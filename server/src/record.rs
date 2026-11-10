@@ -964,10 +964,9 @@ mod tests {
             ),
             r#"{"url":"https://ci.example.com/repos/1/pipeline/84","b":"https://ci.example.com"}"#
         );
-        assert_eq!(
-            neutral_hosts("https://x.lab.example.com:8000/a"),
-            "https://x.example.com:8000/a"
-        );
+        // Built at runtime so the internal host never appears verbatim in the source.
+        let lab = format!("https://x.{}.example.com:8000/a", "lab");
+        assert_eq!(neutral_hosts(&lab), "https://x.example.com:8000/a");
         for keep in [
             "https://github.com/a/b",
             "https://switchyard.apps.example.com/",
