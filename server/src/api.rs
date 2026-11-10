@@ -223,6 +223,26 @@ async fn readyz(State(st): State<Arc<AppState>>) -> Response {
     (code, axum::Json(body)).into_response()
 }
 
+/// What `/` serves (so a token holder can check the web client without a browser
+/// session): the build's upstream sha (`.upstream-sha`), file count and the shell's size.
+fn web_info(dir: Option<&std::path::Path>) -> Value {
+    let Some(dir) = dir else { return Value::Null };
+    let files = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.filter_map(Result::ok)
+                .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+                .count()
+        })
+        .unwrap_or(0);
+    let size = |f: &str| std::fs::metadata(dir.join(f)).map(|m| m.len()).ok();
+    json!({
+        "sha": std::fs::read_to_string(dir.join(".upstream-sha")).ok().map(|s| s.trim().to_string()),
+        "files": files,
+        "shell_bytes": size("shell.html").or_else(|| size("index.html")),
+        "app_js_bytes": size("app.js"),
+    })
+}
+
 async fn meta(State(st): State<Arc<AppState>>) -> Response {
     let counts = st
         .store
@@ -244,6 +264,7 @@ async fn meta(State(st): State<Arc<AppState>>) -> Response {
         "orgs": st.orgs,
         "counts": counts,
         "process": process_stats(),
+        "web": web_info(st.static_dir.as_deref()),
         "now": (st.clock)(),
     });
     (StatusCode::OK, axum::Json(body)).into_response()
