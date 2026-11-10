@@ -308,8 +308,8 @@ cargo run --release -- --demo --listen 127.0.0.1:8080   # from server/, fixtures
 
 ## Changes
 
-- **0.4**: smaller deltas and snapshot (measured on the live fleet: stream 7.0 → ~2.5 MB/h,
-  snapshot 3.1 → ~2.4 MB). New ops `patch` (RFC 7386 merge patch) and `dot` (one main-line
+- **0.4**: smaller deltas and snapshot (measured on the live fleet: stream 7.0 → 1.9 MB/h,
+  snapshot 3.1 → 2.5 MB, so 1 h of `/history` ≈ 4.4 MB). New ops `patch` (RFC 7386 merge patch) and `dot` (one main-line
   Dot); `Repo.main.recent` keeps 12 dots (was ≤ 40, 20 in practice); `Pr.checks` lists only
   required / not-passed checks plus `checks_passed`, and `PrDetail.checks` has them all.
 - **0.3** (additive): `Pipeline.expected_ms?`, `Repo.p50_build_ms?`; `History.base` is the

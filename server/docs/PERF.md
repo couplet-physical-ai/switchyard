@@ -74,8 +74,8 @@ upsert; v0.4 sends whichever of upsert, merge `patch` or main-line `dot` ops is 
 | | v0.3 | v0.4 |
 |---|---|---|
 | Snapshot | 3.08 MB (repos 45 %, PRs 27 %) | **2.47 MB** raw, 0.50 MB gzip (sanitized fixture: 2.2 MB) |
-| Stream | 7.0 MB/h (repo upserts 48 %, pipelines 15 %) | **2.6 MB/h** raw, 0.25 MB/h gzip |
-| `/history` for 1 h (base + frames) | ~10 MB | **~5.1 MB** |
+| Stream | 7.0 MB/h (repo upserts 48 %, pipelines 15 %) | **1.9 MB/h** raw, 0.18 MB/h gzip (24.8 min, 794 frames, 2,834 ops) |
+| `/history` for 1 h (base + frames) | ~10 MB | **~4.4 MB** (`base=0` chunks: frames only) |
 | Largest stream message | unbounded (a resume merged every missed frame) | ≤ 512 KB (`hub::MAX_MESSAGE`) |
 
 The v0.4 column is the recording that became `contract/fixtures` (before sanitizing; sizes are
