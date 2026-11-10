@@ -8,9 +8,12 @@ Checks (stdlib only, so CI needs no install):
     contract's required fields, every enum value is one the contract names, ids match
     their documented shape, times are Unix milliseconds;
   * fixtures/hour.jsonl is one Frame per line: `t` in delta|hb|reset, `seq` strictly
-    increasing across deltas, `at` non-decreasing, every Op is upsert|remove|event with a
-    known kind (unknown kinds are allowed by the contract but reported), every Event has
-    a known `k` and its required fields;
+    increasing across deltas, `at` non-decreasing, every Op is upsert|remove|event|patch|dot
+    with a known kind (unknown kinds are allowed by the contract but reported), every Event
+    has a known `k` and its required fields;
+  * the ops are replayed onto the snapshot's entities: `patch` (RFC 7386 JSON Merge Patch on
+    an entity the client holds) and `dot` (upsert one Dot into repos[id].main.recent, sorted by
+    (at, sha), newest 12 kept) must leave an entity that still matches the contract;
   * no fixture carries an internal address (192.168.*, 10.*, *.lab.example.com).
 
 Exit 0 = valid; 1 = invalid (every problem printed); missing fixtures are reported and
@@ -146,6 +149,23 @@ def entities_of(coll):
     return None
 
 
+def entity_id(kind: str, e, fallback):
+    """The wire id of a snapshot entity: its `id`, a map key, or the contract's derived form."""
+    if isinstance(e, dict) and isinstance(e.get("id"), str):
+        return e["id"]
+    if isinstance(fallback, str):
+        return fallback
+    if not isinstance(e, dict):
+        return None
+    if kind == "commit" and "repo" in e and "sha" in e:
+        return f"{e['repo']}@{e['sha']}"
+    if kind == "pr" and "repo" in e and "number" in e:
+        return f"{e['repo']}#{e['number']}"
+    if kind == "deploy" and "app" in e and "sha" in e:
+        return f"{e['app']}:{e['sha']}"
+    return None
+
+
 def check_snapshot(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     for m in INTERNAL.finditer(text):
@@ -168,6 +188,9 @@ def check_snapshot(path: Path) -> None:
             continue
         for ident, e in items:
             check_entity(kind, e, f"{path.name}:{coll}[{ident}]")
+            key = entity_id(kind, e, ident)
+            if key is not None and isinstance(e, dict):
+                STATE[(kind, key)] = e
         notes.append(f"{coll}: {len(items)}")
     if isinstance(snap.get("watcher"), dict):
         check_entity("watcher", snap["watcher"], f"{path.name}:watcher")
@@ -178,8 +201,45 @@ def check_snapshot(path: Path) -> None:
                 err(path.name, f"stats missing `{k}`")
 
 
+# Replayed state: (kind, id) -> entity, seeded from snapshot.json, moved by hour.jsonl's ops.
+STATE: dict[tuple[str, str], dict] = {}
+DOT_KEEP = 12
+replay = {"patched": 0, "dots": 0, "patch_unknown": 0, "dot_unknown": 0}
+
+
+def merge_patch(target, patch):
+    """RFC 7386: objects merge recursively, null deletes, anything else replaces."""
+    if not isinstance(patch, dict):
+        return patch
+    out = dict(target) if isinstance(target, dict) else {}
+    for k, v in patch.items():
+        if v is None:
+            out.pop(k, None)
+        else:
+            out[k] = merge_patch(out.get(k), v)
+    return out
+
+
+def check_dot(d, where: str) -> bool:
+    if not isinstance(d, dict):
+        err(where, "dot `v` is not an object")
+        return False
+    ok = True
+    for f in ("sha", "at", "state"):
+        if f not in d:
+            err(where, f"dot missing `{f}`")
+            ok = False
+    if "at" in d and not is_ms(d["at"]):
+        err(where, f"dot.at = {d['at']!r} is not Unix milliseconds")
+        ok = False
+    if "state" in d and d["state"] not in CI_STATE:
+        err(where, f"dot.state = {d['state']!r} not in CiState")
+        ok = False
+    return ok
+
+
 def check_op(op, where: str, kinds_seen: dict) -> None:
-    if not isinstance(op, dict) or op.get("op") not in {"upsert", "remove", "event"}:
+    if not isinstance(op, dict) or op.get("op") not in {"upsert", "remove", "event", "patch", "dot"}:
         err(where, f"bad op {op!r:.80}")
         return
     if op["op"] == "event":
@@ -198,18 +258,59 @@ def check_op(op, where: str, kinds_seen: dict) -> None:
         if "at" in e and not is_ms(e["at"]):
             err(where, f"event {k}.at is not Unix milliseconds")
         return
+    if op["op"] == "dot":
+        ident = op.get("id")
+        if not isinstance(ident, str):
+            err(where, "dot without string `id` (a repo id)")
+            return
+        if not REPO_ID.match(ident):
+            err(where, f"dot id {ident!r} is not owner/name")
+        if not check_dot(op.get("v"), where):
+            return
+        repo = STATE.get(("repo", ident))
+        if repo is None:
+            replay["dot_unknown"] += 1
+            return
+        main = repo.setdefault("main", {})
+        recent = [d for d in (main.get("recent") or []) if isinstance(d, dict) and d.get("sha") != op["v"]["sha"]]
+        recent.append(op["v"])
+        recent.sort(key=lambda d: (d.get("at", 0), str(d.get("sha", ""))))
+        main["recent"] = recent[-DOT_KEEP:]
+        replay["dots"] += 1
+        check_entity("repo", repo, f"{where} (repo after dot)")
+        return
     kind, ident = op.get("kind"), op.get("id")
     if not isinstance(ident, str):
         err(where, f"{op['op']} without string `id`")
+    if kind not in ENTITIES and op["op"] == "patch":
+        err(where, f"patch of unknown kind {kind!r}: a patch needs an entity the client holds")
+        return
     if kind not in ENTITIES:
         kinds_seen.setdefault(f"kind:{kind}", 0)
         kinds_seen[f"kind:{kind}"] += 1
         return
-    if op["op"] == "upsert":
-        if "v" not in op:
-            err(where, f"upsert {kind} without `v`")
-        else:
-            check_entity(kind, op["v"], where)
+    if op["op"] == "patch":
+        if not isinstance(op.get("v"), dict):
+            err(where, f"patch {kind} `v` is not an object")
+            return
+        cur = STATE.get((kind, ident))
+        if cur is None:
+            replay["patch_unknown"] += 1
+            return
+        merged = merge_patch(cur, op["v"])
+        STATE[(kind, ident)] = merged
+        replay["patched"] += 1
+        check_entity(kind, merged, f"{where} ({kind} {ident} after patch)")
+        return
+    if op["op"] == "remove":
+        STATE.pop((kind, ident), None)
+        return
+    if "v" not in op:
+        err(where, f"upsert {kind} without `v`")
+    else:
+        check_entity(kind, op["v"], where)
+        if isinstance(op["v"], dict):
+            STATE[(kind, ident)] = op["v"]
 
 
 def check_hour(path: Path) -> None:
@@ -253,6 +354,9 @@ def check_hour(path: Path) -> None:
                     err(where, f"frame at {at} before previous {last_at}")
                 last_at = at
     notes.append(f"{path.name}: {frames} frames, {ops} ops")
+    notes.append(f"{path.name}: replayed {replay['patched']} patch(es), {replay['dots']} dot(s) onto snapshot state"
+                 + (f"; {replay['patch_unknown']} patch(es) / {replay['dot_unknown']} dot(s) on entities the snapshot lacks (not checked)"
+                    if replay['patch_unknown'] or replay['dot_unknown'] else ""))
     for k, c in sorted(unknown.items()):
         notes.append(f"{path.name}: {c} op(s) with unknown {k} (allowed: clients skip them)")
     if frames == 0:
