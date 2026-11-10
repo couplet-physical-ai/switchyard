@@ -56,6 +56,10 @@ jobs:
           echo "exact_pin=$pin" >> "$GITHUB_OUTPUT"
           echo "Switchyard $v, mode $MODE, exact $pin"
           sw_vers; xcodebuild -version
+      - name: GNU timeout (app/scripts/build.sh bounds its steps with it; macOS has none)
+        if: env.MODE == 'app'
+        run: |
+          command -v timeout || { HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install -q coreutils; echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"; }
       - name: Bun 1.4.2
         if: env.MODE != 'placeholder'
         uses: oven-sh/setup-bun@v2
