@@ -64,6 +64,12 @@ app)
   [[ -n "$built" && -d "$built" ]] || { echo "app: no .app produced" >&2; exit 1; }
   echo "app bundle: $built"
   ditto "$built" "$OUT/Switchyard.app"
+  # The release version is the tag's; Exact stamps app.json's. Changing Info.plist voids the
+  # build's ad-hoc signature, so package-macos.sh signs again (entitlements preserved).
+  plist="$OUT/Switchyard.app/Contents/Info.plist"
+  if [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist" 2>/dev/null)" != "$VERSION" ]]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$plist"
+  fi
   ;;
 *) echo "unknown mode $MODE" >&2; exit 2 ;;
 esac
