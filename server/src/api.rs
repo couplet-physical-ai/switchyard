@@ -625,8 +625,20 @@ async fn pr(
     Path((owner, name, number)): Path<(String, String, u64)>,
 ) -> Response {
     let repo = format!("{owner}/{name}");
+    let all = st
+        .store
+        .as_ref()
+        .and_then(|s| s.read().pr_all_checks(&format!("{repo}#{number}")));
     match query::pr_detail(&st.mirror.read(), &repo, number) {
-        Some(v) => (StatusCode::OK, axum::Json(v)).into_response(),
+        Some(mut v) => {
+            // The full check list (the entity carries only required / not-passed ones).
+            if let Some(c) = all.and_then(|c| serde_json::to_value(c).ok()) {
+                v["checks"] = c;
+            } else if let Some(c) = v.pointer("/pr/checks").cloned() {
+                v["checks"] = c;
+            }
+            (StatusCode::OK, axum::Json(v)).into_response()
+        }
         None => (
             StatusCode::NOT_FOUND,
             axum::Json(json!({"error": "unknown_pr"})),

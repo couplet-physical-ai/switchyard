@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Wire protocol version (`contract/CONTRACT.md`). Minor bumps are additive.
-pub const PROTOCOL: &str = "0.3";
+pub const PROTOCOL: &str = "0.4";
 
 pub type Ms = i64;
 
@@ -450,7 +450,11 @@ pub struct Pr {
     pub base: String,
     pub phase: PrPhase,
     pub ci: CiState,
+    /// Required checks and checks that have not passed (full list: `/pr` detail).
     pub checks: Vec<Check>,
+    /// How many other checks passed (success / skipped).
+    #[serde(skip_serializing_if = "is_zero_u32", default)]
+    pub checks_passed: u32,
     pub review: Review,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub merged_at: Option<Ms>,
@@ -720,6 +724,10 @@ pub enum Event {
         culprit: Option<String>,
         at: Ms,
     },
+}
+
+pub fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 pub fn is_false(b: &bool) -> bool {

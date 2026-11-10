@@ -495,35 +495,35 @@ proptest! {
 
     #[test]
     fn ops_replay_to_the_same_tables(facts in prop::collection::vec(fact(), 1..40), every in 1usize..5) {
-        // Applying the emitted ops to an empty client view reproduces the tables.
+        // The emitted ops, encoded as on the wire (upsert / patch / dot / remove) and
+        // applied to an empty client view, reproduce the server's tables exactly.
         let mut s = Store::new(StoreConfig { orgs: vec!["acme".into()], ..Default::default() });
-        let mut view: BTreeMap<(Kind, String), Arc<str>> = BTreeMap::new();
+        let mut view = switchyard::wire::WireState::default();
+        let apply = |ops: Vec<switchyard::store::OpOut>, view: &mut switchyard::wire::WireState| {
+            let inner = switchyard::hub::encode_ops(&ops);
+            let arr: serde_json::Value =
+                serde_json::from_slice(&[b"[".as_slice(), &inner, b"]"].concat()).unwrap();
+            for op in arr.as_array().unwrap() {
+                view.apply_op(op);
+            }
+        };
         for (i, f) in facts.iter().enumerate() {
             s.apply(f.clone(), true);
             if i % every == 0 {
-                for op in s.flush(NOW) {
-                    match op {
-                        switchyard::store::OpOut::Upsert { kind, id, json } => { view.insert((kind, id), json); }
-                        switchyard::store::OpOut::Remove { kind, id } => { view.remove(&(kind, id)); }
-                        switchyard::store::OpOut::Event(_) => {}
-                    }
-                }
+                apply(s.flush(NOW), &mut view);
             }
         }
-        for op in s.flush(NOW) {
-            match op {
-                switchyard::store::OpOut::Upsert { kind, id, json } => { view.insert((kind, id), json); }
-                switchyard::store::OpOut::Remove { kind, id } => { view.remove(&(kind, id)); }
-                switchyard::store::OpOut::Event(_) => {}
-            }
-        }
-        let mut expect: BTreeMap<(Kind, String), Arc<str>> = BTreeMap::new();
+        apply(s.flush(NOW), &mut view);
         for k in Kind::ALL {
-            for (id, j) in s.table(k) {
-                expect.insert((k, id.clone()), j.clone());
-            }
+            let got: BTreeMap<String, serde_json::Value> =
+                view.iter(k).map(|(id, v)| (id.clone(), v.clone())).collect();
+            let want: BTreeMap<String, serde_json::Value> = s
+                .table(k)
+                .iter()
+                .map(|(id, j)| (id.clone(), serde_json::from_str(j).unwrap()))
+                .collect();
+            prop_assert_eq!(got, want, "{}", k.as_str());
         }
-        prop_assert_eq!(view, expect);
     }
 }
 
@@ -557,16 +557,22 @@ fn expected_durations() {
             url: String::new(),
         })
     };
-    // The latest upsert of `id` in a flush (None if it was not re-sent).
+    // Flush; if `id` was re-sent (upsert or patch), its current value.
     let upsert = |s: &mut Store, id: &str| -> Option<serde_json::Value> {
-        s.flush(NOW).into_iter().rev().find_map(|o| match o {
+        let sent = s.flush(NOW).into_iter().any(|o| match o {
             switchyard::store::OpOut::Upsert {
                 kind: Kind::Pipeline,
                 id: i,
-                json,
-            } if i == id => Some(serde_json::from_str(&json).unwrap()),
-            _ => None,
-        })
+                ..
+            }
+            | switchyard::store::OpOut::Patch {
+                kind: Kind::Pipeline,
+                id: i,
+                ..
+            } => i == id,
+            _ => false,
+        });
+        sent.then(|| serde_json::from_str(&s.table(Kind::Pipeline)[id]).unwrap())
     };
     let fresh = |facts: &[Fact]| {
         let mut s = Store::new(StoreConfig {

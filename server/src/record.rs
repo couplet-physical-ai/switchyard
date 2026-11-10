@@ -17,12 +17,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::sync::broadcast;
 use tracing::info;
 
 use crate::hub::Hub;
 use crate::runtime::Adapters;
+use crate::wire::{WireState, diff, dots_between, kind_of};
 
 pub async fn record(
     hub: Arc<Hub>,
@@ -142,6 +143,9 @@ pub struct Sanitizer {
     repo_map: BTreeMap<String, String>,
     login_map: BTreeMap<String, String>,
     app_map: BTreeMap<String, String>,
+    /// The recording's state as recorded, and as published (for patch / dot ops).
+    raw: WireState,
+    clean: WireState,
 }
 
 fn is_bot_login(l: &str) -> bool {
@@ -163,6 +167,8 @@ impl Sanitizer {
             repo_map: BTreeMap::new(),
             login_map: BTreeMap::new(),
             app_map: BTreeMap::new(),
+            raw: WireState::default(),
+            clean: WireState::default(),
         }
     }
 
@@ -720,34 +726,103 @@ impl Sanitizer {
         }
     }
 
+    /// Sanitize one frame. Patch and dot ops carry partial entities, so every changed
+    /// entity is rebuilt whole from the recorded state, sanitized like an upsert, and
+    /// re-encoded against the published state (upsert, patch, or dots + patch).
     pub fn frame(&mut self, f: &mut Value) {
         let Some(ops) = f.get_mut("ops").and_then(Value::as_array_mut) else {
             return;
         };
-        for op in ops.iter_mut() {
+        let mut out = Vec::with_capacity(ops.len());
+        for mut op in ops.drain(..) {
+            let kind_s = match op.get("op").and_then(Value::as_str) {
+                Some("dot") => "repo".to_string(),
+                _ => op
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            };
+            let id = op
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             match op.get("op").and_then(Value::as_str) {
-                Some("upsert") | Some("remove") => {
-                    let kind = op
-                        .get("kind")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
-                    if let Some(v) = op.get_mut("v") {
-                        self.entity(&kind, v);
-                    }
-                    if let Some(id) = op.get("id").and_then(Value::as_str).map(str::to_string) {
-                        op["id"] = Value::from(self.rekey(&kind, &id));
-                    }
-                }
                 Some("event") => {
                     if let Some(e) = op.get_mut("e") {
                         self.event(e);
                     }
+                    out.push(op);
                 }
-                _ => {}
+                Some("remove") => {
+                    self.raw.apply_op(&op);
+                    op["id"] = Value::from(self.rekey(&kind_s, &id));
+                    self.clean.apply_op(&op);
+                    out.push(op);
+                }
+                Some(t @ ("upsert" | "patch" | "dot")) => {
+                    let t = t.to_string();
+                    let Some(kind) = kind_of(&kind_s) else {
+                        continue;
+                    };
+                    self.raw.apply_op(&op);
+                    let Some(mut v) = self.raw.get(kind, &id).cloned() else {
+                        continue; // a patch for an entity the recording never had
+                    };
+                    self.entity(&kind_s, &mut v);
+                    let cid = self.rekey(&kind_s, &id);
+                    let prev = self.clean.get(kind, &cid).cloned();
+                    let enc = match prev {
+                        Some(p) if t != "upsert" => reencode(&kind_s, &cid, &p, &v),
+                        _ => vec![json!({"op": "upsert", "kind": kind_s, "id": cid, "v": v})],
+                    };
+                    for o in enc {
+                        self.clean.apply_op(&o);
+                        out.push(o);
+                    }
+                }
+                _ => out.push(op),
+            }
+        }
+        *ops = out;
+    }
+
+    /// Seed the recorded and published states (call with the raw and the sanitized snapshot).
+    pub fn seed(&mut self, raw: &Value, clean: &Value) {
+        self.raw = WireState::from_snapshot(raw);
+        self.clean = WireState::from_snapshot(clean);
+    }
+}
+
+/// `prev` → `next` as patch / dot ops (the same rule as the server's).
+fn reencode(kind: &str, id: &str, prev: &Value, next: &Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    let (mut p, mut n) = (prev.clone(), next.clone());
+    if kind == "repo" {
+        let take = |v: &mut Value| {
+            v.get_mut("main")
+                .and_then(Value::as_object_mut)
+                .and_then(|m| m.remove("recent"))
+        };
+        if let (Some(Value::Array(pr)), Some(Value::Array(nr))) = (take(&mut p), take(&mut n)) {
+            match dots_between(&pr, &nr) {
+                Some(dots) => {
+                    for d in dots {
+                        out.push(json!({"op": "dot", "id": id, "v": d}));
+                    }
+                }
+                None => {
+                    p["main"]["recent"] = Value::Array(pr);
+                    n["main"]["recent"] = Value::Array(nr);
+                }
             }
         }
     }
+    if let Some(d) = diff(&p, &n) {
+        out.push(json!({"op": "patch", "kind": kind, "id": id, "v": d}));
+    }
+    out
 }
 
 fn generic_note(n: &str) -> String {
@@ -786,7 +861,9 @@ pub fn sanitize_dir(
         &std::fs::read(input.join("snapshot.json")).context("snapshot.json")?,
     )?;
     s.prime(&snap);
+    let raw = snap.clone();
     s.snapshot(&mut snap);
+    s.seed(&raw, &snap);
     std::fs::create_dir_all(out)?;
     let snap_bytes = neutral_hosts(&serde_json::to_string(&snap)?).into_bytes();
     check_clean(&snap_bytes).context("snapshot still contains something internal")?;

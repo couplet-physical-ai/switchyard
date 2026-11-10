@@ -1,4 +1,4 @@
-# Switchyard wire contract — v0.3
+# Switchyard wire contract — v0.4
 
 Owner: the **server** thread (`server/`). The client reads this and `contract/fixtures/`;
 it never edits them. Any change: bump `PROTOCOL` minor, update fixtures in the same commit,
@@ -64,17 +64,30 @@ may see gaps: that is fine). Apply a delta only if `seq > state.seq`. After a `r
 refetch the snapshot and keep the socket: drop deltas with `seq <= snapshot.seq`.
 
 `Op` = `{ "op": "upsert", "kind": Kind, "id": string, "v": Entity }`
+     | `{ "op": "patch",  "kind": Kind, "id": string, "v": object }`
+     | `{ "op": "dot",    "id": string /* repo id */, "v": Dot }`
      | `{ "op": "remove", "kind": Kind, "id": string }`
      | `{ "op": "event", "e": Event }` (transient, never stored).
 
 `Kind` = `"org" | "repo" | "commit" | "pipeline" | "pr" | "deploy" | "app" | "engine" | "queue" | "lane" | "watcher" | "stats"`.
-An upsert replaces the whole entity (`v` always carries its own `id`).
+
+- **upsert** replaces the whole entity (`v` always carries its own `id`).
+- **patch** is an [RFC 7386 JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7386) on the
+  entity the client holds: objects merge recursively, `null` removes a field, anything else
+  (arrays, scalars) replaces the field. It always follows an upsert of that entity (in the
+  snapshot or an earlier frame); a client that does not hold the entity ignores it.
+- **dot** puts one `Dot` into `repos[id].main.recent`: remove the dot with the same `sha`,
+  add this one, sort by `(at, sha)` ascending, keep the newest 12. (The server sends dot ops
+  only when this rule reproduces its main line exactly; otherwise it patches `main` with the
+  whole `recent` array.)
+- Ops apply in order. The server sends whichever of upsert / patch / dots+patch is smallest;
+  applying them yields exactly the entity an upsert would have carried.
 
 ## Snapshot
 
 ```ts
 type Snapshot = {
-  protocol: "0.3", epoch: string, seq: number, at: number,
+  protocol: "0.4", epoch: string, seq: number, at: number,
   orgs: Org[], repos: Repo[], commits: Commit[], pipelines: Pipeline[], prs: Pr[],
   deploys: Deploy[], apps: App[], engines: Engine[], queues: Queue[], lanes: Lane[],
   watcher: Watcher | null, stats: Stats | null
@@ -109,7 +122,7 @@ type MainState = {
   state: CiState,             // newest DECIDED commit (success/failure/error); else head's state
   since: number,              // when main entered `state` (oldest commit of the current streak)
   culprit?: string,           // when red: the sha that turned it red
-  recent: Dot[]               // oldest first, newest last, ≤ 40
+  recent: Dot[]               // oldest first, newest last, ≤ 12 (sorted by (at, sha))
 }
 type Dot = { sha: string, at: number, state: CiState, author: string, bot?: true,
              title: string, deployed?: true, culprit?: true }
@@ -156,7 +169,9 @@ type Pr = {                   // id = "owner/name#123"
   phase: "draft" | "checks" | "review" | "changes_requested" | "mergeable" | "conflict"
        | "merged" | "closed" | "deployed",
   ci: CiState,                // live pipelines on the head + GitHub's check rollup
-  checks: { name: string, state: CiState, required?: true }[],   // required first
+  checks: { name: string, state: CiState, required?: true }[],   // required first; only
+                              // required checks and checks that have not passed
+  checks_passed?: number,     // how many other checks passed (success / skipped)
   review: { ai?: "pending" | "commented" | "approved" | "skipped",
             human?: "approved" | "changes_requested" | "review_required" },
   merged_at?: number, merge_sha?: string,
@@ -268,7 +283,7 @@ type Span = { id: string /* trace id */, name: string /* "npm", "python-uv", "fa
               pipeline?: number /* Woodpecker pipeline number */, start: number, ms: number,
               spans?: number /* inner span count */ }
 
-type PrDetail = { pr: Pr, repo_state: Repo | null, commits: Commit[], pipelines: Pipeline[],
+type PrDetail = { pr: Pr, checks: { name: string, state: CiState, required?: true }[] /* every check */, repo_state: Repo | null, commits: Commit[], pipelines: Pipeline[],
                   deploys: Deploy[] }
 ```
 
@@ -292,6 +307,10 @@ cargo run --release -- --demo --listen 127.0.0.1:8080   # from server/, fixtures
 
 ## Changes
 
+- **0.4**: smaller deltas and snapshot (measured on the live fleet: stream 7.0 → ~2.5 MB/h,
+  snapshot 3.1 → ~2.4 MB). New ops `patch` (RFC 7386 merge patch) and `dot` (one main-line
+  Dot); `Repo.main.recent` keeps 12 dots (was ≤ 40, 20 in practice); `Pr.checks` lists only
+  required / not-passed checks plus `checks_passed`, and `PrDetail.checks` has them all.
 - **0.3** (additive): `Pipeline.expected_ms?`, `Repo.p50_build_ms?`; `History.base` is the
   state at `from` (frames before `from` are folded in) or `null` with `base=0`;
   `GET /api/v1/snapshot?at=`; `/api/v1/tstream[/sse]?token=` for header-less native

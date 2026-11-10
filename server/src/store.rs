@@ -20,7 +20,7 @@ pub const VISIBLE_MS: Ms = 24 * H;
 /// Finished pipelines stay visible this long.
 pub const PIPELINE_VISIBLE_MS: Ms = 2 * H;
 /// Dots per repo main line.
-pub const DOTS: usize = 40;
+pub const DOTS: usize = crate::wire::DOTS;
 
 #[derive(Clone, Debug)]
 pub struct StoreConfig {
@@ -52,6 +52,17 @@ pub enum OpOut {
         kind: Kind,
         id: String,
     },
+    /// RFC 7386 merge patch on the entity the client holds (contract v0.4).
+    Patch {
+        kind: Kind,
+        id: String,
+        json: String,
+    },
+    /// One Dot into `repos[id].main.recent` (contract v0.4).
+    Dot {
+        id: String,
+        json: String,
+    },
     Event(Event),
 }
 
@@ -73,6 +84,22 @@ impl OpOut {
                 out.extend_from_slice(kind.as_str().as_bytes());
                 out.extend_from_slice(b"\",\"id\":");
                 serde_json::to_writer(&mut *out, id).ok();
+                out.push(b'}');
+            }
+            OpOut::Patch { kind, id, json } => {
+                out.extend_from_slice(b"{\"op\":\"patch\",\"kind\":\"");
+                out.extend_from_slice(kind.as_str().as_bytes());
+                out.extend_from_slice(b"\",\"id\":");
+                serde_json::to_writer(&mut *out, id).ok();
+                out.extend_from_slice(b",\"v\":");
+                out.extend_from_slice(json.as_bytes());
+                out.push(b'}');
+            }
+            OpOut::Dot { id, json } => {
+                out.extend_from_slice(b"{\"op\":\"dot\",\"id\":");
+                serde_json::to_writer(&mut *out, id).ok();
+                out.extend_from_slice(b",\"v\":");
+                out.extend_from_slice(json.as_bytes());
                 out.push(b'}');
             }
             OpOut::Event(e) => {
@@ -189,6 +216,17 @@ impl Store {
     }
 
     /// Every retained pipeline of one commit (also those past the visible window).
+    /// Every check of a PR (required first, then by name).
+    pub fn pr_checks(&self, p: &PrFact) -> Vec<Check> {
+        let mut checks = self.live_checks(p);
+        checks.sort_by(|a, b| b.required.cmp(&a.required).then(a.name.cmp(&b.name)));
+        checks
+    }
+
+    pub fn pr_all_checks(&self, id: &str) -> Option<Vec<Check>> {
+        self.prs.get(id).map(|p| self.pr_checks(p))
+    }
+
     pub fn pipelines_for(&self, repo: &str, sha: &str) -> Vec<Pipeline> {
         self.idx
             .sha_pipelines
@@ -650,6 +688,85 @@ impl Store {
     }
 }
 
+/// How a changed entity goes on the wire: the smallest of a full upsert, a merge
+/// patch, or (repos) dot ops for main-line changes plus a patch for the rest.
+fn delta_ops(k: Kind, id: String, old: &str, new: Arc<str>, ops: &mut Vec<OpOut>) {
+    use crate::wire::{diff, dots_between};
+    let full = new.len() + id.len() + 40;
+    // Small entities: a patch would save little, the parse costs more.
+    if new.len() < 300 {
+        ops.push(OpOut::Upsert {
+            kind: k,
+            id,
+            json: new,
+        });
+        return;
+    }
+    let (Ok(mut o), Ok(mut n)) = (
+        serde_json::from_str::<serde_json::Value>(old),
+        serde_json::from_str::<serde_json::Value>(&new),
+    ) else {
+        ops.push(OpOut::Upsert {
+            kind: k,
+            id,
+            json: new,
+        });
+        return;
+    };
+    let mut alt: Vec<OpOut> = Vec::new();
+    let mut via_dots = false;
+    if k == Kind::Repo {
+        let take = |v: &mut serde_json::Value| {
+            v.get_mut("main")
+                .and_then(|m| m.as_object_mut())
+                .and_then(|m| m.remove("recent"))
+        };
+        if let (Some(serde_json::Value::Array(or)), Some(serde_json::Value::Array(nr))) =
+            (take(&mut o), take(&mut n))
+        {
+            match dots_between(&or, &nr) {
+                Some(dots) => {
+                    via_dots = true;
+                    for d in dots {
+                        alt.push(OpOut::Dot {
+                            id: id.clone(),
+                            json: d.to_string(),
+                        });
+                    }
+                }
+                None => {
+                    // Put them back: the whole line is patched.
+                    o["main"]["recent"] = serde_json::Value::Array(or);
+                    n["main"]["recent"] = serde_json::Value::Array(nr);
+                }
+            }
+        }
+    }
+    if let Some(p) = diff(&o, &n) {
+        alt.push(OpOut::Patch {
+            kind: k,
+            id: id.clone(),
+            json: p.to_string(),
+        });
+    }
+    let size: usize = alt
+        .iter()
+        .map(|op| match op {
+            OpOut::Patch { json, id, .. } | OpOut::Dot { json, id } => json.len() + id.len() + 40,
+            _ => 0,
+        })
+        .sum();
+    if size < full || (via_dots && alt.is_empty()) {
+        ops.extend(alt);
+    } else {
+        ops.push(OpOut::Upsert {
+            kind: k,
+            id,
+            json: new,
+        });
+    }
+}
+
 fn median(mut v: Vec<Ms>) -> Option<Ms> {
     if v.is_empty() {
         return None;
@@ -948,8 +1065,14 @@ impl Store {
                     let json = self.derive(k, &id, now, &mut derived_events);
                     let table = &mut self.tables[k.index()];
                     match json {
-                        Some(j) => {
-                            if table.get(&id).is_none_or(|cur| **cur != *j) {
+                        Some(j) => match table.get(&id) {
+                            Some(cur) if **cur == *j => {}
+                            Some(cur) => {
+                                let old = cur.clone();
+                                table.insert(id.clone(), j.clone());
+                                delta_ops(k, id, &old, j, &mut ops);
+                            }
+                            None => {
                                 table.insert(id.clone(), j.clone());
                                 ops.push(OpOut::Upsert {
                                     kind: k,
@@ -957,7 +1080,7 @@ impl Store {
                                     json: j,
                                 });
                             }
-                        }
+                        },
                         None => {
                             if table.remove(&id).is_some() {
                                 ops.push(OpOut::Remove { kind: k, id });
@@ -1650,8 +1773,11 @@ impl Store {
                 }
             }
         };
-        let mut checks = self.live_checks(p);
-        checks.sort_by(|a, b| b.required.cmp(&a.required).then(a.name.cmp(&b.name)));
+        let (checks, passed): (Vec<Check>, Vec<Check>) = self
+            .pr_checks(p)
+            .into_iter()
+            .partition(|c| c.required || !matches!(c.state, CiState::Success | CiState::Skipped));
+        let checks_passed = passed.len() as u32;
         let idle = now - p.updated;
         Some(Pr {
             id: id.to_string(),
@@ -1669,6 +1795,7 @@ impl Store {
             phase,
             ci,
             checks,
+            checks_passed,
             review: Review {
                 ai: p.ai,
                 human: p.review.clone(),

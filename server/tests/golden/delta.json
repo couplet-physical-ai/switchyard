@@ -2,24 +2,10 @@
   {
     "id": "wp:Northwind-EMS/ember-api:53",
     "kind": "pipeline",
-    "op": "upsert",
+    "op": "patch",
     "v": {
-      "author": "dev-02",
-      "branch": "feature/change-1",
-      "created": 1794339459000,
-      "engine": "dagger-ci-102-1",
-      "event": "pull_request",
       "finished": 1794339604000,
-      "id": "wp:Northwind-EMS/ember-api:53",
-      "lane": "roadrunner",
-      "number": 53,
-      "pr": 102,
-      "repo": "Northwind-EMS/ember-api",
-      "sha": "aad98fd9b169395a00cd2260d34490c1d1c0e6cb",
-      "started": 1794339467000,
       "state": "success",
-      "title": "feat: neutral change 2",
-      "url": "https://ci.dev.example.com/repos/38/pipeline/53",
       "workflows": [
         {
           "engine": "dagger-ci-102-1",
@@ -80,30 +66,17 @@
   {
     "id": "Northwind-EMS/ember-api@aad98fd9b169395a00cd2260d34490c1d1c0e6cb",
     "kind": "commit",
-    "op": "upsert",
+    "op": "patch",
     "v": {
-      "at": 1794339459000,
-      "author": "dev-02",
-      "branch": "feature/change-1",
       "ci": "success",
-      "id": "Northwind-EMS/ember-api@aad98fd9b169395a00cd2260d34490c1d1c0e6cb",
-      "pipelines": [
-        "wp:Northwind-EMS/ember-api:53"
-      ],
-      "pr": 102,
-      "repo": "Northwind-EMS/ember-api",
-      "sha": "aad98fd9b169395a00cd2260d34490c1d1c0e6cb",
-      "stage": "gating",
-      "title": "feat: neutral change 2"
+      "stage": "gating"
     }
   },
   {
     "id": "Northwind-EMS/ember-api#102",
     "kind": "pr",
-    "op": "upsert",
+    "op": "patch",
     "v": {
-      "author": "dev-02",
-      "base": "main",
       "checks": [
         {
           "name": "ci/woodpecker/pr/ci",
@@ -117,18 +90,7 @@
         }
       ],
       "ci": "success",
-      "created": 1794339456000,
-      "draft": false,
-      "head": "feature/change-1",
-      "head_sha": "aad98fd9b169395a00cd2260d34490c1d1c0e6cb",
-      "id": "Northwind-EMS/ember-api#102",
-      "number": 102,
-      "phase": "mergeable",
-      "repo": "Northwind-EMS/ember-api",
-      "review": {},
-      "title": "feat: neutral change 2",
-      "updated": 1794339456000,
-      "url": "https://github.com/Northwind-EMS/ember-api/pull/102"
+      "phase": "mergeable"
     }
   },
   {
