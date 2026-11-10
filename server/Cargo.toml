@@ -49,7 +49,7 @@ tikv-jemallocator = "0.6"
 criterion = { version = "0.5", features = ["async_tokio"] }
 proptest = "1"
 tempfile = "3"
-tokio-tungstenite = "0.26"
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 
 [[bench]]
 name = "core"
