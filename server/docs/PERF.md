@@ -8,7 +8,7 @@ build; numbers are from the machines named in each table.
 | `GET /api/v1/snapshot` p99 < 5 ms from memory | **p99 3.8 ms** at 16 concurrent clients, 31,850 req/s (p50 0.29 ms); **p99 1.0 ms** at 8 clients | `oha` against the server (gzip, 481 KiB per response) |
 | Delta fan-out to 1,000 clients | **1,000 real WebSocket clients**: 0 failed, 0 resets, delivery lag p50 3 ms / p99 35 ms / max 59 ms at 6.3 frames/s/client (6,260 frames/s total) | `examples/wsload.rs` against `--demo --speed 10` |
 | ≥ 20k events/s ingest | **47,400 pipeline events/s** through the reducer (apply + derive + diff + encode, flushing every 64 events) on a fleet-sized store | `cargo bench --bench core` → `ingest/pipeline_events_flush64` |
-| RSS < 256 MB steady | live, all five orgs: see the deployed-server row below; locally **58 MB** after sync; demo + 1,000 WebSocket clients **190 MB** (212 MB peak) | `/proc/<pid>/status` VmRSS / VmHWM |
+| RSS < 256 MB steady | deployed, all five orgs: **61 MB** steady (peak 80 MB); demo + 1,000 WebSocket clients **190 MB** (212 MB peak) | `/api/v1/meta` → `process`, `/proc/<pid>/status` |
 | Zero per-client upstream calls | by construction: adapters are the only upstream callers; one SSE connection + polls, independent of clients (see `docs/SOURCES.md`); `/api/v1/meta` → `adapters[].requests` | |
 
 ## Criterion (`cargo bench --bench core`)
@@ -75,7 +75,7 @@ through the platform edge (TLS, Caddy) with a read-only service token.
 | Push → live delta | commit `2f1c06b` pushed to this repo: the stream delivered its `push` + `enqueue` events and the pipeline/commit/repo upserts **3.7 s after `git push` returned** (9.9 s after the check started; the push began at +5.0 s and returned at +6.2 s) | `examples/e2e.rs <url> <sha>` started before the push |
 | Snapshot | 1.2 MB raw / 186 KB gzip right after a restart (2.7 MB once closed + Dependabot PRs are backfilled); 225–270 ms end to end over the edge from the devbox | `examples/e2e.rs` |
 | 200 WebSocket clients over the edge | 200/200 connected (connect p50 169 ms), 0 resets, 0 merged frames, lag p50 39 ms / p99 1.0 s (during the post-restart GitHub backfill: 21 KB average frames) | `wsload wss://…/api/v1/stream 200 45` |
-| RSS | 41 MB at start, 72 MB with 200 clients during the GitHub backfill | `/api/v1/meta` → `process` |
+| RSS | 41 MB at start, 72 MB with 200 clients during the GitHub backfill, **61 MB steady** after the full backfill (2.5 MB snapshot, 393 repos / 908 commits / 379 PRs / 238 apps; peak 80 MB) | `/api/v1/meta` → `process` |
 | Upstream calls | independent of clients: Woodpecker 1 SSE stream + polls, GitHub ~200 GraphQL points/h, cicd 2 req/30 s, catalog 1 req/20 s | `/api/v1/meta` → `adapters[].requests` |
 
 Re-run the live check any time:
