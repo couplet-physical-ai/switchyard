@@ -41,8 +41,12 @@ REPO=couplet-physical-ai/switchyard
 if gh release view "v$V" -R "$REPO" >/dev/null 2>&1; then
   gh release upload "v$V" -R "$REPO" dist/*.zip dist/*.dmg dist/SHA256SUMS --clobber
 else
+  notes=$(mktemp)
+  python3 scripts/release/notes.py "$V" "$sha" > "$notes"
+  printf '\n_Built on the Mac mini (fallback path), mode %s, commit %s._\n' "$MODE" "${sha::7}" >> "$notes"
   gh release create "v$V" -R "$REPO" dist/*.zip dist/*.dmg dist/SHA256SUMS --target "$sha" \
-    --title "Switchyard $V" --notes "Switchyard $V for macOS (Apple Silicon), built on the Mac mini from ${sha::7} ($MODE). Install: \`brew tap couplet-physical-ai/tap && brew install --cask switchyard\`."
+    --title "Switchyard $V" --notes-file "$notes"
+  rm -f "$notes"
 fi
 gh workflow run bump-switchyard.yml -R couplet-physical-ai/homebrew-tap -f version="$V"
 echo "released v$V: $(gh release view "v$V" -R "$REPO" --json url --jq .url); tap bump dispatched"

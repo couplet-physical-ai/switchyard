@@ -28,7 +28,9 @@ free for this public repo), on a `v*` tag or a manual run:
    (`codesign -s -`; no Developer ID exists), writes `Switchyard-<v>-arm64.zip` (what the
    cask installs), `Switchyard-<v>-arm64.dmg` and `SHA256SUMS`.
 5. Launch smoke: the packaged app must still be running after 5 s.
-6. GitHub release `v<v>` with the three files.
+6. GitHub release `v<v>` with the three files. Its notes come from the commit subjects since the
+   previous release, grouped by area (`client:`, `server:`, `ci:`, `release:`, …):
+   [`scripts/release/notes.py`](../scripts/release/notes.py) (`python3 scripts/release/notes.py 0.1.0` previews them).
 
 The tap ([couplet-physical-ai/homebrew-tap](https://github.com/couplet-physical-ai/homebrew-tap))
 moves itself: its `bump-switchyard` workflow reads the newest release's `SHA256SUMS`, hashes

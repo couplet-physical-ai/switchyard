@@ -126,17 +126,16 @@ jobs:
           V: ${{ steps.v.outputs.version }}
         run: |
           set -euo pipefail
-          notes="Switchyard $V for macOS (Apple Silicon), mode $MODE, commit ${GITHUB_SHA::7}.
-
-          Install: \`brew tap couplet-physical-ai/tap && brew install --cask switchyard\`
-          (or download the dmg, drag Switchyard to Applications, then run \`xattr -dr com.apple.quarantine /Applications/Switchyard.app\`: the app is ad-hoc signed).
-          Checksums: SHA256SUMS."
+          python3 scripts/release/notes.py "$V" "$GITHUB_SHA" > "$RUNNER_TEMP/notes.md"
+          printf '\n_Built by %s on GitHub Actions (%s), mode %s, commit %s._\n' "$GITHUB_WORKFLOW" "$(sw_vers -productVersion) / $(xcodebuild -version | head -1)" "$MODE" "${GITHUB_SHA::7}" >> "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
           pre=(); [[ "${{ inputs.prerelease }}" == true ]] && pre=(--prerelease)
           if gh release view "v$V" >/dev/null 2>&1; then
             gh release upload "v$V" dist/*.zip dist/*.dmg dist/SHA256SUMS --clobber
+            gh release edit "v$V" --notes-file "$RUNNER_TEMP/notes.md"
           else
             gh release create "v$V" dist/*.zip dist/*.dmg dist/SHA256SUMS --target "$GITHUB_SHA" \
-              --title "Switchyard $V" --notes "$notes" "${pre[@]}"
+              --title "Switchyard $V" --notes-file "$RUNNER_TEMP/notes.md" "${pre[@]}"
           fi
           gh release view "v$V" --json url,assets --jq '.url, (.assets[] | "  \(.name) \(.size)")'
           echo "The tap's bump-switchyard workflow picks this up within 20 min; scripts/release.sh triggers it at once."
