@@ -570,10 +570,17 @@ async fn history(State(st): State<Arc<AppState>>, Query(q): Query<HistoryQ>) -> 
     let hub = st.hub.clone();
     let out = tokio::task::spawn_blocking(move || {
         let h = hub.history.query(from, to)?;
+        if q.base == Some(0) && !h.has_restarts() {
+            return Some((from, h.after(from)));
+        }
+        // A restart inside the window goes out as a delta against the replayed state,
+        // never as a whole snapshot; that needs the state at `from` even for base=0.
+        let (from, h) = h.fold_to(from, false, PROTOCOL, &hub.epoch);
+        let h = h.inline_restarts(PROTOCOL >= "0.4");
         if q.base == Some(0) {
             return Some((from, h.after(from)));
         }
-        Some(h.fold_to(from, false, PROTOCOL, &hub.epoch))
+        Some((from, h))
     })
     .await
     .ok()

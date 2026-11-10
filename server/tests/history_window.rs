@@ -139,3 +139,58 @@ fn a_restart_inside_the_window_replaces_the_state() {
     assert_eq!(health(&st, "a"), None, "state before the restart is gone");
     assert_eq!(frame_ats(&out.frames), vec![T0 + 50_000]);
 }
+
+#[test]
+fn a_restart_goes_out_as_a_delta_not_a_snapshot() {
+    let h = hub();
+    let seq = h.publish_reset(T0 + 40_000);
+    h.force_snapshot(snap(seq, T0 + 40_000, &[("a", "up"), ("c", "up")]));
+    h.publish(&upsert("c", "down"), T0 + 50_000);
+    for patch in [false, true] {
+        let out = h.history.query(T0 + 5_000, T0 + 60_000).unwrap();
+        let (from, out) = out.fold_to(T0 + 5_000, false, "0.4", "e");
+        let out = out.inline_restarts(patch);
+        assert!(!out.has_restarts());
+        let kinds: Vec<String> = out
+            .frames
+            .iter()
+            .map(|f| {
+                serde_json::from_slice::<Value>(f).unwrap()["t"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert!(kinds.iter().all(|t| t == "delta"), "{kinds:?}");
+        // The restart's delta: b (gone after the restart) removed, c added; a unchanged.
+        let restart: Value = serde_json::from_slice(&out.frames[out.frames.len() - 2]).unwrap();
+        assert_eq!(restart["seq"], seq);
+        let ops = restart["ops"].as_array().unwrap();
+        assert!(ops.iter().any(|o| o["op"] == "remove" && o["id"] == "b"));
+        assert!(ops.iter().any(|o| o["op"] == "upsert" && o["id"] == "c"));
+        assert!(
+            !ops.iter().any(|o| o["id"] == "a"),
+            "a is the same on both sides"
+        );
+        // Replaying base + frames lands on the restarted fleet.
+        let mut st = base_state(&out.base);
+        for f in &out.frames {
+            st.apply_frame(&serde_json::from_slice(f).unwrap());
+        }
+        assert_eq!(health(&st, "c").as_deref(), Some("down"));
+        assert_eq!(health(&st, "a").as_deref(), Some("up"));
+        assert_eq!(health(&st, "b"), None);
+        // base=0 over the same window: no base, only what happened after `from`.
+        let b0 = h
+            .history
+            .query(T0 + 5_000, T0 + 60_000)
+            .unwrap()
+            .fold_to(T0 + 5_000, false, "0.4", "e")
+            .1
+            .inline_restarts(patch)
+            .after(from);
+        assert_eq!(&b0.base[..], b"null");
+        assert!(!b0.has_restarts());
+        assert_eq!(b0.frames.len(), out.frames.len());
+    }
+}
