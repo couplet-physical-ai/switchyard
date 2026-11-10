@@ -1,5 +1,5 @@
-# Roadrunner CI for the Exact client (app/): the web build and every *.test.contract suite on
-# the web host (headless Chromium), on Linux. The macOS build and its tests run on the Mac
+# Roadrunner CI for the Exact client (app/): the web build, every tests/*.test.contract suite on
+# the web host (headless Chromium, 1440x900) and the mock server's selftest, on Linux. The macOS build and its tests run on the Mac
 # (GitHub Actions release.yml / the Mac mini). Runs only when app/, contract/ or this file
 # changes, so a server-only change never rebuilds the client.
 #
@@ -42,4 +42,5 @@ steps:
         if [ ! -f app/app.contract ]; then echo "no app/ on this commit yet: toolchain only"; exit 0; fi;
         if [ -f app/exact.pin ]; then grep -qx 316d1f292f92f91a223d2f582e80fe17979c12c1 app/exact.pin; else grep -qx 316d1f292f92f91a223d2f582e80fe17979c12c1 packaging/exact.pin; fi
         || { echo "exact pin changed: update EXACT_PIN in .woodpecker/client.yaml"; exit 1; };
-        cd app; bun exact.mjs web-build --out /tmp/switchyard-web; bun exact.mjs test web'
+        sh app/scripts/build.sh web /tmp/switchyard-web; sh app/scripts/build.sh test web;
+        bun app/server/selftest.ts'
