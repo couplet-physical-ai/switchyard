@@ -257,10 +257,16 @@ type Journey = {
   commit: Commit | null, repo_state: Repo | null,
   pipelines: Pipeline[],       // every run of this sha (oldest first)
   prs: Pr[], deploys: Deploy[], app: App | null,
-  spans: Span[],               // Dagger spans from cicd /traces (may be empty)
+  spans: Span[],               // the Dagger calls of this sha's Roadrunner runs (may be empty)
   timeline: { at: number, k: "push"|"enqueue"|"start"|"finish"|"merge"|"deploy"|"deployed"|"health",
               label: string }[]
 }
+
+// One Dagger call (a trace in Tempo, read through cicd `/api/traces`), oldest first.
+type Span = { id: string /* trace id */, name: string /* "npm", "python-uv", "failsafe", … */,
+              call?: string /* its arguments, without paths/registries/keys */,
+              pipeline?: number /* Woodpecker pipeline number */, start: number, ms: number,
+              spans?: number /* inner span count */ }
 
 type PrDetail = { pr: Pr, repo_state: Repo | null, commits: Commit[], pipelines: Pipeline[],
                   deploys: Deploy[] }
@@ -289,7 +295,7 @@ cargo run --release -- --demo --listen 127.0.0.1:8080   # from server/, fixtures
   state at `from` (frames before `from` are folded in) or `null` with `base=0`;
   `GET /api/v1/snapshot?at=`; `/api/v1/tstream[/sse]?token=` for header-less native
   streams; web client served at `/` with SPA fallback + cache rules; `meta.process`; the
-  demo snapshot follows the stream.
+  demo snapshot follows the stream; `Journey.spans` defined (`Span`, one per Dagger call).
 - **0.2** (additive over v0): every entity carries `id`; deploy id = `owner/name@sha`;
   Engine `host`/`online`/`agents`/load; Queue `waiting`/`pipelines_running`/`paused`; Pr
   `ci`/`head`/`merge_sha`/`blocked_by`/`stale_ms`; `start.engine` optional; History

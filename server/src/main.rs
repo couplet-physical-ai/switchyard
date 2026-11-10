@@ -291,13 +291,24 @@ async fn serve(cli: Cli) -> Result<()> {
             }
         });
     }
+    // Commit journeys' Dagger calls (live mode with a cicd read token only).
+    let traces = (!cli.demo)
+        .then(switchyard::adapters::UpstreamCfg::from_env)
+        .filter(|c| c.cicd_token.is_some())
+        .map(|c| {
+            Arc::new(switchyard::traces::Traces::new(
+                c.cicd_url.clone(),
+                c.cicd_token.clone(),
+                switchyard::adapters::http_client(),
+            ))
+        });
     let st = Arc::new(AppState {
         hub,
         mirror,
         store,
         adapters,
         auth,
-        traces: None,
+        traces,
         clock,
         mode: if cli.demo { "demo" } else { "live" },
         version: env!("CARGO_PKG_VERSION").to_string(),
