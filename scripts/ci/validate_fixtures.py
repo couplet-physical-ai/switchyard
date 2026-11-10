@@ -192,8 +192,11 @@ def check_snapshot(path: Path) -> None:
             if key is not None and isinstance(e, dict):
                 STATE[(kind, key)] = e
         notes.append(f"{coll}: {len(items)}")
-    if isinstance(snap.get("watcher"), dict):
-        check_entity("watcher", snap["watcher"], f"{path.name}:watcher")
+    for single in ("watcher", "stats"):  # one entity each, ids "outage" / "fleet"; patches may target them
+        if isinstance(snap.get(single), dict):
+            check_entity(single, snap[single], f"{path.name}:{single}")
+            if isinstance(snap[single].get("id"), str):
+                STATE[(single, snap[single]["id"])] = snap[single]
     stats = snap.get("stats")
     if isinstance(stats, dict):
         for k in STATS_KEYS:
