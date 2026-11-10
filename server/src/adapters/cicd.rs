@@ -227,9 +227,23 @@ impl CicdAdapter {
         loop {
             t.tick().await;
             let mut ok = false;
-            let token = self.read_token.as_ref().or(self.gh_token.as_ref());
-            if let Some(tok) = token {
+            // The read token first; the GitHub token also opens this route (and keeps
+            // lanes flowing if cicd does not know the read token yet).
+            let mut mode = None;
+            for tok in [self.read_token.as_ref(), self.gh_token.as_ref()]
+                .into_iter()
+                .flatten()
+            {
                 match self.get("/api/roadrunner/mode", tok).await {
+                    Ok(v) => {
+                        mode = Some(Ok(v));
+                        break;
+                    }
+                    Err(e) => mode = Some(Err(e)),
+                }
+            }
+            if let Some(res) = mode {
+                match res {
                     Ok(v) => match serde_json::from_value::<ModeOut>(v) {
                         Ok(m) => {
                             let facts = facts_from_mode(&m, (self.clock)());
