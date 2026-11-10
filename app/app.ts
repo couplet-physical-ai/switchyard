@@ -7,6 +7,7 @@ import { HttpUpstream, resolveBase, wsUrl, type Upstream } from './src/api.ts';
 import { DEMO_REPLAY, DemoUpstream } from './src/demo.ts';
 import { fleet, journeyView, mainlines, prDetailView, prs, search } from './src/project.ts';
 import { Timeline } from './src/timeline.ts';
+import { updateDo, updateState } from './src/update.ts';
 import type { Frame as WireFrame } from './src/wire.ts';
 import { drawStatic, LiveLayer } from './src/yard/draw.ts';
 import { isRed, layout, pickMains, type Layout } from './src/yard/layout.ts';
@@ -255,6 +256,8 @@ export function parseLink(u: string, server: string, token: string): { server: s
 
 export const sources: Sources = {
   parseLink: ([u, server, token]) => parseLink(u, server, token),
+  updateState: (_a, _store, _storage, native) => updateState(native),
+  updateDo: ([op], _store, _storage, native) => updateDo(op, native),
   loadToken: (_a, store: Store) => {
     const t = store.get(TOKEN) ?? '';
     return { token: t, has: t !== '' };
@@ -350,8 +353,8 @@ function cached<T>(key: string, get: () => Promise<T>): Promise<T> {
 }
 
 /** The host's entry: one function for every source, as `sources` names them. */
-export const answer: Answer = ((source: keyof Sources, args: unknown, store: Store, storage: unknown) =>
-  (sources[source] as (a: unknown, s: Store, st: unknown) => unknown)(args, store, storage)) as Answer;
+export const answer: Answer = ((source: keyof Sources, args: unknown, store: Store, storage: unknown, native?: unknown) =>
+  (sources[source] as (a: unknown, s: Store, st: unknown, n: unknown) => unknown)(args, store, storage, native)) as Answer;
 
 // ---- canvases ------------------------------------------------------------------------------
 export const surfaces: Record<string, number> = { yardStatic: 1, yardLive: 2, rowDots: 2 };

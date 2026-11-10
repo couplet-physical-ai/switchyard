@@ -6,6 +6,7 @@ use MainlinesView from "./views/mainlines.contract"
 use PrsView, PrView from "./views/prs.contract"
 use FleetView from "./views/fleet.contract"
 use JourneyView from "./views/journey.contract"
+use UpdatePill from "./views/update.contract"
 use Conn, Tok, Ack, Overview, Hit, Media, Time, Found, Mainlines, Prs, PrDetail, Fleet, Journey, Link from "./views/shapes.contract"
 
 font "Commit Mono"
@@ -57,6 +58,7 @@ component App
   members "./views/prs.contract"
   members "./views/fleet.contract"
   members "./views/journey.contract"
+  members "./views/update.contract"
 
   task pulse mount
     every(250, tick)
@@ -211,6 +213,7 @@ component App
                   text "Connect"
                 button press=back testId="connect-no"
                   text "Cancel"
+      UpdatePill(u=upd, notesOpen=updNotes, check=checkUpdates, install=installUpdate, toggleNotes=updToggleNotes)
       dialog id="palette" aria-label="Search" testId="palette" width=640 max-width="90vw" padding=0 border-radius=12 background-color="sy.raised" border="1px solid sy.edge"
         column padding=10 gap=6
           input type="search" value=q input=typed aria-label="Search" autofocus=true placeholder="repo, #pr, sha, app" testId="palette-input"

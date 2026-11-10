@@ -1,0 +1,24 @@
+// The updater (views/update.contract, modules/apple/Updater.swift). The web has none; on macOS
+// under the agent it is there but never automatic, and a manual check runs its state machine
+// to an outcome (up to date, a release this copy cannot install, or a failure offline).
+
+test "the web has no updater: no pill, no Check for Updates" on web
+  clock data
+  expect state upd.supported == false
+  expect tree missing "update-pill"
+  expect tree missing "update-check"
+
+test "macOS under the agent: the updater is there, never automatic, and a manual check ends" on macos
+  clock data
+  expect state upd.supported == true
+  expect state upd.auto == false
+  expect state upd.canInstall == false
+  expect state upd.autoInstall == false
+  expect state upd.checks == 0
+  expect tree has "update-check"
+  expect tree missing "update-pill"
+  tap "update-check"
+  clock until state upd.checks == 1 within 45000
+  clock settle
+  expect state upd.canInstall == false
+  expect tree has "update-pill"

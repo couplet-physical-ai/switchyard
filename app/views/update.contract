@@ -1,0 +1,79 @@
+// The in-app updater (README "Updates"): the macOS module (modules/apple/Updater.swift) checks
+// GitHub releases, downloads and verifies a newer build, and says so here; a press swaps the
+// bundle and relaunches. The web has no updater (the server serves the newest web build):
+// `upd.supported` is false there and nothing below shows.
+
+shape Upd
+  supported: bool
+  state: string
+  current: string
+  latest: string
+  progress: number
+  notes: string
+  error: string
+  notice: string
+  line: string
+  show: bool
+  canInstall: bool
+  auto: bool
+  autoInstall: bool
+  prerelease: bool
+  checks: number
+
+shape UpdAck
+  ok: bool
+  installed: bool
+  error: string
+
+members App
+  state updGen = 0
+  state updNotes = false
+  resource upd = updateState(updGen) as shape Upd else empty(supported=false, state="idle", current="", latest="", progress=0, notes="", error="", notice="", line="", show=false, canInstall=false, auto=false, autoInstall=false, prerelease=false, checks=0)
+  mutation updChecked as shape UpdAck refreshes upd
+  mutation updInstalled as shape UpdAck refreshes upd then afterInstall
+  derive updInstalledOk = match updInstalled { case some(r) => r.installed, case none => false }
+  // SWITCHYARD_UPDATE_AUTOINSTALL=1 (an installed copy, outside the agent): the end-to-end
+  // test's way through the real path, installing as soon as an update is ready.
+  task updAuto when upd.state == "ready" and upd.autoInstall key=upd.latest
+    after(500, installUpdate)
+  action checkUpdates
+    send updChecked = updateDo("check")
+  action installUpdate
+    send updInstalled = updateDo("install")
+  action afterInstall
+    if updInstalledOk
+      relaunch()
+  action updToggleNotes
+    updNotes = not updNotes
+
+component UpdatePill
+  props
+    u: Upd
+    notesOpen: bool
+    check: action
+    install: action
+    toggleNotes: action
+  view
+    if u.supported
+      column position="absolute" right=16 bottom=60 align-items="flex-end" gap=6 pointer-events="none" testId="update"
+        // App menu ▸ Check for Updates… (macOS); the agent taps this same button. It takes no
+        // room in the page: the pill says the outcome.
+        button -exact-menu="about" press=check appearance="none" aria-label="Check for Updates…" testId="update-check"
+          position="absolute" width=1 height=1 overflow="hidden" opacity=0 pointer-events="auto" disabled=(u.state == "checking" or u.state == "installing")
+        if u.show and notesOpen and u.notes != "" and u.state == "ready"
+          scroll max-height=240 width=420 max-width="60vw" padding="10px 12px" border-radius=8 border="1px solid sy.edge" background-color="sy.raised" pointer-events="auto" testId="update-notes"
+            text u.notes font-size=11 line-height=1.5 color="sy.ink2" white-space="pre-wrap"
+        if u.show
+          row align-items="center" gap=8 padding="4px 6px 4px 10px" border-radius=999 border="1px solid sy.edge" background-color="sy.raised" pointer-events="auto" testId="update-pill"
+            column width=6 height=6 border-radius=3 background-color=(u.state == "ready" ? "sy.amber" : (u.state == "error" ? "sy.red" : (u.state == "current" ? "sy.green" : "sy.ink4")))
+            if u.state == "ready"
+              button press=install appearance="none" aria-label=`Restart to update to Switchyard ${u.latest}` testId="update-install" padding="1px 0"
+                row gap=6 align-items="baseline"
+                  text `Switchyard ${u.latest} is ready` font-size=11 color="sy.ink2" white-space="nowrap"
+                  text "·" font-size=11 color="sy.ink4"
+                  text "Restart to update" font-size=11 color="sy.amber-text" white-space="nowrap"
+              if u.notes != ""
+                button press=toggleNotes appearance="none" aria-label="What's new" aria-expanded=notesOpen testId="update-notes-toggle" padding="1px 6px" border-radius=999
+                  text (notesOpen ? "hide notes" : "notes") font-size=11 color="sy.ink4"
+            else
+              text u.line font-size=11 color=(u.state == "error" ? "sy.red-text" : "sy.ink2") white-space="nowrap" max-width=520 overflow="hidden" text-overflow="ellipsis" padding-right=4 testId="update-line"
