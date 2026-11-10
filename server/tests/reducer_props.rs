@@ -526,3 +526,76 @@ proptest! {
         prop_assert_eq!(view, expect);
     }
 }
+
+/// Progress rings: a running pipeline expects the median duration of its repo's recent
+/// successful runs of the same kind; the repo carries the median of its push runs; a run
+/// finishing re-derives the running sibling's expectation.
+#[test]
+fn expected_durations() {
+    let p = |n: u64, state: CiState, dur_s: Option<i64>, event: PipelineEvent| {
+        let started = NOW - 3_600_000 + n as i64 * 60_000;
+        Fact::Pipeline(Pipeline {
+            id: ids::wp_pipeline("acme/api", n),
+            lane: LaneKind::Roadrunner,
+            repo: "acme/api".into(),
+            number: n,
+            sha: SHAS[(n % 5) as usize].into(),
+            branch: "main".into(),
+            event,
+            state,
+            created: started,
+            started: Some(started),
+            finished: dur_s.map(|d| started + d * 1000),
+            queue_pos: None,
+            expected_ms: None,
+            engine: None,
+            title: None,
+            author: None,
+            pr: None,
+            deploy: false,
+            workflows: vec![],
+            url: String::new(),
+        })
+    };
+    // The latest upsert of `id` in a flush (None if it was not re-sent).
+    let upsert = |s: &mut Store, id: &str| -> Option<serde_json::Value> {
+        s.flush(NOW).into_iter().rev().find_map(|o| match o {
+            switchyard::store::OpOut::Upsert {
+                kind: Kind::Pipeline,
+                id: i,
+                json,
+            } if i == id => Some(serde_json::from_str(&json).unwrap()),
+            _ => None,
+        })
+    };
+    let fresh = |facts: &[Fact]| {
+        let mut s = Store::new(StoreConfig {
+            orgs: vec!["acme".into()],
+            ..Default::default()
+        });
+        for f in facts {
+            s.apply(f.clone(), true);
+        }
+        s
+    };
+    let mut facts = vec![
+        p(1, CiState::Success, Some(60), PipelineEvent::Push),
+        p(2, CiState::Success, Some(120), PipelineEvent::Push),
+        p(3, CiState::Failure, Some(5), PipelineEvent::Push), // failures don't count
+        p(4, CiState::Success, Some(900), PipelineEvent::PullRequest), // other kind
+        p(9, CiState::Running, None, PipelineEvent::Push),
+    ];
+    let mut s = fresh(&facts);
+    let id9 = ids::wp_pipeline("acme/api", 9);
+    let v = upsert(&mut s, &id9).unwrap();
+    assert_eq!(v["expected_ms"], 120_000, "median of [60 s, 120 s] (upper)");
+    // A third successful push run lands: the running one re-derives (incrementally).
+    s.apply(p(5, CiState::Success, Some(90), PipelineEvent::Push), true);
+    let v = upsert(&mut s, &id9).expect("the running sibling is re-sent");
+    assert_eq!(v["expected_ms"], 90_000);
+    // Finished runs carry no expectation.
+    facts.push(p(9, CiState::Success, Some(100), PipelineEvent::Push));
+    let mut s = fresh(&facts);
+    let v = upsert(&mut s, &id9).unwrap();
+    assert!(v.get("expected_ms").is_none());
+}
