@@ -144,6 +144,9 @@ export function fleet(w: World, now: number) {
     behindText: (a.behind ?? 0) > 0 ? `${a.behind} behind main` : a.live_sha ? 'at main' : 'never deployed',
     lastDeploy: a.last_deploy ? deployText(w, a.last_deploy.id, now) : '', runtime: a.runtime ?? '', team: a.team ?? '', repo: a.repo ?? '',
     lane: laneText(w.repos.get(a.repo ?? '')?.lane ?? 'none'), checked: ago(now, a.checked),
+    meta: [a.runtime, a.team].filter((x) => !!x).join(' · '),
+    version: a.live_sha ? (a.main_sha && a.main_sha !== a.live_sha ? `${short(a.live_sha)} → ${short(a.main_sha)}` : short(a.live_sha)) : '',
+    deployBad: !!a.last_deploy && w.deploys.get(a.last_deploy.id)?.state === 'failure',
   }));
   const hOrder: Record<string, number> = { down: 0, degraded: 1, unknown: 2, up: 3 };
   apps.sort((a, b) => hOrder[a.health] - hOrder[b.health] || b.behind - a.behind || a.id.localeCompare(b.id));
@@ -165,9 +168,13 @@ export function fleet(w: World, now: number) {
     { label: 'deploys · 24 h', value: fmtNum(s.deploys_24h) },
   ];
   const up = apps.filter((a) => a.health === 'up').length;
+  const attention = apps.filter((a) => a.health === 'down' || a.health === 'degraded' || a.behind > 0 || a.deployBad);
+  const never = apps.filter((a) => !a.live).length;
   return {
     apps, engines, queues, stats, up, total: apps.length, down: apps.filter((a) => a.health === 'down').length,
     degraded: apps.filter((a) => a.health === 'degraded').length,
+    attention: attention.slice(0, 40), behindN: apps.filter((a) => a.behind > 0).length, never,
+    hasLatency: apps.some((a) => a.latency !== '–'),
     watcher: w.watcher.tripped ? `outage watcher tripped ${ago(now, w.watcher.since)} · github ${w.watcher.gh_status}${w.watcher.note ? ` · ${w.watcher.note}` : ''}` : `outage watcher calm · github ${w.watcher.gh_status}`,
     watcherTripped: !!w.watcher.tripped,
   };

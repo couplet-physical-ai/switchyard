@@ -130,6 +130,9 @@ shape AppRow
   repo: string
   lane: string
   checked: string
+  meta: string
+  version: string
+  deployBad: bool
 
 shape EngineRow
   id: string
@@ -161,6 +164,10 @@ shape Fleet
   degraded: number
   watcher: string
   watcherTripped: bool
+  attention: AppRow[]
+  behindN: number
+  never: number
+  hasLatency: bool
 
 shape SpanRow
   id: string
