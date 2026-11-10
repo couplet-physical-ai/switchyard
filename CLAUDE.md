@@ -9,6 +9,7 @@ Pipelines (path-filtered, so a client-only change never rebuilds the server):
 | File | Runs when | What |
 |---|---|---|
 | `.woodpecker/server.yaml` | `server/**`, `contract/**` | `cargo fmt --check`, `clippy -D warnings`, `cargo test`, criterion smoke (`cargo bench -- --test`) |
+| `.woodpecker/client.yaml` | `app/**`, `contract/**` | Exact web build + the app's `*.test.contract` suites on the web host (headless Chromium, Linux) |
 | `.woodpecker/contract.yaml` | `contract/**`, `scripts/ci/**` | `scripts/ci/validate_fixtures.py`: fixtures match `contract/CONTRACT.md` |
 | `.woodpecker/security.yaml` | every PR and push to main | gitleaks (`.gitleaks.toml`: default rules + internal IPs / lab hostnames) and osv-scanner |
 

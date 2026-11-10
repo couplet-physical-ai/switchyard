@@ -1,0 +1,45 @@
+# Roadrunner CI for the Exact client (app/): the web build and every *.test.contract suite on
+# the web host (headless Chromium), on Linux. The macOS build and its tests run on the Mac
+# (GitHub Actions release.yml / the Mac mini). Runs only when app/, contract/ or this file
+# changes, so a server-only change never rebuilds the client.
+#
+# --setup is cached by its text: Bun 1.4.2, expo/exact at the pin (packaging/exact.pin or
+# app/exact.pin; keep EXACT_PIN below equal, the run checks), `exact setup` (Rust toolchains,
+# wasm-bindgen, Binaryen, node_modules, Playwright's Chromium) plus Chromium's system libraries,
+# and one warm web build so the contract compiler is already compiled.
+# `$$` escapes `$` for Woodpecker. Docs: https://cicd.docs.example.com/roadrunner/
+labels:
+  tier: "0"
+when:
+  - event: pull_request
+    path:
+      include: ["app/**", "contract/**", "packaging/exact.pin", ".woodpecker/client.yaml"]
+  - event: push
+    branch: main
+    path:
+      include: ["app/**", "contract/**", "packaging/exact.pin", ".woodpecker/client.yaml"]
+  - event: manual
+    branch: main
+steps:
+  - name: web
+    image: bash
+    commands:
+      - >-
+        ci-dagger v0.14.1 container-run --src=. --repo="$${CI_REPO_NAME,,}" --shell=bash
+        --image=public.ecr.aws/docker/library/rust:1.97.0-trixie@sha256:b92b8c8574f8f3b207fcb0912fb3e2de4041580b5934d90312d53938c9a038a9
+        --apt=curl,unzip,git,ca-certificates,xz-utils
+        --setup='set -e;
+        export EXACT_PIN=316d1f292f92f91a223d2f582e80fe17979c12c1 EXACT_FEEDBACK=0;
+        curl -fsSL --retry 3 https://bun.sh/install | BUN_INSTALL=/opt/bun bash -s bun-v1.4.2;
+        export PATH=/opt/bun/bin:$$PATH;
+        git clone -q --filter=blob:none https://github.com/expo/exact.git /opt/exact;
+        cd /opt/exact; git checkout -q $$EXACT_PIN;
+        bun scripts/exact.mjs setup || true;
+        bun node_modules/playwright-core/cli.js install-deps chromium-headless-shell;
+        bun scripts/exact.mjs setup --check || true;
+        bun host/web/build.mjs caltrain-web'
+        --run='export PATH=/opt/bun/bin:$$PATH EXACT2=/opt/exact EXACT_FEEDBACK=0;
+        if [ ! -f app/app.contract ]; then echo "no app/ on this commit yet: toolchain only"; exit 0; fi;
+        if [ -f app/exact.pin ]; then grep -qx 316d1f292f92f91a223d2f582e80fe17979c12c1 app/exact.pin; else grep -qx 316d1f292f92f91a223d2f582e80fe17979c12c1 packaging/exact.pin; fi
+        || { echo "exact pin changed: update EXACT_PIN in .woodpecker/client.yaml"; exit 1; };
+        cd app; bun exact.mjs web-build --out /tmp/switchyard-web; bun exact.mjs test web'
