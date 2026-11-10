@@ -88,6 +88,7 @@ fn pipeline(n: usize, k: usize) -> Fact {
         started: Some(created + 2_000),
         finished: done.then_some(created + 200_000),
         queue_pos: None,
+        expected_ms: None,
         engine: Some(format!("dagger-ci-15{}-1", n % 3)),
         title: Some(format!("change {n}")),
         author: Some(format!("dev-{}", n % 40)),

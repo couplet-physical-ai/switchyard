@@ -100,6 +100,9 @@ export function fleet(w: World, now: number) {
     behindText: num(a.behind) > 0 ? `${a.behind} behind main` : a.live_sha ? 'at main' : 'never deployed',
     lastDeploy: a.last_deploy?.id ? deployText(w, a.last_deploy.id, now) : '', runtime: str(a.runtime), team: str(a.team), repo: str(a.repo),
     lane: laneText(w.repos.get(str(a.repo))?.lane ?? 'none'), checked: ago(now, a.checked),
+    meta: [a.runtime, a.team].filter((x) => !!x).map(str).join(' · '),
+    version: a.live_sha ? (a.main_sha && a.main_sha !== a.live_sha ? `${short(a.live_sha)} → ${short(a.main_sha)}` : short(a.live_sha)) : '',
+    deployBad: !!a.last_deploy?.id && w.deploys.get(a.last_deploy.id)?.state === 'failure',
   }));
   const hOrder: Record<string, number> = { down: 0, degraded: 1, unknown: 2, up: 3 };
   apps.sort((a, b) => (hOrder[a.health] ?? 2) - (hOrder[b.health] ?? 2) || b.behind - a.behind || a.id.localeCompare(b.id));
@@ -127,9 +130,13 @@ export function fleet(w: World, now: number) {
   const up = apps.filter((a) => a.health === 'up').length;
   const wt = w.watcher ?? { id: 'outage', tripped: false, gh_status: 'unknown' };
   const gh = str(wt.gh_status) || 'unknown';
+  const attention = apps.filter((a) => a.health === 'down' || a.health === 'degraded' || a.behind > 0 || a.deployBad);
+  const never = apps.filter((a) => !a.live).length;
   return {
     apps, engines, queues, stats, up, total: apps.length, down: apps.filter((a) => a.health === 'down').length,
     degraded: apps.filter((a) => a.health === 'degraded').length,
+    attention: attention.slice(0, 40), behindN: apps.filter((a) => a.behind > 0).length, never,
+    hasLatency: apps.some((a) => a.latency !== '–'),
     watcher: wt.tripped ? `outage watcher tripped ${ago(now, wt.since)} · github ${gh}${wt.note ? ` · ${wt.note}` : ''}` : `outage watcher calm · github ${gh}`,
     watcherTripped: !!wt.tripped,
   };
@@ -149,7 +156,7 @@ function fmtNum(n: number): string {
 /** The commit journey as rows on one time axis. */
 const EMPTY_JOURNEY = {
   ok: false, error: '', repo: '', sha: '', short: '', title: '', author: '', branch: '', stage: '', pushed: '', total: '',
-  spans: [] as JSpan[], pipelines: [] as JPipe[], deploys: [] as JDep[], deployVia: '', app: '', health: '', healthText: '', url: '', events: [] as JEv[],
+  spans: [] as JSpan[], pipelines: [] as JPipe[], deploys: [] as JDep[], deployVia: '', app: '', health: '', healthText: '', url: '', events: [] as JEv[], ciState: '', deployState: '', ticks: [] as string[],
 };
 type JSpan = { id: string; name: string; depth: number; start: number; width: number; state: string; dur: string; cached: boolean };
 type JPipe = { id: string; number: number; lane: string; state: string; dur: string; wait: string; url: string; engine: string };
@@ -186,7 +193,9 @@ export function journeyView(j: Journey | null, now: number, error = '', offsetMi
       const d = sp.parent ? (depth.get(sp.parent) ?? 0) + 1 : 0;
       depth.set(str(sp.id), d);
       const end = endOf(sp as { start: number; end?: number; ms?: number });
-      rows.push({ id: str(sp.id) || `${sp.name}@${sp.start}`, name: str(sp.name), depth: d, start: pos(sp.start), width: wid(sp.start, end), state: str(sp.state) || 'success', dur: fmtDur(end - sp.start), cached: !!sp.cached });
+      const name = sp.call ? `${str(sp.name)} ${sp.call}` : str(sp.name);
+      const label = sp.pipeline != null && pipes.length > 1 ? `#${sp.pipeline} ${name}` : name;
+      rows.push({ id: `${str(sp.id) || sp.name}:${sp.start}`, name: label, depth: d, start: pos(sp.start), width: wid(sp.start, end), state: str(sp.state) || 'success', dur: fmtDur(end - sp.start) + (sp.spans ? ` · ${sp.spans}` : ''), cached: !!sp.cached });
     }
   } else {
     // No traces: the workflows and their steps, as Roadrunner and GitHub report them.
@@ -214,11 +223,22 @@ export function journeyView(j: Journey | null, now: number, error = '', offsetMi
     deploys: deploys.map((d) => ({ app: str(d.app), via: via(d.via), state: str(d.state), dur: fmtDur(num(d.finished ?? now) - num(d.started)), start: pos(num(d.started)), width: wid(num(d.started), num(d.finished ?? now)) })),
     deployVia: deploys[0] ? via(deploys[0].via) : 'none',
     app: app ? str(app.url).replace(/^https?:\/\//, '') : '', health: str(app?.health),
-    healthText: app ? `${str(app.health)}${app.latency_ms != null ? ` · ${Math.round(num(app.latency_ms))} ms` : ''}${app.behind ? ` · ${app.behind} behind main` : ''}` : '',
+    healthText: app
+      ? (deploys.length === 0 ? `not deployed by this commit${app.live_sha ? ` · it still runs ${short(app.live_sha)}` : ''} · ` : '')
+        + `${str(app.health)}${app.latency_ms != null ? ` · ${Math.round(num(app.latency_ms))} ms` : ''}${app.behind ? ` · ${app.behind} behind main` : ''}`
+      : '',
     url: repo && sha ? `https://github.com/${repo}/commit/${sha}` : '',
-    events: arr(j.timeline).slice(-24).map((e, i) => ({ id: `${i}:${e.at}`, k: str(e.k), label: str(e.label), at: fmtClock(num(e.at), offsetMin), ago: ago(now, e.at) })),
+    events: arr(j.timeline).slice()
+      .sort((a, b) => num(a.at) - num(b.at) || (EV_ORDER[str(a.k)] ?? 9) - (EV_ORDER[str(b.k)] ?? 9))
+      .slice(-24).map((e, i) => ({ id: `${i}:${e.at}`, k: str(e.k), label: str(e.label), at: fmtClock(num(e.at), offsetMin), ago: ago(now, e.at) })),
+    ciState: pipes.some((p) => isFail(p.state)) ? 'failure' : pipes.some((p) => p.state === 'running' || p.state === 'pending') ? 'running' : pipes.length ? 'success' : '',
+    deployState: deploys.some((d) => d.state === 'failure') ? 'failure' : deploys.some((d) => d.state === 'running' || d.state === 'pending') ? 'running' : deploys.length ? 'success' : '',
+    ticks: [0, 1, 2, 3, 4].map((k) => fmtDur((total * k) / 4)),
   };
 }
+
+/** Same-instant events read in the order they happen: a push, then its queueing, start, end. */
+const EV_ORDER: Record<string, number> = { push: 0, enqueue: 1, queued: 1, start: 2, finish: 3, deploy: 4, deployed: 5, health: 6 };
 
 export function prDetailView(d: PrDetail | null, now: number, w: World) {
   if (!d || typeof d !== 'object' || !d.pr || typeof d.pr !== 'object') return { ok: false, row: null, commits: [], pipelines: [], timeline: [] };

@@ -25,6 +25,10 @@ on:
       prerelease:
         type: boolean
         default: false
+      publish:
+        description: "Publish a GitHub release (off = build, smoke and upload the artifact only, e.g. to warm the cache)"
+        type: boolean
+        default: true
 permissions:
   contents: write
 concurrency:
@@ -69,6 +73,7 @@ jobs:
         if: env.MODE != 'placeholder'
         run: |
           set -euo pipefail
+          [[ "$(bun --version)" == 1.4.2 ]] || { echo "Exact needs Bun 1.4.2 exactly, got $(bun --version)"; exit 1; }
           git clone -q --filter=blob:none https://github.com/expo/exact.git "$RUNNER_TEMP/exact"
           git -C "$RUNNER_TEMP/exact" checkout -q "${{ steps.v.outputs.exact_pin }}"
           echo "EXACT_DIR=$RUNNER_TEMP/exact" >> "$GITHUB_ENV"
@@ -111,6 +116,15 @@ jobs:
           "$d/Switchyard.app/Contents/MacOS/$exe" > "$d/out.log" 2>&1 & pid=$!
           sleep 5
           if kill -0 $pid 2>/dev/null; then echo "running after 5 s"; kill $pid; else echo "exited early:"; cat "$d/out.log"; wait $pid; exit 1; fi
+      - name: macOS tests (app/tests/*.test.contract on the macOS host)
+        if: env.MODE == 'app'
+        # Reported, not gating, for now: on GitHub's 3-core runner the demo's `connect` takes
+        # 230-340 ms of one turn, over Exact's 100 ms budget, so Exact refuses it and 6 of 13
+        # tests fail (they pass on the Mac mini). Make it gating once the client yields there.
+        continue-on-error: true
+        env:
+          EXACT2: ${{ runner.temp }}/exact
+        run: app/scripts/build.sh test macos
       - uses: actions/upload-artifact@v4
         with:
           name: switchyard-${{ steps.v.outputs.version }}-${{ env.MODE }}
@@ -120,7 +134,7 @@ jobs:
             dist/SHA256SUMS
           retention-days: 14
       - name: GitHub release
-        if: env.MODE != 'exact-probe'
+        if: env.MODE != 'exact-probe' && inputs.publish != false
         env:
           GH_TOKEN: ${{ github.token }}
           V: ${{ steps.v.outputs.version }}

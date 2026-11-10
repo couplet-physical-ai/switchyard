@@ -1,4 +1,4 @@
-// The recorded real fleet: contract/fixtures (392 repos, 1112 PRs, sanitized from the live
+// The recorded real fleet: contract/fixtures (394 repos, sanitized from the live
 // upstreams). `bun exact.mjs test` starts app.json's `commands.server` (server/mock.ts
 // --fixtures ../contract/fixtures --frozen, read at run time, nothing copied into app/) at the
 // address src/api.ts names, and the server field's `fixtures` connects to it. The same on web
@@ -13,24 +13,24 @@ test "the real fleet's main lines are one canvas that scrolls, focuses and opens
   clock data
   clock +500
   expect state conn.ok == true
-  expect state ov.repos == 392
+  expect state ov.repos == 394
   tap "tab-mainlines"
   clock settle
   clock +600
   expect tree has "mainlines-table"
-  expect state mlData.total == 392
-  expect state mlData.red == 26
-  expect text "mainlines-count" == "392 repos · 26 red · 0 building"
+  expect state mlData.total == 394
+  expect state mlData.red == 30
+  expect text "mainlines-count" == "394 repos · 30 red · 0 building"
   tap "mainlines-table" wheel 0 2000
   clock +800
   expect state mlWheel == 2000
-  expect state mlData.top == "Northwind-Labs/west-orbit"
+  expect state mlData.top == "Northwind-Labs/kestrel-status"
   tap "mainlines-table" wheel 0 200000
   clock +800
   expect state mlData.atEnd == true
   tap "mainlines-table" wheel 0 -1000000
   clock +800
-  expect state mlData.top == "Northwind-Labs/hollow-relay"
+  expect state mlData.top == "couplet-physical-ai/switchyard"
   expect state mlData.atEnd == false
   tap "mainlines-table"
   clock data
@@ -62,7 +62,7 @@ test "a deep link focuses a repo at the end of the list and scrolls it into view
   expect tree has "mainlines-focus"
   tap "state-red"
   clock +400
-  expect text "mainlines-count" == "26 of 392 repos · 26 red · 0 building"
+  expect text "mainlines-count" == "30 of 394 repos · 30 red · 0 building"
 
 test "the real fleet's pull requests: one canvas, filters, a row opens its PR"
   clock data
@@ -76,18 +76,18 @@ test "the real fleet's pull requests: one canvas, filters, a row opens its PR"
   clock settle
   clock +600
   expect tree has "prs-table"
-  expect state prData.open == 878
-  expect state prData.total == 878
-  expect text "prs-count" == "878 open · 471 ready to merge · 314 blocked · 600 from bots"
+  expect state prData.open == 765
+  expect state prData.total == 765
+  expect text "prs-count" == "765 open · 376 ready to merge · 300 blocked · 489 from bots"
   tap "prs-table" wheel 0 3000
   clock +800
   expect state prWheel == 3000
   tap "prs-ready"
   clock +400
-  expect state prData.total == 471
+  expect state prData.total == 376
   tap "prs-blocked"
   clock +400
-  expect state prData.total == 314
+  expect state prData.total == 300
   tap "prs-open"
   clock +400
   tap "prs-table"

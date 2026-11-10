@@ -13,8 +13,9 @@ use serde_json::Value;
 
 use crate::hub::{Hub, Snapshot};
 use crate::model::Ms;
+use crate::model::PROTOCOL;
 use crate::runtime::{Adapters, Clock};
-use crate::wire::shift_times;
+use crate::wire::{WireState, shift_times};
 
 pub struct Fixtures {
     pub snapshot: Value,
@@ -120,9 +121,34 @@ pub async fn run_demo(
             snapshot_bytes(&fx, delta, seq, start, &hub.epoch),
         ));
         let wall0 = tokio::time::Instant::now();
+        // A mirror of the client view: the served snapshot follows the stream (rebuilt
+        // at most once a second), like the live server's.
+        let mut mirror = {
+            let mut v = fx.snapshot.clone();
+            shift_times(&mut v, delta);
+            WireState::from_snapshot(&v)
+        };
+        let mut last_snap = tokio::time::Instant::now();
+        let mut dirty: Option<(u64, Ms)> = None;
+        let publish_snapshot = |mirror: &WireState, seq: u64, at: Ms| {
+            let json =
+                serde_json::to_vec(&mirror.to_snapshot(PROTOCOL, &hub.epoch)).unwrap_or_default();
+            let (h, m) = (hub.clone(), Bytes::from(json));
+            // Encoding + gzip (~20 ms for 2.7 MB) off the playback task.
+            tokio::task::spawn_blocking(move || h.set_snapshot(Snapshot::new(seq, at, m)))
+        };
         for f in &fx.frames {
             let rel = f.get("at").and_then(Value::as_i64).unwrap_or(t0) - t0;
             let wait = Duration::from_millis(((rel.max(0) as f64) / speed) as u64);
+            // The served snapshot trails the stream by at most a second, even when the
+            // next frame is far away.
+            if let Some((seq, at)) = dirty
+                && wall0 + wait > last_snap + Duration::from_secs(1)
+            {
+                tokio::time::sleep_until(last_snap + Duration::from_secs(1)).await;
+                let _ = publish_snapshot(&mirror, seq, at).await;
+                last_snap = tokio::time::Instant::now();
+            }
             tokio::time::sleep_until(wall0 + wait).await;
             // At speed 1 the shifted recording time is "now"; faster playback stamps
             // frames with the wall clock (entity times stay on the recording's scale).
@@ -131,8 +157,26 @@ pub async fn run_demo(
             } else {
                 clock()
             };
-            hub.publish(&ops_bytes(f, delta), at);
+            let ops = ops_bytes(f, delta);
+            let seq = hub.publish(&ops, at);
+            let wrapped = [b"[".as_slice(), &ops, b"]"].concat();
+            if let Ok(Value::Array(ops)) = serde_json::from_slice::<Value>(&wrapped) {
+                for op in &ops {
+                    mirror.apply_op(op);
+                }
+            }
+            mirror.seq = seq;
+            mirror.at = at;
+            dirty = Some((seq, at));
+            if last_snap.elapsed() >= Duration::from_secs(1) {
+                let _ = publish_snapshot(&mirror, seq, at).await;
+                last_snap = tokio::time::Instant::now();
+                dirty = None;
+            }
             adapters.ok("demo", clock(), Some(0));
+        }
+        if let Some((seq, at)) = dirty {
+            let _ = publish_snapshot(&mirror, seq, at).await;
         }
         let rest =
             Duration::from_millis(((period - (fx.end() - t0)).max(1_000) as f64 / speed) as u64);

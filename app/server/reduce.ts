@@ -3,7 +3,8 @@
 // state. Singletons: `watcher` (id "outage") replaces Snapshot.watcher, and the mock's
 // extension kind `stats` (id "stats") replaces Snapshot.stats. Unknown kinds are skipped.
 
-import type { Frame, Op, DemoSnapshot as Snapshot } from '../src/wire.ts';
+import type { Frame, Op, DemoSnapshot as Snapshot, Repo } from '../src/wire.ts';
+import { mergePatch } from '../src/world.ts';
 
 const COLLECTION: Record<string, keyof Snapshot> = {
   org: 'orgs', repo: 'repos', commit: 'commits', pipeline: 'pipelines', pr: 'prs', deploy: 'deploys',
@@ -12,19 +13,31 @@ const COLLECTION: Record<string, keyof Snapshot> = {
 
 export function applyOp(state: Snapshot, op: Op): void {
   if (op.op === 'event') return;
+  if (op.op === 'dot') {
+    // v0.4: same sha out, this dot in, sorted by (at, sha), the newest 12 kept.
+    const r = (state.repos as Record<string, Repo>)[op.id];
+    if (!r) return;
+    const recent = (r.main?.recent ?? []).filter((d) => d.sha !== op.v.sha).concat([op.v]);
+    recent.sort((a, b) => a.at - b.at || (a.sha < b.sha ? -1 : a.sha > b.sha ? 1 : 0));
+    (state.repos as Record<string, Repo>)[op.id] = { ...r, main: { ...r.main, recent: recent.slice(-12) } as Repo['main'] };
+    return;
+  }
   const kind = op.kind as string;
   if (kind === 'watcher') {
     if (op.op === 'upsert') state.watcher = op.v as Snapshot['watcher'];
+    else if (op.op === 'patch') state.watcher = mergePatch(state.watcher, op.v) as Snapshot['watcher'];
     return;
   }
   if (kind === 'stats') {
     if (op.op === 'upsert') state.stats = op.v as Snapshot['stats'];
+    else if (op.op === 'patch') state.stats = mergePatch(state.stats, op.v) as Snapshot['stats'];
     return;
   }
   const key = COLLECTION[kind];
   if (!key) return;
   const coll = state[key] as Record<string, unknown>;
   if (op.op === 'upsert') coll[op.id] = op.v;
+  else if (op.op === 'patch') { if (op.id in coll) coll[op.id] = mergePatch(coll[op.id], op.v); }
   else delete coll[op.id];
 }
 

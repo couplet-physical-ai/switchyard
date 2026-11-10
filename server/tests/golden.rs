@@ -326,11 +326,12 @@ fn delta_golden_pipeline_finishes() {
     let v = ops_json(&ops);
     golden("delta.json", &v);
     // What the one transition must say, whatever else changed with it.
+    // Upserted or patched (v0.4 sends a merge patch when it is smaller).
     let upserts: Vec<(String, String)> = v
         .as_array()
         .unwrap()
         .iter()
-        .filter(|o| o["op"] == "upsert")
+        .filter(|o| o["op"] == "upsert" || o["op"] == "patch")
         .map(|o| {
             (
                 o["kind"].as_str().unwrap().into(),

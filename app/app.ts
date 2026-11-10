@@ -3,7 +3,12 @@
 // the canvases read the world directly every frame (`draw`).
 
 import type { Answer, Ctx2D, Frame, Result, Sources, Store } from './app.contract.d.ts';
-import { HttpUpstream, resolveBase, wsUrl, type Upstream } from './src/api.ts';
+import { HttpUpstream, resolveBase, setDefaultServer, wsUrl, type Upstream } from './src/api.ts';
+
+// A release build bakes the team's server in (app/scripts/build-macos-release.sh sets it);
+// dev and test builds leave it empty and ask on first launch.
+const DEFAULT_SERVER = import.meta.env.SWITCHYARD_DEFAULT_SERVER ?? '';
+setDefaultServer(DEFAULT_SERVER);
 import { DEMO_REPLAY, DemoUpstream } from './src/demo.ts';
 import { fleet, journeyView, prDetailView, search } from './src/project.ts';
 import { MainlinesModel, stateWords } from './src/table/mainlines.ts';
@@ -134,7 +139,7 @@ type Conn = Result<'connect'>;
 
 async function connect(server: string, token: string, epoch0: number): Promise<Conn> {
   epochAtZero = epoch0;
-  const none: Conn = { ok: false, status: 'not connected', error: '', seq: 0, label: '', kind: '', needsSetup: false };
+  const none: Conn = { ok: false, status: 'not connected', error: '', seq: 0, label: '', kind: '', needsSetup: false, signIn: '' };
   try {
     if (server === 'demo') {
       tl.wallNow = (c) => epochAtZero + c;
@@ -161,7 +166,14 @@ async function connect(server: string, token: string, epoch0: number): Promise<C
     motion.sync(tl.world);
     return { ...none, ok: true, status: 'connected', seq: tl.world.seq, label: up.label, kind: 'http' };
   } catch (e) {
-    return { ...none, status: 'offline', error: `Could not reach ${resolveBase(server) || 'the server'}: ${(e as Error).message ?? e}`, needsSetup: !resolveBase(server) };
+    const base = resolveBase(server);
+    const msg = String((e as Error).message ?? e);
+    // The server is there but wants a device token: its /connect page (behind SSO) mints one
+    // and hands it back as a switchyard:// link.
+    if (base && (/ answered 40[13]\b/.test(msg) || /refused the token|needs sign-in/.test(msg))) {
+      return { ...none, status: 'sign in', error: `${base.replace(/^https?:\/\//, '')} needs a device token: sign in on the web to get one.`, needsSetup: true, signIn: `${base}/connect` };
+    }
+    return { ...none, status: 'offline', error: `Could not reach ${base || 'the server'}: ${msg}`, needsSetup: !base };
   }
 }
 
@@ -234,7 +246,32 @@ function route(kind: string, id: string): string {
   }
 }
 
+/** `switchyard://connect?server=…&token=…` (it arrives as `/connect?u=<the whole URL>`), or a
+ *  web link `/connect?server=…&token=…`. Only an http(s) server or a bare host is taken, and a
+ *  token of URL-safe characters; anything else leaves the link refused (ok false). */
+export function parseLink(u: string, server: string, token: string): { server: string; token: string; ok: boolean } {
+  let sv = server, tk = token;
+  if (u) {
+    sv = ''; tk = '';
+    const q = u.indexOf('?');
+    const query = q < 0 ? '' : u.slice(q + 1).split('#')[0];
+    for (const part of query.split('&')) {
+      const eq = part.indexOf('=');
+      if (eq < 0) continue;
+      let v = '';
+      try { v = decodeURIComponent(part.slice(eq + 1).replace(/\+/g, ' ')); } catch { continue; }
+      const k = part.slice(0, eq);
+      if (k === 'server') sv = v; else if (k === 'token') tk = v;
+    }
+  }
+  sv = sv.trim(); tk = tk.trim();
+  const okServer = /^(https?:\/\/)?[A-Za-z0-9.-]+(:\d{1,5})?(\/[A-Za-z0-9._~\/-]*)?$/.test(sv);
+  const okToken = tk === '' || /^[A-Za-z0-9._~-]{1,512}$/.test(tk);
+  return okServer && okToken ? { server: sv, token: tk, ok: true } : { server: okServer ? sv : '', token: '', ok: false };
+}
+
 export const sources: Sources = {
+  parseLink: ([u, server, token]) => parseLink(u, server, token),
   loadToken: (_a, store: Store) => {
     const t = store.get(TOKEN) ?? '';
     return { token: t, has: t !== '' };
@@ -333,7 +370,7 @@ const EMPTY_OV: Result<'overview'> = {
   status: 'waiting', mode: 'live', speed: 1, sentence: 'waiting for the fleet', summary: 'The delivery yard, waiting for data.', layoutKey: '', repos: 0,
   building: 0, queued: 0, red: 0, appsUp: 0, appsTotal: 0, behind: '', seq: 0,
 };
-const EMPTY_FLEET = { apps: [], engines: [], queues: [], stats: [], up: 0, total: 0, down: 0, degraded: 0, watcher: '', watcherTripped: false };
+const EMPTY_FLEET = { apps: [], engines: [], queues: [], stats: [], up: 0, total: 0, down: 0, degraded: 0, attention: [], behindN: 0, never: 0, hasLatency: false, watcher: '', watcherTripped: false };
 
 /** A source that throws answers its empty value instead (and says so once in the log): a sparse
  *  or surprising entity costs a view its rows, never the app. */

@@ -96,6 +96,10 @@ export type Event =
 
 export type Op =
   | { op: 'upsert'; kind: Kind; id: string; v: unknown }
+  /** v0.4: an RFC 7386 merge patch on an entity already held (ignored otherwise). */
+  | { op: 'patch'; kind: Kind; id: string; v: unknown }
+  /** v0.4: one main-line dot into repos[id].main.recent (same sha replaced, sorted, newest 12). */
+  | { op: 'dot'; id: string; v: Dot }
   | { op: 'remove'; kind: Kind; id: string }
   | { op: 'event'; e: Event };
 
@@ -108,9 +112,12 @@ export type Frame =
 export type HistoryFrame = Frame | { t: 'snapshot'; seq: number; at: number; v: Snapshot };
 export type History = { from: number; to: number; base?: Snapshot; frames: HistoryFrame[] };
 
-/** A Dagger call: v0.3's `{id, name, call?, pipeline?, start, ms, spans?}`; the demo's
- *  span tree adds `parent`, `end` and `state`. */
-export type Span = { id: string; parent?: string; name: string; start: number; end?: number; ms?: number; call?: string; spans?: number; state?: CiState; pipeline?: string | number; cached?: boolean };
+/** One Dagger call from cicd's traces (contract v0.3): oldest first. The demo's older form
+ *  (`end`, `parent`, `state`, `cached`) is still read. */
+export type Span = {
+  id: string; name: string; call?: string; pipeline?: number | string; start: number; ms?: number; spans?: number;
+  end?: number; parent?: string; state?: CiState; cached?: boolean;
+};
 export type JourneyEntry = { at: number; k: string; label: string };
 export type Journey = {
   id?: string; repo?: string; sha?: string;

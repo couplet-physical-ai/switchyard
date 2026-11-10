@@ -116,10 +116,31 @@ fn every_frame_conforms_and_applies_in_order() {
         last_seq = seq;
         last_at = at;
         for op in f["ops"].as_array().unwrap() {
+            w.apply_op(op);
             match op["op"].as_str().unwrap() {
-                "upsert" => {
-                    let id = conforms(op["kind"].as_str().unwrap(), &op["v"]).unwrap();
-                    assert_eq!(op["id"].as_str().unwrap(), id, "op id == entity id");
+                t @ ("upsert" | "patch" | "dot") => {
+                    // Partial ops (patch, dot) are checked by the entity they produce.
+                    let kind = if t == "dot" {
+                        "repo"
+                    } else {
+                        op["kind"].as_str().unwrap()
+                    };
+                    let id = op["id"].as_str().unwrap();
+                    let k = Kind::ALL.into_iter().find(|k| k.as_str() == kind).unwrap();
+                    match w.get(k, id) {
+                        Some(v) => {
+                            let got = conforms(kind, v)
+                                .unwrap_or_else(|e| panic!("{t} {kind} {id}: {e}"));
+                            assert_eq!(id, got, "op id == entity id");
+                        }
+                        None => assert_ne!(t, "upsert", "an upsert always lands"),
+                    }
+                    if t == "dot" {
+                        let recent = w
+                            .get(k, id)
+                            .map(|r| r["main"]["recent"].as_array().unwrap().len());
+                        assert!(recent.unwrap_or(0) <= switchyard::wire::DOTS);
+                    }
                 }
                 "remove" => {
                     assert!(op["id"].is_string());
@@ -132,7 +153,8 @@ fn every_frame_conforms_and_applies_in_order() {
                 other => panic!("unknown op {other}"),
             }
         }
-        assert!(w.apply_frame(f));
+        w.seq = seq;
+        w.at = at;
     }
     assert!(events > 0, "the hour has animation events");
     assert_eq!(w.seq, last_seq);

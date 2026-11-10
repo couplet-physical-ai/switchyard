@@ -6,7 +6,7 @@ use MainlinesView from "./views/mainlines.contract"
 use PrsView, PrView from "./views/prs.contract"
 use FleetView from "./views/fleet.contract"
 use JourneyView from "./views/journey.contract"
-use Conn, Tok, Ack, Overview, Hit, Media, Time, Found, Mainlines, Prs, PrDetail, Fleet, Journey from "./views/shapes.contract"
+use Conn, Tok, Ack, Overview, Hit, Media, Time, Found, Mainlines, Prs, PrDetail, Fleet, Journey, Link from "./views/shapes.contract"
 
 font "Commit Mono"
   400 = "assets/fonts/CommitMono-400.ttf"
@@ -20,6 +20,29 @@ routes nav
   commit "/commit/:owner/:name/:sha"
   pr "/pr/:owner/:name/:number"
   connect "/connect"
+
+style Field
+  ::placeholder
+    color="#8A8A8A"
+
+style Primary
+  appearance="none"
+  padding="6px 14px"
+  border-radius=6
+  border="1px solid sy.brand"
+  background-color="sy.brand"
+  color="#0E0E0E"
+  font-size=12
+  font-weight=700
+
+style Quiet
+  appearance="none"
+  padding="6px 12px"
+  border-radius=6
+  border="1px solid sy.edge"
+  background-color="sy.control"
+  color="sy.ink2"
+  font-size=12
 
 style Mono
   font-family="Commit Mono"
@@ -38,9 +61,11 @@ component App
   state mode = "live"
   state speed = 1
   state q = ""
+  state palSel = 0
   state picked = ""
   resource tok = loadToken(tokGen) as shape Tok else empty(token="", has=false)
-  resource conn = connect(server, tok.token, gen) with time.epochAtZero, time.utcOffset as shape Conn else empty(ok=false, status="connecting", error="", seq=0, label="", kind="", needsSetup=false)
+  resource link = parseLink(searchParam(top(nav), "u"), searchParam(top(nav), "server"), searchParam(top(nav), "token")) as shape Link else empty(server="", token="", ok=false)
+  resource conn = connect(server, tok.token, gen) with time.epochAtZero, time.utcOffset as shape Conn else empty(ok=false, status="connecting", error="", seq=0, label="", kind="", needsSetup=false, signIn="")
   resource feed = liveFeed(server, tok.token, conn.seq, gen, conn.ok) as shape Ack else empty(ok=false, status="idle")
   resource ov = overview(clockMs, conn.seq, conn.ok) as shape Overview else empty()
   resource found = search(q, clockMs) as shape Found else empty(hits=[])
@@ -124,6 +149,22 @@ component App
     showModal("palette")
   action typed(v: string)
     q = v
+    palSel = 0
+  action palKey(k: string)
+    if k == "ArrowDown"
+      preventDefault()
+      palSel = palSel + 1 < found.hits.length ? palSel + 1 : palSel
+    else if k == "ArrowUp"
+      preventDefault()
+      palSel = palSel > 0 ? palSel - 1 : 0
+    else if k == "Enter"
+      preventDefault()
+      match found.hits.at(palSel)
+        case some(h)
+          nav = go(nav, h.route)
+          close("palette")
+        case none
+          palSel = 0
   action openHit(route: string)
     nav = go(nav, route)
 
@@ -146,8 +187,8 @@ component App
     tokGen = tokGen + 1
     gen = gen + 1
   action connectLink
-    server = searchParam(top(nav), "server")
-    send saved = saveToken(searchParam(top(nav), "token"), searchParam(top(nav), "token") != "")
+    server = link.server
+    send saved = saveToken(link.token, link.token != "")
     nav = go(nav, "/")
 
   view
@@ -165,9 +206,12 @@ component App
                   text (conn.needsSetup ? "Connect Switchyard to a server" : "The server is not answering") font-weight=700 font-size=16
                   text (conn.error != "" ? conn.error : "Its address and a token, or watch the built-in demo fleet.") color="sy.ink3" font-size=13 max-width=560 text-align="center" testId="setup-error"
                   row gap=10
-                    button press=openSettings buttonStyle="bordered-prominent" testId="setup-connect"
-                      text "Connect…"
-                    button press=useDemo testId="setup-demo"
+                    if conn.signIn != ""
+                      link href=conn.signIn class=Primary testId="setup-signin"
+                        text "Sign in on the web…"
+                    button press=openSettings class=(conn.signIn != "" ? Quiet : Primary) testId="setup-connect"
+                      text (conn.signIn != "" ? "Use a token…" : "Connect…")
+                    button press=useDemo testId="setup-demo" class=Quiet
                       text "Watch the demo"
             footer display="flex" align-items="center" gap=12 padding="10px 20px 12px" border-top="1px solid sy.rule" testId="timebar"
               text ov.sentence color="sy.ink3" font-size=12 flex=1 testId="sentence"
@@ -201,45 +245,49 @@ component App
             PrView(d=prDet, open=openHit)
           if e.name == "connect"
             column align-items="center" justify-content="center" flex=1 gap=12 testId="connect"
-              text "Connect to this server?" font-weight=700 font-size=16
-              text searchParam(e, "server") color="sy.ink2" font-size=13
+              text (link.ok ? "Connect to this server?" : "This link names no Switchyard server") font-weight=700 font-size=16
+              text link.server color="sy.ink2" font-size=13 testId="connect-server"
+              if link.ok and link.token != ""
+                text "with a device token from the link (kept in the Keychain)" color="sy.ink3" font-size=12
               row gap=10
-                button press=connectLink buttonStyle="bordered-prominent" testId="connect-yes"
+                button press=connectLink disabled=(not link.ok) class=Primary testId="connect-yes"
                   text "Connect"
-                button press=back testId="connect-no"
+                button press=back testId="connect-no" class=Quiet
                   text "Cancel"
-      dialog id="palette" aria-label="Search" testId="palette" width=640 max-width="90vw" padding=0 border-radius=12 background-color="sy.raised" border="1px solid sy.edge"
+      dialog id="palette" aria-label="Search" testId="palette" color="sy.ink" width=640 max-width="90vw" padding=0 border-radius=12 background-color="sy.raised" border="1px solid sy.edge"
         column padding=10 gap=6
-          input type="search" value=q input=typed aria-label="Search" autofocus=true placeholder="repo, #pr, sha, app" testId="palette-input"
+          input type="text" value=q input=typed key=palKey aria-label="Search" autofocus=true placeholder="repo, #pr, sha, app" testId="palette-input" class=Field
             padding="10px 12px" font-size=15 border-radius=8 background-color="sy.canvas" border="1px solid sy.edge" color="sy.ink"
           list id="palette-results" max-height=420 testId="palette-results"
-            for h in found.hits key=h.id
+            for h, i in found.hits key=h.id
               button press=openHit(h.route) commandfor="palette" command="close" testId=`hit-${h.kind}-${h.id}` appearance="none" width="100%" align-items="stretch" text-align="left" padding="8px 10px" border-radius=6
+                background-color=(i == palSel ? "sy.control-on" : "transparent") border-left=(i == palSel ? "2px solid sy.brand" : "2px solid transparent") aria-selected=(i == palSel)
                 row gap=10 align-items="baseline"
-                  text h.kind color="sy.ink4" font-size=11 width=58
+                  text h.kind color="sy.ink3" font-size=11 width=58
                   column gap=2 flex=1 min-width=0
                     text h.title font-size=13 color="sy.ink" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
                     text h.subtitle font-size=12 color="sy.ink3"
             if found.hits.length == 0
               text "Nothing matches." color="sy.ink3" font-size=13 padding=10 testId="palette-empty"
-      dialog id="settings" aria-label="Connection" testId="settings" width=520 max-width="90vw" padding=20 border-radius=12 background-color="sy.raised" border="1px solid sy.edge"
+      dialog id="settings" aria-label="Connection" testId="settings" color="sy.ink" width=520 max-width="90vw" padding=20 border-radius=12 background-color="sy.raised" border="1px solid sy.edge"
         column gap=12
           text "Connection" role="heading" aria-level=2 font-weight=700 font-size=16
           text (conn.ok ? `${conn.kind == "demo" ? "Watching the built-in demo fleet" : `Connected to ${conn.label}`} · seq ${conn.seq}` : (conn.error != "" ? conn.error : conn.status)) color=(conn.ok ? "sy.ink3" : "sy.red-text") font-size=12 testId="settings-status"
           column gap=6
             text "Server" font-size=12 color="sy.ink3"
-            input value=draftServer input=editServer aria-label="Server" placeholder="https://switchyard.apps.example.com · blank: this page's server · demo" testId="server-field"
+            input value=draftServer input=editServer aria-label="Server" placeholder="https://switchyard.apps.example.com" testId="server-field" class=Field
               padding="8px 10px" font-size=13 border-radius=8 background-color="sy.canvas" border="1px solid sy.edge" color="sy.ink"
+            text "blank: the server this page came from · demo: the built-in fleet" font-size=11 color="sy.ink3"
           column gap=6
             text (tok.has ? "Token (one is saved; type to replace it)" : "Token") font-size=12 color="sy.ink3"
-            input type="password" value=draftToken input=editToken aria-label="Token" placeholder="kept in the Keychain on macOS" testId="token-field"
+            input type="password" value=draftToken input=editToken aria-label="Token" placeholder="kept in the Keychain on macOS" testId="token-field" class=Field
               padding="8px 10px" font-size=13 border-radius=8 background-color="sy.canvas" border="1px solid sy.edge" color="sy.ink"
           row gap=10 justify-content="flex-end"
-            button press=useDemo commandfor="settings" command="close" testId="settings-demo"
+            button press=useDemo commandfor="settings" command="close" testId="settings-demo" class=Quiet
               text "Watch the demo"
-            button commandfor="settings" command="close" testId="settings-cancel"
+            button commandfor="settings" command="close" testId="settings-cancel" class=Quiet
               text "Cancel"
-            button press=saveSettings commandfor="settings" command="close" buttonStyle="bordered-prominent" testId="settings-save"
+            button press=saveSettings commandfor="settings" command="close" class=Primary testId="settings-save"
               text "Connect"
 
 component TopBar

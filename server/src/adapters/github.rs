@@ -295,6 +295,7 @@ pub fn contexts_to_facts(
             started,
             finished,
             queue_pos: None,
+            expected_ms: None,
             engine: None,
             title: Some(wf.clone()),
             author: None,
@@ -690,6 +691,7 @@ impl GithubAdapter {
 
     pub async fn run(self) {
         self.adapters.syncing(NAME);
+        self.adapters.backfilling(NAME, true);
         let orgs = self.org_q();
         let open_q =
             format!("is:pr is:open archived:false -author:app/dependabot {orgs} sort:updated-desc");
@@ -723,6 +725,8 @@ impl GithubAdapter {
                 warn!(error = %e, "github: PR backfill");
             }
         }
+        self.adapters.backfilling(NAME, false);
+        info!("github: backfill done");
         let mut tick: u64 = 0;
         let mut last_closed = (self.clock)() - 5 * 60_000;
         let mut t = tokio::time::interval(Duration::from_secs(15));

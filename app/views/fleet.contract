@@ -1,11 +1,30 @@
 // Fleet: every app's health and version, engines and runners, queues, the outage watcher.
+// Dense: one line per app, problems first, machines and queues in a side column.
 
-use Fleet from "./shapes.contract"
+use Fleet, AppRow from "./shapes.contract"
 
 members App
-  resource fleetData = fleet(here == "fleet" ? clockMs : 0) as shape Fleet else empty(apps=[], engines=[], queues=[], stats=[], up=0, total=0, down=0, degraded=0, watcher="", watcherTripped=false)
+  resource fleetData = fleet(here == "fleet" ? clockMs : 0) as shape Fleet else empty(apps=[], engines=[], queues=[], stats=[], up=0, total=0, down=0, degraded=0, watcher="", watcherTripped=false, attention=[], behindN=0, never=0, hasLatency=false)
 
 fn healthColor(h: string): string = h == "up" ? "sy.green" : (h == "degraded" ? "sy.amber" : (h == "down" ? "sy.red" : "sy.ink4"))
+
+component AppLine
+  props
+    a: AppRow
+    focused: bool
+    latency: bool
+  view
+    row gap=10 align-items="center" height=22 padding="0 8px" border-radius=4 testId=`app-${a.id}`
+      background-color=(focused ? "sy.control" : "transparent")
+      column width=7 height=7 border-radius=2 background-color=healthColor(a.health) flex-shrink=0
+      text a.id width=200 font-size=12 font-weight=600 color=(a.health == "down" ? "sy.red-text" : "sy.ink") white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+      text a.meta width=150 font-size=11 color="sy.ink3" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+      text (a.version != "" ? a.version : "never deployed") width=150 font-size=11 color=(a.behind > 0 ? "sy.amber-text" : (a.version != "" ? "sy.ink2" : "sy.ink3")) font-variant-numeric="tabular-nums" white-space="nowrap"
+      text (a.behind > 0 ? `${a.behind} behind` : (a.health != "up" ? a.health : "")) width=80 font-size=11 color=(a.health == "down" ? "sy.red-text" : "sy.amber-text") white-space="nowrap"
+      text a.lastDeploy flex=1 min-width=0 font-size=11 color=(a.deployBad ? "sy.red-text" : "sy.ink3") white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+      text a.lane width=120 font-size=11 color="sy.ink3" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+      if latency
+        text a.latency width=56 font-size=11 color="sy.ink3" text-align="right" font-variant-numeric="tabular-nums"
 
 component FleetView
   props
@@ -13,69 +32,56 @@ component FleetView
     focus: string
     open: action
   view
-    scroll flex=1 min-height=0 testId="fleet"
-      column padding="18px 24px 28px" gap=22
-        column gap=4
-          text "Fleet" role="heading" aria-level=2 font-weight=700 font-size=20
-          text `${f.up} of ${f.total} apps up · ${f.degraded} degraded · ${f.down} down` color=(f.down > 0 ? "sy.red-text" : "sy.ink3") font-size=12 testId="fleet-count"
-          text f.watcher color=(f.watcherTripped ? "sy.red-text" : "sy.ink4") font-size=12 testId="watcher"
-        row gap=10 flex-wrap="wrap"
-          for s in f.stats key=s.label
-            column gap=4 padding="12px 16px" border-radius=10 border="1px solid sy.rule" flex="1 1 150px"
-              text s.value font-size=26 font-variant-numeric="tabular-nums" color="sy.ink"
-              text s.label font-size=11 color="sy.ink3"
-        column gap=8
-          text "APPS" font-size=12 letter-spacing="0.08em" color="sy.ink3"
-          table testId="apps-table" width="100%"
-            thead
-              tr
-                th scope="col" text-align="left"
-                  text "app" font-size=11 color="sy.ink4"
-                th scope="col" text-align="left"
-                  text "health" font-size=11 color="sy.ink4"
-                th scope="col" text-align="left"
-                  text "live / main" font-size=11 color="sy.ink4"
-                th scope="col" text-align="left"
-                  text "last deploy" font-size=11 color="sy.ink4"
-                th scope="col" text-align="left"
-                  text "lane" font-size=11 color="sy.ink4"
-                th scope="col" text-align="right"
-                  text "latency" font-size=11 color="sy.ink4"
-            tbody
-              for a in f.apps key=a.id
-                tr testId=`app-${a.id}` background-color=(a.id == focus ? "sy.raised" : "transparent")
-                  td padding="6px 8px 6px 0"
-                    column gap=2
-                      text a.id font-size=13 font-weight=700 color="sy.ink"
-                      text `${a.runtime} · ${a.team}` font-size=11 color="sy.ink4"
-                  td padding="6px 8px"
-                    row gap=7 align-items="center"
-                      column width=8 height=8 border-radius=2 background-color=healthColor(a.health)
-                      text a.health font-size=12 color=(a.health == "up" ? "sy.ink3" : healthColor(a.health))
-                  td padding="6px 8px"
-                    column gap=2
-                      text `${a.live} / ${a.main}` font-size=12 color="sy.ink2"
-                      text a.behindText font-size=11 color=(a.behind > 0 ? "sy.amber-text" : "sy.ink4")
-                  td padding="6px 8px"
-                    text a.lastDeploy font-size=12 color="sy.ink3"
-                  td padding="6px 8px"
-                    text a.lane font-size=12 color="sy.ink3"
-                  td padding="6px 0 6px 8px" text-align="right"
-                    text a.latency font-size=12 color="sy.ink3" font-variant-numeric="tabular-nums"
-        column gap=8
-          text "ENGINES AND RUNNERS" font-size=12 letter-spacing="0.08em" color="sy.ink3"
-          for e in f.engines key=e.id
-            row gap=14 align-items="center" padding="6px 0" testId=`engine-${e.id}`
-              text e.id width=120 font-size=13 font-weight=700 color="sy.ink"
-              text e.kind width=140 font-size=12 color="sy.ink3"
-              row gap=4 width=160
-                for i in range(e.slots) key=i
-                  column width=10 height=10 border-radius=5 border="1px solid sy.machine" background-color=(i < e.busy ? "sy.amber" : "transparent")
-              text `cpu ${e.cpu} · mem ${e.mem}` width=150 font-size=12 color="sy.ink3"
-              text e.running font-size=12 color="sy.ink4" flex=1 white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
-        column gap=8
-          text "QUEUES" font-size=12 letter-spacing="0.08em" color="sy.ink3"
-          for q in f.queues key=q.id
-            row gap=14 testId=`queue-${q.id}`
-              text q.id width=120 font-size=13 font-weight=700 color="sy.ink"
-              text `${q.pending} waiting · ${q.running} running · oldest ${q.oldest}` font-size=12 color=(q.pending > 10 ? "sy.amber-text" : "sy.ink3")
+    row flex=1 min-height=0 testId="fleet"
+      scroll flex=1 min-width=0 min-height=0
+        column padding="12px 16px 24px 20px" gap=14
+          row gap=12 align-items="baseline" flex-wrap="wrap"
+            text "Fleet" role="heading" aria-level=2 font-weight=700 font-size=13
+            text `${f.total} apps · ${f.up} up · ${f.degraded} degraded · ${f.down} down · ${f.behindN} behind main · ${f.never} never deployed` color=(f.down > 0 ? "sy.red-text" : "sy.ink2") font-size=12 testId="fleet-count"
+          row gap=0 flex-wrap="wrap" border="1px solid sy.rule" border-radius=6
+            for s in f.stats key=s.label
+              column gap=1 padding="6px 14px" border-right="1px solid sy.rule" flex="1 1 120px"
+                text s.value font-size=16 font-weight=600 font-variant-numeric="tabular-nums" color="sy.ink"
+                text s.label font-size=10 color="sy.ink3"
+          if f.attention.length > 0
+            column gap=2 testId="apps-attention"
+              text `NEEDS ATTENTION · ${f.attention.length}` font-size=11 letter-spacing="0.08em" color="sy.amber-text" padding="0 8px 4px"
+              for a in f.attention key=a.id
+                AppLine(a=a, focused=(a.id == focus), latency=f.hasLatency)
+          column gap=2 testId="apps-table"
+            row gap=10 height=20 padding="0 8px" border-bottom="1px solid sy.rule" align-items="center"
+              text "" width=7
+              text `ALL APPS · ${f.total}` width=200 font-size=10 letter-spacing="0.08em" color="sy.ink3"
+              text "runtime · team" width=150 font-size=10 color="sy.ink3"
+              text "live → main" width=150 font-size=10 color="sy.ink3"
+              text "" width=80
+              text "last deploy" flex=1 font-size=10 color="sy.ink3"
+              text "lane" width=120 font-size=10 color="sy.ink3"
+              if f.hasLatency
+                text "latency" width=56 font-size=10 color="sy.ink3" text-align="right"
+            for a in f.apps key=a.id
+              AppLine(a=a, focused=(a.id == focus), latency=f.hasLatency)
+      scroll width=380 flex-shrink=0 min-height=0 border-left="1px solid sy.rule"
+        column padding="12px 16px 24px" gap=16
+          column gap=6
+            text "ENGINES AND RUNNERS" font-size=11 letter-spacing="0.08em" color="sy.ink3"
+            for e in f.engines key=e.id
+              column gap=3 padding="6px 0" border-bottom="1px solid sy.rule" testId=`engine-${e.id}`
+                row gap=8 align-items="baseline"
+                  text e.id font-size=12 font-weight=600 color="sy.ink" flex=1 min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+                  text `${e.busy}/${e.slots} busy${e.cpu != "–" ? ` · cpu ${e.cpu}` : ""}${e.mem != "–" ? ` · mem ${e.mem}` : ""}` font-size=11 color=(e.busy >= e.slots and e.slots > 0 ? "sy.amber-text" : "sy.ink3") white-space="nowrap"
+                row gap=3 align-items="center"
+                  for i in range(e.slots) key=i
+                    column width=8 height=8 border-radius=4 border="1px solid sy.machine" background-color=(i < e.busy ? "sy.amber" : "transparent")
+                  text e.kind font-size=10 color="sy.ink3" margin-left=6
+                if e.running != ""
+                  text e.running font-size=11 color="sy.ink3" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+          column gap=6
+            text "QUEUES" font-size=11 letter-spacing="0.08em" color="sy.ink3"
+            for q in f.queues key=q.id
+              row gap=8 align-items="baseline" testId=`queue-${q.id}`
+                text q.id font-size=12 font-weight=600 color="sy.ink"
+                text `${q.pending} waiting · ${q.running} running · oldest ${q.oldest}` flex=1 min-width=0 font-size=11 color=(q.pending > 10 ? "sy.amber-text" : "sy.ink3") white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+          column gap=4
+            text "OUTAGE WATCHER" font-size=11 letter-spacing="0.08em" color="sy.ink3"
+            text f.watcher color=(f.watcherTripped ? "sy.red-text" : "sy.ink3") font-size=11 testId="watcher"

@@ -40,7 +40,7 @@ struct Cli {
     #[arg(long, default_value_t = 1.0)]
     speed: f64,
     /// Web client build to serve at / (index.html fallback for client routes).
-    #[arg(long, env = "SWITCHYARD_STATIC_DIR")]
+    #[arg(long, env = "SWITCHYARD_WEB_DIR", alias = "web-dir")]
     static_dir: Option<PathBuf>,
     /// State directory: history ring, checkpoints, device tokens.
     #[arg(long, env = "SWITCHYARD_DATA_DIR", default_value = "data")]
@@ -260,7 +260,10 @@ async fn serve(cli: Cli) -> Result<()> {
             hub.clone(),
             rx,
             clock.clone(),
-            ReducerCfg::default(),
+            ReducerCfg {
+                settle_on: Some(adapters.clone()),
+                ..ReducerCfg::default()
+            },
         ));
         (hub, Some(store))
     };
@@ -291,13 +294,24 @@ async fn serve(cli: Cli) -> Result<()> {
             }
         });
     }
+    // Commit journeys' Dagger calls (live mode with a cicd read token only).
+    let traces = (!cli.demo)
+        .then(switchyard::adapters::UpstreamCfg::from_env)
+        .filter(|c| c.cicd_token.is_some())
+        .map(|c| {
+            Arc::new(switchyard::traces::Traces::new(
+                c.cicd_url.clone(),
+                c.cicd_token.clone(),
+                switchyard::adapters::http_client(),
+            ))
+        });
     let st = Arc::new(AppState {
         hub,
         mirror,
         store,
         adapters,
         auth,
-        traces: None,
+        traces,
         clock,
         mode: if cli.demo { "demo" } else { "live" },
         version: env!("CARGO_PKG_VERSION").to_string(),

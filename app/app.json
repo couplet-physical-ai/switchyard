@@ -38,5 +38,14 @@
   },
   "server": {
     "database": false
-  }
+  },
+  "protocol_handlers": [
+    {
+      "protocol": "switchyard",
+      "url": "/connect?u=%s"
+    }
+  ],
+  "env": [
+    "SWITCHYARD_DEFAULT_SERVER"
+  ]
 }

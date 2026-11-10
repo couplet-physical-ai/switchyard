@@ -17,12 +17,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::sync::broadcast;
 use tracing::info;
 
 use crate::hub::Hub;
 use crate::runtime::Adapters;
+use crate::wire::{WireState, diff, dots_between, kind_of};
 
 pub async fn record(
     hub: Arc<Hub>,
@@ -142,6 +143,9 @@ pub struct Sanitizer {
     repo_map: BTreeMap<String, String>,
     login_map: BTreeMap<String, String>,
     app_map: BTreeMap<String, String>,
+    /// The recording's state as recorded, and as published (for patch / dot ops).
+    raw: WireState,
+    clean: WireState,
 }
 
 fn is_bot_login(l: &str) -> bool {
@@ -163,6 +167,8 @@ impl Sanitizer {
             repo_map: BTreeMap::new(),
             login_map: BTreeMap::new(),
             app_map: BTreeMap::new(),
+            raw: WireState::default(),
+            clean: WireState::default(),
         }
     }
 
@@ -461,6 +467,16 @@ impl Sanitizer {
                         if !head.is_empty() {
                             v["head"] = Value::from(format!("topic/{:x}", h(&head) & 0xffffff));
                         }
+                        // A base other than a conventional long-lived branch is a name too
+                        // (`someone/project-x`).
+                        let base = v
+                            .get("base")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        if !base.is_empty() && !LONG_LIVED.contains(&base.as_str()) {
+                            v["base"] = Value::from(format!("topic/{:x}", h(&base) & 0xffffff));
+                        }
                     }
                     if let Some(url) = v.get("url").and_then(Value::as_str).map(str::to_string) {
                         v["url"] = Value::from(url.replace(&repo, &new_repo));
@@ -710,34 +726,103 @@ impl Sanitizer {
         }
     }
 
+    /// Sanitize one frame. Patch and dot ops carry partial entities, so every changed
+    /// entity is rebuilt whole from the recorded state, sanitized like an upsert, and
+    /// re-encoded against the published state (upsert, patch, or dots + patch).
     pub fn frame(&mut self, f: &mut Value) {
         let Some(ops) = f.get_mut("ops").and_then(Value::as_array_mut) else {
             return;
         };
-        for op in ops.iter_mut() {
+        let mut out = Vec::with_capacity(ops.len());
+        for mut op in ops.drain(..) {
+            let kind_s = match op.get("op").and_then(Value::as_str) {
+                Some("dot") => "repo".to_string(),
+                _ => op
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            };
+            let id = op
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             match op.get("op").and_then(Value::as_str) {
-                Some("upsert") | Some("remove") => {
-                    let kind = op
-                        .get("kind")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
-                    if let Some(v) = op.get_mut("v") {
-                        self.entity(&kind, v);
-                    }
-                    if let Some(id) = op.get("id").and_then(Value::as_str).map(str::to_string) {
-                        op["id"] = Value::from(self.rekey(&kind, &id));
-                    }
-                }
                 Some("event") => {
                     if let Some(e) = op.get_mut("e") {
                         self.event(e);
                     }
+                    out.push(op);
                 }
-                _ => {}
+                Some("remove") => {
+                    self.raw.apply_op(&op);
+                    op["id"] = Value::from(self.rekey(&kind_s, &id));
+                    self.clean.apply_op(&op);
+                    out.push(op);
+                }
+                Some(t @ ("upsert" | "patch" | "dot")) => {
+                    let t = t.to_string();
+                    let Some(kind) = kind_of(&kind_s) else {
+                        continue;
+                    };
+                    self.raw.apply_op(&op);
+                    let Some(mut v) = self.raw.get(kind, &id).cloned() else {
+                        continue; // a patch for an entity the recording never had
+                    };
+                    self.entity(&kind_s, &mut v);
+                    let cid = self.rekey(&kind_s, &id);
+                    let prev = self.clean.get(kind, &cid).cloned();
+                    let enc = match prev {
+                        Some(p) if t != "upsert" => reencode(&kind_s, &cid, &p, &v),
+                        _ => vec![json!({"op": "upsert", "kind": kind_s, "id": cid, "v": v})],
+                    };
+                    for o in enc {
+                        self.clean.apply_op(&o);
+                        out.push(o);
+                    }
+                }
+                _ => out.push(op),
+            }
+        }
+        *ops = out;
+    }
+
+    /// Seed the recorded and published states (call with the raw and the sanitized snapshot).
+    pub fn seed(&mut self, raw: &Value, clean: &Value) {
+        self.raw = WireState::from_snapshot(raw);
+        self.clean = WireState::from_snapshot(clean);
+    }
+}
+
+/// `prev` → `next` as patch / dot ops (the same rule as the server's).
+fn reencode(kind: &str, id: &str, prev: &Value, next: &Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    let (mut p, mut n) = (prev.clone(), next.clone());
+    if kind == "repo" {
+        let take = |v: &mut Value| {
+            v.get_mut("main")
+                .and_then(Value::as_object_mut)
+                .and_then(|m| m.remove("recent"))
+        };
+        if let (Some(Value::Array(pr)), Some(Value::Array(nr))) = (take(&mut p), take(&mut n)) {
+            match dots_between(&pr, &nr) {
+                Some(dots) => {
+                    for d in dots {
+                        out.push(json!({"op": "dot", "id": id, "v": d}));
+                    }
+                }
+                None => {
+                    p["main"]["recent"] = Value::Array(pr);
+                    n["main"]["recent"] = Value::Array(nr);
+                }
             }
         }
     }
+    if let Some(d) = diff(&p, &n) {
+        out.push(json!({"op": "patch", "kind": kind, "id": id, "v": d}));
+    }
+    out
 }
 
 fn generic_note(n: &str) -> String {
@@ -776,9 +861,11 @@ pub fn sanitize_dir(
         &std::fs::read(input.join("snapshot.json")).context("snapshot.json")?,
     )?;
     s.prime(&snap);
+    let raw = snap.clone();
     s.snapshot(&mut snap);
+    s.seed(&raw, &snap);
     std::fs::create_dir_all(out)?;
-    let snap_bytes = serde_json::to_vec(&snap)?;
+    let snap_bytes = neutral_hosts(&serde_json::to_string(&snap)?).into_bytes();
     check_clean(&snap_bytes).context("snapshot still contains something internal")?;
     std::fs::write(out.join("snapshot.json"), &snap_bytes)?;
     let text = std::fs::read_to_string(input.join("hour.jsonl")).context("hour.jsonl")?;
@@ -790,7 +877,7 @@ pub fn sanitize_dir(
         }
         let mut f: Value = serde_json::from_str(line)?;
         s.frame(&mut f);
-        let b = serde_json::to_vec(&f)?;
+        let b = neutral_hosts(&serde_json::to_string(&f)?).into_bytes();
         check_clean(&b).with_context(|| format!("frame {n} still contains something internal"))?;
         w.write_all(&b)?;
         w.write_all(b"\n")?;
@@ -800,11 +887,56 @@ pub fn sanitize_dir(
     Ok((snap_bytes.len(), n))
 }
 
+/// Branch names that say nothing about anyone (kept as-is in private repos).
+const LONG_LIVED: [&str; 8] = [
+    "main",
+    "master",
+    "develop",
+    "dev",
+    "staging",
+    "production",
+    "release",
+    "trunk",
+];
+
+/// Internal-only hosts (`<x>.dev.example.com`, `<x>.example.com`) in URLs become
+/// `<x>.example.com`, so links keep their shape without naming internal machines.
+pub fn neutral_hosts(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find("https://") {
+        out.push_str(&rest[..i + 8]);
+        rest = &rest[i + 8..];
+        let end = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '-'))
+            .unwrap_or(rest.len());
+        let host = &rest[..end];
+        let internal = [
+            ".dev.example.com",
+            ".lab.example.com",
+            ".example.com",
+        ]
+        .iter()
+        .find_map(|suf| host.strip_suffix(suf));
+        match internal {
+            Some(first) => {
+                out.push_str(first.split('.').next().unwrap_or("internal"));
+                out.push_str(".example.com");
+            }
+            None => out.push_str(host),
+        }
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Refuse anything that looks internal: lab hosts, private IPs, e-mails.
 pub fn check_clean(b: &[u8]) -> Result<()> {
     let s = String::from_utf8_lossy(b);
     for bad in [
         ".lab.example.com",
+        ".dev.example.com",
         "192.168.",
         "@example.com",
         "users.noreply.github.com",
@@ -818,4 +950,31 @@ pub fn check_clean(b: &[u8]) -> Result<()> {
         anyhow::bail!("found a 10.x address");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn internal_hosts_become_neutral() {
+        assert_eq!(
+            neutral_hosts(
+                r#"{"url":"https://ci.dev.example.com/repos/1/pipeline/84","b":"https://ci.dev.example.com"}"#
+            ),
+            r#"{"url":"https://ci.example.com/repos/1/pipeline/84","b":"https://ci.example.com"}"#
+        );
+        // Built at runtime so the internal host never appears verbatim in the source.
+        let lab = format!("https://x.{}.example.com:8000/a", "lab");
+        assert_eq!(neutral_hosts(&lab), "https://x.example.com:8000/a");
+        for keep in [
+            "https://github.com/a/b",
+            "https://switchyard.apps.example.com/",
+            "plain text",
+        ] {
+            assert_eq!(neutral_hosts(keep), keep);
+        }
+        assert!(check_clean(b"https://ci.dev.example.com/x").is_err());
+        assert!(check_clean(neutral_hosts("https://ci.dev.example.com/x").as_bytes()).is_ok());
+    }
 }

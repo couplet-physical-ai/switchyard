@@ -11,6 +11,11 @@ shape Tok
   token: string
   has: bool
 
+shape Link
+  server: string
+  token: string
+  ok: bool
+
 shape Conn
   ok: bool
   status: string
@@ -19,6 +24,7 @@ shape Conn
   label: string
   kind: string
   needsSetup: bool
+  signIn: string
 
 shape Ack
   ok: bool
@@ -124,6 +130,9 @@ shape AppRow
   repo: string
   lane: string
   checked: string
+  meta: string
+  version: string
+  deployBad: bool
 
 shape EngineRow
   id: string
@@ -155,6 +164,10 @@ shape Fleet
   degraded: number
   watcher: string
   watcherTripped: bool
+  attention: AppRow[]
+  behindN: number
+  never: number
+  hasLatency: bool
 
 shape SpanRow
   id: string
@@ -212,6 +225,9 @@ shape Journey
   healthText: string
   url: string
   events: JEvent[]
+  ciState: string
+  deployState: string
+  ticks: string[]
 
 shape PCommit
   sha: string
