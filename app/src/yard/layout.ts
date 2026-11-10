@@ -169,7 +169,10 @@ export function layout(Wc: number, Hc: number, deviceScale: number, c: Census, l
   const laneNeed0 = (slots: number) => { void slots; return LANE0_H; };
   let need0 = 0;
   for (const l of c.lanes) need0 += laneNeed0(l.slots);
-  const wantLanes = need0, wantSrc = nSrc * 20 + 18;
+  // What does not fit at LOD0 even in the tallest band goes dense (pills, cells): then it wants
+  // only a compact band, and the room goes to the bands below.
+  const bandCap = Math.round(H * 0.46) - head - 8;
+  const wantLanes = need0 <= bandCap ? need0 : 150, wantSrc = nSrc * 20 + 18 <= bandCap ? nSrc * 20 + 18 : 150;
   const topMax = Math.round(H * 0.46), topMin = Math.max(150, Math.min(Math.round(H * 0.3), Math.max(wantLanes, wantSrc) + head + 24));
   const bodyH = clamp(Math.max(wantLanes, wantSrc, 150), topMin - head - 8, topMax - head - 8);
   const top = { y0, y1: body0 + bodyH, head, body: body0 };

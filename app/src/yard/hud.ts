@@ -9,7 +9,7 @@ import { C } from './theme.ts';
 
 export type HudInfo = {
   budget: Budget; hist: readonly number[]; live: number; real: number; pooled: number; trains: number;
-  infoDraws: number; stress: boolean; host: string; scale: number; sceneW: number; sceneH: number;
+  infoDraws: number; infoMs: number; stress: boolean; host: string; scale: number; sceneW: number; sceneH: number;
 };
 
 export class Hud {
@@ -37,7 +37,7 @@ export class Hud {
     ly += 16;
     g.runs([['packets ', C.ink3], [`live ${i.live} (${i.real} real) · pooled ${i.pooled} · trains ${i.trains}`, C.ink2]], lx, ly, px);
     ly += 16;
-    g.runs([['scene ', C.ink3], [`${Math.round(i.sceneW)}×${Math.round(i.sceneH)} @${i.scale.toFixed(2)} · info ${i.infoDraws}/s · sim 60 Hz fixed`, C.ink3]], lx, ly, px);
+    g.runs([['scene ', C.ink3], [`${Math.round(i.sceneW)}×${Math.round(i.sceneH)} @${i.scale.toFixed(2)} · info ${i.infoDraws}/s ~${i.infoMs.toFixed(1)} ms · sim 60 Hz`, C.ink3]], lx, ly, px);
     ly += 12;
     // buttons
     const by = y + h - 22;

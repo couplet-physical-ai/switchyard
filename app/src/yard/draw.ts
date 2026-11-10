@@ -202,6 +202,8 @@ export class Yard {
     return more;
   }
   private lastInfoCost = 0;
+  /** The last info-layer redraw's estimated cost (ms), for the HUD. */
+  infoMs = 0;
 
   /** True while the static layer was drawn at another detail than the ladder now asks. */
   get staticStale(): boolean {
@@ -231,7 +233,11 @@ export class Yard {
     this.dial(g, S, t);
     if (this.tl.mode === 'replay') this.strip(g, S);
     // the cost of this frame (plus the info layer's, when it redrew this frame)
-    const est = this.budget.estimate(g.ops, g.arcs, g.texts, drawn) + this.lastInfoCost;
+    // The info layer is a cache: its redraw is a one-off rebuild (mount, resize, new data), a
+    // hitch rather than a load, so it is shown in the HUD but never steps the ladder down.
+    // Only when it redraws often (over 8 times a second) does it count, averaged.
+    const est = this.budget.estimate(g.ops, g.arcs, g.texts, drawn) + (this.infoRate > 8 ? this.lastInfoCost * Math.min(1, this.infoRate / 60) : 0);
+    if (this.lastInfoCost) this.infoMs = this.lastInfoCost;
     this.lastInfoCost = 0;
     this.budget.record(est + this.lastTopCost, g.ops, g.texts, interval, (qq) => this.predict(qq, est, q));
     this.lastTopCost = 0;
@@ -253,7 +259,7 @@ export class Yard {
     const p = this.pool;
     this.hud.draw(g, S.W, S.H, {
       budget: this.budget, hist: this.lod.histogram, live: p.nAct, real: p.real, pooled: p.pooled, trains: this.trains,
-      infoDraws: this.infoRate, stress: this.stress.on, host: this.budget.host, scale: S.k, sceneW: S.W, sceneH: S.H,
+      infoDraws: this.infoRate, infoMs: this.infoMs, stress: this.stress.on, host: this.budget.host, scale: S.k, sceneW: S.W, sceneH: S.H,
     });
     this.lastTopCost = this.budget.estimate(g.ops, g.arcs, g.texts, 0);
     return lensOn || this.hud.on || this.hover.kind !== '';
