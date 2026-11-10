@@ -1,0 +1,70 @@
+// Mainlines: every repo's default branch as a line of commit dots, red first (DESIGN.md, "Views").
+
+use Mainlines from "./shapes.contract"
+
+members App
+  state mlOrg = ""
+  state mlFilter = ""
+  state mlQ = ""
+  resource mlData = mainlines(here == "mainlines" ? clockMs : 0, mlOrg, mlFilter, mlQ, searchParam(top(nav), "repo")) as shape Mainlines else empty(total=0, red=0, rows=[])
+  action mlPickOrg(o: string)
+    mlOrg = o
+  action mlPickFilter(f: string)
+    mlFilter = f
+  action mlTyped(v: string)
+    mlQ = v
+
+fn orgShort(o: string): string = o == "" ? "all" : (o == "Northwind-Labs" ? "labs" : (o == "Northwind-EMS" ? "ems" : (o == "Northwind-Forge" ? "forge" : (o == "couplet-physical-ai" ? "couplet" : (o == "copper-browser" ? "copper" : o)))))
+
+component MainlinesView
+  props
+    data: Mainlines
+    org: string
+    filter: string
+    q: string
+    focus: string
+    open: action
+    pickOrg: action
+    pickFilter: action
+    typed: action
+  view
+    column flex=1 min-height=0 testId="mainlines"
+      header appearance="none" display="flex" align-items="flex-end" gap=16 padding="18px 24px 12px" flex-wrap="wrap"
+        column gap=4 flex="1 1 280px"
+          text "Main lines" role="heading" aria-level=2 font-weight=700 font-size=20
+          text `${data.total} repos · ${data.red} red · newest commit on the right` color="sy.ink3" font-size=12 testId="mainlines-count"
+        row role="radiogroup" aria-label="Organization" gap=2 padding=3 border-radius=8 background-color="sy.control"
+          for o in ["", "Northwind-Labs", "Northwind-EMS", "Northwind-Forge", "couplet-physical-ai", "copper-browser"] key=o
+            button role="radio" aria-checked=(org == o) press=pickOrg(o) testId=`org-${orgShort(o)}` padding="4px 10px" border-radius=6
+              background-color=(org == o ? "sy.control-on" : "transparent")
+              text orgShort(o) font-size=12 color=(org == o ? "sy.ink" : "sy.ink3")
+        row role="radiogroup" aria-label="State" gap=2 padding=3 border-radius=8 background-color="sy.control"
+          for f in ["", "red", "building"] key=f
+            button role="radio" aria-checked=(filter == f) press=pickFilter(f) testId=`state-${f == "" ? "all" : f}` padding="4px 10px" border-radius=6
+              background-color=(filter == f ? "sy.control-on" : "transparent")
+              text (f == "" ? "all" : f) font-size=12 color=(filter == f ? (f == "red" ? "sy.red-text" : "sy.ink") : "sy.ink3")
+        input type="search" value=q input=typed aria-label="Filter repos" placeholder="filter" testId="mainlines-filter" width=180
+          padding="6px 10px" font-size=12 border-radius=8 background-color="sy.raised" border="1px solid sy.edge" color="sy.ink"
+      list id="mainlines-list" flex=1 min-height=0 padding="0 12px 16px" testId="mainlines-list"
+        for r in data.rows key=r.id
+          button press=open(`/mainlines?repo=${encodeURIComponent(r.id)}`) testId=`main-${r.id}` padding="9px 12px" border-radius=8
+            background-color=(r.id == focus ? "sy.raised" : "transparent")
+            row align-items="center" gap=16
+              column width=250 min-width=0 gap=3
+                row gap=8 align-items="baseline"
+                  text r.name font-weight=700 font-size=13 color="sy.ink" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+                  text r.orgLabel font-size=11 color="sy.ink4"
+                text r.stateText font-size=12 color=(r.state == "red" ? "sy.red-text" : (r.state == "building" ? "sy.amber-text" : "sy.ink3")) white-space="nowrap" overflow="hidden" text-overflow="ellipsis" testId=`state-text-${r.id}`
+              canvas surface=rowDots(r.id, r.ver) flex=1 height=30 min-width=120 aria-label=`${r.name} main line: ${r.stateText}`
+              column width=150 gap=3 align-items="flex-end"
+                text r.lane font-size=11 color="sy.ink3"
+                text `${r.prs} open PRs · ${r.last}` font-size=11 color="sy.ink4" white-space="nowrap"
+          if r.id == focus
+            row gap=10 padding="2px 12px 12px 12px" testId="mainline-focus"
+              button press=open(`/prs?repo=${encodeURIComponent(r.id)}`) testId="focus-prs"
+                text `${r.prs} open PRs` font-size=12 color="sy.ink2"
+              if r.app != ""
+                button press=open(`/fleet?app=${encodeURIComponent(r.app)}`) testId="focus-app"
+                  text `app: ${r.app}` font-size=12 color="sy.ink2"
+              link href=`https://github.com/${r.id}` testId="focus-github"
+                text "github ↗" font-size=12 color="sy.ink3"

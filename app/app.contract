@@ -1,0 +1,275 @@
+// Switchyard: Exowatt's whole delivery system as one living schematic (DESIGN.md).
+// app.ts is the data module: the fleet lives there, and the yard's canvases draw from it
+// every frame. This file is the chrome around them, the views, the controls and the tests' handles.
+
+use MainlinesView from "./views/mainlines.contract"
+use PrsView, PrView from "./views/prs.contract"
+use FleetView from "./views/fleet.contract"
+use JourneyView from "./views/journey.contract"
+use Conn, Tok, Ack, Overview, Hit, Media, Time, Found, Mainlines, Prs, PrDetail, Fleet, Journey from "./views/shapes.contract"
+
+font "Commit Mono"
+  400 = "assets/fonts/CommitMono-400.ttf"
+  700 = "assets/fonts/CommitMono-700.ttf"
+
+routes nav
+  yard "/"
+  mainlines "/mainlines"
+  prs "/prs"
+  fleet "/fleet"
+  commit "/commit/:owner/:name/:sha"
+  pr "/pr/:owner/:name/:number"
+  connect "/connect"
+
+style Mono
+  font-family="Commit Mono"
+
+component App
+  resource media = exactViewport() as shape Media
+  resource time = exactTime() as shape Time
+  // Where the data comes from: "" is the page's own server (web) or unset (macOS); "demo" is
+  // the built-in simulation. The token lives in the platform's secret store, never in state.
+  state server = "" persist
+  state draftServer = ""
+  state draftToken = ""
+  state gen = 0
+  state tokGen = 0
+  state clockMs = 0
+  state mode = "live"
+  state speed = 1
+  state q = ""
+  state picked = ""
+  resource tok = loadToken(tokGen) as shape Tok else empty(token="", has=false)
+  resource conn = connect(server, tok.token, gen, time.epochAtZero) as shape Conn else empty(ok=false, status="connecting", error="", seq=0, label="", kind="", needsSetup=false)
+  resource feed = liveFeed(server, tok.token, conn.seq, gen, conn.ok) as shape Ack else empty(ok=false, status="idle")
+  resource ov = overview(clockMs) as shape Overview else empty()
+  resource found = search(q, clockMs) as shape Found else empty(hits=[])
+  mutation ctl as shape Ack refreshes ov
+  mutation replayed as shape Ack refreshes ov then afterReplay
+  mutation hit as shape Hit then afterHit
+  mutation saved as shape Ack then afterSave
+  derive reduced = media.prefersReducedMotion
+  derive here = top(nav).name
+  derive hitNow = match hit { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }
+  derive replayOk = match replayed { case some(r) => r.ok, case none => false }
+  members "./views/mainlines.contract"
+  members "./views/prs.contract"
+  members "./views/fleet.contract"
+  members "./views/journey.contract"
+
+  task pulse mount
+    every(250, tick)
+  task reconnect when feed.status == "closed" or feed.status == "error" or feed.status == "reset" key=feed.status
+    after(2000, retry)
+
+  action tick
+    clockMs = performanceNow()
+  action retry
+    gen = gen + 1
+  action follow(url: string)
+    nav = go(nav, url)
+  action back
+    nav = back(nav)
+  action goTo(name: string)
+    nav = go(nav, name == "yard" ? "/" : `/${name}`)
+
+  // Time controls (DESIGN.md, "Time")
+  action pause
+    mode = "paused"
+    send ctl = timeControl("pause", speed)
+  action playAt(s: number)
+    speed = s
+    mode = (s == 1 and (mode == "live" or mode == "replay")) ? mode : "behind"
+    send ctl = timeControl("play", s)
+  action goLive
+    mode = "live"
+    speed = 1
+    send ctl = timeControl("live", 1)
+  action togglePause
+    if mode == "paused"
+      speed = 1
+      mode = "behind"
+      send ctl = timeControl("play", 1)
+    else
+      mode = "paused"
+      send ctl = timeControl("pause", speed)
+  action startReplay
+    send replayed = replayHour(clockMs)
+  action afterReplay
+    if replayOk
+      mode = "replay"
+      speed = 60
+
+  // The yard: a press picks what is under it
+  action pressYard(e: PointerEvent)
+    send hit = pickAt(e.offsetX, e.offsetY)
+  action afterHit
+    if hitNow.kind == "replay"
+      startReplay()
+    else if hitNow.kind == "repo"
+      picked = hitNow.id
+      nav = go(nav, path("mainlines") + `?repo=${encodeURIComponent(hitNow.id)}`)
+    else if hitNow.kind == "pipeline"
+      picked = hitNow.id
+    else if hitNow.kind == "view"
+      goTo(hitNow.id)
+    else if hitNow.kind == "app"
+      nav = go(nav, path("fleet") + `?app=${encodeURIComponent(hitNow.id)}`)
+    else if hitNow.kind == "commit"
+      nav = go(nav, hitNow.route)
+
+  // ⌘K
+  action openPalette
+    q = ""
+    showModal("palette")
+  action typed(v: string)
+    q = v
+  action openHit(route: string)
+    nav = go(nav, route)
+
+  // Settings and the switchyard:// link
+  action openSettings
+    draftServer = server
+    draftToken = ""
+    showModal("settings")
+  action editServer(v: string)
+    draftServer = v
+  action editToken(v: string)
+    draftToken = v
+  action saveSettings
+    server = draftServer.trim()
+    send saved = saveToken(draftToken, draftToken != "")
+  action useDemo
+    server = "demo"
+    gen = gen + 1
+  action afterSave
+    tokGen = tokGen + 1
+    gen = gen + 1
+  action connectLink
+    server = searchParam(top(nav), "server")
+    send saved = saveToken(searchParam(top(nav), "token"), searchParam(top(nav), "token") != "")
+    nav = go(nav, "/")
+
+  view
+    main navigationKey=`${top(nav).id}` navigationBack="back" navigate=follow testId="root" width="100%" height="100%" background-color="sy.canvas" color="sy.ink" font-family="Commit Mono" -exact-menu-remove="show-tab-bar"
+      for e in stack(nav) key=e.id
+        column navigationKey=`${e.id}` position="absolute" inset=0 display="flex" flex-direction="column"
+          TopBar(here=e.name, connOk=conn.ok, connText=(conn.ok ? `${conn.kind == "demo" ? "demo" : feed.status} · ${conn.label}` : conn.status), live=(feed.status == "live" or feed.status == "demo"), goTo=goTo, openPalette=openPalette, openSettings=openSettings)
+          if e.name == "yard"
+            column flex=1 min-height=0 position="relative" testId="yard"
+              canvas surface=yardStatic(ov.layoutKey) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-static"
+              canvas surface=yardLive(reduced ? "reduced" : "full", picked) position="absolute" left=0 top=0 width="100%" height="100%"
+                role="img" aria-label=ov.summary pointerdown=pressYard touch-action="none" testId="yard-live"
+              if not conn.ok and conn.status != "connecting"
+                column position="absolute" inset=0 align-items="center" justify-content="center" background-color="sy.canvas" gap=14 testId="setup"
+                  text (conn.needsSetup ? "Connect Switchyard to a server" : "The server is not answering") font-weight=700 font-size=16
+                  text (conn.error != "" ? conn.error : "Its address and a token, or watch the built-in demo fleet.") color="sy.ink3" font-size=13 max-width=560 text-align="center" testId="setup-error"
+                  row gap=10
+                    button press=openSettings buttonStyle="bordered-prominent" testId="setup-connect"
+                      text "Connect…"
+                    button press=useDemo testId="setup-demo"
+                      text "Watch the demo"
+            footer display="flex" align-items="center" gap=12 padding="10px 20px 12px" border-top="1px solid sy.rule" testId="timebar"
+              text ov.sentence color="sy.ink3" font-size=12 flex=1 testId="sentence"
+              if mode != "live"
+                button press=goLive testId="go-live" padding="6px 12px" border-radius=8 aria-keyshortcuts="L"
+                  text "back to live" color="sy.green" font-size=13
+              button press=startReplay testId="replay" aria-label="Replay the last hour, sped up" padding="8px 14px" border-radius=8 disabled=(mode == "replay")
+                row gap=8 align-items="center"
+                  svg width=16 height=16 viewBox="0 0 16 16" aria-hidden=true
+                    circle cx=8 cy=8 r=6.5 fill="none" stroke="sy.ink2" stroke-width=1.4
+                    path d="M8 8 L11 5" stroke="sy.ink2" stroke-width=1.4 stroke-linecap="round"
+                  text (mode == "replay" ? "replaying the hour" : "last hour") font-size=13 color=(mode == "replay" ? "sy.amber-text" : "sy.ink3")
+              button press=togglePause testId="pause" aria-keyshortcuts="Space" padding="8px 18px" border-radius=8 border="1px solid sy.edge"
+                text (mode == "paused" ? "Play" : "Pause") font-size=14 color="sy.ink2"
+              row role="radiogroup" aria-label="Speed" padding=3 gap=2 border-radius=9 background-color="sy.control"
+                button role="radio" aria-checked=(speed == 1 and mode != "paused") press=playAt(1) testId="speed-1" padding="6px 16px" border-radius=7
+                  background-color=(speed == 1 and mode != "paused" ? "sy.control-on" : "transparent")
+                  text "1×" font-size=14 color=(speed == 1 and mode != "paused" ? "sy.ink" : "sy.ink3")
+                button role="radio" aria-checked=(speed == 0.25 and mode != "paused") press=playAt(0.25) testId="speed-quarter" padding="6px 16px" border-radius=7
+                  background-color=(speed == 0.25 and mode != "paused" ? "sy.control-on" : "transparent")
+                  text "¼×" font-size=14 color=(speed == 0.25 and mode != "paused" ? "sy.ink" : "sy.ink3")
+          if e.name == "mainlines"
+            MainlinesView(data=mlData, org=mlOrg, filter=mlFilter, q=mlQ, focus=searchParam(e, "repo"), open=openHit, pickOrg=mlPickOrg, pickFilter=mlPickFilter, typed=mlTyped)
+          if e.name == "prs"
+            PrsView(data=prData, filter=prFilter, q=prQ, open=openHit, pickFilter=prPickFilter, typed=prTyped)
+          if e.name == "fleet"
+            FleetView(f=fleetData, focus=searchParam(e, "app"), open=openHit)
+          if e.name == "commit"
+            JourneyView(j=jData, open=openHit)
+          if e.name == "pr"
+            PrView(d=prDet, open=openHit)
+          if e.name == "connect"
+            column align-items="center" justify-content="center" flex=1 gap=12 testId="connect"
+              text "Connect to this server?" font-weight=700 font-size=16
+              text searchParam(e, "server") color="sy.ink2" font-size=13
+              row gap=10
+                button press=connectLink buttonStyle="bordered-prominent" testId="connect-yes"
+                  text "Connect"
+                button press=back testId="connect-no"
+                  text "Cancel"
+      dialog id="palette" aria-label="Search" testId="palette" width=640 max-width="90vw" padding=0 border-radius=12 background-color="sy.raised" border="1px solid sy.edge"
+        column padding=10 gap=6
+          input type="search" value=q input=typed aria-label="Search" autofocus=true placeholder="repo, #pr, sha, app" testId="palette-input"
+            padding="10px 12px" font-size=15 border-radius=8 background-color="sy.canvas" border="1px solid sy.edge" color="sy.ink"
+          list id="palette-results" max-height=420 testId="palette-results"
+            for h in found.hits key=h.id
+              button press=openHit(h.route) commandfor="palette" command="close" testId=`hit-${h.kind}-${h.id}` padding="8px 10px" border-radius=6
+                row gap=10 align-items="baseline"
+                  text h.kind color="sy.ink4" font-size=11 width=58
+                  column gap=2 flex=1 min-width=0
+                    text h.title font-size=13 color="sy.ink" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+                    text h.subtitle font-size=12 color="sy.ink3"
+            if found.hits.length == 0
+              text "Nothing matches." color="sy.ink3" font-size=13 padding=10 testId="palette-empty"
+      dialog id="settings" aria-label="Connection" testId="settings" width=520 max-width="90vw" padding=20 border-radius=12 background-color="sy.raised" border="1px solid sy.edge"
+        column gap=12
+          text "Connection" role="heading" aria-level=2 font-weight=700 font-size=16
+          text (conn.ok ? `${conn.kind == "demo" ? "Watching the built-in demo fleet" : `Connected to ${conn.label}`} · seq ${conn.seq}` : (conn.error != "" ? conn.error : conn.status)) color=(conn.ok ? "sy.ink3" : "sy.red-text") font-size=12 testId="settings-status"
+          column gap=6
+            text "Server" font-size=12 color="sy.ink3"
+            input value=draftServer input=editServer aria-label="Server" placeholder="https://switchyard.apps.example.com · blank: this page's server · demo" testId="server-field"
+              padding="8px 10px" font-size=13 border-radius=8 background-color="sy.canvas" border="1px solid sy.edge" color="sy.ink"
+          column gap=6
+            text (tok.has ? "Token (one is saved; type to replace it)" : "Token") font-size=12 color="sy.ink3"
+            input type="password" value=draftToken input=editToken aria-label="Token" placeholder="kept in the Keychain on macOS" testId="token-field"
+              padding="8px 10px" font-size=13 border-radius=8 background-color="sy.canvas" border="1px solid sy.edge" color="sy.ink"
+          row gap=10 justify-content="flex-end"
+            button press=useDemo commandfor="settings" command="close" testId="settings-demo"
+              text "Watch the demo"
+            button commandfor="settings" command="close" testId="settings-cancel"
+              text "Cancel"
+            button press=saveSettings commandfor="settings" command="close" buttonStyle="bordered-prominent" testId="settings-save"
+              text "Connect"
+
+component TopBar
+  props
+    here: string
+    connOk: bool
+    connText: string
+    live: bool
+    goTo: action
+    openPalette: action
+    openSettings: action
+  view
+    header appearance="none" display="flex" align-items="center" gap=4 padding="10px 20px 8px" border-bottom="1px solid sy.rule" testId="topbar"
+      row align-items="center" gap=10 margin-right=18
+        svg width=18 height=18 viewBox="0 0 24 24" aria-hidden=true
+          circle cx=12 cy=12 r=10 fill="none" stroke="sy.brand" stroke-width=2
+          path d="M7 12h10M12 7v10" stroke="sy.brand" stroke-width=2 stroke-linecap="round"
+        text "switchyard" role="heading" aria-level=1 font-weight=700 font-size=15 letter-spacing="0.02em"
+      row role="tablist" appearance="none" aria-label="Views" gap=2
+        for v in ["yard", "mainlines", "prs", "fleet"] key=v
+          button role="tab" appearance="none" aria-selected=(here == v) press=goTo(v) testId=`tab-${v}` aria-keyshortcuts=`Meta+${v == "yard" ? "1" : v == "mainlines" ? "2" : v == "prs" ? "3" : "4"}`
+            padding="5px 10px" border-radius=6 background-color=(here == v ? "sy.control" : "transparent")
+            text v color=(here == v ? "sy.ink" : "sy.ink3") font-size=13
+      row flex=1
+      button appearance="none" press=openPalette aria-keyshortcuts="Meta+K" aria-label="Search" testId="open-palette"
+        padding="5px 10px" border-radius=6 border="1px solid sy.edge" background-color="sy.raised"
+        row gap=18 align-items="center"
+          text "search repos, prs, commits" color="sy.ink3" font-size=12
+          text "⌘K" color="sy.ink4" font-size=12
+      button appearance="none" press=openSettings aria-label="Connection" testId="open-settings" padding="5px 10px" margin-left=8 border-radius=6
+        row gap=7 align-items="center"
+          column width=7 height=7 border-radius=4 background-color=(connOk ? (live ? "sy.green" : "sy.amber") : "sy.red")
+          text connText color="sy.ink3" font-size=12 testId="conn-status"

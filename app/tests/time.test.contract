@@ -1,0 +1,49 @@
+// Time controls (DESIGN.md, "Time"): LIVE, Pause, 1×, ¼×, the hour replay.
+
+test "pause freezes the yard and back to live returns"
+  clock data
+  tap "setup-demo"
+  clock data
+  clock +1000
+  expect state mode == "live"
+  tap "pause"
+  clock data
+  expect state mode == "paused"
+  expect state ov.mode == "paused"
+  expect text "pause" == "Play"
+  expect tree has "go-live"
+  clock +3000
+  tap "go-live"
+  clock data
+  expect state mode == "live"
+  expect state ov.mode == "live"
+  expect tree missing "go-live"
+
+test "quarter speed plays behind live, then 1× catches up"
+  clock data
+  tap "setup-demo"
+  clock data
+  clock +1000
+  tap "speed-quarter"
+  clock data
+  expect state speed == 0.25
+  expect state ov.mode == "behind"
+  clock +4000
+  tap "speed-1"
+  clock data
+  expect state speed == 1
+
+test "the hour replay plays history at 60× and comes back live"
+  clock data
+  tap "setup-demo"
+  clock data
+  clock +1000
+  tap "replay"
+  clock data
+  expect state mode == "replay"
+  expect state ov.mode == "replay"
+  clock +2000
+  expect state ov.mode == "replay"
+  tap "go-live"
+  clock data
+  expect state ov.mode == "live"

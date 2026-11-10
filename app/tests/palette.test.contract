@@ -1,0 +1,24 @@
+// ⌘K: one field that reaches any repo, PR, commit, app or pipeline.
+
+test "the palette finds a repo and opens it"
+  clock data
+  tap "setup-demo"
+  clock data
+  tap "open-palette"
+  clock settle
+  type "palette-input" "cicd"
+  clock +300
+  expect tree has "hit-repo-Northwind-Labs/cicd"
+  tap "hit-repo-Northwind-Labs/cicd"
+  clock settle
+  expect state here == "mainlines"
+  expect tree has "mainline-focus"
+
+test "an empty palette lists what is on fire"
+  clock data
+  tap "setup-demo"
+  clock data
+  tap "open-palette"
+  clock +300
+  expect state q == ""
+  expect tree missing "palette-empty"

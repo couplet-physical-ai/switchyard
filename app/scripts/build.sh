@@ -1,0 +1,20 @@
+#!/bin/sh
+# One-liners for the client (run from anywhere):
+#   app/scripts/build.sh web [outdir]   the web build (default app/dist): static files the server serves
+#   app/scripts/build.sh mac            the macOS app; prints the .app path last
+#   app/scripts/build.sh test web|macos the *.test.contract suites on that host
+# EXACT2 names an existing exact checkout; otherwise scripts/fetch-exact.sh makes one.
+set -eu
+here=$(cd "$(dirname "$0")/.." && pwd)
+EXACT2=${EXACT2:-$("$here/scripts/fetch-exact.sh" | tail -1)}
+export EXACT2 EXACT_FEEDBACK=${EXACT_FEEDBACK:-0}
+cd "$here"
+case "${1:-}" in
+  web) timeout 1800 bun exact.mjs web-build --out "${2:-$here/dist}" ;;
+  mac)
+    export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
+    timeout 3600 bun exact.mjs mac ${SWITCHYARD_MAC_FLAGS:---release} >&2
+    find "$here/target/clients" -maxdepth 5 -type d -name Switchyard.app -path '*/macos/*' | head -1 ;;
+  test) timeout 3600 bun exact.mjs test "${2:-web}" 'tests/*.test.contract' --size 1440x900 ;;
+  *) echo "usage: app/scripts/build.sh web [outdir] | mac | test web|macos" >&2; exit 2 ;;
+esac

@@ -1,0 +1,30 @@
+{
+  "$schema": "../../../exact/scripts/app.schema.json",
+  "name": "Switchyard",
+  "short_name": "Switchyard",
+  "id": "com.exowatt.switchyard",
+  "start_url": "/",
+  "display": "standalone",
+  "app": {
+    "id": "com.exowatt.switchyard",
+    "name": "Switchyard"
+  },
+  "host": {
+    "web": {},
+    "macos": {
+      "minimumOS": "14.0",
+      "window": {
+        "width": 1440,
+        "height": 900,
+        "minWidth": 960,
+        "minHeight": 640
+      }
+    }
+  },
+  "deploy": {
+    "store": {
+      "web": "0",
+      "macos": "0"
+    }
+  }
+}

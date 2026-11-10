@@ -1,0 +1,54 @@
+// Navigation: the four views, their deep links, the setup screen. Every test starts the
+// built-in demo fleet (no network), so it runs the same on every host.
+
+test "a fresh install asks where to connect, and the demo starts at once"
+  clock data
+  expect tree has "setup"
+  tap "setup-demo"
+  clock data
+  clock +500
+  expect tree missing "setup"
+  expect text "conn-status" == "demo · built-in demo"
+  expect state ov.repos == 410
+
+test "each tab opens its view and the yard comes back"
+  clock data
+  tap "setup-demo"
+  clock data
+  tap "tab-mainlines"
+  clock settle
+  expect tree has "mainlines-list"
+  tap "tab-prs"
+  clock settle
+  expect tree has "prs-list"
+  tap "tab-fleet"
+  clock settle
+  expect tree has "apps-table"
+  tap "tab-yard"
+  clock settle
+  expect tree has "yard-live"
+  expect tree has "timebar"
+
+test "a deep link opens a repo's main line focused"
+  clock data
+  tap "setup-demo"
+  clock data
+  type "root" "/mainlines?repo=Northwind-Labs%2Fcicd"
+  clock settle
+  clock +300
+  expect tree has "mainline-focus"
+  expect tree has "main-Northwind-Labs/cicd"
+
+test "the main lines put red first and filter by state"
+  clock data
+  tap "setup-demo"
+  clock data
+  tap "tab-mainlines"
+  clock settle
+  clock +300
+  tap "state-red"
+  clock +300
+  expect state mlFilter == "red"
+  tap "state-all"
+  clock +300
+  expect state mlFilter == ""

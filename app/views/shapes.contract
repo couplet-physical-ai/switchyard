@@ -1,0 +1,235 @@
+// What the data module answers (src/project.ts builds these).
+
+shape Media
+  prefersReducedMotion: bool
+
+shape Time
+  epochAtZero: number
+  utcOffset: number
+
+shape Tok
+  token: string
+  has: bool
+
+shape Conn
+  ok: bool
+  status: string
+  error: string
+  seq: number
+  label: string
+  kind: string
+  needsSetup: bool
+
+shape Ack
+  ok: bool
+  status: string
+
+shape Hit
+  kind: string
+  id: string
+  label: string
+  route: string
+
+shape Overview
+  status: string
+  mode: string
+  speed: number
+  sentence: string
+  summary: string
+  layoutKey: string
+  repos: number
+  building: number
+  queued: number
+  red: number
+  appsUp: number
+  appsTotal: number
+  behind: string
+  seq: number
+
+shape SearchHit
+  kind: string
+  id: string
+  title: string
+  subtitle: string
+  route: string
+
+shape Found
+  hits: SearchHit[]
+
+shape MainRow
+  id: string
+  name: string
+  org: string
+  orgLabel: string
+  lane: string
+  state: string
+  stateText: string
+  heat: number
+  prs: number
+  app: string
+  last: string
+  ver: number
+
+shape Mainlines
+  total: number
+  red: number
+  rows: MainRow[]
+
+shape PrRow
+  id: string
+  repo: string
+  name: string
+  number: number
+  title: string
+  author: string
+  bot: bool
+  phase: string
+  phaseIdx: number
+  phaseText: string
+  checksOk: number
+  checksTotal: number
+  checksFailed: number
+  checksRunning: number
+  checks: string[]
+  ai: string
+  human: string
+  stale: string
+  staleOld: bool
+  blockedBy: string
+  updated: string
+  url: string
+  org: string
+  bad: bool
+
+shape Prs
+  open: number
+  ready: number
+  blocked: number
+  bots: number
+  total: number
+  rows: PrRow[]
+
+shape AppRow
+  id: string
+  url: string
+  health: string
+  latency: string
+  live: string
+  main: string
+  behind: number
+  behindText: string
+  lastDeploy: string
+  runtime: string
+  team: string
+  repo: string
+  lane: string
+  checked: string
+
+shape EngineRow
+  id: string
+  kind: string
+  slots: number
+  busy: number
+  cpu: string
+  mem: string
+  running: string
+
+shape QueueRow
+  id: string
+  pending: number
+  running: number
+  oldest: string
+
+shape Stat
+  label: string
+  value: string
+
+shape Fleet
+  apps: AppRow[]
+  engines: EngineRow[]
+  queues: QueueRow[]
+  stats: Stat[]
+  up: number
+  total: number
+  down: number
+  degraded: number
+  watcher: string
+  watcherTripped: bool
+
+shape SpanRow
+  id: string
+  name: string
+  depth: number
+  start: number
+  width: number
+  state: string
+  dur: string
+  cached: bool
+
+shape JPipe
+  id: string
+  number: number
+  lane: string
+  state: string
+  dur: string
+  wait: string
+  url: string
+  engine: string
+
+shape JDeploy
+  app: string
+  via: string
+  state: string
+  dur: string
+  start: number
+  width: number
+
+shape Journey
+  ok: bool
+  error: string
+  repo: string
+  sha: string
+  short: string
+  title: string
+  author: string
+  branch: string
+  stage: string
+  pushed: string
+  total: string
+  spans: SpanRow[]
+  pipelines: JPipe[]
+  deploys: JDeploy[]
+  deployVia: string
+  app: string
+  health: string
+  healthText: string
+  url: string
+
+shape PCommit
+  sha: string
+  short: string
+  title: string
+  author: string
+  ci: string
+  ago: string
+  repo: string
+
+shape PPipe
+  number: number
+  lane: string
+  state: string
+  dur: string
+  sha: string
+  ago: string
+
+shape PPhase
+  phase: string
+  note: string
+  ago: string
+
+shape PrDetail
+  ok: bool
+  row: option<PrRow>
+  commits: PCommit[]
+  pipelines: PPipe[]
+  timeline: PPhase[]
