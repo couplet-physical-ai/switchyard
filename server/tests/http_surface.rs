@@ -131,11 +131,22 @@ async fn tstream_accepts_only_a_device_token_in_the_query() {
         "headers are not read here"
     );
     assert_eq!(
-        status(&format!("{sse}?token=sys_monitor"), &[]).await,
+        status(&format!("{sse}?token=sys_forged"), &[]).await,
         401,
-        "service tokens are not device tokens"
+        "unknown service token"
+    );
+    assert_eq!(
+        status(&format!("{sse}?token=eyJhbGciOi.x.y"), &[]).await,
+        401,
+        "no Google tokens here"
     );
     assert_eq!(status(&format!("{sse}?token=syd_forged"), &[]).await, 401);
+    // A read-only service token works too (monitors, the e2e check, a test app).
+    let mut r = reqwest::get(format!("{sse}?token=sys_monitor"))
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200, "service token");
+    drop(r.chunk().await);
     // A valid device token opens the stream (SSE: 200 and a first event).
     let mut r = reqwest::get(format!("{sse}?token={}", s.token))
         .await

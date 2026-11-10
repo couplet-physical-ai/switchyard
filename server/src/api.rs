@@ -421,6 +421,17 @@ impl Sink {
     }
 }
 
+/// Logs the stream's close (how long it lived) when the pump ends, however it ends.
+fn scopeguard_close(opened: std::time::Instant) -> impl Drop {
+    struct Close(std::time::Instant);
+    impl Drop for Close {
+        fn drop(&mut self) {
+            tracing::info!(secs = self.0.elapsed().as_secs(), "stream closed");
+        }
+    }
+    Close(opened)
+}
+
 async fn ws_client(socket: WebSocket, st: Arc<AppState>, since: Option<u64>) {
     let (sink, mut stream) = socket.split();
     let (close_tx, close_rx) = tokio::sync::oneshot::channel::<()>();
@@ -463,7 +474,10 @@ async fn pump(
     mut closed: tokio::sync::oneshot::Receiver<()>,
 ) {
     let hub = st.hub.clone();
-    hub.clients.fetch_add(1, Ordering::Relaxed);
+    let opened = std::time::Instant::now();
+    let n = hub.clients.fetch_add(1, Ordering::Relaxed) + 1;
+    tracing::info!(since = ?since, seq = hub.seq(), clients = n, "stream open");
+    let _log = scopeguard_close(opened);
     let mut rx = hub.tx.subscribe();
     let mut last = hub.seq();
     let mut ok = true;

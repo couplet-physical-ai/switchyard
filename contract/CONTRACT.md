@@ -18,7 +18,7 @@ except the two singleton snapshot fields, which are `null` before their first va
 | `GET /api/v1/stream?since=<seq>` | **WebSocket** (upgrade). Server pushes `Frame`s (text messages). With `since`, frames after it are replayed from the ring first; if `since` is too old (or from before a restart), the first message is `{"t":"reset"}`. |
 | `GET /api/v1/snapshot?at=<ms>` | the fleet as it was at `at` (within the last 24 h): a `Snapshot` with `at` = the requested time. |
 | `GET /api/v1/stream/sse?since=<seq>` | same frames as Server-Sent Events (`data: <frame>`), fallback. |
-| `GET /api/v1/tstream?token=<device token>&since=<seq>` (WS), `GET /api/v1/tstream/sse?token=…` | the same streams for native clients that cannot set headers on a WebSocket: they accept ONLY a device token in the query (see Auth). |
+| `GET /api/v1/tstream?token=<device token>&since=<seq>` (WS), `GET /api/v1/tstream/sse?token=…` | the same streams for native clients that cannot set headers on a WebSocket: they accept ONLY our own tokens in the query: a device token (`syd_…`) or a read-only service token (`sys_…`) (see Auth). |
 | `GET /api/v1/history?from=<ms>&to=<ms>[&base=0]` | replay window (≤ 3 h, within the last 24 h): `History`. `base=0`: no base snapshot, only what happened after `from`. |
 | `GET /api/v1/commit/{owner}/{name}/{sha}` | `Journey` for one commit (sha may be abbreviated). |
 | `GET /api/v1/pr/{owner}/{name}/{number}` | `PrDetail`. |
@@ -42,9 +42,10 @@ except the two singleton snapshot fields, which are `null` before their first va
   (it also offers a `switchyard://connect?server=<url>&token=<token>` link).
 - A WebSocket / EventSource that cannot carry a header: `/api/v1/tstream?token=syd_…`
   (`/api/v1/tstream/sse?token=…`). These two paths pass the platform edge without a session
-  and accept nothing but a valid device token in the query. (`?token=` on `/api/v1/stream`
-  also works where there is no edge in front, e.g. a local server, but behind the platform
-  the edge would send a header-less request to the sign-in page.)
+  and accept nothing but a valid device (`syd_…`) or service (`sys_…`) token in the query. (`?token=` on `/api/v1/stream`
+  also works where there is no edge in front, e.g. a local server. Behind the platform
+  never do that: the edge redirects the request to the sign-in page with the whole URL,
+  token included, in the redirect's `rd=` parameter.)
 - Monitors: read-only service tokens (`Authorization: Bearer sys_…`), configured on the
   server as hashes.
 - `401 {"error":"unauthorized"}` → the token is missing/revoked: send the user to `/connect`.
