@@ -23,7 +23,7 @@ cargo run --release -- --demo --listen 127.0.0.1:8080
 # Live, against the real upstreams (tokens from env, see docs/SOURCES.md):
 WOODPECKER_TOKEN=… GITHUB_TOKEN=… cargo run --release -- --listen 127.0.0.1:8080
 # Serve a web client build at / as well:
-cargo run --release -- --demo --static-dir ../app/dist/web
+cargo run --release -- --demo --static-dir /tmp/sy-web   # from ../app: scripts/build.sh web /tmp/sy-web
 ```
 
 Then `curl -s localhost:8080/api/v1/meta | jq` or open `ws://localhost:8080/api/v1/stream`.
@@ -33,7 +33,7 @@ Then `curl -s localhost:8080/api/v1/meta | jq` or open `ws://localhost:8080/api/
 | `--listen` / `SWITCHYARD_LISTEN` | `0.0.0.0:8080` | |
 | `--demo`, `--fixtures DIR`, `--speed X` | off, `contract/fixtures` (or `../contract/fixtures`), 1.0 | demo playback |
 | `--auth open\|platform` / `SWITCHYARD_AUTH` | `open` | `platform` = SSO edge + device tokens |
-| `--static-dir` / `SWITCHYARD_STATIC_DIR` | — | web client to serve at `/` (SPA fallback) |
+| `--static-dir` / `SWITCHYARD_WEB_DIR` | — | web client to serve at `/`: the file, else `shell.html` (SPA); hashed files cached for a year |
 | `--data-dir` / `SWITCHYARD_DATA_DIR` | `data` | replay ring + device tokens |
 | `--public-url` / `SWITCHYARD_PUBLIC_URL` | — | for `/connect` links |
 | `--record DIR --record-minutes N` | — | record live fixtures (snapshot + frames) |

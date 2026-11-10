@@ -64,6 +64,25 @@ Server RSS went from 139 MB (demo fixtures + replay ring in memory) to 190 MB wi
 sockets (~50 KB per client) after the WebSocket buffers were cut from tungstenite's
 128 KiB-per-direction defaults to 4 KiB read / unbuffered write (before: 318 MB).
 
+## Payload sizes (contract v0.4)
+
+Live recordings of the whole fleet (five orgs, ~395 repos, ~1,050–1,160 open PRs, ~240 apps)
+on a Linux dev box, raw JSON as a client parses it. v0.3 sent every change as a whole-entity
+upsert; v0.4 sends whichever of upsert, merge `patch` or main-line `dot` ops is smallest, keeps
+12 main-line dots per repo and lists only required / not-passed checks on PRs.
+
+| | v0.3 | v0.4 |
+|---|---|---|
+| Snapshot | 3.08 MB (repos 45 %, PRs 27 %) | **2.47 MB** raw, 0.50 MB gzip (sanitized fixture: 2.2 MB) |
+| Stream | 7.0 MB/h (repo upserts 48 %, pipelines 15 %) | **2.6 MB/h** raw, 0.25 MB/h gzip |
+| `/history` for 1 h (base + frames) | ~10 MB | **~5.1 MB** |
+| Largest stream message | unbounded (a resume merged every missed frame) | ≤ 512 KB (`hub::MAX_MESSAGE`) |
+
+The v0.4 column is the recording that became `contract/fixtures` (before sanitizing; sizes are
+`wc -c` of `snapshot.json` and `hour.jsonl` scaled to an hour). The client's own check,
+`bun app/tools/stream-check.ts <url> 90` (snapshot + 90 s of stream equals a fresh snapshot,
+entity by entity), verifies that the smaller ops still reproduce the server's state.
+
 ## Deployed server
 
 `https://switchyard.apps.example.com` — platform LXC (2 cores / 2 GiB), `--profile ct` build,
