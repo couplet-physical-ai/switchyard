@@ -81,7 +81,7 @@ async function demoLive(): Promise<void> {
     return;
   }
   demo = null;
-  demo = new DemoUpstream(wall);
+  demo = await DemoUpstream.start(wall);
   up = demo;
   tl.load(await demo.snapshot(), clock);
 }
@@ -118,7 +118,7 @@ async function connect(server: string, token: string, epoch0: number): Promise<C
       const start = Math.floor((epoch0 + clock) / 1000) * 1000;
       if (!demo || Math.abs(demo.now - start) > 120_000) {
         demo = null;
-        demo = new DemoUpstream(start);
+        demo = await DemoUpstream.start(start);
       }
       up = demo;
       tl.load(await demo.snapshot(), clock);
@@ -235,7 +235,7 @@ export const sources: Sources = {
         const to = Math.floor((epochAtZero + clock) / 1000) * 1000;
         const from = to - DEMO_REPLAY;
         demo = null;
-        demo = new DemoUpstream(from);
+        demo = await DemoUpstream.start(from);
         up = demo;
         tl.load(await demo.snapshot(), clock);
         tl.beginPlayback(from, to);

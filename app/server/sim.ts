@@ -28,6 +28,8 @@ export type SimOptions = {
   /** The in-app demo: keep no frame log and no checkpoints (no history, no resume); a
    *  caller takes frames with advanceTo as they are made. Small enough for a 64 MiB heap. */
   lite?: boolean;
+  /** Do not run the warm-up in the constructor: the caller runs it with `warm`, in slices. */
+  deferWarmup?: boolean;
 };
 export type Lane = 'roadrunner' | 'gha';
 type DirtyKind = Kind | 'stats';
@@ -125,8 +127,21 @@ export class Sim {
     this.dirty.clear();
     this.events.length = 0;
     this.checkpoint();
-    this.step(this.epoch, false);
+    if (!o.deferWarmup) this.warm(Infinity);
+  }
+
+  /** Runs up to `sliceMs` more of the warm-up; true once the simulation has reached its epoch. */
+  warm(sliceMs: number): boolean {
+    if (this.now < this.epoch) this.step(Math.min(this.epoch, this.now + sliceMs), false);
     if (this.lite) this.log.drop();
+    return this.now + TICK > this.epoch;
+  }
+
+  /** The store itself (the in-app demo shares it instead of copying a snapshot). */
+  liveState(): Snapshot {
+    this.state.seq = this.seq;
+    this.state.at = this.now;
+    return this.state;
   }
 
   // ───────────────────────────── public API ─────────────────────────────

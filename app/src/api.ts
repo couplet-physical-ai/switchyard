@@ -1,6 +1,7 @@
 // Where the data comes from: the Switchyard server over HTTP + WebSocket (contract v0), or
 // the built-in demo (a seeded simulation of a fleet, no network). Both answer the same calls.
 
+import { parseLarge } from './json.ts';
 import type { History, Journey, Meta, PrDetail, SearchResults, Snapshot } from './wire.ts';
 
 export interface Upstream {
@@ -39,7 +40,8 @@ export class HttpUpstream implements Upstream {
     const r = await fetch(this.base + path, { headers, exactTimeout: timeout } as RequestInit);
     if (r.status === 404) return null as T;
     if (!r.ok) throw new Error(r.status === 401 || r.status === 403 ? `the server refused the token (${r.status})` : `${path} answered ${r.status}`);
-    return (await r.json()) as T;
+    // Large replies (the snapshot, history) parse piece by piece across turns.
+    return parseLarge<T>(await r.text());
   }
   async snapshot(): Promise<Snapshot> {
     const s = await this.get<Snapshot | null>('/api/v1/snapshot', 30000);
