@@ -96,6 +96,33 @@ pub fn heartbeat(seq: u64, at: Ms) -> Bytes {
     Bytes::from(format!("{{\"t\":\"hb\",\"seq\":{seq},\"at\":{at}}}"))
 }
 
+/// Largest message the server sends on a stream (clients default to a 1 MiB ceiling).
+/// Bigger flushes become several frames; catch-up merges stop at this size.
+pub const MAX_MESSAGE: usize = 512 * 1024;
+
+/// Encode ops as the insides of JSON arrays, each at most [`MAX_MESSAGE`] bytes (one op
+/// larger than that goes alone). Ops keep their order across chunks.
+pub fn encode_ops_chunked(ops: &[OpOut]) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut cur: Vec<u8> = Vec::with_capacity(ops.len().min(512) * 256);
+    let mut one = Vec::new();
+    for op in ops {
+        one.clear();
+        op.write_json(&mut one);
+        if !cur.is_empty() && cur.len() + 1 + one.len() > MAX_MESSAGE - 128 {
+            out.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push(b',');
+        }
+        cur.extend_from_slice(&one);
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 /// Encode ops as the inside of a JSON array.
 pub fn encode_ops(ops: &[OpOut]) -> Vec<u8> {
     let mut v = Vec::with_capacity(ops.len() * 256);

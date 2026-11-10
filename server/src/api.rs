@@ -508,7 +508,8 @@ async fn pump(
     hub.clients.fetch_sub(1, Ordering::Relaxed);
 }
 
-/// Send frames newer than `last`: consecutive deltas merge into one message,
+/// Send frames newer than `last`: consecutive deltas merge into one message of at most
+/// [`MAX_MESSAGE`](crate::hub::MAX_MESSAGE) bytes (a long catch-up is several messages),
 /// resets go through as-is.
 async fn send_batch(sink: &mut Sink, hub: &Hub, frames: &[Arc<Frame>], last: &mut u64) -> bool {
     let fresh: Vec<Arc<Frame>> = frames.iter().filter(|f| f.seq > *last).cloned().collect();
@@ -524,7 +525,13 @@ async fn send_batch(sink: &mut Sink, hub: &Hub, frames: &[Arc<Frame>], last: &mu
             continue;
         }
         let mut j = i;
+        let mut size = 64;
         while j < fresh.len() && fresh[j].kind == FrameKind::Delta {
+            let n = fresh[j].ops.len() + 1;
+            if j > i && size + n > crate::hub::MAX_MESSAGE {
+                break;
+            }
+            size += n;
             j += 1;
         }
         let bytes = Frame::merge(&fresh[i..j]);

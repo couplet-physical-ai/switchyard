@@ -13,7 +13,7 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 
 use crate::facts::Fact;
-use crate::hub::{Hub, Snapshot, encode_ops};
+use crate::hub::{Hub, Snapshot, encode_ops_chunked};
 use crate::model::{Kind, Ms, PROTOCOL};
 use crate::store::Store;
 
@@ -247,8 +247,9 @@ pub async fn run_reducer(
                 let mut s = store.write();
                 if s.has_dirty() {
                     let ops = s.flush(now);
-                    if !ops.is_empty() {
-                        hub.publish(&encode_ops(&ops), now);
+                    // A big flush (a boot backfill) goes out as several frames.
+                    for chunk in encode_ops_chunked(&ops) {
+                        hub.publish(&chunk, now);
                     }
                 }
             }
