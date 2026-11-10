@@ -59,6 +59,10 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
     let bundleID: String
     let repo: String
     let prerelease: Bool
+    /// The releases list: GitHub's API, or a test feed's `<base>/releases` from the env
+    /// SWITCHYARD_UPDATE_FEED (env only, never a setting; the end-to-end test's own feed).
+    let releasesURL: URL?
+    let testFeed: Bool
     private(set) var agent = false
     private(set) var installed = false
     private(set) var writable = false
@@ -95,10 +99,18 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
         bundleID = Bundle.main.bundleIdentifier ?? ""
         let config = ((info["ExactModuleConfig"] as? [String: Any])?["updater"] as? [String: Any]) ?? [:]
         let r = (config["repo"] as? String ?? "").trimmingCharacters(in: .whitespaces)
-        repo = r.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil ? r : SYUpdateEngine.defaultRepo
+        let repoName = r.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil ? r : SYUpdateEngine.defaultRepo
+        repo = repoName
         let env = ProcessInfo.processInfo.environment
         prerelease = env["SWITCHYARD_UPDATE_PRERELEASE"] == "1" || UserDefaults.standard.bool(forKey: "SwitchyardUpdatePrerelease")
         autoInstallEnv = env["SWITCHYARD_UPDATE_AUTOINSTALL"] == "1"
+        if let feed = env["SWITCHYARD_UPDATE_FEED"], !feed.isEmpty, let base = URL(string: feed), base.scheme == "http" || base.scheme == "https" {
+            releasesURL = URL(string: base.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/releases?per_page=20")
+            testFeed = true
+        } else {
+            releasesURL = URL(string: "https://api.github.com/repos/\(repoName)/releases?per_page=20")
+            testFeed = false
+        }
         super.init()
     }
 
@@ -118,7 +130,7 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
             let dir = parent.path
             installed = bundleURL.pathExtension == "app" && (dir == "/Applications" || dir == home + "/Applications")
             writable = FileManager.default.isWritableFile(atPath: dir)
-            log("launch: \(bundleID) \(current) at \(bundleURL.path); installed=\(installed) writable=\(writable) agent=\(agent) prerelease=\(prerelease) repo=\(repo) auto=\(auto)")
+            log("launch: \(bundleID) \(current) at \(bundleURL.path); installed=\(installed) writable=\(writable) agent=\(agent) prerelease=\(prerelease) repo=\(repo) auto=\(auto)\(testFeed ? " TEST FEED \(releasesURL?.absoluteString ?? "")" : "")")
             if auto { startTimer() }
             publish()
         }
@@ -223,13 +235,13 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
     struct Release { let version: String; let zipName: String; let zipURL: URL; let sumsURL: URL; let notes: String }
 
     private func findRelease(_ done: @escaping (Result<Release?, Error>) -> Void) {
-        guard let url = URL(string: "https://api.github.com/repos/\(repo)/releases?per_page=20") else { return done(.success(nil)) }
+        guard let url = releasesURL else { return done(.success(nil)) }
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         req.setValue("Switchyard/\(current) (macOS updater)", forHTTPHeaderField: "User-Agent")
         URLSession.shared.dataTask(with: req) { [self] data, response, err in
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if status == 403 || status == 429 {
+            if (status == 403 || status == 429) && !testFeed {
                 log("check: the API answered \(status) (rate limit): the releases/latest fallback")
                 return fallback(done)
             }

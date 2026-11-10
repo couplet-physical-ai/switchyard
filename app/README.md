@@ -45,6 +45,58 @@ bun app/server/mock.ts --port 4790          # live; --frozen, --rate 10, --burst
 bun app/server/selftest.ts                  # 50 checks: shapes, determinism, history, WS, SSE, auth
 ```
 
+## Updates (macOS)
+
+The Mac app keeps itself current, like Copper. `modules/apple/Updater.swift` is a native module:
+
+- **When it checks.** An installed copy checks by itself about 10 s after launch, then every
+  6 h, on a background queue. Installed means it lives in `/Applications` or `~/Applications`,
+  its folder is writable, and it is not running under the Exact agent. Dev builds
+  (`target/clients/…`) never check by themselves. **Switchyard ▸ Check for Updates…** (the app
+  menu) checks at any time, and a slim pill reports the result: *up to date*, *Downloading
+  0.1.1 · 42%*, or *Update failed: …*.
+- **The feed.** GitHub releases of `couplet-physical-ai/switchyard`, read through the API.
+  `app.json` `moduleConfig.updater.repo` overrides the repo. The updater takes the highest
+  semver among non-draft releases that carry `Switchyard-<v>-arm64.zip` and `SHA256SUMS`.
+  When the API rate-limits it (403/429), it falls back to
+  `releases/latest/download/SHA256SUMS`.
+- **Download and verify.** A newer release downloads in the background. Then the updater
+  checks all of these before it accepts the update:
+  - the zip's SHA-256 matches its `SHA256SUMS` line;
+  - `ditto -x -k` unpacks it into a staging folder on the same volume as the app;
+  - the bundle id matches this app's, and `CFBundleShortVersionString` matches the release;
+  - `codesign --verify --deep --strict` passes;
+  - the quarantine flag is removed.
+- **Install.** The pill then says *Switchyard 0.1.1 is ready · Restart to update*. Its *notes*
+  show the release body (the first ~1,500 characters) as plain text. Pressing the pill swaps
+  the bundle in place with `FileManager.replaceItemAt`, an atomic same-volume exchange, and
+  relaunches into the new version. A failed swap leaves the old app as it was.
+- **Log.** It writes to `~/Library/Logs/Switchyard/updater.log`, and to stdout.
+- **Web.** There is no updater on the web (the server serves the newest web build), and
+  nothing shows.
+
+**Pre-release channel.** Pre-releases are skipped unless you turn the channel on with
+`defaults write com.exowatt.switchyard SwitchyardUpdatePrerelease -bool true`, or the env
+`SWITCHYARD_UPDATE_PRERELEASE=1`.
+
+**Release requirements.** Each release must stamp its version into `Info.plist` and
+re-sign; the version check refuses a zip whose version differs from its tag. **The Homebrew
+cask must declare `auto_updates true`**, so `brew upgrade` leaves the self-updated app alone
+and Homebrew does not fight the updater.
+
+**End-to-end test (a real Mac, outside the agent):**
+
+```sh
+app/tools/updater-e2e.sh <path to a release Switchyard.app> 0.0.2
+```
+
+The script installs a copy at `~/Applications`, stamped to an old version and re-signed.
+It launches the copy with `SWITCHYARD_UPDATE_PRERELEASE=1` and
+`SWITCHYARD_UPDATE_AUTOINSTALL=1`. Once the update is ready, the Contract installs and
+relaunches it. The script then prints the log, the versions, and the process now running,
+and removes the copy. `FEED=<base URL>` points the run at a test feed instead
+(`SWITCHYARD_UPDATE_FEED`, read only from the environment).
+
 ## Layout
 
 | Path | What |
@@ -58,4 +110,5 @@ bun app/server/selftest.ts                  # 50 checks: shapes, determinism, hi
 | `src/wire.ts` | the wire contract (`../contract/CONTRACT.md`) in TypeScript |
 | `server/` | the deterministic simulation and mock server |
 | `tests/` | `*.test.contract` suites (web and macOS) |
-| `tools/` | `webperf.mjs` (frame pacing in Chromium), `mini-sync.sh` (copy to the Mac mini) |
+| `modules/apple/Updater.swift`, `views/update.contract`, `src/update.ts` | the macOS updater ("Updates" above) |
+| `tools/` | `webperf.mjs` (frame pacing in Chromium), `mini-sync.sh` (copy to the Mac mini), `updater-e2e.sh` |
