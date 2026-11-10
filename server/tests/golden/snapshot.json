@@ -1169,7 +1169,7 @@
       ]
     }
   ],
-  "protocol": "0.2",
+  "protocol": "0.3",
   "prs": [
     {
       "author": "dependabot",
@@ -1643,7 +1643,8 @@
       },
       "name": "kestrel-deploy",
       "open_prs": 1,
-      "org": "Northwind-EMS"
+      "org": "Northwind-EMS",
+      "p50_build_ms": 78000
     },
     {
       "default_branch": "main",
@@ -1699,7 +1700,8 @@
       },
       "name": "aurora-api",
       "open_prs": 2,
-      "org": "Northwind-Labs"
+      "org": "Northwind-Labs",
+      "p50_build_ms": 7000
     },
     {
       "app": "borealis-web",
@@ -1729,7 +1731,8 @@
       },
       "name": "borealis-web",
       "open_prs": 0,
-      "org": "Northwind-Labs"
+      "org": "Northwind-Labs",
+      "p50_build_ms": 96000
     },
     {
       "app": "cirrus-hub",
@@ -1773,7 +1776,8 @@
       },
       "name": "cirrus-hub",
       "open_prs": 1,
-      "org": "Northwind-Labs"
+      "org": "Northwind-Labs",
+      "p50_build_ms": 493000
     },
     {
       "app": "delta-stock",
@@ -1940,7 +1944,8 @@
       },
       "name": "nimbus-predict",
       "open_prs": 0,
-      "org": "Northwind-Labs"
+      "org": "Northwind-Labs",
+      "p50_build_ms": 62000
     },
     {
       "default_branch": "main",

@@ -340,6 +340,38 @@ pub async fn require(State(st): State<Arc<AppState>>, req: Request, next: Next) 
     }
 }
 
+/// The stream for native clients that cannot set headers on a WebSocket
+/// (`/api/v1/tstream?token=syd_…`). The platform edge lets this path through without
+/// a session (`allow_paths_unauthenticated`), so it accepts ONLY a valid device token
+/// from the query: no edge headers, no service or Google tokens.
+pub async fn require_query_token(
+    State(st): State<Arc<AppState>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    if st.auth.mode == AuthMode::Open {
+        return next.run(req).await;
+    }
+    let q: Option<TokenQ> = req.uri().query().and_then(serde_urlencoded_token);
+    let now = (st.clock)();
+    match q
+        .and_then(|t| t.token)
+        .filter(|t| t.starts_with(TOKEN_PREFIX))
+        .and_then(|t| st.auth.check_token(&t, now))
+    {
+        Some(p) => {
+            let mut req = req;
+            req.extensions_mut().insert(p);
+            next.run(req).await
+        }
+        None => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "unauthorized", "message": "this path needs ?token=<device token> (mint one at /connect)"})),
+        )
+            .into_response(),
+    }
+}
+
 /// `?token=` for clients that cannot set headers on a WebSocket (browsers).
 fn serde_urlencoded_token(q: &str) -> Option<TokenQ> {
     for kv in q.split('&') {

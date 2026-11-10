@@ -295,6 +295,7 @@ pub fn contexts_to_facts(
             started,
             finished,
             queue_pos: None,
+            expected_ms: None,
             engine: None,
             title: Some(wf.clone()),
             author: None,

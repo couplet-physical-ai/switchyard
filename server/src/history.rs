@@ -403,3 +403,66 @@ fn parse_num(line: &[u8], key: &[u8]) -> Option<u64> {
 fn parse_seq(line: &[u8]) -> Option<u64> {
     parse_num(line, b"\"seq\":")
 }
+
+impl HistoryOut {
+    /// Fold every entry before `at` (or at it, when `inclusive`) into the base, so the
+    /// base is the fleet's state at `at` and only the later frames remain. A
+    /// `t:"snapshot"` entry (server restart) replaces the state. Returns the effective
+    /// start (`at`, or the oldest retained checkpoint when `at` is older).
+    /// No base (`null`) and only the entries strictly after `at`.
+    pub fn after(self, at: Ms) -> HistoryOut {
+        let frames = self
+            .frames
+            .into_iter()
+            .filter(|f| parse_num(f, b"\"at\":").unwrap_or(0) as Ms > at)
+            .collect();
+        HistoryOut {
+            base: Bytes::from_static(b"null"),
+            base_seq: 0,
+            base_at: at,
+            frames,
+        }
+    }
+
+    pub fn fold_to(self, at: Ms, inclusive: bool, protocol: &str, epoch: &str) -> (Ms, HistoryOut) {
+        use crate::wire::WireState;
+        use serde_json::Value;
+        let start = at.max(self.base_at);
+        let base: Value = serde_json::from_slice(&self.base).unwrap_or(Value::Null);
+        let mut st = WireState::from_snapshot(&base);
+        let mut rest = Vec::new();
+        for f in self.frames {
+            let (seq, fat) = (
+                parse_seq(&f).unwrap_or(0),
+                parse_num(&f, b"\"at\":").unwrap_or(0) as Ms,
+            );
+            let before = if inclusive { fat <= start } else { fat < start };
+            if !before {
+                rest.push(f);
+                continue;
+            }
+            let Ok(v) = serde_json::from_slice::<Value>(&f) else {
+                continue;
+            };
+            match v.get("t").and_then(Value::as_str) {
+                Some("snapshot") => {
+                    st = WireState::from_snapshot(v.get("v").unwrap_or(&Value::Null))
+                }
+                Some("delta") => {
+                    st.apply_frame(&v);
+                }
+                _ => {}
+            }
+            st.seq = st.seq.max(seq);
+        }
+        st.at = start;
+        let json = serde_json::to_vec(&st.to_snapshot(protocol, epoch)).unwrap_or_default();
+        let out = HistoryOut {
+            base: Bytes::from(json),
+            base_seq: st.seq,
+            base_at: start,
+            frames: rest,
+        };
+        (start, out)
+    }
+}

@@ -13,8 +13,9 @@ use serde_json::Value;
 
 use crate::hub::{Hub, Snapshot};
 use crate::model::Ms;
+use crate::model::PROTOCOL;
 use crate::runtime::{Adapters, Clock};
-use crate::wire::shift_times;
+use crate::wire::{WireState, shift_times};
 
 pub struct Fixtures {
     pub snapshot: Value,
@@ -120,7 +121,16 @@ pub async fn run_demo(
             snapshot_bytes(&fx, delta, seq, start, &hub.epoch),
         ));
         let wall0 = tokio::time::Instant::now();
-        for f in &fx.frames {
+        // A mirror of the client view: the served snapshot follows the stream (rebuilt
+        // at most once a second), like the live server's.
+        let mut mirror = {
+            let mut v = fx.snapshot.clone();
+            shift_times(&mut v, delta);
+            WireState::from_snapshot(&v)
+        };
+        let mut last_snap = tokio::time::Instant::now();
+        let n = fx.frames.len();
+        for (i, f) in fx.frames.iter().enumerate() {
             let rel = f.get("at").and_then(Value::as_i64).unwrap_or(t0) - t0;
             let wait = Duration::from_millis(((rel.max(0) as f64) / speed) as u64);
             tokio::time::sleep_until(wall0 + wait).await;
@@ -131,7 +141,26 @@ pub async fn run_demo(
             } else {
                 clock()
             };
-            hub.publish(&ops_bytes(f, delta), at);
+            let ops = ops_bytes(f, delta);
+            let seq = hub.publish(&ops, at);
+            let wrapped = [b"[".as_slice(), &ops, b"]"].concat();
+            if let Ok(Value::Array(ops)) = serde_json::from_slice::<Value>(&wrapped) {
+                for op in &ops {
+                    mirror.apply_op(op);
+                }
+            }
+            mirror.seq = seq;
+            mirror.at = at;
+            if last_snap.elapsed() >= Duration::from_secs(1) || i + 1 == n {
+                last_snap = tokio::time::Instant::now();
+                let json = serde_json::to_vec(&mirror.to_snapshot(PROTOCOL, &hub.epoch))
+                    .unwrap_or_default();
+                let (h, m) = (hub.clone(), Bytes::from(json));
+                // Encoding + gzip (~20 ms for 2.7 MB) off the playback task.
+                let _ =
+                    tokio::task::spawn_blocking(move || h.set_snapshot(Snapshot::new(seq, at, m)))
+                        .await;
+            }
             adapters.ok("demo", clock(), Some(0));
         }
         let rest =

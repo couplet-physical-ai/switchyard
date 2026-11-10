@@ -1,4 +1,4 @@
-# Switchyard wire contract — v0.2
+# Switchyard wire contract — v0.3
 
 Owner: the **server** thread (`server/`). The client reads this and `contract/fixtures/`;
 it never edits them. Any change: bump `PROTOCOL` minor, update fixtures in the same commit,
@@ -16,11 +16,14 @@ except the two singleton snapshot fields, which are `null` before their first va
 |---|---|
 | `GET /api/v1/snapshot` | the whole fleet now: `Snapshot` (send `Accept-Encoding: gzip`; ~2.7 MB raw, ~0.5 MB gz). Header `x-switchyard-seq`, `ETag` (`If-None-Match` → 304). Served from a pre-encoded cache refreshed ≤ 1/s, so it may trail the stream by up to a second: always resume with `since=snapshot.seq`. |
 | `GET /api/v1/stream?since=<seq>` | **WebSocket** (upgrade). Server pushes `Frame`s (text messages). With `since`, frames after it are replayed from the ring first; if `since` is too old (or from before a restart), the first message is `{"t":"reset"}`. |
+| `GET /api/v1/snapshot?at=<ms>` | the fleet as it was at `at` (within the last 24 h): a `Snapshot` with `at` = the requested time. |
 | `GET /api/v1/stream/sse?since=<seq>` | same frames as Server-Sent Events (`data: <frame>`), fallback. |
-| `GET /api/v1/history?from=<ms>&to=<ms>` | replay window (≤ 3 h, within the last 24 h): `History`. |
+| `GET /api/v1/tstream?token=<device token>&since=<seq>` (WS), `GET /api/v1/tstream/sse?token=…` | the same streams for native clients that cannot set headers on a WebSocket: they accept ONLY a device token in the query (see Auth). |
+| `GET /api/v1/history?from=<ms>&to=<ms>[&base=0]` | replay window (≤ 3 h, within the last 24 h): `History`. `base=0`: no base snapshot, only what happened after `from`. |
 | `GET /api/v1/commit/{owner}/{name}/{sha}` | `Journey` for one commit (sha may be abbreviated). |
 | `GET /api/v1/pr/{owner}/{name}/{number}` | `PrDetail`. |
 | `GET /api/v1/search?q=&limit=` | ⌘K: `{q, results: Hit[]}` across repos / apps / PRs / commits / pipelines. |
+| `GET /` and any other non-`/api` path | the web client (`--static-dir` / `SWITCHYARD_WEB_DIR`): the file if it exists, else `shell.html` with 200 (SPA). Content-hashed files (`name-XXXXXXXX.ext`) are `Cache-Control: public, max-age=31536000, immutable`; everything else (`shell.html`, `index.html`, `app.js`, `app.plan`, `style.css`, …) `no-cache`. Unknown `/api/*` paths are a JSON 404, never the shell. |
 | `GET /api/v1/meta` | `{protocol, version, git_sha, mode: "live"\|"demo", epoch, seq, snapshot:{seq,at,bytes,gzip_bytes}, clients, adapters: AdapterStatus[], orgs, counts, process: {rss_bytes, peak_rss_bytes, threads}, now}` |
 | `GET /api/healthz` | liveness `{ok:true}` (public). |
 | `GET /api/readyz` | `{ready, mode, seq, adapters: AdapterStatus[]}`; 200 when every enabled adapter has synced once, else 503. |
@@ -34,11 +37,19 @@ except the two singleton snapshot fields, which are `null` before their first va
 - Browser (web client, same origin): nothing to do; the platform's SSO edge signs the
   person in and the server trusts it (it verifies the edge's Google ID token).
 - macOS app / scripts: `Authorization: Bearer syd_…` on every `/api/v1/*` request
-  including the WebSocket upgrade. Where a header cannot be set, `?token=syd_…` works too.
-  Get a token on `https://<server>/connect` (it also offers a
-  `switchyard://connect?server=<url>&token=<token>` link).
+  including the WebSocket upgrade (the platform edge lets Bearer requests on `/api/*`
+  through to the server, which checks the token). Get a token on `https://<server>/connect`
+  (it also offers a `switchyard://connect?server=<url>&token=<token>` link).
+- A WebSocket / EventSource that cannot carry a header: `/api/v1/tstream?token=syd_…`
+  (`/api/v1/tstream/sse?token=…`). These two paths pass the platform edge without a session
+  and accept nothing but a valid device token in the query. (`?token=` on `/api/v1/stream`
+  also works where there is no edge in front, e.g. a local server, but behind the platform
+  the edge would send a header-less request to the sign-in page.)
+- Monitors: read-only service tokens (`Authorization: Bearer sys_…`), configured on the
+  server as hashes.
 - `401 {"error":"unauthorized"}` → the token is missing/revoked: send the user to `/connect`.
-- Demo / local server (`--auth open`): no auth.
+- Demo / local server (`--auth open`): no auth, and permissive CORS (`*`) on every path so
+  a dev client on another origin can read it. A platform server is same-origin only.
 
 ### Frames (one WebSocket message = one frame; ≤ 30 frames/s per client)
 
@@ -63,7 +74,7 @@ An upsert replaces the whole entity (`v` always carries its own `id`).
 
 ```ts
 type Snapshot = {
-  protocol: "0.2", epoch: string, seq: number, at: number,
+  protocol: "0.3", epoch: string, seq: number, at: number,
   orgs: Org[], repos: Repo[], commits: Commit[], pipelines: Pipeline[], prs: Pr[],
   deploys: Deploy[], apps: App[], engines: Engine[], queues: Queue[], lanes: Lane[],
   watcher: Watcher | null, stats: Stats | null
@@ -89,6 +100,7 @@ type Repo = {
   heat: number,               // 0..1 in steps of 0.05: recent activity (3 h half-life)
   open_prs: number,
   last_activity: number,      // newest commit / pipeline / PR update (0 = none known)
+  p50_build_ms?: number,      // median duration of the repo's successful push runs, last 24 h
   links: { github: string, woodpecker?: string, cicd?: string }
 }
 
@@ -122,6 +134,9 @@ type Pipeline = {             // id = "wp:<owner/name>:<number>" (Roadrunner) | 
   event: "push" | "pull_request" | "tag" | "cron" | "manual" | "deployment",
   state: CiState, created: number, started?: number, finished?: number,
   queue_pos?: number,         // 1-based, while pending
+  expected_ms?: number,       // while pending/running: median duration (started → finished)
+                              // of this repo's last ≤ 20 successful runs of the same lane,
+                              // event and deploy-ness (last 24 h). Progress = (now − started) / expected_ms.
   engine?: string,            // agent name, e.g. "dagger-ci-153-1", "rr-mac-mini-1"
   title?: string, author?: string,
   pr?: number,                // pull_request pipelines
@@ -226,12 +241,13 @@ the upserts they explain.
 
 ```ts
 type History = {
-  from: number, to: number,
-  base: Snapshot,              // the checkpoint at or before `from`
+  from: number, to: number,    // `from` is moved up to the oldest retained state if older
+  base: Snapshot | null,       // the fleet AT `from` (base.at = from); null with `base=0`
   frames: (Frame | { t: "snapshot", seq: number, at: number, v: Snapshot })[]
+                               // in order; at >= from (at > from with base=0), at <= to
 }
-// Replay: state = base; apply every frame in order (frames with at < from just
-// fast-forward); a `t:"snapshot"` entry replaces the state (server restart).
+// Replay: state = base; apply every entry in order; a `t:"snapshot"` entry replaces the
+// state (a server restart inside the window).
 
 type Hit = { kind: "repo" | "app" | "pr" | "commit" | "pipeline", id: string,
              title: string, subtitle: string, score: number }
@@ -259,9 +275,22 @@ names, private commit/PR titles, people's logins, internal hosts are replaced by
 stand-ins; states, times, shapes and structure are real).
 
 `switchyard-server --demo` (no credentials) serves them on every endpoint above, looping,
-with all timestamps shifted so the recording ends "now", the previous loop pre-recorded
-into `/history`, and a `reset` at each loop start.
+with every timestamp shifted so the loop starts "now", the previous loop pre-recorded into
+`/history`, a `reset` at each loop start, and the served snapshot following the stream (at
+most 1 s behind) like the live server's.
 
 ```sh
 cargo run --release -- --demo --listen 127.0.0.1:8080   # from server/, fixtures default to ../contract/fixtures
 ```
+
+## Changes
+
+- **0.3** (additive): `Pipeline.expected_ms?`, `Repo.p50_build_ms?`; `History.base` is the
+  state at `from` (frames before `from` are folded in) or `null` with `base=0`;
+  `GET /api/v1/snapshot?at=`; `/api/v1/tstream[/sse]?token=` for header-less native
+  streams; web client served at `/` with SPA fallback + cache rules; `meta.process`; the
+  demo snapshot follows the stream.
+- **0.2** (additive over v0): every entity carries `id`; deploy id = `owner/name@sha`;
+  Engine `host`/`online`/`agents`/load; Queue `waiting`/`pipelines_running`/`paused`; Pr
+  `ci`/`head`/`merge_sha`/`blocked_by`/`stale_ms`; `start.engine` optional; History
+  `{base, frames}`.

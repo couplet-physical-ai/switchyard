@@ -23,7 +23,6 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc};
 use tower_http::compression::CompressionLayer;
-use tower_http::services::{ServeDir, ServeFile};
 
 use crate::auth::{self, Auth};
 use crate::hub::{Frame, FrameKind, Hub, heartbeat};
@@ -68,17 +67,25 @@ pub fn router(st: Arc<AppState>) -> Router {
         .route("/tokens", get(auth::list_tokens))
         .route("/tokens/{id}", axum::routing::delete(auth::revoke_token))
         .layer(middleware::from_fn_with_state(st.clone(), auth::require));
+    let tstream = Router::new()
+        .route("/tstream", get(stream_ws))
+        .route("/tstream/sse", get(stream_sse))
+        .layer(middleware::from_fn_with_state(
+            st.clone(),
+            auth::require_query_token,
+        ));
     let r = Router::new()
         .route("/api/healthz", get(healthz))
         .route("/api/readyz", get(readyz))
         .route("/connect", get(auth::connect_page))
         .route("/api/connect/mint", axum::routing::post(auth::mint))
-        .nest("/api/v1", v1);
+        .nest("/api/v1", v1.merge(tstream))
+        .route("/api", get(api_not_found))
+        .route("/api/{*rest}", get(api_not_found));
     let r = match &st.static_dir {
-        Some(dir) => {
-            let index = dir.join("index.html");
-            r.fallback_service(ServeDir::new(dir).fallback(ServeFile::new(index)))
-        }
+        Some(dir) => r
+            .fallback(web_file)
+            .layer(axum::Extension(WebDir(dir.clone()))),
         None => r.fallback(get(root)),
     };
     let open = st.auth.mode == crate::auth::AuthMode::Open;
@@ -90,6 +97,103 @@ pub fn router(st: Arc<AppState>) -> Router {
         r
     };
     r.with_state(st)
+}
+
+#[cfg(test)]
+mod web_tests {
+    use super::hashed_asset;
+
+    #[test]
+    fn hashed_assets() {
+        for h in [
+            "canvas2d-Lmh-ovnK.js",
+            "fragment-4yz_we-b.js",
+            "storage-environment-Cl6q2ZQ_.js",
+            "symbol-roles-B-ExGlrT.js",
+        ] {
+            assert!(hashed_asset(h), "{h}");
+        }
+        for n in [
+            "app.js",
+            "app.plan",
+            "shell.html",
+            "index.html",
+            "style.css",
+            "routes.json",
+            "manifest.json",
+            "ts-stream.js",
+        ] {
+            assert!(!hashed_asset(n), "{n}");
+        }
+    }
+}
+
+async fn api_not_found() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        axum::Json(json!({"error": "not_found"})),
+    )
+        .into_response()
+}
+
+#[derive(Clone)]
+struct WebDir(PathBuf);
+
+/// True for content-hashed build outputs (`canvas2d-Lmh-ovnK.js`: a `-` then an 8-char
+/// base64url hash before the extension): safe to cache forever.
+fn hashed_asset(name: &str) -> bool {
+    let stem = name
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(name)
+        .as_bytes();
+    stem.len() > 9
+        && stem[stem.len() - 9] == b'-'
+        && stem[stem.len() - 8..]
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-')
+        && stem[stem.len() - 8..]
+            .iter()
+            .any(|b| b.is_ascii_digit() || b.is_ascii_uppercase())
+}
+
+/// The web client: the file when it exists, else the SPA shell (`shell.html`, or
+/// `index.html`) with 200. Hashed assets are immutable; everything else revalidates.
+async fn web_file(
+    axum::Extension(WebDir(dir)): axum::Extension<WebDir>,
+    uri: axum::http::Uri,
+) -> Response {
+    let rel = uri.path().trim_start_matches('/');
+    let safe = !rel
+        .split('/')
+        .any(|seg| seg == ".." || seg.starts_with('.') && !seg.is_empty());
+    let mut path = dir.join(if rel.is_empty() { "index.html" } else { rel });
+    if !safe || !path.is_file() {
+        path = ["shell.html", "index.html"]
+            .iter()
+            .map(|f| dir.join(f))
+            .find(|p| p.is_file())
+            .unwrap_or(dir.join("index.html"));
+    }
+    let Ok(bytes) = tokio::fs::read(&path).await else {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    };
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let mime = mime_guess::from_path(&path).first_or_octet_stream();
+    let mut r = Response::new(Body::from(bytes));
+    let h = r.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(mime.as_ref()) {
+        h.insert(header::CONTENT_TYPE, v);
+    }
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(if hashed_asset(name) {
+            "public, max-age=31536000, immutable"
+        } else {
+            "no-cache"
+        }),
+    );
+    r
 }
 
 async fn root(State(st): State<Arc<AppState>>) -> Response {
@@ -160,6 +264,42 @@ fn process_stats() -> Value {
     json!({"rss_bytes": kb("VmRSS:"), "peak_rss_bytes": kb("VmHWM:"), "threads": kb("Threads:").map(|n| n / 1024)})
 }
 
+/// `GET /api/v1/snapshot?at=<ms>`: the fleet as it was at `at` (within the replay ring).
+async fn snapshot_at(st: Arc<AppState>, at: Ms) -> Response {
+    let now = (st.clock)();
+    if at > now || at < now - crate::history::KEEP_MS {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": "bad_time", "message": "need a time within the last 24 h"})),
+        )
+            .into_response();
+    }
+    let hub = st.hub.clone();
+    let out = tokio::task::spawn_blocking(move || {
+        hub.history
+            .query(at, at)
+            .map(|h| h.fold_to(at, true, PROTOCOL, &hub.epoch).1)
+    })
+    .await
+    .ok()
+    .flatten();
+    match out {
+        Some(h) => {
+            let mut r = Response::new(Body::from(h.base));
+            r.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            );
+            r
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            axum::Json(json!({"error": "no_history"})),
+        )
+            .into_response(),
+    }
+}
+
 fn accepts_gzip(h: &HeaderMap) -> bool {
     h.get_all(header::ACCEPT_ENCODING)
         .iter()
@@ -168,7 +308,19 @@ fn accepts_gzip(h: &HeaderMap) -> bool {
 }
 
 /// Snapshot straight from the pre-encoded cache (no serialization per request).
-async fn snapshot(State(st): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+#[derive(Deserialize)]
+struct SnapshotQ {
+    at: Option<Ms>,
+}
+
+async fn snapshot(
+    State(st): State<Arc<AppState>>,
+    Query(q): Query<SnapshotQ>,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(at) = q.at {
+        return snapshot_at(st, at).await;
+    }
     let s = st.hub.snapshot();
     let etag = format!("\"{}-{}\"", st.hub.epoch, s.seq);
     if headers
@@ -390,6 +542,9 @@ async fn send_batch(sink: &mut Sink, hub: &Hub, frames: &[Arc<Frame>], last: &mu
 struct HistoryQ {
     from: Option<Ms>,
     to: Option<Ms>,
+    /// `base=0`: no base snapshot (`base: null`), only the entries after `from` (a client
+    /// that already holds the state at `from`, e.g. its live state, saves the big base).
+    base: Option<u8>,
 }
 
 async fn history(State(st): State<Arc<AppState>>, Query(q): Query<HistoryQ>) -> Response {
@@ -406,12 +561,18 @@ async fn history(State(st): State<Arc<AppState>>, Query(q): Query<HistoryQ>) -> 
             .into_response();
     }
     let hub = st.hub.clone();
-    let out = tokio::task::spawn_blocking(move || hub.history.query(from, to))
-        .await
-        .ok()
-        .flatten();
+    let out = tokio::task::spawn_blocking(move || {
+        let h = hub.history.query(from, to)?;
+        if q.base == Some(0) {
+            return Some((from, h.after(from)));
+        }
+        Some(h.fold_to(from, false, PROTOCOL, &hub.epoch))
+    })
+    .await
+    .ok()
+    .flatten();
     match out {
-        Some(h) => {
+        Some((from, h)) => {
             let mut r = Response::new(Body::from(h.to_json(from, to)));
             r.headers_mut().insert(
                 header::CONTENT_TYPE,

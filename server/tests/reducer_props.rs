@@ -86,6 +86,7 @@ fn pipeline() -> impl Strategy<Value = Fact> {
                     started,
                     finished,
                     queue_pos: None,
+                    expected_ms: None,
                     engine: started.map(|_| "dagger-ci-153-1".to_string()),
                     title: Some(format!("change {number}")),
                     author: Some(if number == 2 {
