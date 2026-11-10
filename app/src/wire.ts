@@ -105,8 +105,12 @@ export type Frame =
 export type HistoryFrame = Frame | { t: 'snapshot'; seq: number; at: number; v: Snapshot };
 export type History = { from: number; to: number; base?: Snapshot; frames: HistoryFrame[] };
 
-/** cicd's Dagger spans, passed through by the server (shape not fixed by the contract). */
-export type Span = { id: string; parent?: string; name: string; start: number; end?: number; state?: CiState; pipeline?: string; cached?: boolean };
+/** One Dagger call from cicd's traces (contract v0.3): oldest first. The demo's older form
+ *  (`end`, `parent`, `state`, `cached`) is still read. */
+export type Span = {
+  id: string; name: string; call?: string; pipeline?: number | string; start: number; ms?: number; spans?: number;
+  end?: number; parent?: string; state?: CiState; cached?: boolean;
+};
 export type JourneyEntry = { at: number; k: string; label: string };
 export type Journey = {
   id?: string; repo?: string; sha?: string;

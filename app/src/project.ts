@@ -209,7 +209,7 @@ export function journeyView(j: Journey | null, now: number, error = '', offsetMi
   const t0 = c?.at ?? dot?.at ?? pipes[0]?.created ?? now;
   let t1 = t0 + 1000;
   const spans0 = j.spans ?? [];
-  for (const sp of spans0) t1 = Math.max(t1, sp.end ?? now);
+  for (const sp of spans0) t1 = Math.max(t1, sp.end ?? (sp.ms != null ? sp.start + sp.ms : now));
   for (const p of pipes) t1 = Math.max(t1, p.finished ?? (p.state === 'running' || p.state === 'pending' ? now : p.started ?? p.created));
   for (const d of j.deploys ?? []) t1 = Math.max(t1, d.finished ?? now);
   const total = Math.max(1000, t1 - t0);
@@ -221,8 +221,10 @@ export function journeyView(j: Journey | null, now: number, error = '', offsetMi
     for (const sp of spans0.slice().sort((a, b) => a.start - b.start)) {
       const d = sp.parent ? (depth.get(sp.parent) ?? 0) + 1 : 0;
       depth.set(sp.id, d);
-      const end = sp.end ?? now;
-      rows.push({ id: sp.id, name: sp.name, depth: d, start: pos(sp.start), width: wid(sp.start, end), state: sp.state ?? 'success', dur: fmtDur(end - sp.start), cached: !!sp.cached });
+      const end = sp.end ?? (sp.ms != null ? sp.start + sp.ms : now);
+      const name = sp.call ? `${sp.name} ${sp.call}` : sp.name;
+      const label = sp.pipeline != null && pipes.length > 1 ? `#${sp.pipeline} ${name}` : name;
+      rows.push({ id: `${sp.id}:${sp.start}`, name: label, depth: d, start: pos(sp.start), width: wid(sp.start, end), state: sp.state ?? 'success', dur: fmtDur(end - sp.start) + (sp.spans ? ` · ${sp.spans}` : ''), cached: !!sp.cached });
     }
   } else {
     // No traces: the workflows and their steps, as Roadrunner and GitHub report them.
