@@ -5,6 +5,13 @@ import AppKit
 
 let webURL = URL(string: ProcessInfo.processInfo.environment["SWITCHYARD_URL"] ?? "https://switchyard.apps.example.com")!
 
+final class Canvas: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor(calibratedWhite: 0.04, alpha: 1).setFill()
+        bounds.fill()
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
 
@@ -14,7 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                           backing: .buffered, defer: false)
         window.title = "Switchyard"
         window.backgroundColor = NSColor(calibratedWhite: 0.04, alpha: 1)
-        let view = NSView(frame: frame)
+        let view = Canvas(frame: frame)
         let mono = NSFont.monospacedSystemFont(ofSize: 22, weight: .medium)
         let small = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         let title = NSTextField(labelWithString: "Switchyard")
@@ -44,9 +51,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         URLSession.shared.dataTask(with: req) { _, resp, err in
             let code = (resp as? HTTPURLResponse)?.statusCode
             let text = code.map { "server: \(self.host) answered HTTP \($0)" } ?? "server: \(self.host) unreachable (\(err?.localizedDescription ?? "no answer"))"
-            DispatchQueue.main.async { status.stringValue = text }
+            DispatchQueue.main.async {
+                status.stringValue = text
+                self.snapshotIfAsked()
+            }
             FileHandle.standardError.write((text + "\n").data(using: .utf8)!)
         }.resume()
+    }
+
+    /// `--snapshot <png>`: render this window's own content to a PNG (no Screen Recording
+    /// permission needed, unlike screencapture over ssh), so the release check can look at it.
+    func snapshotIfAsked() {
+        let args = CommandLine.arguments
+        guard let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count, let view = window.contentView else { return }
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        if let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: args[i + 1]))
+        }
     }
 
     var host: String { webURL.host ?? webURL.absoluteString }
@@ -60,4 +82,5 @@ let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
 app.setActivationPolicy(.regular)
+app.appearance = NSAppearance(named: .darkAqua)
 app.run()
