@@ -693,10 +693,8 @@ impl GithubAdapter {
             format!("is:pr is:open archived:false -author:app/dependabot {orgs} sort:updated-desc");
         let bot_q =
             format!("is:pr is:open archived:false author:app/dependabot {orgs} sort:updated-desc");
-        // Boot: inventory, then every open PR, then heads.
-        if let Err(e) = self.inventory().await {
-            self.adapters.degraded(NAME, format!("inventory: {e}"));
-        }
+        // Boot: heads and open human PRs first (a few calls: ready in ~1 min), then
+        // the slow parts (inventory with main-line history, closed and bot PRs).
         let since = (self.clock)() - 24 * 3_600_000;
         let closed_q = |t: Ms| {
             format!(
@@ -715,6 +713,9 @@ impl GithubAdapter {
         // Ready once heads + open human PRs are in; the rest fills in after.
         self.adapters.ok(NAME, (self.clock)(), None);
         info!("github: synced");
+        if let Err(e) = self.inventory().await {
+            self.adapters.degraded(NAME, format!("inventory: {e}"));
+        }
         for (q, pages) in [(closed_q(since), 10), (bot_q.clone(), 25)] {
             if let Err(e) = self.prs(&q, pages, false).await {
                 warn!(error = %e, "github: PR backfill");
