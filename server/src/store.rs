@@ -527,6 +527,14 @@ impl Store {
         self.mark(Kind::Commit, &key);
         self.mark(Kind::Repo, &p.repo.clone());
         self.mark(Kind::Stats, "fleet");
+        // Running siblings' expected durations depend on this repo's finished runs.
+        self.mark_active_pipelines(&p.repo.clone());
+        if let Some(o) = self.pipelines.get(&id)
+            && o.repo != p.repo
+        {
+            let r = o.repo.clone();
+            self.mark_active_pipelines(&r);
+        }
         let prs: Vec<String> = self
             .idx
             .sha_prs
@@ -623,6 +631,31 @@ impl Store {
         }
         self.deploys.insert(key, d);
     }
+}
+
+impl Store {
+    fn mark_active_pipelines(&mut self, repo: &str) {
+        let ids: Vec<String> = self
+            .idx
+            .repo_pipelines
+            .get(repo)
+            .into_iter()
+            .flatten()
+            .filter(|id| self.pipelines.get(*id).is_some_and(|p| p.state.is_active()))
+            .cloned()
+            .collect();
+        for id in ids {
+            self.mark(Kind::Pipeline, &id);
+        }
+    }
+}
+
+fn median(mut v: Vec<Ms>) -> Option<Ms> {
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_unstable();
+    Some(v[v.len() / 2])
 }
 
 pub fn is_bot(login: &str) -> bool {
@@ -793,6 +826,8 @@ impl Store {
                 idx_del(&mut self.idx.repo_pipelines, &p.repo, &id);
                 self.mark(Kind::Pipeline, &id);
                 self.mark(Kind::Commit, &sk);
+                self.mark(Kind::Repo, &p.repo);
+                self.mark_active_pipelines(&p.repo);
             }
         }
         let dead: Vec<String> = self
@@ -1320,6 +1355,32 @@ impl Store {
         Some(d)
     }
 
+    /// Durations (started → finished) of a repo's successful runs finished in the last
+    /// 24 h that match `keep`, newest first, at most `n`.
+    fn recent_durations(
+        &self,
+        repo: &str,
+        now: Ms,
+        n: usize,
+        keep: impl Fn(&Pipeline) -> bool,
+    ) -> Vec<Ms> {
+        let mut runs: Vec<(Ms, &str, Ms)> = self
+            .idx
+            .repo_pipelines
+            .get(repo)
+            .into_iter()
+            .flatten()
+            .filter_map(|id| self.pipelines.get(id))
+            .filter(|p| p.state == CiState::Success && keep(p))
+            .filter_map(|p| {
+                let (s, f) = (p.started?, p.finished?);
+                (f >= s && f >= now - 24 * H).then_some((f, p.id.as_str(), f - s))
+            })
+            .collect();
+        runs.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+        runs.into_iter().take(n).map(|r| r.2).collect()
+    }
+
     fn derive_pipeline(&self, id: &str, now: Ms) -> Option<Pipeline> {
         let p = self.pipelines.get(id)?;
         let visible = p.state.is_active()
@@ -1329,6 +1390,14 @@ impl Store {
         }
         let mut p = p.clone();
         p.queue_pos = None;
+        p.expected_ms = None;
+        if p.state.is_active() {
+            let (event, deploy) = (p.event, p.deploy);
+            let d = self.recent_durations(&p.repo, now, 20, |x| {
+                x.event == event && x.deploy == deploy && x.lane == p.lane
+            });
+            p.expected_ms = median(d);
+        }
         if p.state.rank() == 1
             && let Some(q) = &self.queue
             && let Some(i) = q.queue.items.iter().position(|x| x == id)
@@ -1761,6 +1830,9 @@ impl Store {
             heat: ((heat * 20.0).round() / 20.0) as f32,
             open_prs,
             last_activity,
+            p50_build_ms: median(
+                self.recent_durations(id, now, 50, |x| x.event == PipelineEvent::Push),
+            ),
             links: Links {
                 github: format!("https://github.com/{id}"),
                 woodpecker: wid.map(|w| format!("{}/repos/{w}", self.cfg.woodpecker_url)),

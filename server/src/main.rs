@@ -40,7 +40,7 @@ struct Cli {
     #[arg(long, default_value_t = 1.0)]
     speed: f64,
     /// Web client build to serve at / (index.html fallback for client routes).
-    #[arg(long, env = "SWITCHYARD_STATIC_DIR")]
+    #[arg(long, env = "SWITCHYARD_WEB_DIR", alias = "web-dir")]
     static_dir: Option<PathBuf>,
     /// State directory: history ring, checkpoints, device tokens.
     #[arg(long, env = "SWITCHYARD_DATA_DIR", default_value = "data")]

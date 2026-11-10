@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Wire protocol version (`contract/CONTRACT.md`). Minor bumps are additive.
-pub const PROTOCOL: &str = "0.2";
+pub const PROTOCOL: &str = "0.3";
 
 pub type Ms = i64;
 
@@ -246,6 +246,9 @@ pub struct Repo {
     pub heat: f32,
     pub open_prs: u32,
     pub last_activity: Ms,
+    /// Median duration of the repo's successful push pipelines in the last 24 h.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub p50_build_ms: Option<Ms>,
     pub links: Links,
 }
 
@@ -343,6 +346,10 @@ pub struct Pipeline {
     pub finished: Option<Ms>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub queue_pos: Option<u32>,
+    /// While pending/running: the typical duration (started → finished) of this repo's
+    /// recent successful runs of the same kind (event + deploy), for progress rings.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub expected_ms: Option<Ms>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub engine: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
