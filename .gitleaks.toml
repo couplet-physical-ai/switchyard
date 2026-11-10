@@ -1,0 +1,31 @@
+# gitleaks config for a PUBLIC repo: gitleaks' default rules plus three that keep internal
+# network details out of git (private addresses and lab hostnames come from env at deploy
+# time, never from the tree). Used by .woodpecker/security.yaml (ci-dagger security-scan).
+title = "switchyard"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "internal-ipv4-192-168"
+description = "Private 192.168.x.x address"
+regex = '''(?:^|[^0-9.])(192\.168\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9]))(?:[^0-9.]|$)'''
+secretGroup = 1
+keywords = ["192.168."]
+
+[[rules]]
+id = "internal-ipv4-10"
+description = "Private 10.x.x.x address"
+regex = '''(?:^|[^0-9.])(10\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9]))(?:[^0-9.]|$)'''
+secretGroup = 1
+keywords = ["10."]
+
+[[rules]]
+id = "internal-lab-hostname"
+description = "Internal *.lab.example.com hostname"
+regex = '''([a-z0-9-]+\.)+lab\.example\.com'''
+keywords = ["lab.example.com"]
+
+[allowlist]
+description = "Build outputs and vendored lockfiles"
+paths = ['''(^|/)target/''', '''(^|/)node_modules/''', '''(^|/)\.exact/''', '''(^|/)dist/''']

@@ -1,0 +1,22 @@
+# Roadrunner CI: the wire contract's fixtures (contract/fixtures/) are well-formed and match
+# contract/CONTRACT.md's shapes (scripts/ci/validate_fixtures.py, stdlib only). Runs only when
+# contract/ or the validator changes. Docs: https://cicd.docs.example.com/roadrunner/
+labels:
+  tier: "0"
+when:
+  - event: pull_request
+    path:
+      include: ["contract/**", "scripts/ci/**", ".woodpecker/contract.yaml"]
+  - event: push
+    branch: main
+    path:
+      include: ["contract/**", "scripts/ci/**", ".woodpecker/contract.yaml"]
+  - event: manual
+    branch: main
+steps:
+  - name: fixtures
+    image: bash
+    commands:
+      - >-
+        ci-dagger v0.14.1 python-plain --src=. --repo="$${CI_REPO_NAME,,}" --python=3.12
+        --run='python3 scripts/ci/validate_fixtures.py contract'
