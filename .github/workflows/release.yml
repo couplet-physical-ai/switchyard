@@ -78,6 +78,7 @@ jobs:
             ~/.cargo/hermes-lean-sys
             ~/.cache/exact
             ${{ runner.temp }}/exact/target
+            app/target
           key: exact-macos27-${{ steps.v.outputs.exact_pin }}-${{ hashFiles('app/**/Cargo.lock', 'app/app.json') }}
           restore-keys: |
             exact-macos27-${{ steps.v.outputs.exact_pin }}-

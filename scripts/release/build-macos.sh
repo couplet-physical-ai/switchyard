@@ -41,24 +41,29 @@ placeholder)
   ;;
 exact-probe)
   : "${EXACT_DIR:?set EXACT_DIR to the expo/exact checkout}"
+  stamp=$(mktemp); sleep 1
   (cd "$EXACT_DIR" && bun host/apple/build.mjs --bundle)
-  built=$(find "$EXACT_DIR/target" -maxdepth 6 -name '*.app' -type d -newer "$ROOT/scripts/release/build-macos.sh" 2>/dev/null | head -1)
+  built=$(find "$EXACT_DIR/target" -maxdepth 6 -name '*.app' -type d -newer "$stamp" 2>/dev/null | head -1); rm -f "$stamp"
   [[ -n "$built" ]] || { echo "exact-probe: no .app produced under $EXACT_DIR/target" >&2; exit 1; }
   ditto "$built" "$OUT/Switchyard.app"
   ;;
 app)
   : "${EXACT_DIR:?set EXACT_DIR to the expo/exact checkout}"
-  [[ -d app ]] || { echo "app/ does not exist yet; use --mode placeholder" >&2; exit 1; }
-  # The client's own release command (owned by app/): prints the built .app path last.
+  [[ -f app/app.contract ]] || { echo "app/ does not exist yet; use --mode placeholder" >&2; exit 1; }
+  export EXACT2="$EXACT_DIR"   # app/exact.mjs finds the exact checkout through EXACT2
+  stamp=$(mktemp); sleep 1
+  # The client's own release command (owned by app/) wins: it prints the built .app path last.
   if [[ -x app/scripts/build-macos-release.sh ]]; then
-    built=$(EXACT_DIR="$EXACT_DIR" SWITCHYARD_VERSION="$VERSION" app/scripts/build-macos-release.sh | tail -1)
+    built=$(SWITCHYARD_VERSION="$VERSION" app/scripts/build-macos-release.sh | tail -1)
   else
-    (cd app && EXACT_DIR="$EXACT_DIR" bun exact.mjs mac --bundle)
-    built=$(find app "$EXACT_DIR/target" -maxdepth 7 -name '*.app' -type d -newer "$ROOT/scripts/release/build-macos.sh" 2>/dev/null | head -1)
+    (cd app && bun exact.mjs mac --bundle ${SWITCHYARD_MAC_FLAGS:-})
+    built=$(find app "$EXACT_DIR/target" -maxdepth 8 -type d -name 'Switchyard.app' -newer "$stamp" 2>/dev/null | head -1)
+    [[ -n "$built" ]] || built=$(find app "$EXACT_DIR/target" -maxdepth 8 -type d -name '*.app' -newer "$stamp" 2>/dev/null | head -1)
   fi
+  rm -f "$stamp"
   [[ -n "$built" && -d "$built" ]] || { echo "app: no .app produced" >&2; exit 1; }
+  echo "app bundle: $built"
   ditto "$built" "$OUT/Switchyard.app"
-  /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$OUT/Switchyard.app/Contents/Info.plist" 2>/dev/null || true
   ;;
 *) echo "unknown mode $MODE" >&2; exit 2 ;;
 esac
