@@ -93,6 +93,10 @@ export type Event =
 
 export type Op =
   | { op: 'upsert'; kind: Kind; id: string; v: unknown }
+  /** v0.4: an RFC 7386 merge patch on an entity already held (ignored otherwise). */
+  | { op: 'patch'; kind: Kind; id: string; v: unknown }
+  /** v0.4: one main-line dot into repos[id].main.recent (same sha replaced, sorted, newest 12). */
+  | { op: 'dot'; id: string; v: Dot }
   | { op: 'remove'; kind: Kind; id: string }
   | { op: 'event'; e: Event };
 

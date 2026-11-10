@@ -3,7 +3,7 @@
 // entity, removes delete it, events go to the listener (the yard's motion) after the ops of
 // the same frame have landed, so a listener always sees the world the event produced.
 
-import type { App, Commit, Deploy, Engine, Event, Frame as WireFrame, Kind, Lane, Org, Pipeline, Pr, Queue, Repo, Snapshot, Stats, Watcher } from './wire.ts';
+import type { App, Commit, Deploy, Dot, Engine, Event, Frame as WireFrame, Kind, Lane, Org, Pipeline, Pr, Queue, Repo, Snapshot, Stats, Watcher } from './wire.ts';
 
 /** The sources column's row for bots (AUTOFIX, Renovate, agents). */
 export const BOTS = '@bots';
@@ -78,6 +78,8 @@ export class World {
     for (const op of f.ops) {
       if (op.op === 'event') (events ??= []).push(op.e);
       else if (op.op === 'upsert') this.upsert(op.kind, op.id, op.v);
+      else if (op.op === 'patch') this.patch(op.kind, op.id, op.v);
+      else if (op.op === 'dot') this.dot(op.id, op.v);
       else if (op.op === 'remove') this.remove(op.kind, op.id);
     }
     this.seq = f.seq;
@@ -102,6 +104,30 @@ export class World {
       m.set(id, v);
     } else if (kind === 'watcher') this.watcher = v as Watcher;
     else if (kind === 'stats') this.stats = { ...EMPTY_STATS, ...(v as Stats) };
+  }
+
+  /** v0.4 `patch`: a merge patch makes a new entity (copy on write: whoever holds the old
+   *  object still sees the old one, as after an upsert). Unknown entities are ignored. */
+  private patch(kind: Kind | string, id: string, v: unknown): void {
+    if (kind === 'watcher') { this.watcher = mergePatch(this.watcher, v) as Watcher; return; }
+    if (kind === 'stats') { this.stats = { ...EMPTY_STATS, ...(mergePatch(this.stats, v) as Stats) }; return; }
+    const m = this.mapOf(kind);
+    const cur = m?.get(id);
+    if (!m || cur === undefined) return;
+    const next = mergePatch(cur, v) as { id?: string };
+    if (next && typeof next === 'object' && !next.id) next.id = id;
+    m.set(id, next);
+  }
+
+  /** v0.4 `dot`: same sha out, this dot in, sorted by (at, sha), the newest MAIN_DOTS kept. */
+  private dot(id: string, d: Dot): void {
+    const r = this.repos.get(id);
+    if (!r || !d || typeof d.sha !== 'string') return;
+    const recent = (r.main?.recent ?? []).filter((x: Dot) => x.sha !== d.sha);
+    recent.push(d);
+    recent.sort((a: Dot, b: Dot) => a.at - b.at || (a.sha < b.sha ? -1 : a.sha > b.sha ? 1 : 0));
+    const main = { ...(r.main ?? {}), recent: recent.length > MAIN_DOTS ? recent.slice(recent.length - MAIN_DOTS) : recent };
+    this.repos.set(id, { ...r, main });
   }
 
   private remove(kind: Kind | string, id: string): void {
@@ -174,4 +200,22 @@ function toMap<T>(o: T[] | Record<string, T> | undefined | null): Map<string, T>
     }
   }
   return m;
+}
+
+/** Main-line dots a repo keeps (contract v0.4). */
+const MAIN_DOTS = 12;
+
+const isObj = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+/** RFC 7386 JSON Merge Patch, without touching `target`: objects merge recursively, null
+ *  removes a field, anything else (arrays, scalars) replaces it. */
+export function mergePatch(target: unknown, patch: unknown): unknown {
+  if (!isObj(patch)) return patch;
+  const out: Record<string, unknown> = isObj(target) ? { ...target } : {};
+  for (const k in patch) {
+    const v = patch[k];
+    if (v === null) delete out[k];
+    else out[k] = mergePatch(out[k], v);
+  }
+  return out;
 }
