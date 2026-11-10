@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connect Switchyard</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0b0b0c;
+         color: #e8e8e8; font: 14px/1.6 ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace; }
+  main { width: min(560px, 92vw); border: 1px solid #2a2a2e; border-radius: 14px; padding: 28px 30px; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
+  h1 .live { color: #7bd88f; font-weight: 500; margin-right: 10px; }
+  p { color: #9a9aa0; margin: 6px 0 18px; }
+  button, a.btn { appearance: none; display: inline-block; border: 1px solid #3a3a40; background: #151518;
+         color: #f2f2f2; border-radius: 9px; padding: 9px 14px; font: inherit; cursor: pointer; text-decoration: none; }
+  button.primary, a.primary { border-color: #f5a524; color: #f5a524; }
+  button:focus-visible, a.btn:focus-visible { outline: 2px solid #f5a524; outline-offset: 2px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
+  code { display: block; word-break: break-all; background: #111114; border: 1px dashed #34343a; border-radius: 8px;
+         padding: 10px 12px; color: #f5a524; margin-top: 10px; }
+  .muted { color: #6e6e75; font-size: 12px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1><span class="live">LIVE</span>Connect Switchyard for macOS</h1>
+  <p>Signed in as <strong>{{WHO}}</strong>. This mints a device token that lets the app stream the fleet. You can revoke it any time.</p>
+  <div class="row">
+    <button class="primary" id="mint" type="button">Create device token</button>
+  </div>
+  <section id="out" hidden>
+    <div class="row">
+      <a class="btn primary" id="open" href="#">Open in Switchyard</a>
+      <button type="button" id="copy">Copy token</button>
+    </div>
+    <code id="token"></code>
+    <p class="muted">Shown once. If the app is not installed: <code style="display:inline;padding:2px 6px">brew tap couplet-physical-ai/tap &amp;&amp; brew install --cask switchyard</code></p>
+  </section>
+  <p class="muted" id="err" role="alert"></p>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  $("mint").addEventListener("click", async () => {
+    $("err").textContent = "";
+    try {
+      const r = await fetch("/api/connect/mint", { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Switchyard for macOS" }), credentials: "same-origin" });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const j = await r.json();
+      $("token").textContent = j.token;
+      $("open").href = j.link;
+      $("out").hidden = false;
+      $("mint").disabled = true;
+    } catch (e) { $("err").textContent = "Could not create a token: " + e.message; }
+  });
+  $("copy").addEventListener("click", async () => {
+    await navigator.clipboard.writeText($("token").textContent);
+    $("copy").textContent = "Copied";
+  });
+</script>
+</body>
+</html>

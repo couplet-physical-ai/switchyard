@@ -1,0 +1,70 @@
+[package]
+name = "switchyard-server"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Switchyard: the live brain of a CI/CD fleet. Ingests Woodpecker, GitHub, the cicd console and the apps platform, keeps the whole fleet in memory and streams deltas."
+repository = "https://github.com/couplet-physical-ai/switchyard"
+publish = false
+default-run = "switchyard-server"
+
+[lib]
+name = "switchyard"
+path = "src/lib.rs"
+
+[[bin]]
+name = "switchyard-server"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", features = ["ws", "macros"] }
+base64 = "0.22"
+bytes = "1"
+clap = { version = "4", features = ["derive", "env"] }
+flate2 = "1"
+futures = "0.3"
+hmac = "0.12"
+parking_lot = "0.12"
+rand = "0.8"
+ring = "0.17"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip", "stream", "http2"] }
+rustc-hash = "2"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["raw_value"] }
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "trace", "compression-gzip", "compression-br", "set-header", "cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "0.6"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio"] }
+proptest = "1"
+tempfile = "3"
+tokio-tungstenite = "0.26"
+
+[[bench]]
+name = "core"
+harness = false
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+debug = 1
+
+[profile.bench]
+debug = 1
+
+# The platform CT build (2 cores, 870 s budget): fast to compile, still optimized.
+[profile.ct]
+inherits = "release"
+lto = false
+codegen-units = 16
+debug = 0

@@ -50,6 +50,7 @@ ENTITIES: dict[str, tuple[list[str], dict[str, set[str]]]] = {
     "queue": (["id", "pending", "running", "oldest_wait_ms", "items"], {"id": PIPE_LANE}),
     "lane": (["id", "mode"], {"mode": LANE_MODE}),
     "watcher": (["id", "tripped", "gh_status"], {}),
+    "stats": (["id", "commits_24h", "pipelines_24h", "success_rate_24h", "prs_open"], {}),
 }
 # Snapshot collection key -> entity kind
 COLLECTIONS = {
@@ -63,7 +64,7 @@ STATS_KEYS = ["commits_24h", "pipelines_24h", "success_rate_24h", "p50_queue_ms"
 EVENTS: dict[str, list[str]] = {
     "push": ["repo", "sha", "branch", "author", "title", "at"],
     "enqueue": ["pipeline", "lane", "repo", "sha", "at"],
-    "start": ["pipeline", "engine", "at"],
+    "start": ["pipeline", "at"],  # engine is optional (unknown until an agent picks it up)
     "step": ["pipeline", "workflow", "step", "state", "at"],
     "finish": ["pipeline", "state", "at"],
     "pr": ["repo", "number", "phase", "at"],
