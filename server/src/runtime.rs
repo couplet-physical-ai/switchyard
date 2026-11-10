@@ -96,9 +96,17 @@ pub struct AdapterStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lag_ms: Option<i64>,
     pub synced: bool,
+    /// The adapter's slow boot backfill is still loading (it may be `synced`, i.e.
+    /// ready, before that). Settling waits for it.
+    #[serde(skip_serializing_if = "is_false")]
+    pub backfilling: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     pub requests: u64,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Shared adapter health board (readyz, meta).
@@ -122,6 +130,7 @@ impl Adapters {
                 last_error: None,
                 lag_ms: None,
                 synced: false,
+                backfilling: false,
                 note,
                 requests: 0,
             },
@@ -182,6 +191,19 @@ impl Adapters {
             .lock()
             .values()
             .all(|a| a.state == AdapterState::Disabled || a.synced)
+    }
+    /// Mark the adapter's slow boot backfill as running (`true`) or done (`false`).
+    pub fn backfilling(&self, name: &str, on: bool) {
+        if let Some(a) = self.inner.lock().get_mut(name) {
+            a.backfilling = on;
+        }
+    }
+    /// Every enabled adapter is synced and done with its boot backfill.
+    pub fn settled(&self) -> bool {
+        self.inner
+            .lock()
+            .values()
+            .all(|a| a.state == AdapterState::Disabled || (a.synced && !a.backfilling))
     }
 }
 
@@ -273,7 +295,7 @@ pub async fn run_reducer(
             _ = snap.tick() => {
                 if hub.is_settling() {
                     let now = clock();
-                    let ready = cfg.settle_on.as_ref().is_none_or(|a| a.ready());
+                    let ready = cfg.settle_on.as_ref().is_none_or(|a| a.settled());
                     if !ready {
                         ready_since = None;
                     }
@@ -310,5 +332,24 @@ pub async fn run_reducer(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod settle_tests {
+    use super::*;
+
+    #[test]
+    fn ready_before_settled_while_backfilling() {
+        let a = Adapters::default();
+        a.register("github", true, None);
+        a.register("off", false, None);
+        a.backfilling("github", true);
+        assert!(!a.ready() && !a.settled());
+        a.ok("github", 1, None);
+        assert!(a.ready(), "ready once the first pass is in");
+        assert!(!a.settled(), "not settled while the slow backfill loads");
+        a.backfilling("github", false);
+        assert!(a.settled());
     }
 }
