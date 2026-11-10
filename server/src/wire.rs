@@ -296,6 +296,37 @@ pub fn dots_between(old: &[Value], new: &[Value]) -> Option<Vec<Value>> {
     (cur == new).then_some(ops)
 }
 
+/// Ops turning the client view `old` into `new` (a server restart inside a history
+/// window, sent as one delta instead of a whole snapshot). With `patch`, changed
+/// entities go as merge patches when smaller (contract ≥ 0.4), else as upserts.
+pub fn state_diff(old: &WireState, new: &WireState, patch: bool) -> Vec<Value> {
+    let mut ops = Vec::new();
+    for k in Kind::ALL {
+        for (id, nv) in new.iter(k) {
+            let up = || serde_json::json!({"op": "upsert", "kind": k.as_str(), "id": id, "v": nv});
+            match old.get(k, id) {
+                None => ops.push(up()),
+                Some(ov) if ov == nv => {}
+                Some(ov) => {
+                    let p = patch.then(|| diff(ov, nv)).flatten().map(|p| {
+                        serde_json::json!({"op": "patch", "kind": k.as_str(), "id": id, "v": p})
+                    });
+                    match p {
+                        Some(p) if p.to_string().len() < nv.to_string().len() => ops.push(p),
+                        _ => ops.push(up()),
+                    }
+                }
+            }
+        }
+        for (id, _) in old.iter(k) {
+            if new.get(k, id).is_none() {
+                ops.push(serde_json::json!({"op": "remove", "kind": k.as_str(), "id": id}));
+            }
+        }
+    }
+    ops
+}
+
 #[cfg(test)]
 mod patch_tests {
     use super::*;
@@ -334,35 +365,4 @@ mod patch_tests {
         let shrunk = old[..11].to_vec();
         assert!(dots_between(&old, &shrunk).is_none());
     }
-}
-
-/// Ops turning the client view `old` into `new` (a server restart inside a history
-/// window, sent as one delta instead of a whole snapshot). With `patch`, changed
-/// entities go as merge patches when smaller (contract ≥ 0.4), else as upserts.
-pub fn state_diff(old: &WireState, new: &WireState, patch: bool) -> Vec<Value> {
-    let mut ops = Vec::new();
-    for k in Kind::ALL {
-        for (id, nv) in new.iter(k) {
-            let up = || serde_json::json!({"op": "upsert", "kind": k.as_str(), "id": id, "v": nv});
-            match old.get(k, id) {
-                None => ops.push(up()),
-                Some(ov) if ov == nv => {}
-                Some(ov) => {
-                    let p = patch.then(|| diff(ov, nv)).flatten().map(|p| {
-                        serde_json::json!({"op": "patch", "kind": k.as_str(), "id": id, "v": p})
-                    });
-                    match p {
-                        Some(p) if p.to_string().len() < nv.to_string().len() => ops.push(p),
-                        _ => ops.push(up()),
-                    }
-                }
-            }
-        }
-        for (id, _) in old.iter(k) {
-            if new.get(k, id).is_none() {
-                ops.push(serde_json::json!({"op": "remove", "kind": k.as_str(), "id": id}));
-            }
-        }
-    }
-    ops
 }
