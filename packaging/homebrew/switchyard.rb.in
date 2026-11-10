@@ -13,15 +13,14 @@ cask "switchyard" do
   end
 
   depends_on arch: :arm64
-  depends_on macos: ">= :sonoma"
+  depends_on macos: :sonoma
 
   app "Switchyard.app"
 
   # Ad-hoc signed (no Developer ID): drop the download quarantine so Gatekeeper lets it open.
-  postflight do
-    system_command "/usr/bin/xattr",
-                   args: ["-dr", "com.apple.quarantine", "#{appdir}/Switchyard.app"],
-                   sudo: false
+  # `postflight_steps` (Homebrew >= 7.0.6), not the `postflight` block Homebrew 7 deprecates.
+  postflight_steps do
+    run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{appdir}}/Switchyard.app"]
   end
 
   zap trash: [
