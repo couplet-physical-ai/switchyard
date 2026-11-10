@@ -66,5 +66,20 @@ sockets (~50 KB per client) after the WebSocket buffers were cut from tungstenit
 
 ## Deployed server
 
-`switchyard.apps.example.com` (platform LXC, 2 cores / 2 GiB): see the table filled in at
-deploy time below.
+`https://switchyard.apps.example.com` — platform LXC (2 cores / 2 GiB), `--profile ct` build,
+live against every upstream (five orgs, ~390 repos, ~240 apps). Measured from a Linux dev box
+through the platform edge (TLS, Caddy) with a read-only service token.
+
+| What | Result | How |
+|---|---|---|
+| Push → live delta | commit `2f1c06b` pushed to this repo: the stream delivered its `push` + `enqueue` events and the pipeline/commit/repo upserts **3.7 s after `git push` returned** (9.9 s after the check started; the push began at +5.0 s and returned at +6.2 s) | `examples/e2e.rs <url> <sha>` started before the push |
+| Snapshot | 1.2 MB raw / 186 KB gzip right after a restart (2.7 MB once closed + Dependabot PRs are backfilled); 225–270 ms end to end over the edge from the devbox | `examples/e2e.rs` |
+| 200 WebSocket clients over the edge | 200/200 connected (connect p50 169 ms), 0 resets, 0 merged frames, lag p50 39 ms / p99 1.0 s (during the post-restart GitHub backfill: 21 KB average frames) | `wsload wss://…/api/v1/stream 200 45` |
+| RSS | 41 MB at start, 72 MB with 200 clients during the GitHub backfill | `/api/v1/meta` → `process` |
+| Upstream calls | independent of clients: Woodpecker 1 SSE stream + polls, GitHub ~200 GraphQL points/h, cicd 2 req/30 s, catalog 1 req/20 s | `/api/v1/meta` → `adapters[].requests` |
+
+Re-run the live check any time:
+
+```sh
+SY_TOKEN=… cargo run --release --example e2e -- https://switchyard.apps.example.com
+```
