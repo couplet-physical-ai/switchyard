@@ -25,12 +25,15 @@ export type View = {
   focus: Pipeline | null;
 };
 
-type Panel = { id: string; rect: Rect; key: number; draw: (g: Gfx, v: View, r: Rect) => void };
+/** `every`: the least time between two redraws of the panel (ms); a change sooner waits for the
+ *  next draw after it (the 250 ms tick), so a busy fleet cannot redraw a big panel every frame. */
+type Panel = { id: string; rect: Rect; key: number; every?: number; draw: (g: Gfx, v: View, r: Rect) => void };
 
 const h = (a: number, b: number) => (Math.imul(a ^ 0x5bd1e995, 31) + b) | 0;
 
 export class InfoLayer {
   private keys = new Map<string, number>();
+  private drawnAt = new Map<string, number>();
   private sceneKey = '';
   /** Where NOW's running step chip is (the live layer bobs a packet over it). */
   activeChip = { x: -1, y: 0 };
@@ -47,7 +50,9 @@ export class InfoLayer {
       const fadeKey = fading ? (v.t | 0) : 0;
       const key = h(p.key, fadeKey);
       if (old === key) continue;
+      if (!full && p.every && old !== undefined && v.t - (this.drawnAt.get(p.id) ?? -1e9) < p.every) continue;
       this.keys.set(p.id, key);
+      this.drawnAt.set(p.id, v.t);
       const r = p.rect;
       if (!full) g.clear(r.x, r.y, r.w, r.h);
       p.draw(g, v, r);
@@ -68,8 +73,8 @@ export class InfoLayer {
       { id: 'intake', rect: { x: S.intake.x - 6, y: top.y0 - 4, w: S.engines.x - S.intake.x, h: S.divY - 6 - (top.y0 - 4) }, key: h(h(kv.queue, kv.pipeline), Math.floor(now / 10000)), draw: drawIntake },
       { id: 'engines', rect: { x: S.engines.x - 4, y: top.y0 - 4, w: S.engines.w + 8, h: S.divY - 6 - (top.y0 - 4) }, key: h(h(h(kv.engine, kv.pipeline), sec), h(S.engines.lod, fade('lanes')) + stressT), draw: drawEngines },
       { id: 'gates', rect: { x: S.gates.x - 6, y: top.y0 - 4, w: S.bus.x - S.gates.x + 4, h: S.divY - 6 - (top.y0 - 4) }, key: h(h(kv.stats, kv.pr), min), draw: drawGates },
-      { id: 'mains', rect: { x: S.mains.x0 - 4, y: top.y0 - 4, w: S.mains.x1 - S.mains.x0 + 8 + S.m - 4, h: S.mains.heat.y - 4 - (top.y0 - 4) }, key: h(h(kv.repo, min), h(kv.pipeline, fade('rows'))), draw: drawMains },
-      { id: 'heat', rect: { x: S.mains.x0 - 4, y: S.mains.heat.y - 4, w: S.mains.x1 - S.mains.x0 + 8, h: S.mains.heat.h + 6 }, key: h(h(kv.repo, v.agg.repos.ver), v.stress.on ? 1 : 0), draw: drawHeat },
+      { id: 'mains', rect: { x: S.mains.x0 - 4, y: top.y0 - 4, w: S.mains.x1 - S.mains.x0 + 8 + S.m - 4, h: S.mains.heat.y - 4 - (top.y0 - 4) }, key: h(h(kv.repo, min), h(kv.pipeline, fade('rows'))), every: v.stress.on ? 1000 : 400, draw: drawMains },
+      { id: 'heat', rect: { x: S.mains.x0 - 4, y: S.mains.heat.y - 4, w: S.mains.x1 - S.mains.x0 + 8, h: S.mains.heat.h + 6 }, key: h(v.agg.repos.sig, v.stress.on ? 1 : 0), every: 1000, draw: drawHeat },
       { id: 'apps', rect: { x: S.mains.x0 - 4, y: S.deploy.y - 16, w: S.mains.x1 - S.mains.x0 + 8, h: S.H - (S.deploy.y - 16) }, key: h(h(kv.app, kv.deploy), h(min, h(kv.stats, fade('apps')))), draw: drawApps },
       { id: 'now', rect: { x: L.x0 - 4, y: S.now.y - 4, w: L.x1 - L.x0 + 8, h: S.now.h + 6 }, key: h(h(kv.pipeline, sec), h(kv.repo, nowKey(v.focus))), draw: (g, vv, r) => this.drawNow(g, vv, r) },
       { id: 'queue', rect: { x: L.x0 - 4, y: S.queue.y - 4, w: L.x1 - L.x0 + 8, h: S.queue.h + 6 }, key: h(h(kv.queue, kv.pipeline), Math.floor(now / 10000)), draw: drawQueue },

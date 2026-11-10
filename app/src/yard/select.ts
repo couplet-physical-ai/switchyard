@@ -223,6 +223,8 @@ export type RepoAgg = {
   fresh: number;
   /** Repos worth a row: reds, building, or any heat. */
   hot: number;
+  /** A hash of `state`: the heatmap redraws only when a cell's colour changed. */
+  sig: number;
 };
 
 /** A red younger than this is a current streak. */
@@ -259,7 +261,7 @@ export class Slicer {
 }
 
 export class Aggregates {
-  repos: RepoAgg = { ids: [], state: new Uint8Array(0), orgs: [], ranked: [], red: 0, green: 0, oldestRed: 0, ver: -1, fresh: 0, hot: 0 };
+  repos: RepoAgg = { ids: [], state: new Uint8Array(0), orgs: [], ranked: [], red: 0, green: 0, oldestRed: 0, ver: -1, fresh: 0, hot: 0, sig: 0 };
   apps: AppAgg = { ids: [], health: new Uint8Array(0), up: 0, problems: [], ver: -1 };
   private repoWant = -1;
   private appWant = -1;
@@ -330,7 +332,9 @@ export class Aggregates {
           if (sc >= 2e6) hot++;
         }
         const ranked = list.slice().sort((a, b) => scores.get(b.id)! - scores.get(a.id)! || a.id.localeCompare(b.id)).map((r) => r.id);
-        this.repos = { ids, state, orgs, ranked, red, green, oldestRed, ver, fresh, hot };
+        let sig = list.length;
+        for (let k = 0; k < state.length; k++) sig = (Math.imul(sig, 31) + state[k] * (k + 1)) | 0;
+        this.repos = { ids, state, orgs, ranked, red, green, oldestRed, ver, fresh, hot, sig };
         return true;
       },
     };

@@ -335,7 +335,7 @@ export const answer: Answer = ((source: keyof Sources, args: unknown, store: Sto
 
 // ---- canvases ------------------------------------------------------------------------------
 /** Surface → its arity (Contract passes that many arguments). */
-export const surfaces: Record<string, number> = { yardStatic: 2, yardInfo: 2, yardLive: 2, yardTop: 2, rowDots: 2 };
+export const surfaces: Record<string, number> = { yardStatic: 2, yardInfo: 2, yardLive: 3, yardTop: 2, rowDots: 2 };
 
 export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame): boolean {
   if (surface === 'yardStatic') {

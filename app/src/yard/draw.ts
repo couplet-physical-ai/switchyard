@@ -109,7 +109,9 @@ export class Yard {
       this.picksAt = t;
       this.picksFresh = ra.fresh;
     }
-    const sig = `${W}|${H}|${scale}|${w.shapeVer}|${ra.ver}|${this.agg.apps.ver}|${this.picksAt}|${this.laneSig}|${this.stress.on ? 1 : 0}|${this.lod.histogram.length}`;
+    // The scene depends on the fleet's shape (counts, tiers, org runs), not on every state
+    // change: those the info layer redraws in place.
+    const sig = `${W}|${H}|${scale}|${w.shapeVer}|${ra.ids.length}:${ra.fresh}:${ra.hot}:${ra.orgs.length}|${this.agg.apps.ids.length}|${this.picksAt}|${this.laneSig}|${this.stress.on ? 1 : 0}|${this.lod.histogram.length}`;
     if (sig !== this.sceneSig || !this.S) {
       this.sceneSig = sig;
       const c = census(w, ra, this.agg.apps, this.stress.on ? this.stress : null);
@@ -241,7 +243,10 @@ export class Yard {
     this.lastInfoCost = 0;
     this.budget.record(est + this.lastTopCost, g.ops, g.texts, interval, (qq) => this.predict(qq, est, q));
     this.lastTopCost = 0;
-    return true;
+    // Sleep when nothing moves (a game's idle frame): the canvas keeps its last picture and the
+    // 250 ms tick (a surface argument) redraws it, enough for the slow progress rings. The HUD
+    // keeps frames coming, since it measures them.
+    return this.hud.on || this.tl.mode === 'replay' || this.tl.mode === 'behind' || this.hover.kind !== '' || p.busy(t);
   }
   private lastTopCost = 0;
 

@@ -96,6 +96,15 @@ export class Pool {
   reduced = false;
   /** Packets alpha (the paused look draws them at half). */
   traveling = 0;
+  /** Docked packets still easing to a moved anchor (last sim step). */
+  easing = 0;
+  /** Whether anything moves: travellers, easing, dying or newborn packets, effects, stress. */
+  busy(t: number): boolean {
+    if (this.traveling || this.easing || this.nFx || this.stressN > 0 || this.nNextAny) return true;
+    for (let k = 0; k < this.nAct; k++) { const i = this.act[k]; if (this.die[i] || t - this.born[i] < 220 || this.labelUntil[i] > t) return true; }
+    return false;
+  }
+  private get nNextAny(): boolean { for (let k = 0; k < this.nAct; k++) if (this.nNext[this.act[k]]) return true; return false; }
   real = 0;
   stressN = 0;
   dropped = 0;
@@ -610,6 +619,7 @@ export class Pool {
 
   private step(t: number, w: World): void {
     const k = 1 - Math.exp(-STEP_MS / 110);
+    this.easing = 0;
     const pt = this.pt;
     for (let a = 0; a < this.nAct; a++) {
       const i = this.act[a];
@@ -640,6 +650,7 @@ export class Pool {
       } else {
         const dx = this.tx[i] - this.x[i], dy = this.ty[i] - this.y[i];
         if (dx > 0.2 || dx < -0.2 || dy > 0.2 || dy < -0.2) {
+          this.easing++;
           this.x[i] += this.reduced ? dx : dx * k;
           this.y[i] += this.reduced ? dy : dy * k;
         }
