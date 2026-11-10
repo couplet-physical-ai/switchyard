@@ -40,7 +40,7 @@ component App
   state q = ""
   state picked = ""
   resource tok = loadToken(tokGen) as shape Tok else empty(token="", has=false)
-  resource conn = connect(server, tok.token, gen, time.epochAtZero) as shape Conn else empty(ok=false, status="connecting", error="", seq=0, label="", kind="", needsSetup=false)
+  resource conn = connect(server, tok.token, gen, time.epochAtZero, time.utcOffset) as shape Conn else empty(ok=false, status="connecting", error="", seq=0, label="", kind="", needsSetup=false)
   resource feed = liveFeed(server, tok.token, conn.seq, gen, conn.ok) as shape Ack else empty(ok=false, status="idle")
   resource ov = overview(clockMs) as shape Overview else empty()
   resource found = search(q, clockMs) as shape Found else empty(hits=[])
@@ -171,24 +171,24 @@ component App
                       text "Watch the demo"
             footer display="flex" align-items="center" gap=12 padding="10px 20px 12px" border-top="1px solid sy.rule" testId="timebar"
               text ov.sentence color="sy.ink3" font-size=12 flex=1 testId="sentence"
-              if mode != "live"
+              if ov.mode != "live"
                 button press=goLive testId="go-live" padding="6px 12px" border-radius=8 aria-keyshortcuts="L"
                   text "back to live" color="sy.green" font-size=13
-              button press=startReplay testId="replay" aria-label="Replay the last hour, sped up" padding="8px 14px" border-radius=8 disabled=(mode == "replay")
+              button press=startReplay testId="replay" aria-label="Replay the last hour, sped up" padding="8px 14px" border-radius=8 disabled=(ov.mode == "replay")
                 row gap=8 align-items="center"
                   svg width=16 height=16 viewBox="0 0 16 16" aria-hidden=true
                     circle cx=8 cy=8 r=6.5 fill="none" stroke="sy.ink2" stroke-width=1.4
                     path d="M8 8 L11 5" stroke="sy.ink2" stroke-width=1.4 stroke-linecap="round"
-                  text (mode == "replay" ? "replaying the hour" : "last hour") font-size=13 color=(mode == "replay" ? "sy.amber-text" : "sy.ink3")
+                  text (ov.mode == "replay" ? "replaying the hour" : "last hour") font-size=13 color=(ov.mode == "replay" ? "sy.amber-text" : "sy.ink3")
               button press=togglePause testId="pause" aria-keyshortcuts="Space" padding="8px 18px" border-radius=8 border="1px solid sy.edge"
-                text (mode == "paused" ? "Play" : "Pause") font-size=14 color="sy.ink2"
+                text (ov.mode == "paused" ? "Play" : "Pause") font-size=14 color="sy.ink2"
               row role="radiogroup" aria-label="Speed" padding=3 gap=2 border-radius=9 background-color="sy.control"
-                button role="radio" aria-checked=(speed == 1 and mode != "paused") press=playAt(1) testId="speed-1" padding="6px 16px" border-radius=7
-                  background-color=(speed == 1 and mode != "paused" ? "sy.control-on" : "transparent")
-                  text "1×" font-size=14 color=(speed == 1 and mode != "paused" ? "sy.ink" : "sy.ink3")
-                button role="radio" aria-checked=(speed == 0.25 and mode != "paused") press=playAt(0.25) testId="speed-quarter" padding="6px 16px" border-radius=7
-                  background-color=(speed == 0.25 and mode != "paused" ? "sy.control-on" : "transparent")
-                  text "¼×" font-size=14 color=(speed == 0.25 and mode != "paused" ? "sy.ink" : "sy.ink3")
+                button role="radio" aria-checked=(ov.speed == 1 and ov.mode != "paused") press=playAt(1) testId="speed-1" padding="6px 16px" border-radius=7
+                  background-color=(ov.speed == 1 and ov.mode != "paused" ? "sy.control-on" : "transparent")
+                  text "1×" font-size=14 color=(ov.speed == 1 and ov.mode != "paused" ? "sy.ink" : "sy.ink3")
+                button role="radio" aria-checked=(ov.speed == 0.25 and ov.mode != "paused") press=playAt(0.25) testId="speed-quarter" padding="6px 16px" border-radius=7
+                  background-color=(ov.speed == 0.25 and ov.mode != "paused" ? "sy.control-on" : "transparent")
+                  text "¼×" font-size=14 color=(ov.speed == 0.25 and ov.mode != "paused" ? "sy.ink" : "sy.ink3")
           if e.name == "mainlines"
             MainlinesView(data=mlData, org=mlOrg, filter=mlFilter, q=mlQ, focus=searchParam(e, "repo"), open=openHit, pickOrg=mlPickOrg, pickFilter=mlPickFilter, typed=mlTyped)
           if e.name == "prs"

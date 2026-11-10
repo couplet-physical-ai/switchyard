@@ -4,7 +4,7 @@
 import type { CiState, Journey, Pr, PrDetail, PrPhase, Repo, SearchHit } from './wire.ts';
 import type { World } from './world.ts';
 import { isRed, orgLabel } from './yard/layout.ts';
-import { fmtDur } from './yard/paint.ts';
+import { fmtClock, fmtDur } from './yard/paint.ts';
 
 export const PHASES: PrPhase[] = ['draft', 'checks', 'review', 'mergeable', 'merged', 'deployed'];
 
@@ -185,35 +185,74 @@ function fmtNum(n: number): string {
 }
 
 /** The commit journey as rows on one time axis. */
-export function journeyView(j: Journey | null, now: number, error = '') {
-  if (!j) return { ok: false, error: error || 'No such commit in the last day.', repo: '', sha: '', short: '', title: '', author: '', branch: '', stage: '', pushed: '', total: '', spans: [], pipelines: [], deploys: [], deployVia: '', app: '', health: '', healthText: '', url: '' };
+const EMPTY_JOURNEY = {
+  ok: false, error: '', repo: '', sha: '', short: '', title: '', author: '', branch: '', stage: '', pushed: '', total: '',
+  spans: [] as JSpan[], pipelines: [] as JPipe[], deploys: [] as JDep[], deployVia: '', app: '', health: '', healthText: '', url: '', events: [] as JEv[],
+};
+type JSpan = { id: string; name: string; depth: number; start: number; width: number; state: string; dur: string; cached: boolean };
+type JPipe = { id: string; number: number; lane: string; state: string; dur: string; wait: string; url: string; engine: string };
+type JDep = { app: string; via: string; state: string; dur: string; start: number; width: number };
+type JEv = { id: string; k: string; label: string; at: string; ago: string };
+
+const via = (v: string) => (v === 'gha_fallback' ? 'gha fallback' : v);
+
+/** One commit end to end: its pipelines' workflows and steps (or cicd's spans) on one axis. */
+export function journeyView(j: Journey | null, now: number, error = '', offsetMin = 0) {
+  if (!j) return { ...EMPTY_JOURNEY, error: error || 'No such commit in the last day.' };
+  const pipes = (j.pipelines ?? []).slice().sort((a, b) => a.created - b.created);
   const c = j.commit;
-  const t0 = c.at;
+  const repo = c?.repo ?? j.repo ?? pipes[0]?.repo ?? '';
+  const sha = c?.sha ?? j.sha ?? pipes[0]?.sha ?? '';
+  const dot = j.repo_state?.main?.recent?.find((d) => d.sha === sha);
+  const title = c?.title ?? pipes[0]?.title ?? dot?.title ?? '';
+  const author = c?.author ?? pipes[0]?.author ?? dot?.author ?? '';
+  const t0 = c?.at ?? dot?.at ?? pipes[0]?.created ?? now;
   let t1 = t0 + 1000;
-  for (const s of j.spans ?? []) t1 = Math.max(t1, s.end ?? now);
+  const spans0 = j.spans ?? [];
+  for (const sp of spans0) t1 = Math.max(t1, sp.end ?? now);
+  for (const p of pipes) t1 = Math.max(t1, p.finished ?? (p.state === 'running' || p.state === 'pending' ? now : p.started ?? p.created));
   for (const d of j.deploys ?? []) t1 = Math.max(t1, d.finished ?? now);
-  const span = Math.max(1000, t1 - t0);
-  const depth = new Map<string, number>();
-  const spans = (j.spans ?? []).slice().sort((a, b) => a.start - b.start).map((s) => {
-    const d = s.parent ? (depth.get(s.parent) ?? 0) + 1 : 0;
-    depth.set(s.id, d);
-    const end = s.end ?? now;
-    return {
-      id: s.id, name: s.name, depth: d, start: Math.max(0, (s.start - t0) / span), width: Math.max(0.004, (end - s.start) / span),
-      state: s.state, dur: fmtDur(end - s.start), cached: !!s.cached,
-    };
-  });
-  const app = j.app;
-  const after = j.health_after ?? [];
+  const total = Math.max(1000, t1 - t0);
+  const pos = (a: number) => Math.max(0, Math.min(1, (a - t0) / total));
+  const wid = (a: number, b: number) => Math.max(0.004, Math.min(1, (b - a) / total));
+  const rows: JSpan[] = [];
+  if (spans0.length) {
+    const depth = new Map<string, number>();
+    for (const sp of spans0.slice().sort((a, b) => a.start - b.start)) {
+      const d = sp.parent ? (depth.get(sp.parent) ?? 0) + 1 : 0;
+      depth.set(sp.id, d);
+      const end = sp.end ?? now;
+      rows.push({ id: sp.id, name: sp.name, depth: d, start: pos(sp.start), width: wid(sp.start, end), state: sp.state ?? 'success', dur: fmtDur(end - sp.start), cached: !!sp.cached });
+    }
+  } else {
+    // No traces: the workflows and their steps, as Roadrunner and GitHub report them.
+    for (const p of pipes) {
+      for (const wf of p.workflows ?? []) {
+        const ws = wf.started ?? p.started;
+        if (ws == null) continue;
+        const we = wf.finished ?? (wf.state === 'running' ? now : ws);
+        rows.push({ id: `${p.id}/${wf.name}`, name: pipes.length > 1 ? `#${p.number} ${wf.name}` : wf.name, depth: 0, start: pos(ws), width: wid(ws, we), state: wf.state, dur: fmtDur(we - ws), cached: false });
+        for (const st of wf.steps ?? []) {
+          if (st.started == null) continue;
+          const se = st.finished ?? (st.state === 'running' ? now : st.started);
+          rows.push({ id: `${p.id}/${wf.name}/${st.name}`, name: st.name, depth: 1, start: pos(st.started), width: wid(st.started, se), state: st.state, dur: fmtDur(se - st.started), cached: !!st.cached });
+        }
+      }
+    }
+  }
+  const app = j.app ?? null;
+  const deploys = j.deploys ?? [];
+  const stage = c?.stage ?? (pipes.some((p) => p.state === 'running') ? 'building' : pipes.some((p) => p.state === 'failure' || p.state === 'error') ? 'failed' : pipes.length ? 'done' : 'pushed');
   return {
-    ok: true, error: '', repo: c.repo, sha: c.sha, short: short(c.sha), title: c.title, author: c.author, branch: c.branch, stage: c.stage,
-    pushed: ago(now, c.at), total: fmtDur(span), spans: spans.slice(0, 120),
-    pipelines: (j.pipelines ?? []).map((p) => ({ id: `${p.lane === 'gha' ? 'gha' : 'wp'}:${p.repo}:${p.number}`, number: p.number, lane: p.lane, state: p.state, dur: fmtDur((p.finished ?? now) - (p.started ?? p.created)), wait: fmtDur((p.started ?? now) - p.created), url: p.url, engine: (p.engine ?? '').toLowerCase() })),
-    deploys: (j.deploys ?? []).map((d) => ({ app: d.app, via: d.via === 'gha_fallback' ? 'gha fallback' : d.via, state: d.state, dur: fmtDur((d.finished ?? now) - d.started), start: Math.max(0, (d.started - t0) / span), width: Math.max(0.004, ((d.finished ?? now) - d.started) / span) })),
-    deployVia: j.deploys?.[0] ? (j.deploys[0].via === 'gha_fallback' ? 'gha fallback' : j.deploys[0].via) : 'none',
+    ok: true, error: '', repo, sha, short: short(sha), title, author, branch: c?.branch ?? pipes[0]?.branch ?? '', stage,
+    pushed: ago(now, t0), total: fmtDur(total), spans: rows.slice(0, 160),
+    pipelines: pipes.map((p) => ({ id: p.id ?? `${p.repo}:${p.number}`, number: p.number, lane: p.lane, state: p.state, dur: fmtDur((p.finished ?? now) - (p.started ?? p.created)), wait: fmtDur((p.started ?? now) - p.created), url: p.url, engine: (p.engine ?? '').toLowerCase() })),
+    deploys: deploys.map((d) => ({ app: d.app, via: via(d.via), state: d.state, dur: fmtDur((d.finished ?? now) - d.started), start: pos(d.started), width: wid(d.started, d.finished ?? now) })),
+    deployVia: deploys[0] ? via(deploys[0].via) : 'none',
     app: app ? app.url.replace(/^https?:\/\//, '') : '', health: app?.health ?? '',
-    healthText: app ? `${app.health}${after.length ? ` · ${after.length} checks since deploy` : ''}${app.latency_ms != null ? ` · ${Math.round(app.latency_ms)} ms` : ''}` : '',
-    url: `https://github.com/${c.repo}/commit/${c.sha}`,
+    healthText: app ? `${app.health}${app.latency_ms != null ? ` · ${Math.round(app.latency_ms)} ms` : ''}${app.behind ? ` · ${app.behind} behind main` : ''}` : '',
+    url: repo && sha ? `https://github.com/${repo}/commit/${sha}` : '',
+    events: (j.timeline ?? []).slice(-24).map((e, i) => ({ id: `${i}:${e.at}`, k: e.k, label: e.label, at: fmtClock(e.at, offsetMin), ago: ago(now, e.at) })),
   };
 }
 

@@ -1,29 +1,31 @@
 // The built-in demo: the mock server's seeded simulation (server/sim.ts), run inside the data
-// module. No network; the playhead advances it. Deterministic for a seed and an epoch, so a
-// test that fixes the clock sees the same fleet every time.
+// module in its lite form (no frame log). No network; the playhead pulls it forward. The same
+// seed and start make the same fleet, so a test that fixes the clock sees the same yard.
+//
+// Its "last hour, sped up" is a rewind: a new simulation started an hour before now plays
+// forward at 60× until it reaches now, and then simply carries on as the live one.
 
 import { createSim, type Sim } from '../server/sim.ts';
 import type { Upstream } from './api.ts';
 import type { Frame as WireFrame, History, Journey, Meta, PrDetail, SearchResults, Snapshot } from './wire.ts';
 
-/** How much the demo simulates before it starts (and so how far back its replay goes). */
+/** How much the demo simulates before it starts, so main lines have history. */
 export const DEMO_WARMUP = 10 * 60_000;
+/** The rewind's length. */
+export const DEMO_REPLAY = 60 * 60_000;
 
 export class DemoUpstream implements Upstream {
   readonly kind = 'demo' as const;
   readonly label = 'built-in demo';
   private sim: Sim;
   constructor(readonly epoch: number, seed = 7) {
-    // Warm up before `epoch`, so main lines have history and the replay has something to show.
-    // Bounded: the data module's engine (Hermes) has a smaller heap than a server process.
-    this.sim = createSim({ epoch, seed, warmupMs: DEMO_WARMUP, historyMs: DEMO_WARMUP + 600_000, checkpointMs: 600_000, ringFrames: 6000, maxCommits: 1200 });
+    this.sim = createSim({ epoch, seed, warmupMs: DEMO_WARMUP, checkpointMs: 60_000, maxCommits: 1200, lite: true });
   }
-  /** Runs the simulation to `wallMs` and returns the frames it produced. */
-  pump(wallMs: number): WireFrame[] {
-    if (wallMs <= this.sim.now) return [];
-    // A long gap (a sleeping laptop) is not simulated tick by tick: the demo moves at most
-    // 30 s at a time, so the yard catches up over a few frames instead of stalling.
-    return this.sim.advanceTo(Math.min(wallMs, this.sim.now + 30_000));
+  /** Runs the simulation toward `ms` (at most 30 s per call, so a long gap catches up over
+   *  a few frames instead of stalling one) and returns the frames it made. */
+  pump(ms: number): WireFrame[] {
+    if (ms <= this.sim.now) return [];
+    return this.sim.advanceTo(Math.min(ms, this.sim.now + 30_000));
   }
   get now(): number {
     return this.sim.now;
@@ -31,19 +33,19 @@ export class DemoUpstream implements Upstream {
   async snapshot(): Promise<Snapshot> {
     return this.sim.snapshot();
   }
-  async history(from: number, to: number): Promise<History> {
-    return this.sim.history(from, to);
+  async history(_from: number, _to: number): Promise<History> {
+    throw new Error('the demo rewinds instead');
   }
   async journey(repo: string, sha: string): Promise<Journey | null> {
-    return this.sim.journey(repo, sha);
+    return this.sim.journey(repo, sha) as Journey | null;
   }
   async pr(repo: string, number: number): Promise<PrDetail | null> {
-    return this.sim.prDetail(repo, number);
+    return this.sim.prDetail(repo, number) as PrDetail | null;
   }
   async search(q: string): Promise<SearchResults> {
     return this.sim.search(q);
   }
   async meta(): Promise<Meta | null> {
-    return { protocol: '0', version: 'demo', git_sha: '', adapters: [{ name: 'demo', state: 'ok' }], orgs: [] };
+    return { protocol: '0.2', version: 'demo', git_sha: '', mode: 'demo', adapters: [{ name: 'demo', state: 'ok' }], orgs: [] };
   }
 }

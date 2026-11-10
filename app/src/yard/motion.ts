@@ -4,7 +4,7 @@
 
 import type { Event, Pipeline } from '../wire.ts';
 import type { World } from '../world.ts';
-import { BOTS, type Layout, type Pt, bezierAt, wire } from './layout.ts';
+import { BOTS, GHA, type Layout, type Pt, bezierAt, enginesOf, wire } from './layout.ts';
 import { clamp, easeInOut } from './theme.ts';
 
 export type Station =
@@ -353,8 +353,23 @@ export function isMain(w: World, p: Pipeline): boolean {
   return p.event !== 'pull_request' && p.branch === (r?.default_branch ?? 'main');
 }
 
+/** The engine a pipeline runs on: by id, by agent label (what pipelines name), by its running
+ *  list, or GitHub Actions' virtual one. */
+export function engineOf(w: World, p: Pipeline) {
+  const all = enginesOf(w);
+  if (p.engine) {
+    const e = w.engines.get(p.engine) ?? all.find((x) => x.label === p.engine);
+    if (e) return e;
+  }
+  if (p.id) {
+    const e = all.find((x) => x.running.includes(p.id!));
+    if (e) return e;
+  }
+  return p.lane === 'gha' ? all.find((x) => x.id === GHA) : undefined;
+}
+
 export function slotPoint(L: Layout, w: World, p: Pipeline): { x: number; y: number; r: number } | null {
-  const eng = p.engine ? w.engines.get(p.engine) : undefined;
+  const eng = engineOf(w, p);
   if (!eng) return null;
   const slots = L.slotByEngine.get(eng.id);
   if (!slots?.length) return null;
@@ -384,7 +399,7 @@ function route(L: Layout, w: World, pk: Packet, from: Station, to: Station, a: P
   const pts: Pt[] = [a];
   const engBox = () => {
     const p = w.pipelines.get(pk.pipeline);
-    const eng = p?.engine;
+    const eng = p ? engineOf(w, p)?.id : undefined;
     return L.engines.find((e) => eng && e.engines.includes(eng)) ?? null;
   };
   if (to.k === 'queue') {

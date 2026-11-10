@@ -9,7 +9,7 @@
 
 import type {
   App, CiState, Commit, Deploy, DeployVia, Engine, Event, Frame, Health, History, Journey, Kind,
-  Pipeline, Pr, PrDetail, PrPhase, Queue, Repo, SearchResults, Snapshot, Step, Workflow,
+  Pipeline, Pr, PrDetail, PrPhase, Queue, Repo, SearchResults, DemoSnapshot as Snapshot, Step, Workflow,
 } from '../src/wire.ts';
 import { FrameLog, historyJson } from './history.ts';
 import * as N from './names.ts';
@@ -25,6 +25,9 @@ const PEAK_PER_MS = 1 / 5000; // ~1 commit / 5 s fleet-wide at daytime peak
 export type SimOptions = {
   epoch: number; seed?: number; warmupMs?: number; historyMs?: number; ringFrames?: number;
   checkpointMs?: number; maxCommits?: number;
+  /** The in-app demo: keep no frame log and no checkpoints (no history, no resume); a
+   *  caller takes frames with advanceTo as they are made. Small enough for a 64 MiB heap. */
+  lite?: boolean;
 };
 export type Lane = 'roadrunner' | 'gha';
 type DirtyKind = Kind | 'stats';
@@ -98,6 +101,7 @@ export class Sim {
   private queueDirty: Record<Lane, boolean> = { roadrunner: true, gha: true };
   private readonly ckptMs: number;
   private readonly maxCommits: number;
+  private readonly lite: boolean;
   private snapCache = { key: '', json: '' };
 
   constructor(o: SimOptions) {
@@ -108,6 +112,7 @@ export class Sim {
     this.rng = makeRng(this.seed * 2654435761 + 1);
     this.ckptMs = o.checkpointMs ?? 10 * MIN;
     this.maxCommits = o.maxCommits ?? 3000;
+    this.lite = !!o.lite;
     this.log = new FrameLog(Math.max(o.historyMs ?? 2 * HOUR, o.warmupMs ?? HOUR), o.ringFrames ?? 20000);
     this.state = {
       protocol: PROTOCOL, seq: 0, at: this.t0, orgs: {}, repos: {}, commits: {}, pipelines: {}, prs: {},
@@ -121,6 +126,7 @@ export class Sim {
     this.events.length = 0;
     this.checkpoint();
     this.step(this.epoch, false);
+    if (this.lite) this.log.drop();
   }
 
   // ───────────────────────────── public API ─────────────────────────────
@@ -139,8 +145,12 @@ export class Sim {
   /** Runs to `ms` (coalesced) and returns the produced frames as objects. */
   advanceTo(ms: number): Frame[] {
     const from = this.seq;
+    this.collecting = true;
     this.step(ms);
-    return (this.log.since(from, this.seq) ?? []).map((j) => JSON.parse(j) as Frame);
+    this.collecting = false;
+    const out = (this.log.since(from, this.seq) ?? []).map((j) => JSON.parse(j) as Frame);
+    if (this.lite) this.log.drop();
+    return out;
   }
   /** Frames after `since` (JSON strings), or null → client must reset. */
   framesSince(since: number): string[] | null { return this.log.since(since, this.seq); }
@@ -186,10 +196,13 @@ export class Sim {
   // ───────────────────────────── frame plumbing ─────────────────────────────
 
   private lastCkpt = 0;
+  /** advanceTo is gathering frames: a lite sim keeps its log until it hands them over. */
+  private collecting = false;
   private checkpoint(): void {
     this.state.seq = this.seq;
     this.state.at = this.now;
-    this.log.checkpoint(this.seq, this.now, JSON.stringify(this.state));
+    this.log.checkpoint(this.seq, this.now, this.lite ? '' : JSON.stringify(this.state));
+    if (this.lite && !this.collecting) this.log.drop();
     this.lastCkpt = this.now;
   }
   mark(kind: DirtyKind, id: string): void {

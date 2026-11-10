@@ -185,6 +185,13 @@ shape JDeploy
   start: number
   width: number
 
+shape JEvent
+  id: string
+  k: string
+  label: string
+  at: string
+  ago: string
+
 shape Journey
   ok: bool
   error: string
@@ -205,6 +212,7 @@ shape Journey
   health: string
   healthText: string
   url: string
+  events: JEvent[]
 
 shape PCommit
   sha: string

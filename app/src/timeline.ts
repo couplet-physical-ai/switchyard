@@ -1,16 +1,25 @@
 // The time machine (DESIGN.md, "Time"). One playhead in server milliseconds decides what the
-// yard shows. `live` takes every frame as it arrives; `shown` is `live` in LIVE mode, and a
-// separate world otherwise: paused (frozen), behind (playing buffered frames at 1× or ¼×) or
-// replay (an hour of history at 60×). The motion listener hears events only from `shown`.
+// yard shows, and there is only ever ONE world in memory (the data module's engine has a
+// 64 MiB heap; the fleet is a few MB of JSON, its objects several times that):
+//
+//   live    every frame is applied as it arrives; the playhead is the server's now.
+//   paused  frames are kept, not applied (bounded); the world stands still.
+//   behind  the kept frames are applied as the playhead (1× or ¼×) passes them.
+//   replay  the world is replaced by history's base and history's frames play at 60×;
+//           live frames are dropped, so going live again refetches the snapshot.
+//
+// The built-in demo needs no buffer: it generates frames up to the playhead on demand.
 
 import type { Frame as WireFrame, History, Snapshot } from './wire.ts';
 import { World, type Listener } from './world.ts';
 
 export type Mode = 'live' | 'paused' | 'behind' | 'replay';
 
+/** Paused or behind for longer than this many frames: drop them and refetch on resume. */
+const MAX_KEPT = 20_000;
+
 export class Timeline {
-  live = new World();
-  shown: World = this.live;
+  world = new World();
   mode: Mode = 'live';
   speed = 1;
   /** Server time shown, ms. */
@@ -20,55 +29,69 @@ export class Timeline {
   /** Server time of the newest frame and the module clock when it arrived. */
   private lastAt = 0;
   private lastAtClock = 0;
-  private buffer: WireFrame[] = [];
+  /** Frames that arrived while paused or behind, oldest first. */
+  private kept: WireFrame[] = [];
+  private keptIdx = 0;
   private replay: WireFrame[] = [];
   private replayIdx = 0;
   replayFrom = 0;
   replayTo = 0;
-  /** Bumps when `shown` is replaced or jumps: the motion system re-syncs. */
+  /** The world no longer follows the server (replay, or too much kept): refetch to go live. */
+  stale = false;
+  /** Bumps when the world is replaced or jumps: the motion system re-syncs. */
   epoch = 0;
   listener: Listener | undefined;
-  /** Frames applied in the last second, for the coalescing readout. */
-  framesSeen = 0;
-  eventsSeen = 0;
+  /** For the demo: the server's now comes from the simulation's clock, not from frames. */
+  wallNow: ((clock: number) => number) | null = null;
+
+  /** Back-compat names: the world shown (and, there being one, the live one). */
+  get shown(): World { return this.world; }
 
   load(s: Snapshot, clock: number): void {
-    this.live = new World();
-    this.live.load(s);
-    this.lastAt = this.live.at;
+    const w = new World();
+    w.load(s);
+    this.world = w;
+    this.lastAt = w.at;
     this.lastAtClock = clock;
-    this.buffer = [];
-    if (this.mode !== 'replay') {
-      this.mode = 'live';
-      this.shown = this.live;
-      this.playhead = this.live.at;
-      this.epoch++;
-    }
+    this.clearKept();
+    this.replay = [];
+    this.stale = false;
+    this.mode = 'live';
+    this.speed = 1;
+    this.playhead = w.at;
+    this.epoch++;
   }
 
   /** A frame from the server (or the demo). False: the client must refetch the snapshot. */
   ingest(f: WireFrame, clock: number): boolean {
-    if (f.t === 'reset') return false;
-    if (f.t !== 'hb') {
-      this.framesSeen++;
-      this.eventsSeen += f.ops.length;
+    if (f.t === 'reset') {
+      if (this.mode === 'replay') return true; // live is refetched when the replay ends
+      return false;
     }
-    const inLive = this.mode === 'live';
-    const ok = this.live.apply(f, inLive ? this.listener : undefined);
-    if (!ok) return false;
-    if (atOf(f) >= this.lastAt) {
-      this.lastAt = atOf(f);
+    if (f.at >= this.lastAt) {
+      this.lastAt = f.at;
       this.lastAtClock = clock;
     }
-    if ((this.mode === 'paused' || this.mode === 'behind') && f.t === 'delta') {
-      this.buffer.push(f);
-      if (this.buffer.length > 40_000) this.goLive();
+    switch (this.mode) {
+      case 'live':
+        return this.world.apply(f, this.listener);
+      case 'replay':
+        this.stale = true;
+        return true;
+      default:
+        if (f.t !== 'delta') return true;
+        if (this.kept.length - this.keptIdx >= MAX_KEPT) {
+          this.clearKept();
+          this.stale = true;
+        }
+        if (!this.stale) this.kept.push(f);
+        return true;
     }
-    return true;
   }
 
-  /** The server's now, extrapolated from the newest frame by the module clock (≤ 15 s). */
+  /** The server's now: the demo's clock, or the newest frame plus the time since (≤ 15 s). */
   liveNow(clock = this.clock): number {
+    if (this.wallNow) return this.wallNow(clock);
     return this.lastAt + Math.min(15_000, Math.max(0, clock - this.lastAtClock));
   }
 
@@ -84,30 +107,39 @@ export class Timeline {
         break;
       case 'behind': {
         this.playhead += dt * this.speed;
-        let i = 0;
-        while (i < this.buffer.length && atOf(this.buffer[i]) <= this.playhead) this.shown.apply(this.buffer[i++], this.listener);
-        if (i) this.buffer.splice(0, i);
-        if (this.speed >= 1 && !this.buffer.length && this.playhead >= this.liveNow(clock) - 250) this.goLive();
+        while (this.keptIdx < this.kept.length && this.kept[this.keptIdx].t !== 'reset' && (this.kept[this.keptIdx] as { at: number }).at <= this.playhead) {
+          this.world.apply(this.kept[this.keptIdx++], this.listener);
+        }
+        if (this.keptIdx > 512 && this.keptIdx * 2 > this.kept.length) { this.kept = this.kept.slice(this.keptIdx); this.keptIdx = 0; }
+        const live = this.liveNow(clock);
+        if (this.speed > 1 && this.playhead >= live - 250) {
+          // Caught up (only faster than 1× can): live again.
+          this.playhead = live;
+          if (!this.stale && this.keptIdx >= this.kept.length) this.toLive(false);
+        }
         break;
       }
       case 'replay': {
         this.playhead += dt * this.speed;
         while (this.replayIdx < this.replay.length && atOf(this.replay[this.replayIdx]) <= this.playhead) {
-          this.shown.apply(this.replay[this.replayIdx++], this.listener);
+          this.world.apply(this.replay[this.replayIdx++], this.listener);
         }
-        if (this.playhead >= this.replayTo) this.goLive();
+        if (this.playhead >= this.replayTo) this.playhead = this.replayTo;
         break;
       }
     }
   }
 
+  /** True when the replay has played to its end. */
+  replayDone(): boolean {
+    return this.mode === 'replay' && this.playhead >= this.replayTo;
+  }
+
   pause(): void {
     if (this.mode === 'paused') return;
     if (this.mode === 'live') {
-      this.shown = this.live.clone();
       this.playhead = this.liveNow();
-      this.buffer = [];
-      this.epoch++;
+      this.clearKept();
     }
     this.mode = 'paused';
   }
@@ -118,39 +150,102 @@ export class Timeline {
     if (this.mode === 'replay') return;
     if (this.mode === 'live') {
       if (speed >= 1) return;
-      this.shown = this.live.clone();
       this.playhead = this.liveNow();
-      this.buffer = [];
-      this.epoch++;
+      this.clearKept();
     }
     this.mode = 'behind';
   }
 
-  startReplay(h: History, base: Snapshot | null): boolean {
-    const b = h.base ?? base;
-    if (!b) return false;
+  /** Replaces the world with history's base and plays its frames at 60×. */
+  startReplay(h: History): boolean {
+    if (!h.base) return false;
     const w = new World();
-    w.load(b);
-    this.shown = w;
-    this.replay = (h.frames ?? []).filter((f) => f.t === 'delta').sort((a, b) => atOf(a) - atOf(b));
+    w.load(h.base);
+    this.world = w;
+    const frames: WireFrame[] = [];
+    for (const f of h.frames ?? []) {
+      if (f.t === 'delta') frames.push(f);
+      else if (f.t === 'snapshot') {
+        // A server restart inside the window: what came before it no longer applies.
+        frames.length = 0;
+        w.load(f.v);
+      }
+    }
+    frames.sort((a, b) => atOf(a) - atOf(b));
+    this.replay = frames;
     this.replayIdx = 0;
     this.replayFrom = h.from;
     this.replayTo = h.to;
-    this.playhead = h.from;
+    this.playhead = Math.max(h.from, w.at);
+    // Frames before `from` only fast-forward the base (no motion for them).
+    while (this.replayIdx < frames.length && atOf(frames[this.replayIdx]) <= this.playhead) w.apply(frames[this.replayIdx++]);
+    this.clearKept();
+    this.stale = true;
     this.mode = 'replay';
     this.speed = 60;
     this.epoch++;
     return true;
   }
 
-  goLive(): void {
+  /** A frame the demo made for the playhead (behind or rewinding): applied at once. */
+  applyNow(f: WireFrame): void {
+    if (f.t !== 'reset' && f.at >= this.lastAt) { this.lastAt = f.at; this.lastAtClock = this.clock; }
+    this.world.apply(f, this.listener);
+  }
+
+  /** The demo's rewind: the world (already loaded at `from`) plays forward to `to` at 60×,
+   *  pulled by the playhead; nothing is stale, the world it ends on is the live one. */
+  beginPlayback(from: number, to: number): void {
+    this.replay = [];
+    this.replayIdx = 0;
+    this.replayFrom = from;
+    this.replayTo = to;
+    this.playhead = from;
+    this.clearKept();
+    this.stale = false;
+    this.mode = 'replay';
+    this.speed = 60;
+    this.epoch++;
+  }
+
+  /** The demo's playback reached now (or the person asked for live): live from here. */
+  resumeLive(): void {
+    this.replay = [];
+    this.clearKept();
+    this.stale = false;
     this.mode = 'live';
     this.speed = 1;
-    this.shown = this.live;
-    this.buffer = [];
-    this.replay = [];
     this.playhead = this.liveNow();
-    this.epoch++;
+  }
+
+  /**
+   * Back to live. True: done (the kept frames were applied at once). False: the world no
+   * longer follows the server, and the caller must refetch the snapshot (`load`).
+   */
+  goLive(): boolean {
+    return this.toLive(true);
+  }
+
+  private toLive(jump: boolean): boolean {
+    this.replay = [];
+    if (this.stale || this.mode === 'replay') {
+      this.mode = 'live';
+      this.speed = 1;
+      this.clearKept();
+      return false;
+    }
+    while (this.keptIdx < this.kept.length) this.world.apply(this.kept[this.keptIdx++]);
+    this.clearKept();
+    this.mode = 'live';
+    this.speed = 1;
+    this.playhead = this.liveNow();
+    if (jump) this.epoch++;
+    return true;
+  }
+
+  private clearKept(): void {
+    this.kept = [];
+    this.keptIdx = 0;
   }
 
   /** How far the shown world is behind live, ms (0 in LIVE). */
@@ -165,5 +260,5 @@ export class Timeline {
 }
 
 function atOf(f: WireFrame): number {
-  return f.t === 'reset' ? 0 : f.at;
+  return f.t === 'reset' ? 0 : (f.at ?? 0);
 }

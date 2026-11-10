@@ -46,7 +46,6 @@ export class World {
     this.repos = toMap(s.repos);
     this.commits = toMap(s.commits);
     this.pipelines = toMap(s.pipelines);
-    for (const [id, p] of this.pipelines) p.id = id;
     this.prs = toMap(s.prs);
     this.deploys = toMap(s.deploys);
     this.apps = toMap(s.apps);
@@ -70,7 +69,7 @@ export class World {
   apply(f: WireFrame, listener?: Listener): boolean {
     if (f.t === 'reset') return false;
     if (f.t === 'hb') {
-      if (f.seq > this.seq) return false;
+      // The server merges frames for slow clients, so a gap in seq is fine (CONTRACT.md).
       this.at = Math.max(this.at, f.at);
       return true;
     }
@@ -99,7 +98,7 @@ export class World {
     const m = this.mapOf(kind);
     if (m) {
       if (!m.has(id) && (kind === 'repo' || kind === 'org' || kind === 'engine' || kind === 'app' || kind === 'queue')) this.shapeVer++;
-      if (kind === 'pipeline' && v && typeof v === 'object') (v as { id?: string }).id = id;
+      if (v && typeof v === 'object' && !(v as { id?: string }).id) (v as { id?: string }).id = id;
       m.set(id, v);
     } else if (kind === 'watcher') this.watcher = v as Watcher;
     else if (kind === 'stats') this.stats = { ...EMPTY_STATS, ...(v as Stats) };
@@ -157,27 +156,22 @@ export class World {
   commitOfPipeline(p: Pipeline): Commit | undefined {
     return this.commits.get(`${p.repo}@${p.sha}`);
   }
-
-  /** A deep copy: the time machine pauses on one while the live world moves on. */
-  clone(): World {
-    const w = new World();
-    const copy = <T>(m: Map<string, T>) => new Map(Array.from(m, ([k, v]) => [k, deep(v)]));
-    w.protocol = this.protocol; w.seq = this.seq; w.at = this.at;
-    w.orgs = copy(this.orgs); w.repos = copy(this.repos); w.commits = copy(this.commits);
-    w.pipelines = copy(this.pipelines); w.prs = copy(this.prs); w.deploys = copy(this.deploys);
-    w.apps = copy(this.apps); w.engines = copy(this.engines); w.queues = copy(this.queues);
-    w.lanes = copy(this.lanes); w.watcher = deep(this.watcher); w.stats = { ...this.stats };
-    w.pushes = new Map(Array.from(this.pushes, ([k, v]) => [k, v.slice()]));
-    w.recent = this.recent.slice();
-    w.loaded = this.loaded; w.ver = this.ver + 1; w.shapeVer = this.shapeVer + 1;
-    return w;
-  }
 }
 
-const deep = <T>(v: T): T => (v === undefined ? v : JSON.parse(JSON.stringify(v)));
-
-function toMap<T>(o: Record<string, T> | undefined | null): Map<string, T> {
+/** v0.2 sends arrays of entities with their own ids; the demo sends id-keyed maps. */
+function toMap<T>(o: T[] | Record<string, T> | undefined | null): Map<string, T> {
   const m = new Map<string, T>();
-  if (o) for (const k of Object.keys(o)) m.set(k, o[k]);
+  if (Array.isArray(o)) {
+    for (const v of o) {
+      const id = (v as { id?: string }).id;
+      if (id != null) m.set(String(id), v);
+    }
+  } else if (o) {
+    for (const k of Object.keys(o)) {
+      const v = o[k];
+      if (v && typeof v === 'object' && !(v as { id?: string }).id) (v as { id?: string }).id = k;
+      m.set(k, v);
+    }
+  }
   return m;
 }

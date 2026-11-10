@@ -4,7 +4,7 @@
 
 import type { Answer, Ctx2D, Frame, Result, Sources, Store } from './app.contract.d.ts';
 import { HttpUpstream, resolveBase, wsUrl, type Upstream } from './src/api.ts';
-import { DemoUpstream } from './src/demo.ts';
+import { DEMO_REPLAY, DemoUpstream } from './src/demo.ts';
 import { fleet, journeyView, mainlines, prDetailView, prs, search } from './src/project.ts';
 import { Timeline } from './src/timeline.ts';
 import type { Frame as WireFrame } from './src/wire.ts';
@@ -42,19 +42,52 @@ tl.listener = (e, w) => motion.onEvent(e, w);
 
 function advance(t: number): void {
   if (t > clock) clock = t;
-  if (demo) {
-    const frames = demo.pump(epochAtZero + clock);
-    for (const f of frames) tl.ingest(f, clock);
-  }
   tl.tick(clock);
+  if (demo) {
+    // The demo makes frames up to where the playhead needs them; paused, it stands still.
+    const target = tl.mode === 'live' ? epochAtZero + clock : tl.mode === 'paused' ? 0 : tl.playhead;
+    if (target > demo.now) {
+      for (const f of demo.pump(target)) {
+        if (tl.mode === 'live') tl.ingest(f, clock);
+        else tl.applyNow(f);
+      }
+    }
+    if (tl.replayDone()) tl.resumeLive();
+  } else if (tl.replayDone()) {
+    void reloadLive();
+  }
   if (tl.epoch !== seenEpoch) {
     seenEpoch = tl.epoch;
-    motion.sync(tl.shown);
+    motion.sync(tl.world);
   }
 }
 
+/** The world stopped following the server (a replay, a long pause, a reset): refetch it. */
+let reloading: Promise<void> | null = null;
+function reloadLive(): Promise<void> {
+  if (!up || demo) return Promise.resolve();
+  reloading ??= up.snapshot().then(
+    (s) => { tl.load(s, clock); },
+    () => { /* the feed's reconnect retries */ },
+  ).finally(() => { reloading = null; });
+  return reloading;
+}
+
+/** Live again in the demo: a short gap is simulated, a long one starts the demo afresh at now. */
+async function demoLive(): Promise<void> {
+  const wall = Math.floor((epochAtZero + clock) / 1000) * 1000;
+  if (demo && wall - demo.now <= 120_000) {
+    tl.resumeLive();
+    return;
+  }
+  demo = null;
+  demo = new DemoUpstream(wall);
+  up = demo;
+  tl.load(await demo.snapshot(), clock);
+}
+
 function ensureLayout(w: number, h: number): Layout {
-  const world = tl.shown;
+  const world = tl.world;
   const n = 10;
   if (clock - mainsAt > 8000 || mainsShape !== world.shapeVer || !mains.length) {
     // Red lines join at once; otherwise the selection changes at most every 8 s.
@@ -81,14 +114,19 @@ async function connect(server: string, token: string, epoch0: number): Promise<C
   const none: Conn = { ok: false, status: 'not connected', error: '', seq: 0, label: '', kind: '', needsSetup: false };
   try {
     if (server === 'demo') {
+      tl.wallNow = (c) => epochAtZero + c;
       const start = Math.floor((epoch0 + clock) / 1000) * 1000;
-      if (!demo || demo.now < start - 3_600_000) demo = new DemoUpstream(start);
+      if (!demo || Math.abs(demo.now - start) > 120_000) {
+        demo = null;
+        demo = new DemoUpstream(start);
+      }
       up = demo;
       tl.load(await demo.snapshot(), clock);
-      motion.sync(tl.shown);
-      return { ...none, ok: true, status: 'demo', seq: tl.live.seq, label: demo.label, kind: 'demo' };
+      motion.sync(tl.world);
+      return { ...none, ok: true, status: 'demo', seq: tl.world.seq, label: demo.label, kind: 'demo' };
     }
     demo = null;
+    tl.wallNow = null;
     const base = resolveBase(server);
     if (!base) {
       up = null;
@@ -97,8 +135,8 @@ async function connect(server: string, token: string, epoch0: number): Promise<C
     up = new HttpUpstream(base, token);
     const snap = await up.snapshot();
     tl.load(snap, clock);
-    motion.sync(tl.shown);
-    return { ...none, ok: true, status: 'connected', seq: tl.live.seq, label: up.label, kind: 'http' };
+    motion.sync(tl.world);
+    return { ...none, ok: true, status: 'connected', seq: tl.world.seq, label: up.label, kind: 'http' };
   } catch (e) {
     return { ...none, status: 'offline', error: `Could not reach ${resolveBase(server) || 'the server'}: ${(e as Error).message ?? e}`, needsSetup: !resolveBase(server) };
   }
@@ -135,7 +173,7 @@ function parseFrames(data: string): WireFrame[] {
 }
 
 function overview(): Result<'overview'> {
-  const w = tl.shown;
+  const w = tl.world;
   let building = 0, queued = 0, red = 0, appsUp = 0;
   for (const p of w.pipelines.values()) { if (p.state === 'running') building++; else if (p.state === 'pending') queued++; }
   for (const r of w.repos.values()) if (isRed(r)) red++;
@@ -158,7 +196,7 @@ function route(kind: string, id: string): string {
     case 'pr': { const [repo, n] = id.split('#'); return `/pr/${repo}/${n}`; }
     case 'commit': { const [repo, sha] = id.split('@'); return `/commit/${repo}/${sha}`; }
     case 'pipeline': {
-      const p = tl.shown.pipelines.get(id);
+      const p = tl.world.pipelines.get(id);
       return p ? `/commit/${p.repo}/${p.sha}` : '/';
     }
     default: return '/';
@@ -174,22 +212,38 @@ export const sources: Sources = {
     if (set) store.set(TOKEN, token);
     return { ok: true, status: set ? 'saved' : 'kept' };
   },
-  connect: ([server, token, _gen, epoch0]) => connect(server, token, epoch0),
+  connect: ([server, token, _gen, epoch0, offset]) => {
+    liveLayer.offsetMin = offset;
+    return connect(server, token, epoch0);
+  },
   liveFeed: ([server, token, seq, _gen, ok]) => liveFeed(server, token, seq, ok),
   overview: ([t]) => { if (t > 0) advance(t); return overview(); },
-  timeControl: ([what, speed]) => {
+  timeControl: async ([what, speed]) => {
     if (what === 'pause') tl.pause();
-    else if (what === 'play') tl.play(speed);
-    else tl.goLive();
+    else if (what === 'play') {
+      if (tl.mode === 'replay') tl.speed = speed;
+      else tl.play(speed);
+    } else if (demo) await demoLive();
+    else if (!tl.goLive()) await reloadLive();
     return { ok: true, status: tl.mode };
   },
   replayHour: async ([t]) => {
     if (t > 0) advance(t);
     if (!up) return { ok: false, status: 'not connected' };
-    const to = tl.liveNow();
     try {
+      if (demo) {
+        const to = Math.floor((epochAtZero + clock) / 1000) * 1000;
+        const from = to - DEMO_REPLAY;
+        demo = null;
+        demo = new DemoUpstream(from);
+        up = demo;
+        tl.load(await demo.snapshot(), clock);
+        tl.beginPlayback(from, to);
+        return { ok: true, status: 'replay' };
+      }
+      const to = tl.liveNow();
       const h = await up.history(to - 3_600_000, to);
-      return { ok: tl.startReplay(h, null), status: 'replay' };
+      return { ok: tl.startReplay(h), status: 'replay' };
     } catch (e) {
       return { ok: false, status: String((e as Error).message ?? e) };
     }
@@ -203,28 +257,45 @@ export const sources: Sources = {
   },
   search: ([q, t]) => {
     if (t > 0) advance(t);
-    return { hits: search(tl.shown, q, tl.playhead).map((h) => ({ kind: h.kind, id: h.id, title: h.title, subtitle: h.subtitle, route: route(h.kind, h.id) })) };
+    return { hits: search(tl.world, q, tl.playhead).map((h) => ({ kind: h.kind, id: h.id, title: h.title, subtitle: h.subtitle, route: route(h.kind, h.id) })) };
   },
-  mainlines: ([t, org, filter, q]) => mainlines(tl.shown, t > 0 ? tl.playhead : tl.playhead, org, filter, q),
-  prs: ([_t, org, filter, q]) => prs(tl.shown, tl.playhead, org, filter, q),
-  fleet: () => fleet(tl.shown, tl.playhead),
-  journey: async ([_s, _tok, repo, sha]) => {
+  mainlines: ([t, org, filter, q]) => mainlines(tl.world, t > 0 ? tl.playhead : tl.playhead, org, filter, q),
+  prs: ([_t, org, filter, q]) => prs(tl.world, tl.playhead, org, filter, q),
+  fleet: () => fleet(tl.world, tl.playhead),
+  journey: async ([_s, _tok, repo, sha, t]) => {
+    if (t > 0) advance(t);
     if (!repo || !sha) return journeyView(null, tl.playhead, ' ');
     try {
-      return journeyView(up ? await up.journey(repo, sha) : null, tl.playhead);
+      const j = await cached(`j:${repo}@${sha}`, () => (up ? up.journey(repo, sha) : Promise.resolve(null)));
+      return journeyView(j, tl.playhead, '', liveLayer.offsetMin);
     } catch (e) {
       return journeyView(null, tl.playhead, String((e as Error).message ?? e));
     }
   },
-  prDetail: async ([_s, _tok, repo, number]) => {
-    if (!repo) return prDetailView(null, tl.playhead, tl.shown);
+  prDetail: async ([_s, _tok, repo, number, t]) => {
+    if (t > 0) advance(t);
+    if (!repo) return prDetailView(null, tl.playhead, tl.world);
     try {
-      return prDetailView(up ? await up.pr(repo, Number(number)) : null, tl.playhead, tl.shown);
+      const d = await cached(`p:${repo}#${number}`, () => (up ? up.pr(repo, Number(number)) : Promise.resolve(null)));
+      return prDetailView(d, tl.playhead, tl.world);
     } catch {
-      return prDetailView(null, tl.playhead, tl.shown);
+      return prDetailView(null, tl.playhead, tl.world);
     }
   },
 };
+
+/** A detail fetched at most every 5 s of the module clock while its view is open (the views
+ *  re-ask every 250 ms so their ages tick; the server is asked far less). */
+const details = new Map<string, { at: number; p: Promise<unknown> }>();
+function cached<T>(key: string, get: () => Promise<T>): Promise<T> {
+  const hit = details.get(key);
+  if (hit && clock - hit.at < 5000) return hit.p as Promise<T>;
+  const p = get();
+  details.set(key, { at: clock, p });
+  p.catch(() => details.delete(key));
+  if (details.size > 16) details.delete(details.keys().next().value as string);
+  return p;
+}
 
 /** The host's entry: one function for every source, as `sources` names them. */
 export const answer: Answer = ((source: keyof Sources, args: unknown, store: Store, storage: unknown) =>
@@ -246,12 +317,12 @@ export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
     advance(frame.time);
     const lay = ensureLayout(frame.width, frame.height);
     motion.reduced = args[0] === 'reduced';
-    motion.update(clock, tl.shown, dt);
+    motion.update(clock, tl.world, dt);
     liveLayer.draw(ctx, lay, tl, motion, clock, motion.reduced);
     return true;
   }
   if (surface === 'rowDots') {
-    const r = tl.shown.repos.get(String(args[0]));
+    const r = tl.world.repos.get(String(args[0]));
     ctx.clearRect(0, 0, frame.width, frame.height);
     if (r) dotLine(ctx, r.main?.recent ?? [], 6, frame.width - 30, frame.height / 2 + 3, 15, clock, { red: isRed(r), culprit: isRed(r) ? r.main.culprit : null, r: 4.5 });
     return false;

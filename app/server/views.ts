@@ -1,7 +1,7 @@
 // Read-side views over the simulation: commit Journey (with a Dagger-like span tree),
 // PrDetail, and ⌘K search. Pure and portable; results are fresh copies.
 
-import type { Commit, Deploy, Health, Journey, Pipeline, Pr, PrDetail, PrPhase, SearchHit, SearchResults, Snapshot, Span } from '../src/wire.ts';
+import type { Commit, Deploy, Health, Journey, Pipeline, Pr, PrDetail, PrPhase, SearchHit, SearchResults, DemoSnapshot as Snapshot, Span } from '../src/wire.ts';
 import { hash32 } from './util.ts';
 
 const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x)) as T;

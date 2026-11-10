@@ -5,7 +5,7 @@ import type { Ctx2D } from '../../app.contract.d.ts';
 import type { Pipeline, Repo, Step } from '../wire.ts';
 import type { World } from '../world.ts';
 import type { Timeline } from '../timeline.ts';
-import { type Layout, type Pt, BOTS, isRed, wire } from './layout.ts';
+import { type Layout, type Pt, BOTS, enginesOf, isRed, wire } from './layout.ts';
 import { type Motion, slotPoint } from './motion.ts';
 import { arrow, chip, dotLine, eyebrow, fmtClock, fmtDur, machine, port, runs, text, withAlpha } from './paint.ts';
 import { C, TAU, clamp, easeOut, font } from './theme.ts';
@@ -220,26 +220,32 @@ export class LiveLayer {
 
   private engines(ctx: Ctx2D, L: Layout, w: World, now: number, t: number, reduced: boolean): void {
     const ringOk: number[] = [], ringRun: [number, number, number, number][] = [];
+    const byId = new Map(enginesOf(w).map((e) => [e.id, e]));
+    const fallbackExp = w.stats.p50_build_ms || 0;
     for (const box of L.engines) {
       let busy = 0, slots = 0, cpu = 0, ncpu = 0;
       for (const id of box.engines) {
-        const e = w.engines.get(id);
+        const e = byId.get(id);
         if (!e) continue;
-        busy += e.running.length; slots += e.slots;
-        if (e.cpu != null) { cpu += e.cpu; ncpu++; }
+        busy += Math.min(e.slots, e.running.length); slots += e.slots;
+      }
+      for (const id of box.stats.length ? box.stats : box.engines) {
+        const e = byId.get(id);
+        if (e?.cpu != null) { cpu += e.cpu; ncpu++; }
       }
       const load = ncpu ? ` · cpu ${Math.round((cpu / ncpu) * (cpu / ncpu <= 1 ? 100 : 1))}%` : '';
-      text(ctx, `${busy}/${slots}${load}`, box.x + box.w, box.y - 7, busy ? C.amberText : C.ink4, 11, false, 'right');
+      if (box.offline) text(ctx, 'offline', box.x + box.w, box.y - 7, C.ink4, 11, false, 'right');
+      else text(ctx, `${busy}/${slots}${load}`, box.x + box.w, box.y - 7, busy ? C.amberText : C.ink4, 11, false, 'right');
       this.hits.push({ x: box.x - 4, y: box.y - 20, w: box.w + 8, h: box.h + 24, kind: 'engine', id: box.id, label: box.title });
       for (const id of box.engines) {
-        const e = w.engines.get(id);
+        const e = byId.get(id);
         if (!e) continue;
         const slotsOf = L.slotByEngine.get(id) ?? [];
         e.running.forEach((pid, i) => {
           const s = slotsOf[Math.min(i, slotsOf.length - 1)];
           if (!s) return;
           const p = w.pipelines.get(pid);
-          const exp = p?.expected_ms ?? w.repos.get(p?.repo ?? '')?.p50_build_ms ?? 0;
+          const exp = p?.expected_ms ?? w.repos.get(p?.repo ?? '')?.p50_build_ms ?? fallbackExp;
           const el = p?.started ? Math.max(0, now - p.started) : 0;
           if (exp > 0) ringRun.push([s.x, s.y, s.r + 3.5, clamp(el / exp, 0.02, 0.98)]);
           else ringOk.push(s.x, s.y, s.r + 3.5);
@@ -413,39 +419,55 @@ export class LiveLayer {
     const where = p.state === 'running' ? `building on ${(p.engine ?? '').toLowerCase()} · ${fmtDur(el)}` : p.state === 'pending' ? `queued ${fmtDur(now - p.created)}` : `${p.state} · ${fmtDur((p.finished ?? now) - (p.started ?? p.created))}`;
     eyebrow(ctx, [['now', C.ink3], [' · ', C.ink4], [`${p.repo.split('/')[1]} #${p.number}`, C.ink2], [` · ${p.branch} · ${where}`, C.ink3]], L.m, y0 + 30);
     this.hits.push({ x: L.m, y: y0 + 12, w: L.W * 0.5, h: 26, kind: 'pipeline', id: p.id ?? "", label: `${p.repo} #${p.number}` });
-    // steps: the first workflow's, up to 7
-    const wf = p.workflows?.[0];
-    const steps: Step[] = (wf?.steps ?? []).slice(0, 7);
-    let x = L.m + 150;
+    // Steps: the running workflow's (else the first), as many as fit before the main line;
+    // a window around the active step, the rest folded into "N done" and "+M" chips.
+    const wf = p.workflows?.find((x) => x.state === 'running') ?? p.workflows?.[0];
+    const steps: Step[] = wf?.steps ?? [];
+    const sx = L.m + 150, limit = L.cols.mains - 36;
     const cy = y0 + 70;
-    arrow(ctx, L.m + 60, x - 4, cy);
-    text(ctx, wf?.name ?? 'pipeline', L.m, cy + 4, C.ink3, 12);
+    arrow(ctx, L.m + 60, sx - 4, cy);
+    text(ctx, trim(wf?.name ?? 'pipeline', 12), L.m, cy + 4, C.ink3, 12);
+    ctx.font = font(11);
+    const labels = steps.map((st) => trim(st.name, 18) + (st.cached ? ' ⟳' : ''));
+    const widths = labels.map((l) => Math.ceil(ctx.measureText(l).width) + 14);
+    let act = steps.findIndex((st) => st.state === 'running');
+    if (act < 0) act = Math.max(0, steps.findIndex((st) => st.state !== 'success' && st.state !== 'skipped'));
+    let lo = 0, hi = steps.length;
+    const need = (a: number, b: number) => widths.slice(a, b).reduce((n, v) => n + v, 0) + 20 * Math.max(0, b - a - 1) + (a > 0 ? 84 : 0) + (b < steps.length ? 56 : 0);
+    while (hi - lo > 1 && sx + need(lo, hi) > limit) { if (act - lo > hi - 1 - act) lo++; else hi--; }
+    let x = sx;
+    if (lo > 0) { x += chip(ctx, `${lo} done`, x, cy, 'ok'); arrow(ctx, x + 3, x + 17, cy); x += 20; }
     let activeX = -1;
-    steps.forEach((s, i) => {
-      const st = s.state === 'success' ? 'ok' : s.state === 'failure' || s.state === 'error' ? 'bad' : s.state === 'running' ? 'active' : s.state === 'skipped' || s.state === 'canceled' ? 'skip' : 'idle';
-      const cw = chip(ctx, s.name + (s.cached ? ' ⟳' : ''), x, cy, st);
-      if (s.state === 'running') activeX = x + cw / 2;
+    for (let i = lo; i < hi; i++) {
+      const st0 = steps[i];
+      const st = st0.state === 'success' ? 'ok' : st0.state === 'failure' || st0.state === 'error' ? 'bad' : st0.state === 'running' ? 'active' : st0.state === 'skipped' || st0.state === 'canceled' ? 'skip' : 'idle';
+      const cw = chip(ctx, labels[i], x, cy, st);
+      if (st0.state === 'running') activeX = x + cw / 2;
       x += cw;
-      if (i < steps.length - 1) { arrow(ctx, x + 3, x + 17, cy); x += 20; }
-    });
+      if (i < hi - 1 || hi < steps.length) { arrow(ctx, x + 3, x + 17, cy); x += 20; }
+    }
+    if (hi < steps.length) x += chip(ctx, `+${steps.length - hi}`, x, cy, 'idle');
     if (activeX >= 0) {
       const bob = Math.sin(t / 380) * 1.2;
       ctx.beginPath(); ctx.roundRect(activeX - 9, cy - 27 + bob, 18, 11, 2.5); ctx.fillStyle = C.packet; ctx.fill();
     }
     // the sentence under the chips
-    const exp = p.expected_ms ?? r?.p50_build_ms ?? 0;
-    const done = steps.filter((s) => s.state === 'success').length;
-    const line = [`${done} of ${steps.length} steps`, exp ? `typical ${fmtDur(exp)}` : '', p.lane === 'gha' ? 'github actions' : 'roadrunner', p.event === 'pull_request' ? 'pull request' : `push to ${p.branch}`].filter(Boolean).join(' · ');
-    text(ctx, line, L.m + 150, cy + 30, C.ink3, 12);
-    // other workflows as small chips
-    let x2 = L.m + 150 + Math.max(320, x - L.m - 150 + 30);
-    const others = (p.workflows ?? []).slice(1, 5);
-    if (others.length && x2 < L.cols.mains - 60) {
+    const exp = p.expected_ms ?? r?.p50_build_ms ?? w.stats.p50_build_ms ?? 0;
+    const done = steps.filter((st) => st.state === 'success').length;
+    const line = [`${done} of ${steps.length} steps`, exp ? `typical ${fmtDur(exp)}` : '', p.lane === 'gha' ? 'github actions' : 'roadrunner', p.event === 'pull_request' ? `pull request${p.pr ? ` #${p.pr}` : ''}` : `push to ${p.branch}`].filter(Boolean).join(' · ');
+    text(ctx, line, sx, cy + 30, C.ink3, 12);
+    // other workflows as small chips, only those that fit
+    let x2 = Math.max(sx + 320, x + 34);
+    const others = (p.workflows ?? []).filter((o) => o !== wf).slice(0, 4);
+    if (others.length && x2 + 120 < limit) {
       text(ctx, 'also', x2, cy + 4, C.ink4, 12);
       x2 += 40;
+      ctx.font = font(11);
       for (const o of others) {
+        const label = trim(o.name, 16);
+        if (x2 + ctx.measureText(label).width + 14 > limit) break;
         const st = o.state === 'success' ? 'ok' : o.state === 'failure' || o.state === 'error' ? 'bad' : o.state === 'running' ? 'active' : 'idle';
-        x2 += chip(ctx, o.name, x2, cy, st) + 8;
+        x2 += chip(ctx, label, x2, cy, st) + 8;
       }
     }
     // the repo's main line, its culprit labelled
@@ -489,7 +511,8 @@ export class LiveLayer {
       const repo = p.repo.split('/')[1] ?? p.repo;
       runs(ctx, [[`#${p.number} `, C.ink2], [trim(repo, 20), C.ink3]], L.m, y + 4, 12.5);
       let x = L.m + 250;
-      const chips = [`${p.event === 'pull_request' ? 'pr' : 'push'} · ${trim(p.branch, 18)}`, `waiting ${fmtDur(now - p.created)}`, p.lane === 'gha' ? 'gha runner' : 'roadrunner', `~${fmtDur(p.expected_ms ?? w.repos.get(p.repo)?.p50_build_ms ?? 0)} build`];
+      const est = p.expected_ms ?? w.repos.get(p.repo)?.p50_build_ms ?? w.stats.p50_build_ms ?? 0;
+      const chips = [`${p.event === 'pull_request' ? 'pr' : 'push'} · ${trim(p.branch, 18)}`, `waiting ${fmtDur(now - p.created)}`, p.lane === 'gha' ? 'gha runner' : 'roadrunner', est ? `~${fmtDur(est)} build` : 'then build'];
       chips.forEach((c, j) => {
         x += chip(ctx, c, x, y, j === 1 && now - p.created > 120_000 ? 'bad' : 'idle');
         if (j < chips.length - 1) { arrow(ctx, x + 3, x + 19, y); x += 22; }

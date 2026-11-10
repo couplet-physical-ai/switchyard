@@ -8,7 +8,7 @@ import type { World } from '../world.ts';
 export type Pt = { x: number; y: number };
 export type Machine = { id: string; x: number; y: number; w: number; h: number; inPort: Pt; outPort: Pt; title: string; sub: string };
 export type Slot = { engine: string; idx: number; x: number; y: number; r: number };
-export type EngineBox = Machine & { kind: Engine['kind']; engines: string[]; slots: Slot[] };
+export type EngineBox = Machine & { kind: Engine['kind']; engines: string[]; slots: Slot[]; stats: string[]; offline: boolean };
 export type SourceRow = { org: string; label: string; x: number; y: number; port: Pt; bot: boolean };
 export type MainLine = { repo: string; x0: number; x1: number; y: number; step: number; n: number };
 export type AppCell = { app: string; x: number; y: number; s: number };
@@ -106,15 +106,11 @@ export function layout(W: number, H: number, world: World, mains: string[]): Lay
   const gha: Machine = mk('gha', cols.intake, rr.y + rr.h + 34, qW, 62, 'gha', 'actions scale set');
   const junction = { x: cols.intake - 34, y: (rr.inPort.y + gha.inPort.y) / 2 };
 
-  // Engines: each Dagger engine its own machine; Woodpecker agents and GHA runners grouped.
+  // Engines: Woodpecker agents grouped by the machine they run on (a Dagger engine on the same
+  // machine lends the box its cpu), a Dagger engine with no agents its own box, then GitHub
+  // Actions (its runners, or one virtual box for its runs when the fleet reports no runners).
   const engW = Math.round(W * 0.205);
-  const all = Array.from(world.engines.values());
-  const groups: { id: string; kind: Engine['kind']; title: string; engines: Engine[] }[] = [];
-  for (const e of all.filter((e) => e.kind === 'dagger').sort((a, b) => a.id.localeCompare(b.id))) groups.push({ id: e.id, kind: 'dagger', title: `${e.id.toLowerCase()} · dagger`, engines: [e] });
-  const agents = all.filter((e) => e.kind === 'wp_agent').sort((a, b) => a.id.localeCompare(b.id));
-  if (agents.length) groups.push({ id: 'agents', kind: 'wp_agent', title: 'agents · woodpecker', engines: agents });
-  const runners = all.filter((e) => e.kind === 'gha_runner').sort((a, b) => a.id.localeCompare(b.id));
-  if (runners.length) groups.push({ id: 'runners', kind: 'gha_runner', title: 'runners · gha', engines: runners });
+  const groups = engineGroups(world);
   const slotR = compact ? 8.5 : 10;
   const pitch = slotR * 2 + (compact ? 7 : 9);
   const perRow = Math.max(4, Math.floor((engW - 28) / pitch));
@@ -132,6 +128,8 @@ export function layout(W: number, H: number, world: World, mains: string[]): Lay
     const box = mk(g.id, cols.engines, ey, engW, h, g.title, '') as EngineBox;
     box.kind = g.kind;
     box.engines = g.engines.map((e) => e.id);
+    box.stats = g.stats;
+    box.offline = g.engines.length > 0 && g.engines.every((e) => e.online === false);
     box.slots = [];
     let k = 0;
     for (const e of g.engines) {
@@ -171,10 +169,18 @@ export function layout(W: number, H: number, world: World, mains: string[]): Lay
   const bus = { x: busX, y0: firstY - 4, y1: tier2 + deploy.h / 2 };
 
   // Apps: a grid to the right of deploy.
+  // The largest square (12 px down to 4) whose grid fits between deploy's tier and the
+  // return wire: 60 apps get roomy squares, 240 get small ones, never spilling into NOW.
   const appIds = Array.from(world.apps.keys()).sort();
-  const cell = compact ? 10 : 12, gapA = compact ? 5 : 6;
   const gx = x0, gy = tier2 + 6;
-  const colsA = Math.max(8, Math.floor((x1 - gx) / (cell + gapA)));
+  const availW = x1 + 16 - gx, availH = Math.max(24, LH - 34 - gy);
+  let cell = 4, gapA = 2;
+  for (let c = compact ? 10 : 12; c >= 4; c--) {
+    const g = Math.max(2, Math.round(c * 0.42));
+    const cols = Math.max(1, Math.floor((availW + g) / (c + g)));
+    if (Math.ceil(appIds.length / cols) * (c + g) - g <= availH) { cell = c; gapA = g; break; }
+  }
+  const colsA = Math.max(8, Math.floor((availW + gapA) / (cell + gapA)));
   const apps: AppCell[] = appIds.map((app, i) => ({ app, x: gx + (i % colsA) * (cell + gapA), y: gy + Math.floor(i / colsA) * (cell + gapA), s: cell }));
   const rowsA = Math.ceil(appIds.length / colsA);
   const appsBox = { x: gx, y: gy, w: colsA * (cell + gapA) - gapA, h: rowsA * (cell + gapA) - gapA, cols: colsA };
@@ -192,6 +198,56 @@ export function layout(W: number, H: number, world: World, mains: string[]): Lay
 
 function mk(id: string, x: number, y: number, w: number, h: number, title: string, sub: string): Machine {
   return { id, x, y, w, h, inPort: { x, y: y + h / 2 }, outPort: { x: x + w, y: y + h / 2 }, title, sub };
+}
+
+export type EngineGroup = { id: string; kind: Engine['kind']; title: string; engines: Engine[]; stats: string[] };
+
+/** The id of the virtual engine that stands for GitHub Actions when no runners are reported. */
+export const GHA = 'gha';
+
+/** Every engine the yard shows: the fleet's, plus a virtual one for GitHub Actions' runs. */
+const engCache = new WeakMap<World, { ver: number; all: Engine[] }>();
+export function enginesOf(w: World): Engine[] {
+  const hit = engCache.get(w);
+  if (hit && hit.ver === w.ver) return hit.all;
+  const all = Array.from(w.engines.values());
+  if (!all.some((e) => e.kind === 'gha_runner')) {
+    const running: string[] = [];
+    for (const p of w.pipelines.values()) if (p.lane === 'gha' && p.state === 'running' && p.id) running.push(p.id);
+    all.push({ id: GHA, kind: 'gha_runner', label: 'github actions', online: true, slots: Math.max(4, running.length), busy: running.length, running });
+  }
+  engCache.set(w, { ver: w.ver, all });
+  return all;
+}
+
+const hostRank = (h: string) => (/^vm/i.test(h) ? 0 : /mac/i.test(h) ? 2 : 1);
+
+export function engineGroups(w: World): EngineGroup[] {
+  const all = enginesOf(w);
+  const groups: EngineGroup[] = [];
+  const agents = all.filter((e) => e.kind === 'wp_agent');
+  const daggers = all.filter((e) => e.kind === 'dagger');
+  const hosts = new Map<string, Engine[]>();
+  const loose: Engine[] = [];
+  for (const a of agents) {
+    if (a.host) { let l = hosts.get(a.host); if (!l) hosts.set(a.host, (l = [])); l.push(a); }
+    else loose.push(a);
+  }
+  const usedDagger = new Set<string>();
+  for (const h of Array.from(hosts.keys()).sort((a, b) => hostRank(a) - hostRank(b) || a.localeCompare(b, 'en', { numeric: true }))) {
+    const list = hosts.get(h)!.sort((a, b) => a.id.localeCompare(b.id, 'en', { numeric: true }));
+    const dg = daggers.filter((d) => d.host === h || d.label === h || d.id === `dagger:${h}`);
+    for (const d of dg) usedDagger.add(d.id);
+    const plat = list[0]?.platform?.startsWith('darwin') ? 'macos' : dg.length ? 'dagger' : 'linux';
+    groups.push({ id: `host:${h}`, kind: 'wp_agent', title: `${h.toLowerCase()} · ${plat}`, engines: list, stats: dg.map((d) => d.id) });
+  }
+  for (const d of daggers.filter((d) => !usedDagger.has(d.id)).sort((a, b) => a.id.localeCompare(b.id, 'en', { numeric: true }))) {
+    groups.push({ id: d.id, kind: 'dagger', title: `${(d.label ?? d.id).toLowerCase()} · dagger`, engines: [d], stats: [d.id] });
+  }
+  if (loose.length) groups.push({ id: 'agents', kind: 'wp_agent', title: 'agents · woodpecker', engines: loose.sort((a, b) => a.id.localeCompare(b.id)), stats: [] });
+  const runners = all.filter((e) => e.kind === 'gha_runner').sort((a, b) => a.id.localeCompare(b.id));
+  if (runners.length) groups.push({ id: 'runners', kind: 'gha_runner', title: runners.length === 1 && runners[0].id === GHA ? 'github actions' : 'runners · gha', engines: runners, stats: [] });
+  return groups;
 }
 
 function slotsOf(es: Engine[]): number {

@@ -3,7 +3,7 @@
 // state. Singletons: `watcher` (id "outage") replaces Snapshot.watcher, and the mock's
 // extension kind `stats` (id "stats") replaces Snapshot.stats. Unknown kinds are skipped.
 
-import type { Frame, Op, Snapshot } from '../src/wire.ts';
+import type { Frame, Op, DemoSnapshot as Snapshot } from '../src/wire.ts';
 
 const COLLECTION: Record<string, keyof Snapshot> = {
   org: 'orgs', repo: 'repos', commit: 'commits', pipeline: 'pipelines', pr: 'prs', deploy: 'deploys',

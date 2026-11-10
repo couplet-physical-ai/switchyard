@@ -3,7 +3,7 @@
 // checks snapshot shape, determinism, history replay == snapshot, WS/SSE, search, journey,
 // PR detail, auth, and the burst frame.
 
-import type { Frame, History, Journey, PrDetail, SearchResults, Snapshot } from '../src/wire.ts';
+import type { Frame, History, Journey, PrDetail, SearchResults, DemoSnapshot as Snapshot } from '../src/wire.ts';
 import { applyFrame } from './reduce.ts';
 
 const EPOCH = Date.UTC(2026, 10, 10, 20, 0); // a weekday afternoon (US Central)

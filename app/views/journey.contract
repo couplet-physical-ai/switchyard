@@ -3,7 +3,7 @@
 use Journey from "./shapes.contract"
 
 members App
-  resource jData = journey(server, tok.token, here == "commit" ? `${top(nav).params.owner}/${top(nav).params.name}` : "", here == "commit" ? top(nav).params.sha : "", here == "commit" ? clockMs : 0) as shape Journey else empty(ok=false, error="", repo="", sha="", short="", title="", author="", branch="", stage="", pushed="", total="", spans=[], pipelines=[], deploys=[], deployVia="", app="", health="", healthText="", url="")
+  resource jData = journey(server, tok.token, here == "commit" ? `${top(nav).params.owner}/${top(nav).params.name}` : "", here == "commit" ? top(nav).params.sha : "", here == "commit" ? clockMs : 0) as shape Journey else empty(ok=false, error="", repo="", sha="", short="", title="", author="", branch="", stage="", pushed="", total="", spans=[], pipelines=[], deploys=[], deployVia="", app="", health="", healthText="", url="", events=[])
 
 fn barColor(s: string): string = s == "success" ? "sy.machine" : (s == "failure" or s == "error" ? "sy.red" : (s == "running" ? "sy.amber" : "sy.ink4"))
 
@@ -56,6 +56,15 @@ component JourneyView
                   row flex=1 height=10 position="relative"
                     column position="absolute" top=0 bottom=0 left=`${d.start * 100}%` width=`${d.width * 100}%` border-radius=2 background-color=(d.state == "failure" ? "sy.red" : "sy.amber")
                   text `${d.dur} · ${d.via}` width=90 font-size=11 color="sy.ink4" text-align="right"
+          if j.events.length > 0
+            column gap=6 testId="journey-story"
+              text "WHAT HAPPENED" font-size=12 letter-spacing="0.08em" color="sy.ink3"
+              for e in j.events key=e.id
+                row gap=14 align-items="baseline"
+                  text e.at width=56 font-size=12 color="sy.ink4" font-variant-numeric="tabular-nums"
+                  text e.k width=72 font-size=12 color=(e.k == "finish" or e.k == "health" ? "sy.ink2" : (e.k == "deploy" or e.k == "deployed" ? "sy.amber-text" : "sy.ink3"))
+                  text e.label font-size=12 color="sy.ink2" flex=1
+                  text e.ago font-size=11 color="sy.ink4"
           if j.app != ""
             column gap=4
               text "AFTER" font-size=12 letter-spacing="0.08em" color="sy.ink3"

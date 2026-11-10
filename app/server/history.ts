@@ -2,7 +2,7 @@
 // strings; periodic state checkpoints (also JSON) let `window(from, to)` rebuild the state at
 // `from` by replaying frames through the contract reducer. Pure and portable.
 
-import type { Frame, Snapshot } from '../src/wire.ts';
+import type { Frame, DemoSnapshot as Snapshot } from '../src/wire.ts';
 import { applyFrame } from './reduce.ts';
 
 type Rec = { seq: number; at: number; json: string };
@@ -21,6 +21,13 @@ export class FrameLog {
   get oldestAt(): number { return this.ckpts.length ? this.ckpts[0]!.at : 0; }
   get frameCount(): number { return this.recs.length - this.head; }
   private ckptSeq(): number { return this.ckpts.length ? this.ckpts[this.ckpts.length - 1]!.seq : 0; }
+
+  /** Forgets every frame (the in-app demo keeps none: it hands frames over as it makes them). */
+  drop(): void {
+    this.recs = [];
+    this.head = 0;
+    this.bytes = 0;
+  }
 
   push(seq: number, at: number, json: string): void {
     this.recs.push({ seq, at, json });

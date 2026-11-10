@@ -5,7 +5,7 @@
 // Env: PORT, SEED (default 7), EPOCH (ms; default now rounded down to the minute),
 //      SWITCHYARD_TOKEN (require bearer/?token= on /api/v1/*), HISTORY_HOURS (default 3).
 
-import type { Frame, Journey, PrDetail, SearchResults, Snapshot } from '../src/wire.ts';
+import type { Frame, Journey, PrDetail, SearchResults, DemoSnapshot as Snapshot } from '../src/wire.ts';
 import { FrameLog, historyJson } from './history.ts';
 import { applyFrame } from './reduce.ts';
 import { createSim, PROTOCOL } from './sim.ts';
