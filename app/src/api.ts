@@ -34,28 +34,32 @@ export class HttpUpstream implements Upstream {
   get label(): string {
     return this.base.replace(/^https?:\/\//, '');
   }
-  private async get<T>(path: string, timeout = 15000): Promise<T> {
+  /** `ceiling`: the largest reply accepted (Exact refuses a reply over it; 1 MiB unless given).
+   *  Reads with one are independent: they need no order with the other requests. */
+  private async get<T>(path: string, timeout = 15000, ceiling = 0): Promise<T> {
     const headers: Record<string, string> = { accept: 'application/json' };
     if (this.token) headers.authorization = `Bearer ${this.token}`;
-    const r = await fetch(this.base + path, { headers, exactTimeout: timeout } as RequestInit);
+    const init: Record<string, unknown> = { headers, exactTimeout: timeout };
+    if (ceiling) init.exactIndependentHttp = { maxResponseBytes: ceiling };
+    const r = await fetch(this.base + path, init as RequestInit);
     if (r.status === 404) return null as T;
     if (!r.ok) throw new Error(r.status === 401 || r.status === 403 ? `the server refused the token (${r.status})` : `${path} answered ${r.status}`);
     // Large replies (the snapshot, history) parse piece by piece across turns.
     return parseLarge<T>(await r.text());
   }
   async snapshot(): Promise<Snapshot> {
-    const s = await this.get<Snapshot | null>('/api/v1/snapshot', 30000);
+    const s = await this.get<Snapshot | null>('/api/v1/snapshot', 30000, 16 << 20);
     if (!s || typeof s !== 'object' || !('repos' in s)) throw new Error('it has no Switchyard API here (no /api/v1/snapshot)');
     return s;
   }
   history(from: number, to: number): Promise<History> {
-    return this.get<History>(`/api/v1/history?from=${Math.floor(from)}&to=${Math.floor(to)}`, 60000);
+    return this.get<History>(`/api/v1/history?from=${Math.floor(from)}&to=${Math.floor(to)}`, 60000, 24 << 20);
   }
   journey(repo: string, sha: string): Promise<Journey | null> {
-    return this.get<Journey | null>(`/api/v1/commit/${repo}/${sha}`);
+    return this.get<Journey | null>(`/api/v1/commit/${repo}/${sha}`, 15000, 4 << 20);
   }
   pr(repo: string, number: number): Promise<PrDetail | null> {
-    return this.get<PrDetail | null>(`/api/v1/pr/${repo}/${number}`);
+    return this.get<PrDetail | null>(`/api/v1/pr/${repo}/${number}`, 15000, 4 << 20);
   }
   search(q: string): Promise<SearchResults> {
     return this.get<SearchResults>(`/api/v1/search?q=${encodeURIComponent(q)}`);

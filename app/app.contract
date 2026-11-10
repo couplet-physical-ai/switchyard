@@ -42,7 +42,7 @@ component App
   resource tok = loadToken(tokGen) as shape Tok else empty(token="", has=false)
   resource conn = connect(server, tok.token, gen) with time.epochAtZero, time.utcOffset as shape Conn else empty(ok=false, status="connecting", error="", seq=0, label="", kind="", needsSetup=false)
   resource feed = liveFeed(server, tok.token, conn.seq, gen, conn.ok) as shape Ack else empty(ok=false, status="idle")
-  resource ov = overview(clockMs) as shape Overview else empty()
+  resource ov = overview(clockMs, conn.seq, conn.ok) as shape Overview else empty()
   resource found = search(q, clockMs) as shape Found else empty(hits=[])
   mutation ctl as shape Ack refreshes ov
   mutation replayed as shape Ack refreshes ov then afterReplay

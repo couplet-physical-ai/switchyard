@@ -149,15 +149,22 @@ function liveFeed(server: string, token: string, seq: number, ok: boolean) {
   if (!base) return { ok: false, status: 'idle' };
   let status = 'connecting';
   return fetch(wsUrl(base, `/api/v1/stream?since=${seq}`, token), {
+    // A resume's first message can carry many merged frames: allow 8 MiB a message.
+    exactIndependentHttp: { maxResponseBytes: 8 << 20 },
     exactStream(ev) {
       if (ev.type === 'open') status = 'live';
       else if (ev.type === 'message' && typeof ev.data === 'string') {
         status = 'live';
-        for (const f of parseFrames(ev.data)) {
+        // A coalesced message means frames were dropped on the way in: the world has a gap.
+        if ((ev as { coalesced?: number }).coalesced) status = 'reset';
+        else for (const f of parseFrames(ev.data)) {
           if (!tl.ingest(f, clock)) { status = 'reset'; break; }
         }
-      } else if (ev.type === 'error') status = 'error';
-      else if (ev.type === 'close') status = status === 'reset' ? 'reset' : 'closed';
+      } else if (ev.type === 'error') {
+        const e = ev as { kind?: string; message?: string };
+        console.log(`stream ended: ${e.kind ?? ''} ${e.message ?? ''}`);
+        status = status === 'reset' ? 'reset' : e.kind === 'Network' ? 'closed' : 'error';
+      } else if (ev.type === 'close') status = status === 'reset' ? 'reset' : 'closed';
       return { ok: status === 'live', status };
     },
   });

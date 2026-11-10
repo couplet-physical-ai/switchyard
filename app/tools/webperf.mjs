@@ -4,6 +4,7 @@
 // cold start (navigation → first fleet frame drawn), frame pacing over a window,
 // and the data module's per-frame draw cost (it records `sy:draw` measures).
 // Usage: bun tools/webperf.mjs [--dist dist] [--url /] [--seconds 10] [--size 1440x900] [--server URL]
+//        [--base http://host:port: measure a build some other server hosts, e.g. switchyard-server --static-dir]
 import { chromium } from 'playwright-core';
 import { existsSync, readdirSync } from 'node:fs';
 import { join, extname, resolve } from 'node:path';
@@ -36,10 +37,10 @@ const browser = await chromium.launch({ executablePath: chrome(), args: ['--enab
 const page = await browser.newPage({ viewport: { width: w, height: h } });
 await page.addInitScript(() => {
   globalThis.__syFrames = []; globalThis.__syLong = [];
-  globalThis.__syFirstPaint = null;
+  globalThis.__syFirstPaint = null; globalThis.__syFirstData = null;
   const probe = document.createElement('canvas'); probe.width = probe.height = 1; const pctx = probe.getContext('2d', { willReadFrequently: true });
   const painted = () => { for (const c of document.querySelectorAll('canvas')) { if (c.width < 8) continue; pctx.clearRect(0, 0, 1, 1); pctx.drawImage(c, 0, 0, c.width, c.height, 0, 0, 1, 1); const d = pctx.getImageData(0, 0, 1, 1).data; if (d[3] > 0 && d[0] + d[1] + d[2] > 3) return true; } return false; };
-  const loop = (t) => { globalThis.__syFrames.push(t); if (globalThis.__syFirstPaint === null && painted()) globalThis.__syFirstPaint = performance.now(); requestAnimationFrame(loop); }; requestAnimationFrame(loop);
+  const loop = (t) => { globalThis.__syFrames.push(t); if (globalThis.__syFirstPaint === null && painted()) globalThis.__syFirstPaint = performance.now(); if (globalThis.__syFirstData === null && document.body && / repos · /.test(document.body.innerText)) globalThis.__syFirstData = performance.now(); requestAnimationFrame(loop); }; requestAnimationFrame(loop);
   try { new PerformanceObserver((l) => { for (const e of l.getEntries()) globalThis.__syLong.push(e.duration); }).observe({ type: 'longtask', buffered: true }); } catch {}
 });
 const base = arg('base', `http://127.0.0.1:${srv.port}`);
@@ -47,8 +48,8 @@ const url = `${base}${route}${server ? (route.includes('?') ? '&' : '?') + 'serv
 const logs = []; page.on('console', (m) => logs.push(m.text())); page.on('pageerror', (e) => logs.push('pageerror ' + e.message));
 const t0 = Date.now();
 await page.goto(url);
-await page.waitForFunction(() => globalThis.__syFirstPaint !== null, null, { timeout: 15000 }).catch(() => {});
-const marks = { firstCanvasPaint: await page.evaluate(() => globalThis.__syFirstPaint) };
+await page.waitForFunction(() => globalThis.__syFirstPaint !== null && globalThis.__syFirstData !== null, null, { timeout: 15000 }).catch(() => {});
+const marks = await page.evaluate(() => ({ firstCanvasPaint: globalThis.__syFirstPaint, firstLiveData: globalThis.__syFirstData }));
 const cdp = await page.context().newCDPSession(page); await cdp.send('Performance.enable');
 const metric = async () => Object.fromEntries((await cdp.send('Performance.getMetrics')).metrics.map((m) => [m.name, m.value]));
 await page.waitForTimeout(1000);
