@@ -32,7 +32,8 @@ timeout 7200 "${SSH[@]}" "set -e
   # git archive has no .git: give build-macos.sh a build number
   export SWITCHYARD_BUILD_NUMBER=\$(date +%s)
   scripts/release/build-macos.sh --mode '$MODE' --version '$V'
-  scripts/release/package-macos.sh '$V'"
+  scripts/release/package-macos.sh '$V'
+  if [ '$MODE' = app ]; then EXACT2=\$EXACT_DIR app/scripts/build.sh test macos; fi"
 rm -rf dist && mkdir -p dist
 timeout 600 "${SSH[@]}" "tar -C '$src/dist' -cf - Switchyard-$V-arm64.zip Switchyard-$V-arm64.dmg SHA256SUMS" | tar -C dist -xf -
 (cd dist && sha256sum -c SHA256SUMS)
