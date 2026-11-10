@@ -294,6 +294,7 @@ export const sources: Sources = {
   mainlines: ([_t, org, filter, q, focus]) => safe('mainlines', EMPTY_ML, () => mainlinesHeader(org, filter, q, focus)),
   prs: ([_t, org, filter, q, repo]) => safe('prs', EMPTY_PRS, () => prsHeader(org, filter, q, repo)),
   tablePick: ([table, x, y]) => safe('tablePick', NO_HIT, () => tablePick(table, x, y)),
+  viewOnTop: ([here]) => { topView = String(here ?? ''); return { ok: true, status: topView }; },
   tableKey: ([table, key]) => safe('tableKey', NO_HIT, () => tableKey(table, key)),
   fleet: () => safe('fleet', EMPTY_FLEET, () => fleet(tl.world, tl.playhead)),
   journey: async ([_s, _tok, repo, sha, t]) => {
@@ -422,7 +423,13 @@ export const answer: Answer = ((source: keyof Sources, args: unknown, store: Sto
 // ---- canvases ------------------------------------------------------------------------------
 export const surfaces: Record<string, number> = { yardStatic: 1, yardLive: 2, mainlinesTable: 9, prsTable: 9 };
 
+/** The route on top (`viewOnTop`). The yard stays mounted under every other view; its live
+ *  layer animating there cost 3-4× the ops of the view on top. Covered, it is not drawn (the
+ *  canvas keeps its last pixels) and asks for frames still, so it resumes on its first frame. */
+let topView = '';
+
 export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame): boolean {
+  if (surface === 'yardLive' && topView !== '' && topView !== 'yard') return true;
   try {
     return drawSurface(surface, args, ctx, frame);
   } catch (e) {

@@ -7,11 +7,26 @@ import type { Pr } from '../wire.ts';
 import type { World } from '../world.ts';
 import { ago, phaseIndex, short } from '../project.ts';
 import { arrow, withAlpha } from '../yard/paint.ts';
-import { C, FACE, TAU } from '../yard/theme.ts';
-import { CanvasTable, type RowCtx, advance, fit } from './table.ts';
+import { C, FACE } from '../yard/theme.ts';
+import { CanvasTable, DotBatch, RectBatch, type RowCtx, advance, fit } from './table.ts';
 import { TXT3, author, coarse } from './mainlines.ts';
 
-export type PrTableRow = { id: string; pr: Pr; bad: boolean; updated: number };
+export type PrTableRow = { id: string; pr: Pr; bad: boolean; group: number; updated: number };
+
+/** The row's group: stuck, ready, in review, in checks, draft, then the shipped and closed. */
+function groupOf(pr: Pr, bad: boolean): number {
+  if (bad) return 0;
+  switch (pr.phase) {
+    case 'mergeable': return 1;
+    case 'review': return 2;
+    case 'checks': return 3;
+    case 'draft': return 4;
+    case 'merged': return 5;
+    case 'deployed': return 6;
+    case 'closed': return 7;
+    default: return 8;
+  }
+}
 
 export const PR_DENSE = 20;
 export const PR_OPEN = 56;
@@ -104,6 +119,7 @@ export class PrsModel {
   seq = 0;
   counts = { open: 0, ready: 0, blocked: 0, bots: 0, total: 0 };
   private cols: Cols | null = null;
+  private batches: Batches = { dots: new DotBatch(), rects: new RectBatch() };
 
   constructor() {
     this.table.padTop = HEAD;
@@ -133,9 +149,11 @@ export class PrsModel {
       if (filter === 'shipped' && isOpen) continue;
       const id = `${pr.repo}#${pr.number}`;
       if (ql && !(`${id} ${pr.title ?? ''} ${pr.author ?? ''}`.toLowerCase().includes(ql))) continue;
-      rows.push({ id, pr, bad: stuckAt(pr) >= 0 || pr.phase === 'conflict' || pr.phase === 'changes_requested', updated: Number(pr.updated) || 0 });
+      const bad = stuckAt(pr) >= 0;
+      rows.push({ id, pr, bad, group: groupOf(pr, bad), updated: Number(pr.updated) || 0 });
     }
-    rows.sort((a, b) => Number(b.bad) - Number(a.bad) || b.updated - a.updated || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    // Grouped by where they stand, the stuck first, then the closest to shipping (review #17).
+    rows.sort((a, b) => a.group - b.group || b.updated - a.updated || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     this.world = w;
     this.ver = w.ver;
     this.key = key;
@@ -155,7 +173,10 @@ export class PrsModel {
   draw(ctx: Ctx2D, frame: Frame, now: number, loaded: boolean): boolean {
     if (!this.cols || this.cols.W !== frame.width) this.cols = columns(frame.width);
     const cols = this.cols;
-    const moving = this.table.draw(ctx, frame, (c, row, rc) => paintPr(c, row, rc, cols), now, loaded ? 'No pull request matches.' : 'Waiting for the fleet…');
+    const rows = this.rows, b = this.batches;
+    const moving = this.table.draw(ctx, frame, (c, row, rc) => paintPr(c, row, rc, cols, rows[rc.index + 1]?.group, b), now, loaded ? 'No pull request matches.' : 'Waiting for the fleet…');
+    b.rects.flush(ctx);
+    b.dots.flush(ctx);
     paintHeader(ctx, cols, frame.width);
     return moving;
   }
@@ -181,7 +202,9 @@ function paintHeader(ctx: Ctx2D, k: Cols, W: number): void {
   ctx.letterSpacing = '0px';
 }
 
-function paintPr(ctx: Ctx2D, row: PrTableRow, rc: RowCtx, k: Cols): void {
+type Batches = { dots: DotBatch; rects: RectBatch };
+
+function paintPr(ctx: Ctx2D, row: PrTableRow, rc: RowCtx, k: Cols, nextGroup: number | undefined, b: Batches): void {
   const { y, h, W, e, focused, hits, now } = rc;
   const pr = row.pr;
   if (e > 0 || focused) {
@@ -189,17 +212,17 @@ function paintPr(ctx: Ctx2D, row: PrTableRow, rc: RowCtx, k: Cols): void {
     ctx.fillRect(0, y, W, h);
     if (focused) { ctx.fillStyle = C.brand; ctx.fillRect(0, y + 2, 2, h - 4); }
   }
-  ctx.fillStyle = HAIR;
-  ctx.fillRect(k.name, y + h - 1, W - k.name - 12, 1);
+  // hairline under the row; a stronger, full one where the group changes
+  const edge = nextGroup !== undefined && nextGroup !== row.group;
+  ctx.fillStyle = edge ? '#262628' : HAIR;
+  ctx.fillRect(edge ? 0 : k.name, y + h - 1, edge ? W : W - k.name - 12, 1);
   const cy = y + 14;
   const states = chipStates(pr);
   const [word, wordC] = phaseWord(pr);
   // glyph: where it stands
   const bad = states.includes('bad');
   ctx.fillStyle = bad ? C.red : pr.phase === 'mergeable' ? C.green : !isOpenPhase(pr.phase) ? C.greenEdge : pr.phase === 'draft' ? C.machineDim : C.packet;
-  ctx.beginPath();
-  ctx.roundRect(k.glyph, y + 7, 6, 6, 1.5);
-  ctx.fill();
+  ctx.fillRect(k.glyph, y + 7, 6, 6);
 
   ctx.textAlign = 'left';
   const a12b = advance(ctx, F12B), a11 = advance(ctx, F11), a12 = advance(ctx, F12);
@@ -219,9 +242,13 @@ function paintPr(ctx: Ctx2D, row: PrTableRow, rc: RowCtx, k: Cols): void {
 
   // the phase track: mini-chips at LOD2 (fading out as the row opens to the labelled one)
   const mini = 1 - Math.min(1, e * 1.6);
-  if (mini > 0) {
+  if (mini >= 1) miniTrack(b.rects, states, k.track, y + 10);
+  else if (mini > 0) {
+    // (a row opening: its own, faded; it is one row of the frame)
+    const own = new RectBatch();
+    miniTrack(own, states, k.track, y + 10);
     ctx.globalAlpha = mini;
-    miniTrack(ctx, states, k.track, y + 10);
+    own.flush(ctx);
     ctx.globalAlpha = 1;
   }
   ctx.font = F11;
@@ -242,18 +269,13 @@ function paintPr(ctx: Ctx2D, row: PrTableRow, rc: RowCtx, k: Cols): void {
     ctx.fillText(t, cx, cy);
     cx += (t.length + 0.5) * a11;
   }
-  const groups = new Map<string, number[]>();
-  shown.forEach((c, i) => {
-    const col = c.state === 'success' ? C.ink2 : isFail(c.state) ? C.red : c.state === 'running' || c.state === 'pending' ? C.packet : C.dotDim;
-    let a = groups.get(col);
-    if (!a) groups.set(col, (a = []));
-    a.push(cx + 3 + i * 6);
-  });
-  for (const [col, xs] of groups) {
-    ctx.beginPath();
-    for (const x of xs) { ctx.moveTo(x + 2.2, y + 10); ctx.arc(x, y + 10, 2.2, 0, TAU); }
-    ctx.fillStyle = col;
-    ctx.fill();
+  const dotColor = (st: string) => (st === 'success' ? C.ink2 : isFail(st) ? C.red : st === 'running' || st === 'pending' ? C.packet : C.dotDim);
+  for (let i = 0; i < shown.length;) {
+    const col = dotColor(shown[i].state);
+    let j = i + 1;
+    while (j < shown.length && dotColor(shown[j].state) === col) j++;
+    b.dots.add(col, 2.2, 6, cx + 3 + i * 6, y + 10, j - i);
+    i = j;
   }
   cx += shown.length ? shown.length * 6 + 4 : 0;
   if (failed) { ctx.fillStyle = C.redText; ctx.fillText(`${failed} red`, cx, cy); }
@@ -324,21 +346,18 @@ function bigChip(ctx: Ctx2D, label: string, x: number, cy: number, st: string, a
   return w + 1;
 }
 
-/** Six dashed mini-chips (12×8, 3 apart): passed green, the current solid amber, the stuck
- *  one red, a never-taken draft a faint outline. */
-function miniTrack(ctx: Ctx2D, states: string[], x0: number, cy: number): void {
+/** Six dashed mini-chips (11×7, 15 apart): passed green, the current solid amber, the stuck
+ *  one red, a never-taken draft a faint outline. Into the frame's rect batch: one op a chip. */
+function miniTrack(rects: RectBatch, states: string[], x0: number, cy: number): void {
   for (let i = 0; i < states.length; i++) {
     const st = states[i];
-    const x = x0 + i * 15;
-    ctx.beginPath();
-    ctx.roundRect(x + 0.5, cy - 3.5, 11, 7, 2);
-    if (st === 'ok') { ctx.fillStyle = C.greenFill; ctx.fill(); }
-    else if (st === 'bad') { ctx.fillStyle = C.redFill; ctx.fill(); }
-    else if (st === 'active') { ctx.fillStyle = withAlpha(C.packet, 0.9); ctx.fill(); }
-    ctx.setLineDash(st === 'idle' || st === 'skip' ? [2, 2] : []);
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = st === 'ok' ? C.greenEdge : st === 'bad' ? C.red : st === 'active' ? C.packet : st === 'skip' ? withAlpha(C.chipEdge, 0.45) : C.chipEdge;
-    ctx.stroke();
-    ctx.setLineDash([]);
+    const x = x0 + i * 15 + 0.5, y = cy - 3.5;
+    if (st === 'ok') rects.add(C.greenFill, C.greenEdge, false, x, y, 11, 7);
+    else if (st === 'bad') rects.add(C.redFill, C.red, false, x, y, 11, 7);
+    else if (st === 'active') rects.add(C.packet, null, false, x, y, 11, 7);
+    else if (st === 'idle') rects.add(null, C.chipEdge, true, x, y, 11, 7);
+    else rects.add(null, SKIP_EDGE, true, x, y, 11, 7);
   }
 }
+
+const SKIP_EDGE = withAlpha(C.chipEdge, 0.45);

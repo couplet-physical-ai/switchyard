@@ -411,10 +411,8 @@ export class CanvasTable<R> {
       if (a > 0) {
         const th = Math.max(24, H * (H / total));
         const ty = (H - th) * (this.scroll / Math.max(1, total - H));
-        ctx.beginPath();
-        ctx.roundRect(W - 4, ty, 3, th, 1.5);
         ctx.fillStyle = withAlpha(C.ink3, 0.55 * a);
-        ctx.fill();
+        ctx.fillRect(W - 4, ty, 3, th);
       }
     }
     this.lastPainted = painted;
@@ -442,4 +440,74 @@ export function fit(s: string, maxW: number, a: number): string {
   const n = Math.floor(maxW / a);
   if (s.length <= n) return s;
   return n <= 1 ? '…' : `${s.slice(0, n - 1)}…`;
+}
+
+/** Dots batched across a frame's rows. A run of n dots of one colour at one pitch is ONE short
+ *  dashed subpath (a 0.01 px dash with round caps paints a dot), and a colour is one stroke:
+ *  two ops a run instead of six a dot (an arc is four curves), which is most of a dense table's
+ *  ops. Flush once, after the rows. */
+export class DotBatch {
+  private groups = new Map<string, { color: string; r: number; pitch: number; runs: number[] }>();
+
+  /** `n` dots from `x0` rightward, `pitch` apart, centred on `y`. */
+  add(color: string, r: number, pitch: number, x0: number, y: number, n: number): void {
+    if (n <= 0) return;
+    const p = Math.round(pitch * 100) / 100;
+    const key = `${color}|${r}|${p}`;
+    let g = this.groups.get(key);
+    if (!g) this.groups.set(key, (g = { color, r, pitch: p, runs: [] }));
+    g.runs.push(x0, y, n);
+  }
+
+  flush(ctx: Ctx2D): void {
+    if (!this.groups.size) return;
+    ctx.lineCap = 'round';
+    for (const g of this.groups.values()) {
+      ctx.setLineDash([0.01, Math.max(0.5, g.pitch - 0.01)]);
+      ctx.lineWidth = 2 * g.r;
+      ctx.strokeStyle = g.color;
+      ctx.beginPath();
+      const rs = g.runs;
+      for (let i = 0; i < rs.length; i += 3) {
+        ctx.moveTo(rs[i], rs[i + 1]);
+        ctx.lineTo(rs[i] + (rs[i + 2] - 1) * g.pitch + 0.02, rs[i + 1]);
+      }
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.lineCap = 'butt';
+    this.groups.clear();
+  }
+}
+
+/** Rectangles batched across a frame's rows by look (fill, edge, dashed): one style switch a
+ *  look, one op a rectangle. */
+export class RectBatch {
+  private looks = new Map<string, { fill: string | null; edge: string | null; dashed: boolean; xs: number[] }>();
+
+  add(fill: string | null, edge: string | null, dashed: boolean, x: number, y: number, w: number, h: number): void {
+    const key = `${fill}|${edge}|${dashed}`;
+    let l = this.looks.get(key);
+    if (!l) this.looks.set(key, (l = { fill, edge, dashed, xs: [] }));
+    l.xs.push(x, y, w, h);
+  }
+
+  flush(ctx: Ctx2D): void {
+    if (!this.looks.size) return;
+    ctx.lineWidth = 1;
+    for (const l of this.looks.values()) {
+      const xs = l.xs;
+      if (l.fill) {
+        ctx.fillStyle = l.fill;
+        for (let i = 0; i < xs.length; i += 4) ctx.fillRect(xs[i], xs[i + 1], xs[i + 2], xs[i + 3]);
+      }
+      if (l.edge) {
+        if (l.dashed) ctx.setLineDash([2, 2]);
+        ctx.strokeStyle = l.edge;
+        for (let i = 0; i < xs.length; i += 4) ctx.strokeRect(xs[i], xs[i + 1], xs[i + 2], xs[i + 3]);
+        if (l.dashed) ctx.setLineDash([]);
+      }
+    }
+    this.looks.clear();
+  }
 }

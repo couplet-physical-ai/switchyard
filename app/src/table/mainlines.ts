@@ -9,7 +9,7 @@ import { ago, laneText, mainState, short } from '../project.ts';
 import { orgLabel } from '../yard/layout.ts';
 import { withAlpha } from '../yard/paint.ts';
 import { C, FACE, TAU, clamp } from '../yard/theme.ts';
-import { CanvasTable, type RowCtx, type SubHit, advance, fit } from './table.ts';
+import { CanvasTable, DotBatch, type RowCtx, type SubHit, advance, fit } from './table.ts';
 
 export type MlState = 'red' | 'building' | 'green' | 'quiet';
 export type MlRow = { id: string; r: Repo; st: MlState; heat: number };
@@ -87,31 +87,52 @@ type Cols = {
   W: number; glyph: number; name: number; nameW: number; org: number; orgW: number; lane: number; laneW: number;
   state: number; stateW: number; dots0: number; dots1: number; head: number; headW: number; right: number;
   open1: number; prsR: number;
+  /** The 11 px columns as character cells from `org` (monospace): one fillText paints them all. */
+  a: number; cOrg: number; cLane: number; cState: number; cHead: number; cPrs: number; cEnd: number;
 };
 
-function columns(W: number, maxDots: number): Cols {
+/** The columns at width W; the 11 px ones snapped to character cells of advance `a`. */
+function columns(W: number, maxDots: number, a: number): Cols {
   const m = 12;
   const glyph = m;
   const name = m + 12;
   const nameW = W >= 1280 ? 210 : W >= 1100 ? 180 : 150;
-  let x = name + nameW + 10;
+  const org = name + nameW + 10;
+  const cell = (x: number) => Math.round((x - org) / a);
+  const at = (c: number) => org + c * a;
   const orgW = W >= 1100 ? 62 : 0;
-  const org = x; x += orgW ? orgW + 8 : 0;
+  const cLane = cell(org + (orgW ? orgW + 8 : 0));
   const laneW = W >= 1220 ? 116 : 0;
-  const lane = x; x += laneW ? laneW + 8 : 0;
+  const cState = cell(at(cLane) + (laneW ? laneW + 8 : 0));
   const stateW = W >= 1100 ? 178 : 150;
-  const state = x; x += stateW + 12;
+  const x = at(cState) + stateW + 12;
   const right = W - m;
+  const cEnd = Math.floor((right - org) / a);
   // the dense line's room: every dot of the longest main line at 9 px (v0.4 keeps ≤ 12)
   const n = Math.max(12, Math.min(40, maxDots));
   const dotsW = Math.max(120, Math.min(n * 9 + 8, right - 120 - x));
   const dots0 = x, dots1 = x + dotsW;
-  const head = dots1 + 22;
-  const prsR = right - 62;
-  const headW = Math.max(0, prsR - 56 - head);
+  const cHead = cell(dots1 + 22) + 1;
+  const cPrs = cEnd - 9;
+  const headW = Math.max(0, at(cPrs) - 5 * a - at(cHead));
   // LOD0's line: the same dots at 15 px, newest at one x for every row, over the head column
-  const open1 = Math.max(dots1, Math.min(prsR - 70, dots0 + (n - 1) * 15 + 14));
-  return { W, glyph, name, nameW, org, orgW, lane, laneW, state, stateW, dots0, dots1, head, headW: headW >= 120 ? headW : 0, right, open1, prsR };
+  const open1 = Math.max(dots1, Math.min(at(cPrs) - 70, dots0 + (n - 1) * 15 + 14));
+  return {
+    W, glyph, name, nameW, org, orgW, lane: at(cLane), laneW, state: at(cState), stateW, dots0, dots1, head: at(cHead), headW: headW >= 120 ? headW : 0,
+    right: at(cEnd), open1, prsR: at(cPrs), a, cOrg: 0, cLane, cState, cHead, cPrs, cEnd,
+  };
+}
+
+/** Text in character cells: [cell, text, cells it may take, right-aligned]; '' between. */
+function cells(n: number, parts: [number, string, number, boolean][]): string {
+  const out = new Array<string>(n).fill(' ');
+  for (const [c, t, w, right] of parts) {
+    if (!t || w <= 0) continue;
+    const s = t.length > w ? (w <= 1 ? '…' : `${t.slice(0, w - 1)}…`) : t;
+    const c0 = right ? c - s.length : c;
+    for (let i = 0; i < s.length; i++) if (c0 + i >= 0 && c0 + i < n) out[c0 + i] = s[i];
+  }
+  return out.join('').trimEnd();
 }
 
 export class MainlinesModel {
@@ -125,6 +146,7 @@ export class MainlinesModel {
   counts = { total: 0, red: 0, building: 0, shown: 0 };
   private cols: Cols | null = null;
   private maxDots = 12;
+  private dots = new DotBatch();
 
   constructor() {
     this.table.padTop = HEAD;
@@ -178,10 +200,11 @@ export class MainlinesModel {
   }
 
   draw(ctx: Ctx2D, frame: Frame, now: number, loaded: boolean): boolean {
-    if (!this.cols || this.cols.W !== frame.width) this.cols = columns(frame.width, this.maxDots);
+    if (!this.cols || this.cols.W !== frame.width) this.cols = columns(frame.width, this.maxDots, advance(ctx, F11));
     const cols = this.cols;
-    const rows = this.rows;
-    const moving = this.table.draw(ctx, frame, (c, row, rc) => paintRow(c, row, rc, cols, rows[rc.index + 1]?.st), now, loaded ? 'No repo matches.' : 'Waiting for the fleet…');
+    const rows = this.rows, batch = this.dots;
+    const moving = this.table.draw(ctx, frame, (c, row, rc) => paintRow(c, row, rc, cols, rows[rc.index + 1]?.st, batch), now, loaded ? 'No repo matches.' : 'Waiting for the fleet…');
+    batch.flush(ctx);
     paintHeader(ctx, cols, frame.width);
     return moving;
   }
@@ -213,7 +236,7 @@ function paintHeader(ctx: Ctx2D, k: Cols, W: number): void {
   ctx.letterSpacing = '0px';
 }
 
-function paintRow(ctx: Ctx2D, row: MlRow, rc: RowCtx, k: Cols, nextSt: MlState | undefined): void {
+function paintRow(ctx: Ctx2D, row: MlRow, rc: RowCtx, k: Cols, nextSt: MlState | undefined, batch: DotBatch): void {
   const { y, h, W, e, focused, hits, now } = rc;
   const r = row.r;
   // ground: the focused row raised with a brand edge, a hovered one lifted
@@ -231,44 +254,46 @@ function paintRow(ctx: Ctx2D, row: MlRow, rc: RowCtx, k: Cols, nextSt: MlState |
   // state glyph
   const gc = row.st === 'red' ? C.red : row.st === 'building' ? C.packet : row.st === 'green' ? C.greenEdge : C.machineDim;
   ctx.fillStyle = gc;
-  ctx.beginPath();
-  ctx.roundRect(k.glyph, y + 7, 6, 6, 1.5);
-  ctx.fill();
+  ctx.fillRect(k.glyph, y + 7, 6, 6);
 
   ctx.textAlign = 'left';
   const a12b = advance(ctx, F12B);
   ctx.font = F12B;
   ctx.fillStyle = row.st === 'quiet' ? C.ink2 : C.ink;
   ctx.fillText(fit(String(r.name ?? row.id), k.nameW, a12b), k.name, cy);
-  const a11 = advance(ctx, F11);
-  ctx.font = F11;
-  if (k.orgW) { ctx.fillStyle = TXT3; ctx.fillText(fit(orgLabel(String(r.org ?? '')), k.orgW, a11), k.org, cy); }
-  if (k.laneW) { ctx.fillStyle = TXT3; ctx.fillText(fit(laneText(String(r.lane ?? '')), k.laneW, a11), k.lane, cy); }
-  ctx.font = F11;
-  ctx.fillStyle = row.st === 'red' ? C.redText : row.st === 'building' ? C.amberText : TXT3;
-  ctx.fillText(fit(stateWords(row, now), k.stateW, a11), k.state, cy);
-
+  const a11 = k.a;
   const dots = dotsOf(r);
-  // last commit (LOD2 only room: the head column)
-  if (k.headW && e < 1) {
-    // (LOD0 says it on its second line, and its dot line takes this room)
-    const last = dots.at(-1);
-    if (last) {
-      ctx.globalAlpha = 1 - e;
-      ctx.fillStyle = TXT3;
-      ctx.fillText(fit(`${short(last.sha ?? '')} ${last.title ?? ''}${last.author ? ` · ${author(last.author)}` : ''}`, k.headW, a11), k.head, cy);
-      ctx.globalAlpha = 1;
-    }
-  }
-  // open PRs, age of the newest commit: right-aligned columns
-  ctx.textAlign = 'right';
-  ctx.fillStyle = TXT3;
   const prs = Number(r.open_prs) || 0;
   const age = shortAge(now, dots.at(-1)?.at ?? (r.last_activity || undefined));
-  if (prs) { ctx.fillStyle = C.ink2; ctx.fillText(`${prs}`, k.prsR, cy); }
+  const last = dots.at(-1);
+  const words = stateWords(row, now);
+  const plain = row.st === 'green' || row.st === 'quiet';
+  const stateC = Math.floor(k.stateW / a11);
+  // Every gray 11 px column in ONE fillText (a monospace row is a grid of cells): org, lane,
+  // the state when it is not red or amber, the last commit (LOD2: LOD0 says it on its second
+  // line and its dot line takes the room), the open PRs and the age.
+  const gray: [number, string, number, boolean][] = [
+    [k.cOrg, k.orgW ? orgLabel(String(r.org ?? '')) : '', Math.floor(k.orgW / a11), false],
+    [k.cLane, k.laneW ? laneText(String(r.lane ?? '')) : '', Math.floor(k.laneW / a11), false],
+    [k.cState, plain ? words : '', stateC, false],
+    [k.cPrs, prs ? String(prs) : '', 5, true],
+    [k.cEnd, age || '–', 8, true],
+  ];
+  const headText = k.headW && last ? `${short(last.sha ?? '')} ${last.title ?? ''}${last.author ? ` · ${author(last.author)}` : ''}` : '';
+  if (e === 0) gray.push([k.cHead, headText, Math.floor(k.headW / a11), false]);
+  ctx.font = F11;
   ctx.fillStyle = TXT3;
-  ctx.fillText(age || '–', k.right, cy);
-  ctx.textAlign = 'left';
+  ctx.fillText(cells(k.cEnd, gray), k.org, cy);
+  if (!plain) {
+    ctx.fillStyle = row.st === 'red' ? C.redText : C.amberText;
+    ctx.fillText(fit(words, k.stateW, a11), k.state, cy);
+  }
+  if (e > 0 && e < 1 && headText) {
+    ctx.globalAlpha = 1 - e;
+    ctx.fillStyle = TXT3;
+    ctx.fillText(fit(headText, k.headW, a11), k.head, cy);
+    ctx.globalAlpha = 1;
+  }
 
   // the main line: compact at LOD2, full at LOD0, interpolated between
   const x1 = k.dots1 - 10 + (k.open1 - k.dots1) * e;
@@ -276,7 +301,7 @@ function paintRow(ctx: Ctx2D, row: MlRow, rc: RowCtx, k: Cols, nextSt: MlState |
   const avail = x1 - k.dots0;
   const pitch = Math.min(9 + 6 * e, avail / Math.max(1, Math.min(40, dots.length)));
   const red = row.st === 'red';
-  if (pitch >= 4.5 || e > 0.5) mainLine(ctx, dots, k.dots0, x1, lineY, Math.max(4.5, pitch), 2.6 + 1.6 * e, e, red, red ? r.main?.culprit ?? null : null, hits, row.id);
+  if (pitch >= 4.5 || e > 0.5) mainLine(ctx, dots, k.dots0, x1, lineY, Math.max(4.5, pitch), 2.6 + 1.6 * e, e, red, red ? r.main?.culprit ?? null : null, hits, row.id, batch);
   else bars(ctx, dots, k.dots0, x1, lineY, now, red);
 
   if (e <= 0.05) return;
@@ -343,34 +368,24 @@ function focusedHint(rc: RowCtx): string {
 }
 
 /** The dots, newest at `x1`: reds older than the last green as rings, the current streak solid. */
-function mainLine(ctx: Ctx2D, dots: Dot[], x0: number, x1: number, y: number, pitch: number, r: number, e: number, red: boolean, culprit: string | null, hits: SubHit[] | null, repo: string): void {
+function mainLine(ctx: Ctx2D, dots: Dot[], x0: number, x1: number, y: number, pitch: number, r: number, e: number, red: boolean, culprit: string | null, hits: SubHit[] | null, repo: string, batch: DotBatch): void {
   const n = Math.max(0, Math.min(dots.length, Math.floor((x1 - x0) / pitch) + 1, 40));
   const list = dots.slice(dots.length - n);
   const left = x1 - (list.length - 1) * pitch;
   const lg = lastGreen(list);
   const ci = culprit ? list.findIndex((d) => d?.sha === culprit) : -1;
-  // rail and cap
-  ctx.beginPath();
-  ctx.moveTo(list.length ? left - 4 : x0, y + 0.5);
-  ctx.lineTo(x1 + 6 + 2 * e, y + 0.5);
-  ctx.strokeStyle = C.wire;
-  ctx.lineWidth = 1;
-  ctx.stroke();
+  // rail and cap (rects: one op each)
+  const railX = list.length ? left - 4 : x0;
+  ctx.fillStyle = C.wire;
+  ctx.fillRect(railX, Math.round(y), x1 + 6 + 2 * e - railX, 1);
   if (red && ci >= 0) {
-    ctx.beginPath();
-    ctx.moveTo(x1 - (list.length - 1 - ci) * pitch, y + 0.5);
-    ctx.lineTo(x1 + 6 + 2 * e, y + 0.5);
-    ctx.strokeStyle = withAlpha(C.red, 0.5);
-    ctx.stroke();
+    const cx = x1 - (list.length - 1 - ci) * pitch;
+    ctx.fillStyle = withAlpha(C.red, 0.5);
+    ctx.fillRect(cx, Math.round(y), x1 + 6 + 2 * e - cx, 1);
   }
   const capH = 9 + 9 * e;
-  ctx.beginPath();
-  ctx.roundRect(x1 + 6 + 2 * e, y - capH / 2, 3 + 3 * e, capH, 1.5);
-  ctx.fillStyle = C.port;
-  ctx.fill();
-  ctx.strokeStyle = C.portEdge;
-  ctx.lineWidth = 1;
-  ctx.stroke();
+  ctx.fillStyle = C.portEdge;
+  ctx.fillRect(x1 + 6 + 2 * e, y - capH / 2, 3 + 3 * e, capH);
   if (!list.length) return;
   // batched by colour: solid fills, then the rings
   const solid = new Map<string, number[]>();
@@ -387,12 +402,24 @@ function mainLine(ctx: Ctx2D, dots: Dot[], x0: number, x1: number, y: number, pi
     else if (s === 'pending' || s === 'blocked') push(solid, TXT3, x);
     else push(solid, C.dotDim, x);
   }
-  for (const [c, xs] of solid) {
-    const rr = c === C.dotDim ? r * 0.7 : r;
-    ctx.beginPath();
-    for (const x of xs) { ctx.moveTo(x + rr, y); ctx.arc(x, y, rr, 0, TAU); }
-    ctx.fillStyle = c;
-    ctx.fill();
+  if (e < 0.05) {
+    // LOD2: the dots go to the frame's batch, a run of one colour at a time
+    let i = 0;
+    while (i < list.length) {
+      const c = colorAt(list, i, lg);
+      let j = i + 1;
+      while (j < list.length && colorAt(list, j, lg) === c) j++;
+      if (c) batch.add(c, c === C.dotDim ? r * 0.7 : r, pitch, x1 - (list.length - 1 - i) * pitch, y, j - i);
+      i = j;
+    }
+  } else {
+    for (const [c, xs] of solid) {
+      const rr = c === C.dotDim ? r * 0.7 : r;
+      ctx.beginPath();
+      for (const x of xs) { ctx.moveTo(x + rr, y); ctx.arc(x, y, rr, 0, TAU); }
+      ctx.fillStyle = c;
+      ctx.fill();
+    }
   }
   if (oldRed.length) {
     ctx.beginPath();
@@ -444,6 +471,16 @@ function mainLine(ctx: Ctx2D, dots: Dot[], x0: number, x1: number, y: number, pi
       hits.push({ x: x - pitch / 2, y: y - r - 4, w: pitch, h: 2 * r + 8, kind: 'commit', id: `${repo}@${d.sha}`, route: `/commit/${repo}/${d.sha}`, label: `${short(d.sha)} ${d.title ?? ''}` });
     }
   }
+}
+
+/** A dot's solid colour ('' for an old red, drawn as a ring). */
+function colorAt(list: Dot[], i: number, lg: number): string {
+  const s = list[i]?.state;
+  if (isFail(s)) return i < lg ? '' : C.red;
+  if (s === 'success') return C.dot;
+  if (s === 'running') return C.ink;
+  if (s === 'pending' || s === 'blocked') return TXT3;
+  return C.dotDim;
 }
 
 function push(m: Map<string, number[]>, c: string, x: number): void {

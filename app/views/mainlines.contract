@@ -2,7 +2,7 @@
 // ONE canvas draws the rows in view (src/table/), however many repos there are; this file is
 // the header around it and the state the canvas is drawn from (focus, wheel, pointer).
 
-use Mainlines, Hit from "./shapes.contract"
+use Mainlines, Hit, Ack from "./shapes.contract"
 
 members App
   state mlOrg = ""
@@ -16,6 +16,9 @@ members App
   state mlPx = -1
   state mlPy = -1
   state mlKick = 0
+  // Which view is on top: the data module stops drawing the yard's live layer while it is
+  // covered (the stack keeps the yard mounted under every other view).
+  resource syTop = viewOnTop(here) as shape Ack else empty(ok=false, status="")
   derive mlFocus = (mlOwn and mlLink == searchParam(top(nav), "repo")) ? mlPicked : searchParam(top(nav), "repo")
   resource mlData = mainlines(here == "mainlines" ? clockMs : 0, mlOrg, mlFilter, mlQ, mlFocus) as shape Mainlines else empty(total=0, red=0, building=0, shown=0, tick=0, top="", atEnd=false, focusText="", focusShown=false, summary="")
   mutation mlHit as shape Hit then mlAfterHit
@@ -105,6 +108,8 @@ component MainlinesView
               text (f == "" ? "all" : f) font-size=11 color=(filter == f ? (f == "red" ? "sy.red-text" : "sy.ink") : "sy.ink3")
         input type="search" value=q input=typed aria-label="Filter repos" placeholder="filter repos" testId="mainlines-filter" width=170
           padding="4px 9px" font-size=12 border-radius=7 background-color="sy.raised" border="1px solid sy.edge" color="sy.ink"
+          ::placeholder
+            color="sy.ink3"
       column flex=1 min-height=0 position="relative"
         if active
           canvas surface=mainlinesTable(data.tick, focus, wheel, px, py, org, filter, q, kick) position="absolute" left=0 top=0 width="100%" height="100%"

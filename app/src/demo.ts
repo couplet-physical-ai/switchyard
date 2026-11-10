@@ -29,6 +29,9 @@ export class DemoUpstream implements Upstream {
   /** A demo at `epoch`, its warm-up run 10 s of fleet time per turn (a turn has 100 ms). */
   static async start(epoch: number, seed = 7): Promise<DemoUpstream> {
     const d = new DemoUpstream(epoch, seed);
+    // The seeding is one turn and the warm-up others: on a busy Mac (efficiency cores) the
+    // two together went over a turn's 100 ms budget.
+    await yieldTurn();
     while (!d.sim.warm(10_000)) await yieldTurn();
     return d;
   }
