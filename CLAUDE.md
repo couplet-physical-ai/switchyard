@@ -15,7 +15,7 @@ Pipelines (path-filtered, so a client-only change never rebuilds the server):
 macOS releases are the exception: they build on **GitHub Actions** macOS runners
 (`.github/workflows/release.yml`, tag `v*`), publish a GitHub release and bump the cask in
 [`couplet-physical-ai/homebrew-tap`](https://github.com/couplet-physical-ai/homebrew-tap).
-Check those with `gh run list -w release.yml`. Release steps: `packaging/RELEASING.md`.
+Check those with `gh run list -w release.yml`. One command cuts a release: `scripts/release.sh <version>`; details in `packaging/RELEASING.md`.
 
 ## Public repo
 
