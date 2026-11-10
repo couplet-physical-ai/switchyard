@@ -25,6 +25,16 @@ style Field
   ::placeholder
     color="#8A8A8A"
 
+style Primary
+  appearance="none"
+  padding="6px 14px"
+  border-radius=6
+  border="1px solid sy.brand"
+  background-color="sy.brand"
+  color="#0E0E0E"
+  font-size=12
+  font-weight=700
+
 style Quiet
   appearance="none"
   padding="6px 12px"
@@ -196,7 +206,7 @@ component App
                   text (conn.needsSetup ? "Connect Switchyard to a server" : "The server is not answering") font-weight=700 font-size=16
                   text (conn.error != "" ? conn.error : "Its address and a token, or watch the built-in demo fleet.") color="sy.ink3" font-size=13 max-width=560 text-align="center" testId="setup-error"
                   row gap=10
-                    button press=openSettings buttonStyle="bordered-prominent" testId="setup-connect"
+                    button press=openSettings class=Primary testId="setup-connect"
                       text "Connect…"
                     button press=useDemo testId="setup-demo" class=Quiet
                       text "Watch the demo"
@@ -237,7 +247,7 @@ component App
               if link.ok and link.token != ""
                 text "with a device token from the link (kept in the Keychain)" color="sy.ink3" font-size=12
               row gap=10
-                button press=connectLink disabled=(not link.ok) buttonStyle="bordered-prominent" testId="connect-yes"
+                button press=connectLink disabled=(not link.ok) class=Primary testId="connect-yes"
                   text "Connect"
                 button press=back testId="connect-no" class=Quiet
                   text "Cancel"
@@ -274,7 +284,7 @@ component App
               text "Watch the demo"
             button commandfor="settings" command="close" testId="settings-cancel" class=Quiet
               text "Cancel"
-            button press=saveSettings commandfor="settings" command="close" buttonStyle="bordered-prominent" testId="settings-save"
+            button press=saveSettings commandfor="settings" command="close" class=Primary testId="settings-save"
               text "Connect"
 
 component TopBar
