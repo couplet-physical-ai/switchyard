@@ -224,8 +224,16 @@ impl CicdAdapter {
         let mut t = tokio::time::interval(Duration::from_secs(30));
         t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut first = true;
+        // cicd is one small container shared with heavy jobs: when it struggles, back off
+        // (30 s → 1 → 2 → 4 → 5 min) and keep serving the last good lanes/engines.
+        let (mut fails, mut tick) = (0u32, 0u64);
         loop {
             t.tick().await;
+            tick += 1;
+            let every = 1u64 << fails.min(4);
+            if tick % every.min(10) != 0 {
+                continue;
+            }
             let mut ok = false;
             // The read token first; the GitHub token also opens this route (and keeps
             // lanes flowing if cicd does not know the read token yet).
@@ -270,6 +278,7 @@ impl CicdAdapter {
                 let facts = engines_from_cicd(&v, (self.clock)());
                 let _ = self.tx.send(Ingest { facts, live: true }).await;
             }
+            fails = if ok { 0 } else { fails.saturating_add(1) };
             if ok {
                 first = false;
                 self.adapters.ok(NAME, (self.clock)(), None);
