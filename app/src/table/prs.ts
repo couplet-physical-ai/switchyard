@@ -244,9 +244,12 @@ function paintPr(ctx: Ctx2D, row: PrTableRow, rc: RowCtx, k: Cols, nextGroup: nu
 
   const a12b = k.a12b, a11 = k.a11, a12 = k.a12;
   L.text(F12B, C.ink, fit(`${String(pr.repo).split('/')[1] ?? pr.repo} #${pr.number}`, k.nameW, a12b), k.name, cy);
-  if (k.titleW > 40) L.text(F12, C.ink2, fit(String(pr.title ?? ''), k.titleW, a12), k.title, cy);
+  // Motion LOD (Core Text's shaping is most of a frame): while the list moves, the author,
+  // review and age fade out; moving fast, the title too. The name, phase and checks stay.
+  const detail = Math.round((1 - Math.max(rc.motion, rc.drift)) * 8) / 8;
+  if (k.titleW > 40) L.text(F12, C.ink2, fit(String(pr.title ?? ''), k.titleW, a12), k.title, cy, Math.round((1 - rc.motion) * 8) / 8);
   const bot = isBot(pr);
-  L.text(F11, bot ? C.amberText : TXT3, bot ? `${fit(author(pr.author), k.authorW - 4 * a11, a11)} bot` : fit(author(pr.author), k.authorW, a11), k.author, cy);
+  L.text(F11, bot ? C.amberText : TXT3, bot ? `${fit(author(pr.author), k.authorW - 4 * a11, a11)} bot` : fit(author(pr.author), k.authorW, a11), k.author, cy, detail);
 
   // the phase track: mini-chips at LOD2 (fading out as the row opens to the labelled one)
   const mini = 1 - Math.min(1, e * 1.6);
@@ -260,7 +263,7 @@ function paintPr(ctx: Ctx2D, row: PrTableRow, rc: RowCtx, k: Cols, nextGroup: nu
     ctx.globalAlpha = 1;
   }
   L.text(F11, wordC, word, k.word, cy);
-  if (k.reviewW) { const [rw, rc2] = reviewWord(pr); L.text(F11, rc2, fit(rw, k.reviewW, a11), k.review, cy); }
+  if (k.reviewW) { const [rw, rc2] = reviewWord(pr); L.text(F11, rc2, fit(rw, k.reviewW, a11), k.review, cy, detail); }
 
   // checks: "✓N" for those that passed beyond the list (v0.4's checks_passed), then a dot for
   // each listed one (required first, then those that have not passed: the server's order)
@@ -289,7 +292,7 @@ function paintPr(ctx: Ctx2D, row: PrTableRow, rc: RowCtx, k: Cols, nextGroup: nu
   // updated, or stale in amber; right-aligned by its length (monospace)
   const stale = Number(pr.stale_ms) || 0;
   const upd = stale > 86_400_000 && isOpenPhase(pr.phase) ? `stale ${coarse(stale)}` : pr.updated ? coarse(now - pr.updated) : '–';
-  L.text(F11, upd.startsWith('stale') ? C.amberText : TXT3, upd, k.right - upd.length * a11, cy);
+  L.text(F11, upd.startsWith('stale') ? C.amberText : TXT3, upd, k.right - upd.length * a11, cy, detail);
 
   if (e <= 0.05) return;
   // LOD0: the labelled track, what blocks it, the review and the head

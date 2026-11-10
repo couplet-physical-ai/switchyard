@@ -261,19 +261,31 @@ function paintRow(ctx: Ctx2D, row: MlRow, rc: RowCtx, k: Cols, nextSt: MlState |
   const words = stateWords(row, now);
   const plain = row.st === 'green' || row.st === 'quiet';
   const stateC = Math.floor(k.stateW / a11);
-  // Every gray 11 px column in ONE fillText (a monospace row is a grid of cells): org, lane,
-  // the state when it is not red or amber, the last commit (LOD2: LOD0 says it on its second
-  // line and its dot line takes the room), the open PRs and the age.
-  const gray: [number, string, number, boolean][] = [
-    [k.cOrg, k.orgW ? orgLabel(String(r.org ?? '')) : '', Math.floor(k.orgW / a11), false],
-    [k.cLane, k.laneW ? laneText(String(r.lane ?? '')) : '', Math.floor(k.laneW / a11), false],
-    [k.cState, plain ? words : '', stateC, false],
-    [k.cPrs, prs ? String(prs) : '', 5, true],
-    [k.cEnd, age || '–', 8, true],
-  ];
+  // The gray 11 px columns as three strings (monospace cells, padded within a group): org, lane
+  // and a plain state; the last commit; the open PRs and the age. Core Text shapes and bounds
+  // every cell of every string, so a frame's text is most of its cost: while the list moves
+  // fast they fade out (motion LOD) and only names, states and dots are drawn.
+  const detail = 1 - rc.motion;
   const headText = k.headW && last ? `${short(last.sha ?? '')} ${last.title ?? ''}${last.author ? ` · ${author(last.author)}` : ''}` : '';
-  if (e === 0) gray.push([k.cHead, headText, Math.floor(k.headW / a11), false]);
-  L.text(F11, TXT3, cells(k.cEnd, gray), k.org, cy);
+  if (detail > 0.05) {
+    const a = Math.round(detail * 8) / 8;
+    // (moving at all, the lane and a green row's words go too: the org, a red row's words,
+    //  the dots, the PRs and the age carry a scroll)
+    const ha = Math.round((1 - Math.max(rc.motion, rc.drift)) * 8) / 8;
+    if (k.orgW) L.text(F11, TXT3, fit(orgLabel(String(r.org ?? '')), k.orgW, a11), k.org, cy, a);
+    if (ha > 0) {
+      const mid = cells(k.cHead - 2 - k.cLane, [
+        [0, k.laneW ? laneText(String(r.lane ?? '')) : '', Math.floor(k.laneW / a11), false],
+        [k.cState - k.cLane, plain ? words : '', stateC, false],
+      ]);
+      L.text(F11, TXT3, mid, k.lane, cy, ha);
+    }
+    // (the last commit, the longest string, goes as soon as the list moves at all; an open
+    //  row's own LOD0 lines say it)
+    if (e === 0 && headText && ha > 0) L.text(F11, TXT3, fit(headText, k.headW, a11), k.head, cy, ha);
+    const right = cells(k.cEnd - k.cPrs + 5, [[5, prs ? String(prs) : '', 5, true], [k.cEnd - k.cPrs + 5, age || '–', 8, true]]);
+    L.text(F11, TXT3, right, k.prsR - 5 * a11, cy, a);
+  }
   if (!plain) L.text(F11, row.st === 'red' ? C.redText : C.amberText, fit(words, k.stateW, a11), k.state, cy);
   if (e > 0 && e < 1 && headText) {
     ctx.globalAlpha = 1 - e;

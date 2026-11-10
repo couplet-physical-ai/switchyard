@@ -30,7 +30,7 @@ export type SubHit = { x: number; y: number; w: number; h: number; kind: string;
 
 /** What a painter is told about one row. `e` is the row's expansion, 0 (LOD2) to 1 (LOD0),
  *  already eased; `hits` takes the row's targets (only for rows open enough to show them). */
-export type RowCtx = { y: number; h: number; W: number; e: number; focused: boolean; hovered: boolean; hits: SubHit[] | null; now: number; index: number };
+export type RowCtx = { y: number; h: number; W: number; e: number; focused: boolean; hovered: boolean; hits: SubHit[] | null; now: number; index: number; motion: number; drift: number };
 
 export type Painter<R> = (ctx: Ctx2D, row: R, rc: RowCtx) => void;
 
@@ -76,6 +76,15 @@ export class CanvasTable<R> {
   private moves = new Map<string, { from: number; t0: number }>();
   private barUntil = -1;
   private now = 0;
+  /** Motion LOD, eased with hysteresis: `motion` 0 still … 1 moving fast; `drift` 0 still … 1
+   *  moving at all (a reading pace). Painters drop their longest text as each rises. */
+  motion = 0;
+  drift = 0;
+  private motionTo = 0;
+  private driftTo = 0;
+  private stillSince = 0;
+  private slowSince = 0;
+  private lastScroll = 0;
 
   constructor(readonly keyOf: (r: R) => string, dense: number, open: number) {
     this.dense = dense;
@@ -363,6 +372,24 @@ export class CanvasTable<R> {
       if (t - m.t0 >= MOVE_MS) this.moves.delete(k);
       else moving = true;
     }
+
+    // Motion LOD: fast (> 0.7 px/ms, 12 px a frame) fades the detail out in ~80 ms; it comes back
+    // in ~150 ms once the list has been slow (< 0.25 px/ms) for 100 ms. A reading pace keeps it.
+    const speed = dt > 0 ? Math.abs(this.scroll - this.lastScroll) / dt : 0;
+    this.lastScroll = this.scroll;
+    if (speed > 0.7) { this.motionTo = 1; this.slowSince = t; }
+    else if (speed > 0.25) this.slowSince = t;
+    else if (t - this.slowSince > 100) this.motionTo = 0;
+    if (speed > 0.03) { this.driftTo = 1; this.stillSince = t; }
+    else if (t - this.stillSince > 120) this.driftTo = 0;
+    if (this.motion !== this.motionTo) {
+      this.motion = this.motionTo > this.motion ? Math.min(1, this.motion + dt / 80) : Math.max(0, this.motion - dt / 150);
+      moving = true;
+    } else if (this.motionTo === 1) moving = true;
+    if (this.drift !== this.driftTo) {
+      this.drift = this.driftTo > this.drift ? Math.min(1, this.drift + dt / 80) : Math.max(0, this.drift - dt / 150);
+      moving = true;
+    } else if (this.driftTo === 1) moving = true;
     if (t < this.barUntil) moving = true;
     return moving;
   }
@@ -401,7 +428,7 @@ export class CanvasTable<R> {
       if (y > H || y + h < 0) continue;
       const v = this.exp.get(k) ?? 0;
       const e = easeInOut(clamp(v, 0, 1));
-      paint(ctx, this.rows[i], { y, h, W, e, focused: k === this.focus, hovered: k === this.hover, hits: e > 0.6 ? this.hits : null, now, index: i });
+      paint(ctx, this.rows[i], { y, h, W, e, focused: k === this.focus, hovered: k === this.hover, hits: e > 0.6 ? this.hits : null, now, index: i, motion: this.motion, drift: this.drift });
       painted++;
     }
     // A thin scroll bar while the list moves.
@@ -519,7 +546,7 @@ export class RectBatch {
 export class Layers {
   readonly dots = new DotBatch();
   private rects = new Map<string, number[]>();
-  private texts = new Map<string, { font: string; color: string; items: (string | number)[] }>();
+  private texts = new Map<string, { font: string; color: string; alpha: number; items: (string | number)[] }>();
   private rings = new Map<string, { color: string; width: number; xs: number[] }>();
 
   rect(color: string, x: number, y: number, w: number, h: number): void {
@@ -528,11 +555,11 @@ export class Layers {
     a.push(x, y, w, h);
   }
 
-  text(font: string, color: string, s: string, x: number, y: number): void {
-    if (!s) return;
-    const key = `${font}|${color}`;
+  text(font: string, color: string, s: string, x: number, y: number, alpha = 1): void {
+    if (!s || !s.trim() || alpha <= 0) return;
+    const key = `${font}|${color}|${alpha}`;
     let t = this.texts.get(key);
-    if (!t) this.texts.set(key, (t = { font, color, items: [] }));
+    if (!t) this.texts.set(key, (t = { font, color, alpha, items: [] }));
     t.items.push(s, x, y);
   }
 
@@ -563,8 +590,10 @@ export class Layers {
     for (const t of this.texts.values()) {
       ctx.font = t.font;
       ctx.fillStyle = t.color;
+      if (t.alpha < 1) ctx.globalAlpha = t.alpha;
       const it = t.items;
       for (let i = 0; i < it.length; i += 3) ctx.fillText(it[i] as string, it[i + 1] as number, it[i + 2] as number);
+      if (t.alpha < 1) ctx.globalAlpha = 1;
     }
     this.texts.clear();
   }
