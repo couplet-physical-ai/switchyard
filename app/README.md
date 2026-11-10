@@ -8,21 +8,31 @@ Design: [DESIGN.md](DESIGN.md). Performance: [PERF.md](PERF.md).
 
 ## Build and run
 
-Exact has no releases: an app builds against a checkout of it. `scripts/fetch-exact.sh`
-clones expo/exact at `exact.pin` (into `~/.cache/switchyard/`, or `$EXACT2`) and runs its
-`setup` once. Bun 1.4.2 is required (Exact checks).
+Exact has no releases: an app builds against a checkout of it. `app/exact.mjs` finds it
+through **`$EXACT2`** (the path of an expo/exact checkout; without it, `../../../exact`).
+`scripts/fetch-exact.sh` makes one: it clones expo/exact at the commit in **`exact.pin`**
+(`316d1f292f92f91a223d2f582e80fe17979c12c1`, the same as `packaging/exact.pin`) into
+`${XDG_CACHE_HOME:-~/.cache}/switchyard/exact-<pin>` (or `$EXACT2`), runs `bun install` and
+`bun scripts/exact.mjs setup` once, and prints the path last. Every `scripts/build.sh` verb
+calls it when `EXACT2` is unset. **Bun 1.4.2 exactly** (Exact checks).
 
-| What | Command | Output |
+| What | Command (from the repo root) | Output |
 |---|---|---|
-| web build | `app/scripts/build.sh web [outdir]` | static files in `app/dist` (`shell.html`, `app.js`, `app.plan`, …) |
-| macOS app | `app/scripts/build.sh mac` | prints the `Switchyard.app` path (under `app/target/clients/…/macos/`) |
-| tests | `app/scripts/build.sh test web` · `app/scripts/build.sh test macos` | `tests/*.test.contract` at 1440×900 |
+| web build (headless, Linux) | `app/scripts/build.sh web <OUTDIR>` = `cd app && bun exact.mjs web-build --out <OUTDIR>` | static files in `<OUTDIR>` (default `app/dist`): `index.html` (= `shell.html`), `app.js`, `app.plan`, `style.css`, chunks, `assets/`, `routes.json` |
+| web tests (headless Chromium, CI) | `app/scripts/build.sh test web` = `cd app && bun exact.mjs test web 'tests/*.test.contract' --size 1440x900` | exit 1 on a failure |
+| macOS release app | `app/scripts/build-macos-release.sh` (= `bun exact.mjs mac --release`, ad-hoc signed; `SWITCHYARD_MAC_FLAGS` overrides) | prints the path last: `app/target/clients/<hash>/com.exowatt.switchyard/macos/Switchyard.app` |
+| macOS tests | `app/scripts/build.sh test macos` | |
+| mock API selftest | `bun app/server/selftest.ts` | 50 checks |
 | dev loop | `cd app && bun exact.mjs web` | reloads on save |
 
-The server serves the web build from the same origin: any path that is not `/api/…` and is
-not a file in the build answers `shell.html`. On the web the client talks to the page's own
-origin; on macOS it asks for a server URL and a token (kept in the Keychain) in the
-connection sheet, or takes a `switchyard://connect?server=…&token=…` link.
+The tests run on the built-in demo fleet (no network). A cold macOS release build takes
+about 4 minutes on an M-series Mac mini (cargo ~190 s, swift ~45 s).
+
+The server serves the web build from the same origin (`switchyard-server --static-dir
+<OUTDIR>`): with no server set, the client reads `/api/v1/snapshot` and
+`ws(s)://<origin>/api/v1/stream` of the page's own origin. On macOS it asks for a server URL
+and a token (kept in the Keychain) in the connection sheet, or takes a
+`switchyard://connect?server=…&token=…` link.
 
 ### Without a server
 
