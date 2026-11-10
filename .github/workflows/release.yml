@@ -73,6 +73,7 @@ jobs:
         if: env.MODE != 'placeholder'
         run: |
           set -euo pipefail
+          [[ "$(bun --version)" == 1.4.2 ]] || { echo "Exact needs Bun 1.4.2 exactly, got $(bun --version)"; exit 1; }
           git clone -q --filter=blob:none https://github.com/expo/exact.git "$RUNNER_TEMP/exact"
           git -C "$RUNNER_TEMP/exact" checkout -q "${{ steps.v.outputs.exact_pin }}"
           echo "EXACT_DIR=$RUNNER_TEMP/exact" >> "$GITHUB_ENV"
@@ -115,6 +116,11 @@ jobs:
           "$d/Switchyard.app/Contents/MacOS/$exe" > "$d/out.log" 2>&1 & pid=$!
           sleep 5
           if kill -0 $pid 2>/dev/null; then echo "running after 5 s"; kill $pid; else echo "exited early:"; cat "$d/out.log"; wait $pid; exit 1; fi
+      - name: macOS tests (app/tests/*.test.contract on the macOS host)
+        if: env.MODE == 'app'
+        env:
+          EXACT2: ${{ runner.temp }}/exact
+        run: app/scripts/build.sh test macos
       - uses: actions/upload-artifact@v4
         with:
           name: switchyard-${{ steps.v.outputs.version }}-${{ env.MODE }}
