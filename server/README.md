@@ -61,7 +61,8 @@ Then `curl -s localhost:8080/api/v1/meta | jq` or open `ws://localhost:8080/api/
 - **Auth** (`src/auth.rs`, `src/google.rs`): browsers come through the platform's SSO edge
   (e-mail header confirmed by the edge's Google ID token, verified against Google's JWKS);
   the macOS app uses revocable device tokens minted on the SSO-gated `/connect` page; a
-  Google ID token (`gcloud auth print-identity-token`) also works as a Bearer.
+  Google ID token (`gcloud auth print-identity-token`) also works as a Bearer; monitors and
+  the live e2e check use read-only service tokens (`SWITCHYARD_SERVICE_TOKENS`, hashes only).
 
 ## Test and bench
 
@@ -73,6 +74,16 @@ cargo bench --bench core       # ingest, snapshot, fan-out; numbers in docs/PERF
 ```
 
 CI: `.woodpecker/server.yaml` (Roadrunner) runs all of the above (benches in `--test` mode).
+
+Live checks against a running server (numbers in [`docs/PERF.md`](docs/PERF.md)):
+
+```sh
+# health, readiness (every adapter ok), a real snapshot, live deltas; with a sha pushed
+# right after it starts, the time until that commit shows up on the stream
+SY_TOKEN=… cargo run --release --example e2e -- https://switchyard.apps.example.com [sha]
+# N real WebSocket clients: delivery lag, merged frames, resets
+cargo run --release --example wsload -- wss://switchyard.apps.example.com/api/v1/stream 200 60
+```
 
 ## Deploy
 

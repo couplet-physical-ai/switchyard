@@ -70,6 +70,7 @@ runs.
 | `SWITCHYARD_ORGS` | the five Exowatt orgs | which GitHub orgs to watch |
 | `SWITCHYARD_BACKFILL_HOURS` | `24` | boot backfill window |
 | `EXOWATT_AUTH_AUDIENCE` | — | OAuth client id(s) of the SSO edge (verifies browser identities) |
+| `SWITCHYARD_SERVICE_TOKENS` | — | `name:sha256hex,…` of read-only service tokens (`sys_…` Bearer; monitors, live e2e) |
 | `EXOWATT_AUTH_ALLOWED_EMAIL_DOMAINS` / `SWITCHYARD_EMAIL_DOMAINS` | — | who may sign in |
 
 An adapter whose credentials are missing registers as `disabled`: it shows in
