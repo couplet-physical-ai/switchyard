@@ -317,7 +317,11 @@ pub fn engines_from_cicd(v: &Value, now: Ms) -> Vec<Fact> {
                 slots: e.get("slots").and_then(Value::as_u64).unwrap_or(0) as u32,
                 busy: e.get("running").and_then(Value::as_u64).unwrap_or(0) as u32,
                 cpu: f("cpu_pct"),
-                mem: f("mem_pct"),
+                // cicd reports bytes (`mem_used` / `mem_total`); older payloads a percent.
+                mem: f("mem_pct").or_else(|| match (f("mem_used"), f("mem_total")) {
+                    (Some(u), Some(t)) if t > 0.0 => Some((u / t * 1000.0).round() / 10.0),
+                    _ => None,
+                }),
                 load: f("load1"),
                 last_seen: Some(now),
                 running: Vec::new(),
