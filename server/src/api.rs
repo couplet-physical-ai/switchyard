@@ -139,9 +139,25 @@ async fn meta(State(st): State<Arc<AppState>>) -> Response {
         "adapters": st.adapters.list(),
         "orgs": st.orgs,
         "counts": counts,
+        "process": process_stats(),
         "now": (st.clock)(),
     });
     (StatusCode::OK, axum::Json(body)).into_response()
+}
+
+/// Resident memory of this process (Linux `/proc/self/status`; `null` elsewhere).
+fn process_stats() -> Value {
+    let Ok(st) = std::fs::read_to_string("/proc/self/status") else {
+        return Value::Null;
+    };
+    let kb = |k: &str| {
+        st.lines()
+            .find(|l| l.starts_with(k))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|n| n.parse::<u64>().ok())
+            .map(|n| n * 1024)
+    };
+    json!({"rss_bytes": kb("VmRSS:"), "peak_rss_bytes": kb("VmHWM:"), "threads": kb("Threads:").map(|n| n / 1024)})
 }
 
 fn accepts_gzip(h: &HeaderMap) -> bool {
