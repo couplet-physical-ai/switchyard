@@ -277,8 +277,9 @@ type PrDetail = { pr: Pr, repo_state: Repo | null, commits: Commit[], pipelines:
 `contract/fixtures/snapshot.json` is a real fleet snapshot and `contract/fixtures/hour.jsonl`
 the real frames that followed it (one frame per line), recorded from the live upstreams by
 `switchyard-server --record` and sanitized by `switchyard-server sanitize` (private repo
-names, private commit/PR titles, people's logins, internal hosts are replaced by stable
-stand-ins; states, times, shapes and structure are real).
+names, private commit/PR titles and branch names, people's logins are replaced by stable
+stand-ins; internal hosts in links become `<name>.example.com`; states, times, shapes and
+structure are real).
 
 `switchyard-server --demo` (no credentials) serves them on every endpoint above, looping,
 with every timestamp shifted so the loop starts "now", the previous loop pre-recorded into
