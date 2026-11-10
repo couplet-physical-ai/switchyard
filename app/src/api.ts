@@ -23,8 +23,13 @@ export function resolveBase(server: string): string {
   return typeof origin === 'string' && /^https?:\/\//.test(origin) ? origin : '';
 }
 
+/** The stream's WebSocket URL. A WebSocket cannot carry the Bearer header, so with a device
+ *  token it is `/api/v1/tstream?token=` (the one query-token path the platform edge passes,
+ *  contract v0.3); without one (the web, same origin, signed in by the edge) `/api/v1/stream`. */
 export function wsUrl(base: string, path: string, token: string): string {
-  const u = base.replace(/^http/, 'ws') + path;
+  let p = path;
+  if (token) p = p.replace('/api/v1/stream', '/api/v1/tstream');
+  const u = base.replace(/^http/, 'ws') + p;
   return token ? `${u}${u.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : u;
 }
 
