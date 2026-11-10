@@ -92,6 +92,9 @@ jobs:
           bun scripts/exact.mjs setup 2>&1 | tail -40 || true
           cargo run -q --manifest-path vendor/ibex/crates/hermes-lean-sys-installer/Cargo.toml -- --target aarch64-apple-darwin
           echo "setup took $(( $(date +%s) - start ))s"
+      - name: Metal toolchain (Exact's GPU Canvas 2D module needs it; without it canvases fall back to Core Graphics)
+        if: env.MODE != 'placeholder'
+        run: xcrun -sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
       - name: Build
         run: scripts/release/build-macos.sh --mode "$MODE" --version "${{ steps.v.outputs.version }}"
       - name: Package (ad-hoc sign, zip, dmg, sha256)
