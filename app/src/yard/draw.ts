@@ -376,13 +376,27 @@ export class LiveLayer {
     ctx.beginPath();
     for (const k of Object.keys(groups)) for (const p of groups[k]) if (p.bot) { ctx.moveTo(p.x - 3.5, p.y); ctx.lineTo(p.x + 3.5, p.y); }
     ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = 1.5; ctx.stroke();
+    // Labels: newest first, never on top of each other, at most a handful at once, each on a
+    // patch of the canvas colour so it reads over wires.
+    const cand: Packet2[] = [];
     for (const k of Object.keys(groups)) for (const p of groups[k]) {
       if (p.count > 1) text(ctx, `×${p.count}`, p.x + 9, p.y - 6, C.amberText, 10);
-      if (p.label) {
-        ctx.globalAlpha = p.la * p.a;
-        text(ctx, p.label, p.x + 10, p.y + 3.5, C.ink2, 10.5);
-        ctx.globalAlpha = 1;
-      }
+      if (p.label) cand.push(p);
+    }
+    cand.sort((a, b) => b.la - a.la);
+    const placed: { x: number; y: number; w: number; h: number }[] = [];
+    ctx.font = font(10.5);
+    for (const p of cand) {
+      if (placed.length >= MAX_LABELS) break;
+      const w = ctx.measureText(p.label).width + 6;
+      const r = { x: p.x + 8, y: p.y - 7, w, h: 14 };
+      if (placed.some((q) => r.x < q.x + q.w + 4 && q.x < r.x + r.w + 4 && r.y < q.y + q.h + 2 && q.y < r.y + r.h + 2)) continue;
+      placed.push(r);
+      ctx.globalAlpha = p.la * p.a;
+      ctx.fillStyle = withAlpha(C.canvas, 0.82);
+      ctx.beginPath(); ctx.roundRect(r.x, r.y, r.w, r.h, 3); ctx.fill();
+      text(ctx, p.label, p.x + 11, p.y + 3.5, C.ink2, 10.5);
+      ctx.globalAlpha = 1;
     }
   }
 
@@ -493,6 +507,8 @@ export class LiveLayer {
     if (!items.length) text(ctx, 'every slot can take the next push', L.m, y0 + 64, C.ink4, 12);
   }
 }
+
+const MAX_LABELS = 6;
 
 type Packet2 = { x: number; y: number; a: number; bot: boolean; label: string; la: number; count: number };
 

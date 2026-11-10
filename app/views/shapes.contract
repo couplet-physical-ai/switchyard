@@ -100,6 +100,7 @@ shape PrRow
   url: string
   org: string
   bad: bool
+  badIdx: number
 
 shape Prs
   open: number

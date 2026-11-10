@@ -43,11 +43,11 @@ component MainlinesView
             button role="radio" aria-checked=(filter == f) press=pickFilter(f) testId=`state-${f == "" ? "all" : f}` padding="4px 10px" border-radius=6
               background-color=(filter == f ? "sy.control-on" : "transparent")
               text (f == "" ? "all" : f) font-size=12 color=(filter == f ? (f == "red" ? "sy.red-text" : "sy.ink") : "sy.ink3")
-        input type="search" value=q input=typed aria-label="Filter repos" placeholder="filter" testId="mainlines-filter" width=180
+        input type="search" value=q input=typed aria-label="Filter repos" placeholder="filter repos" testId="mainlines-filter" width=180
           padding="6px 10px" font-size=12 border-radius=8 background-color="sy.raised" border="1px solid sy.edge" color="sy.ink"
       list id="mainlines-list" flex=1 min-height=0 padding="0 12px 16px" testId="mainlines-list"
         for r in data.rows key=r.id
-          button press=open(`/mainlines?repo=${encodeURIComponent(r.id)}`) testId=`main-${r.id}` padding="9px 12px" border-radius=8
+          button press=open(`/mainlines?repo=${encodeURIComponent(r.id)}`) testId=`main-${r.id}` appearance="none" width="100%" align-items="stretch" text-align="left" padding="9px 12px" border-radius=8
             background-color=(r.id == focus ? "sy.raised" : "transparent")
             row align-items="center" gap=16
               column width=250 min-width=0 gap=3

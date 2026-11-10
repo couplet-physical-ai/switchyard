@@ -214,7 +214,7 @@ component App
             padding="10px 12px" font-size=15 border-radius=8 background-color="sy.canvas" border="1px solid sy.edge" color="sy.ink"
           list id="palette-results" max-height=420 testId="palette-results"
             for h in found.hits key=h.id
-              button press=openHit(h.route) commandfor="palette" command="close" testId=`hit-${h.kind}-${h.id}` padding="8px 10px" border-radius=6
+              button press=openHit(h.route) commandfor="palette" command="close" testId=`hit-${h.kind}-${h.id}` appearance="none" width="100%" align-items="stretch" text-align="left" padding="8px 10px" border-radius=6
                 row gap=10 align-items="baseline"
                   text h.kind color="sy.ink4" font-size=11 width=58
                   column gap=2 flex=1 min-width=0

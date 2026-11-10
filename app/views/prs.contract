@@ -23,13 +23,13 @@ component Track
       for i in [0, 1, 2, 3, 4, 5] key=i
         row align-items="center" gap=0
           if i > 0
-            text "→" font-size=10 color="sy.ink4" padding="0 5px"
+            text "→" font-size=10 color=(i <= row.phaseIdx ? "sy.ink3" : "sy.ink4") padding="0 5px"
           column padding="2px 7px" border-radius=4 position="relative"
-            border=(i == row.phaseIdx ? (row.bad ? "1px solid sy.red-edge" : "1px solid sy.machine") : (i < row.phaseIdx ? "1px dashed sy.green-edge" : "1px dashed sy.chip-edge"))
-            background-color=(i < row.phaseIdx ? "sy.green-fill" : (i == row.phaseIdx and row.bad ? "sy.red-fill" : "transparent"))
-            text (i == row.phaseIdx and row.bad ? (row.phase == "conflict" ? "conflict" : (row.phase == "changes_requested" ? "changes" : phaseLabel(i))) : phaseLabel(i)) font-size=11
-              color=(i == row.phaseIdx ? (row.bad ? "sy.red-text" : "sy.ink") : (i < row.phaseIdx ? "sy.green-ink" : "sy.ink4"))
-            if i == row.phaseIdx and not row.bad and row.phase != "merged" and row.phase != "deployed"
+            border=(i == row.badIdx ? "1px solid sy.red-edge" : (i == row.phaseIdx ? "1px solid sy.machine" : (i < row.phaseIdx ? "1px dashed sy.green-edge" : "1px dashed sy.chip-edge")))
+            background-color=(i == row.badIdx ? "sy.red-fill" : (i < row.phaseIdx ? "sy.green-fill" : "transparent"))
+            text (i == row.badIdx ? (row.phase == "conflict" ? "conflict" : (row.phase == "changes_requested" ? "changes" : "failing")) : phaseLabel(i)) font-size=11
+              color=(i == row.badIdx ? "sy.red-text" : (i == row.phaseIdx ? "sy.ink" : (i < row.phaseIdx ? "sy.green-ink" : "sy.ink4")))
+            if i == row.phaseIdx and row.badIdx < 0 and row.phase != "merged" and row.phase != "deployed"
               column position="absolute" top=-7 left="50%" margin-left=-6 width=12 height=7 border-radius=2 background-color="sy.amber"
 
 component Checks
@@ -61,11 +61,11 @@ component PrsView
             button role="radio" aria-checked=(filter == f) press=pickFilter(f) testId=`prs-${f}` padding="4px 10px" border-radius=6
               background-color=(filter == f ? "sy.control-on" : "transparent")
               text f font-size=12 color=(filter == f ? "sy.ink" : "sy.ink3")
-        input type="search" value=q input=typed aria-label="Filter pull requests" placeholder="filter" testId="prs-filter" width=180
+        input type="search" value=q input=typed aria-label="Filter pull requests" placeholder="filter prs" testId="prs-filter" width=180
           padding="6px 10px" font-size=12 border-radius=8 background-color="sy.raised" border="1px solid sy.edge" color="sy.ink"
       list id="prs-list" flex=1 min-height=0 padding="0 12px 16px" testId="prs-list"
         for r in data.rows key=r.id
-          button press=open(`/pr/${r.repo}/${r.number}`) testId=`pr-${r.id}` padding="10px 12px" border-radius=8
+          button press=open(`/pr/${r.repo}/${r.number}`) testId=`pr-${r.id}` appearance="none" width="100%" align-items="stretch" text-align="left" padding="10px 12px" border-radius=8
             row align-items="center" gap=18 flex-wrap="wrap"
               column width=380 min-width=0 gap=4
                 row gap=8 align-items="baseline"
@@ -117,7 +117,7 @@ component PrView
           column gap=6
             text "COMMITS" font-size=12 letter-spacing="0.08em" color="sy.ink3"
             for c in d.commits key=c.sha
-              button press=open(`/commit/${c.repo}/${c.sha}`) testId=`pr-commit-${c.short}` padding="6px 8px" border-radius=6
+              button press=open(`/commit/${c.repo}/${c.sha}`) testId=`pr-commit-${c.short}` appearance="none" width="100%" align-items="stretch" text-align="left" padding="6px 8px" border-radius=6
                 row gap=12 align-items="center"
                   column width=8 height=8 border-radius=4 background-color=(c.ci == "failure" or c.ci == "error" ? "sy.red" : (c.ci == "running" or c.ci == "pending" ? "sy.amber" : "sy.ink2"))
                   text c.short font-size=12 color="sy.ink3" width=64

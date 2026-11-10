@@ -108,6 +108,8 @@ export function prRow(pr: Pr, now: number, w: World) {
     ai: pr.review?.ai ?? '', human: pr.review?.human ?? '', stale: stale > 86_400_000 ? `stale ${fmtDur(stale)}` : '', staleOld: stale > 3 * 86_400_000,
     blockedBy: pr.blocked_by ?? '', updated: ago(now, pr.updated), url: pr.url, org: w.orgOf(pr.repo),
     bad: pr.phase === 'conflict' || pr.phase === 'changes_requested' || failed > 0,
+    // The chip that is red: where the PR is stuck, not where it is.
+    badIdx: pr.phase === 'conflict' ? 3 : pr.phase === 'changes_requested' ? 2 : failed > 0 && phaseIndex(pr.phase) <= 1 ? 1 : -1,
   };
 }
 
