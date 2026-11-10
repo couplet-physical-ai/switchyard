@@ -56,13 +56,52 @@ Then `curl -s localhost:8080/api/v1/meta | jq` or open `ws://localhost:8080/api/
   second and served from memory with a cached gzip. Per-client pumps merge pending frames
   (≤ 30 frames/s); a client that falls behind the broadcast channel gets a `reset` (refetch
   the snapshot), never an unbounded queue.
-- **History** (`src/history.rs`): 24 h on-disk ring of frames + periodic checkpoints;
-  `/api/v1/history` returns a checkpoint and the frames after it.
-- **Auth** (`src/auth.rs`, `src/google.rs`): browsers come through the platform's SSO edge
-  (e-mail header confirmed by the edge's Google ID token, verified against Google's JWKS);
-  the macOS app uses revocable device tokens minted on the SSO-gated `/connect` page; a
-  Google ID token (`gcloud auth print-identity-token`) also works as a Bearer; monitors and
-  the live e2e check use read-only service tokens (`SWITCHYARD_SERVICE_TOKENS`, hashes only).
+- **History** (`src/history.rs`): 24 h on-disk ring of frames + periodic checkpoints.
+  `/api/v1/history?from&to` returns the fleet at `from` (`base`) and the frames after it;
+  `&base=0` drops the base (replay in chunks). A server restart inside the window goes out
+  as one delta (only what changed across it), never a whole snapshot.
+- **Restart settling** (`Hub::begin_settle` / `end_settle`, `Adapters::settled`): a new
+  process starts empty and backfills the whole fleet (GitHub's inventory and PR pages take
+  ~4 min). While it does, frames still reach live clients, but history records nothing;
+  once every adapter is synced, done with its boot backfill and quiet for 5 s (at most
+  10 min), history records one restart entry with the settled fleet. A deploy therefore
+  costs `/history` ~0.2 MB instead of a megabytes-large refill. `readyz` turns ready
+  earlier (heads + open PRs, ~1 min); `meta.adapters[].backfilling` shows the rest.
+- **Auth** (`src/auth.rs`, `src/google.rs`): see [Tokens](#tokens) below.
+
+## Tokens
+
+| Who | Credential | Where it is accepted |
+|---|---|---|
+| A browser | the platform's SSO session (the edge adds the e-mail header and its Google ID token, verified against Google's JWKS) | everything, incl. `/` and `/connect` |
+| The macOS app (a person) | **device token** `syd_…`, minted on the SSO-gated `/connect` page (link `switchyard://connect?server=…&token=…`), revocable, stored hashed in `<data-dir>` | `Authorization: Bearer` on `/api/v1/*`; `?token=` on `/api/v1/tstream[/sse]` |
+| Monitors, the live e2e check, test clients | **service token** `sys_…`, read-only, one per identity name (`e2e`, `client`, …), configured as hashes in `SWITCHYARD_SERVICE_TOKENS=name:sha256hex,…` | same as a device token |
+| Someone on the VPN with gcloud | a Google ID token (`gcloud auth print-identity-token`) | `Authorization: Bearer` on `/api/v1/*` |
+
+`/api/v1/tstream` and `/api/v1/tstream/sse` exist for clients that cannot set headers on a
+WebSocket: the platform edge lets them through without a session
+(`allow_paths_unauthenticated`), so they accept **only** our own tokens from the query,
+never edge headers or Google tokens. Behind the edge never put `?token=` on any other path:
+the edge redirects it to sign-in with the token copied into the redirect URL. Every refused
+request is logged with its path, the token *kind* and the client address (never the token).
+
+Rotate a service token (the value never leaves a 0600 file):
+
+```sh
+umask 077; python3 -c "import secrets; print('sys_' + secrets.token_urlsafe(32))" > new-token
+h=$(tr -d '\n' < new-token | sha256sum | cut -d' ' -f1)
+# list every identity that should keep working, e.g. e2e:<h1>,client:<h2>
+printf 'e2e:%s,client:%s' "$h" "$h_client" | gh secret set SWITCHYARD_SERVICE_TOKENS -R Northwind-Labs/deploy-wrapper
+gh workflow run populate-secrets.yml -R Northwind-Labs/deploy-wrapper   # writes the app env, restarts it
+curl -so /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $(cat old-token)" https://switchyard.apps.example.com/api/v1/meta  # 401
+curl -so /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $(cat new-token)" https://switchyard.apps.example.com/api/v1/meta  # 200
+```
+
+Device tokens: `GET /api/v1/tokens` lists the caller's, `DELETE /api/v1/tokens/{id}` revokes one. The cicd
+read token this server uses (`CICD_READ_TOKEN`) is the other half of cicd's
+`SWITCHYARD_READ_TOKEN`; rotate it on both sides: `gh secret set SWITCHYARD_READ_TOKEN -R
+Northwind-Labs/cicd` + `gh workflow run populate-secrets.yml -R Northwind-Labs/cicd`, then the
+same value as `CICD_READ_TOKEN` here.
 
 ## Test and bench
 
@@ -88,7 +127,26 @@ cargo run --release --example wsload -- wss://switchyard.apps.example.com/api/v1
 ## Deploy
 
 The app platform deploys only Northwind-Labs repos, so a private wrapper repo
-(`Northwind-Labs/deploy-wrapper`) pins one commit of this public repo; on the app's
-container its build script fetches that commit, builds this crate (`--profile ct`,
-persistent target dir, hot redeploy) and the web client, and installs both. Runtime secrets
-are platform env vars (`WOODPECKER_TOKEN`, `GITHUB_TOKEN`, `CICD_READ_TOKEN`).
+(`Northwind-Labs/deploy-wrapper`) pins one commit of this public repo (`UPSTREAM`) and
+carries the web client prebuilt at the same commit (`web/`). On the app's container its
+build script fetches the pinned commit, builds this crate (`--profile ct`, persistent target
+dir, hot redeploy) and serves `web/` via `--static-dir`. The web client is built off the
+container: Exact's toolchain does not fit the platform's build window, and the container is
+small and runs the live server.
+
+```sh
+# 1. the web client at the commit being deployed (Bun + Exact at app/exact.pin)
+git archive <sha> app contract packaging | tar -x -C /tmp/sy-src
+(cd /tmp/sy-src/app && scripts/build.sh web /tmp/sy-web)
+# 2. pin the server + web together; pushing main deploys (Roadrunner, ~2 min)
+cd deploy-wrapper && scripts/bump.sh <sha> --web /tmp/sy-web && git push origin main
+# 3. verify (meta.git_sha and meta.web.sha are the pinned commit)
+SY_TOKEN=$(cat e2e-token) cargo run --release --example e2e -- https://switchyard.apps.example.com
+```
+
+Server and web always ship in one bump, so the page and the stream never disagree on the
+protocol. `scripts/bump.sh <sha>` without `--web` keeps the current `web/`. Runtime
+secrets are platform env vars written by the wrapper's `populate-secrets.yml`
+(`WOODPECKER_TOKEN`, `GITHUB_TOKEN`, `CICD_READ_TOKEN`, `SWITCHYARD_SERVICE_TOKENS`).
+After a deploy, `readyz` is ready within ~1 min and the restart settles into history
+after ~4 min (see [Restart settling](#how-it-works)).
