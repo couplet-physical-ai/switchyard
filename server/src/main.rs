@@ -260,7 +260,10 @@ async fn serve(cli: Cli) -> Result<()> {
             hub.clone(),
             rx,
             clock.clone(),
-            ReducerCfg::default(),
+            ReducerCfg {
+                settle_on: Some(adapters.clone()),
+                ..ReducerCfg::default()
+            },
         ));
         (hub, Some(store))
     };

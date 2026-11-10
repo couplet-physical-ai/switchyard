@@ -175,6 +175,8 @@ pub struct Hub {
     pub clients: AtomicU64,
     pub frames_sent: AtomicU64,
     pub resets_sent: AtomicU64,
+    /// Booting: frames go to clients but not into history (see [`Hub::begin_settle`]).
+    settling: std::sync::atomic::AtomicBool,
 }
 
 impl Hub {
@@ -191,7 +193,35 @@ impl Hub {
             clients: AtomicU64::new(0),
             frames_sent: AtomicU64::new(0),
             resets_sent: AtomicU64::new(0),
+            settling: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// Start a boot: until [`Hub::end_settle`], frames and snapshots reach clients but
+    /// not history, so the fleet filling up from empty (megabytes of backfill) never
+    /// lands in `/history`.
+    pub fn begin_settle(&self) {
+        self.settling.store(true, Ordering::Release);
+    }
+
+    pub fn is_settling(&self) -> bool {
+        self.settling.load(Ordering::Acquire)
+    }
+
+    /// End the boot with the settled fleet: history records one restart (a reset marker
+    /// plus this snapshot, at the current seq), which `/history` sends as a delta holding
+    /// only what changed across the restart. Live clients see nothing.
+    pub fn end_settle(&self, s: Snapshot) {
+        let s = Arc::new(s);
+        self.history.append(&Arc::new(Frame::reset(s.seq, s.at)));
+        self.history.checkpoint(&s);
+        {
+            let mut cur = self.snapshot.write();
+            if s.seq >= cur.seq {
+                *cur = s.clone();
+            }
+        }
+        self.settling.store(false, Ordering::Release);
     }
 
     pub fn seq(&self) -> u64 {
@@ -217,14 +247,18 @@ impl Hub {
             }
             *cur = s.clone();
         }
-        self.history.checkpoint(&s);
+        if !self.is_settling() {
+            self.history.checkpoint(&s);
+        }
     }
 
     /// Replace the snapshot unconditionally (demo loops restart the timeline).
     pub fn force_snapshot(&self, s: Snapshot) {
         let s = Arc::new(s);
         *self.snapshot.write() = s.clone();
-        self.history.checkpoint(&s);
+        if !self.is_settling() {
+            self.history.checkpoint(&s);
+        }
     }
 
     /// Publish one delta frame of already-encoded ops. Returns its seq.
@@ -244,7 +278,9 @@ impl Hub {
     }
 
     fn push(&self, f: Arc<Frame>) {
-        self.history.append(&f);
+        if !self.is_settling() {
+            self.history.append(&f);
+        }
         {
             let mut r = self.ring.lock();
             if r.len() == self.ring_cap {

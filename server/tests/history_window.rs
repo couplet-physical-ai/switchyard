@@ -37,12 +37,11 @@ fn health(state: &WireState, id: &str) -> Option<String> {
 /// A hub whose history holds: snapshot at T0 (a=up), then a→down at T0+10 s,
 /// b appears at T0+20 s, a→up at T0+30 s.
 fn hub() -> std::sync::Arc<Hub> {
-    let hub = Hub::new(
-        "e".into(),
-        64,
-        64,
-        History::Mem(MemHistory::new(24 * 3_600_000)),
-    );
+    hub_with(History::Mem(MemHistory::new(24 * 3_600_000)))
+}
+
+fn hub_with(history: History) -> std::sync::Arc<Hub> {
+    let hub = Hub::new("e".into(), 64, 64, history);
     hub.set_snapshot(snap(0, T0, &[("a", "up")]));
     hub.publish(&upsert("a", "down"), T0 + 10_000);
     hub.publish(&upsert("b", "up"), T0 + 20_000);
@@ -193,4 +192,66 @@ fn a_restart_goes_out_as_a_delta_not_a_snapshot() {
         assert!(!b0.has_restarts());
         assert_eq!(b0.frames.len(), out.frames.len());
     }
+}
+
+#[test]
+fn a_boot_settles_before_history_records_it() {
+    settle_case(hub());
+    let dir = tempfile::tempdir().unwrap();
+    settle_case(hub_with(History::Disk(
+        switchyard::history::DiskHistory::open(dir.path()).unwrap(),
+    )));
+}
+
+fn settle_case(h: std::sync::Arc<Hub>) {
+    // Before the restart: a=up, b=up (hub() ends with a up, b up). The new process
+    // boots empty, backfills the whole fleet (b is gone now, c is new) while settling;
+    // history must hold one restart carrying only that difference, no backfill frames.
+    h.begin_settle();
+    let reset = h.publish_reset(T0 + 40_000);
+    h.set_snapshot(snap(reset, T0 + 40_000, &[]));
+    h.publish(&upsert("a", "up"), T0 + 41_000);
+    h.publish(&upsert("c", "up"), T0 + 42_000);
+    let settled = h.seq();
+    h.end_settle(snap(settled, T0 + 45_000, &[("a", "up"), ("c", "up")]));
+    assert!(!h.is_settling());
+    assert_eq!(
+        h.snapshot().seq,
+        settled,
+        "clients get the settled fleet too"
+    );
+    h.publish(&upsert("c", "down"), T0 + 50_000);
+    let (_, out) =
+        h.history
+            .query(T0 + 5_000, T0 + 60_000)
+            .unwrap()
+            .fold_to(T0 + 5_000, false, "0.4", "e");
+    let out = out.inline_restarts(true);
+    let ats = frame_ats(&out.frames);
+    assert!(
+        !ats.contains(&(T0 + 41_000)) && !ats.contains(&(T0 + 42_000)),
+        "no backfill frames in history: {ats:?}"
+    );
+    assert_eq!(
+        ats,
+        vec![
+            T0 + 10_000,
+            T0 + 20_000,
+            T0 + 30_000,
+            T0 + 45_000,
+            T0 + 50_000
+        ]
+    );
+    let restart: Value = serde_json::from_slice(&out.frames[3]).unwrap();
+    let ops = restart["ops"].as_array().unwrap();
+    assert_eq!(ops.len(), 2, "only b removed and c added: {ops:?}");
+    assert!(ops.iter().any(|o| o["op"] == "remove" && o["id"] == "b"));
+    assert!(ops.iter().any(|o| o["op"] == "upsert" && o["id"] == "c"));
+    let mut st = base_state(&out.base);
+    for f in &out.frames {
+        st.apply_frame(&serde_json::from_slice(f).unwrap());
+    }
+    assert_eq!(health(&st, "a").as_deref(), Some("up"));
+    assert_eq!(health(&st, "b"), None);
+    assert_eq!(health(&st, "c").as_deref(), Some("down"));
 }

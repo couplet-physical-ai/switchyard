@@ -189,6 +189,11 @@ pub struct ReducerCfg {
     pub frame_ms: u64,
     pub tick_ms: u64,
     pub snapshot_ms: u64,
+    /// Keep the boot out of history until these adapters are synced (and quiet for
+    /// `settle_quiet_ms`, at most `settle_max_ms`); None records the boot as it happens.
+    pub settle_on: Option<Arc<Adapters>>,
+    pub settle_quiet_ms: Ms,
+    pub settle_max_ms: Ms,
 }
 
 impl Default for ReducerCfg {
@@ -197,6 +202,9 @@ impl Default for ReducerCfg {
             frame_ms: 33,
             tick_ms: 5_000,
             snapshot_ms: 1_000,
+            settle_on: None,
+            settle_quiet_ms: 5_000,
+            settle_max_ms: 600_000,
         }
     }
 }
@@ -218,6 +226,11 @@ pub async fn run_reducer(
     let mut snap_key: (u64, u64) = (u64::MAX, u64::MAX);
     // A boot is a discontinuity for anyone replaying history across it.
     let at = clock();
+    let boot_at = at;
+    let mut ready_since: Option<Ms> = None;
+    if cfg.settle_on.is_some() {
+        hub.begin_settle();
+    }
     let seq = hub.publish_reset(at);
     {
         let s = store.read();
@@ -258,6 +271,31 @@ pub async fn run_reducer(
                 store.write().tick(now);
             }
             _ = snap.tick() => {
+                if hub.is_settling() {
+                    let now = clock();
+                    let ready = cfg.settle_on.as_ref().is_none_or(|a| a.ready());
+                    if !ready {
+                        ready_since = None;
+                    }
+                    let since = *ready_since.get_or_insert(now);
+                    if (ready && now - since >= cfg.settle_quiet_ms)
+                        || now - boot_at >= cfg.settle_max_ms
+                    {
+                        let (seq, json) = {
+                            let s = store.read();
+                            let seq = hub.seq();
+                            (seq, build_snapshot(&s, seq, now, &hub.epoch))
+                        };
+                        let h = hub.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            h.end_settle(Snapshot::new(seq, now, json))
+                        })
+                        .await;
+                        tracing::info!(seq, boot_s = (now - boot_at) / 1000, "boot settled; history resumes");
+                        snap_key = (store.read().version, seq);
+                        continue;
+                    }
+                }
                 let key = (store.read().version, hub.seq());
                 if key != snap_key {
                     snap_key = key;
