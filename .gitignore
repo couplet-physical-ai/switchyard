@@ -1,0 +1,7 @@
+target/
+node_modules/
+.exact/
+dist/
+*.log
+.DS_Store
+/inspo/
