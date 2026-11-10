@@ -15,9 +15,15 @@ export interface Upstream {
   meta(): Promise<Meta | null>;
 }
 
+/** The recorded real fleet (contract/fixtures), served by `bun exact.mjs server` (server/mock.ts
+ *  --fixtures --frozen). `bun exact.mjs test` starts it here for the tests; the server field
+ *  takes `fixtures` for it. */
+export const FIXTURES = 'http://127.0.0.1:8097';
+
 /** The server's base URL: the setting, else (on the web) the page's own origin. */
 export function resolveBase(server: string): string {
   const s = server.trim().replace(/\/+$/, '');
+  if (s === 'fixtures') return FIXTURES;
   if (s && s !== 'demo') return /^https?:\/\//.test(s) ? s : `https://${s}`;
   const origin = (globalThis as { origin?: unknown }).origin;
   return typeof origin === 'string' && /^https?:\/\//.test(origin) ? origin : '';

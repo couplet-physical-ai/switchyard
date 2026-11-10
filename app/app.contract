@@ -190,9 +190,9 @@ component App
                   background-color=(ov.speed == 0.25 and ov.mode != "paused" ? "sy.control-on" : "transparent")
                   text "¼×" font-size=14 color=(ov.speed == 0.25 and ov.mode != "paused" ? "sy.ink" : "sy.ink3")
           if e.name == "mainlines"
-            MainlinesView(data=mlData, org=mlOrg, filter=mlFilter, q=mlQ, focus=searchParam(e, "repo"), open=openHit, pickOrg=mlPickOrg, pickFilter=mlPickFilter, typed=mlTyped)
+            MainlinesView(data=mlData, org=mlOrg, filter=mlFilter, q=mlQ, focus=mlFocus, wheel=mlWheel, px=mlPx, py=mlPy, kick=mlKick, active=(e.id == top(nav).id), pickOrg=mlPickOrg, pickFilter=mlPickFilter, typed=mlTyped, press=mlPress, move=mlMove, hover=mlHover, wheeled=mlWheeled, key=mlKey)
           if e.name == "prs"
-            PrsView(data=prData, filter=prFilter, q=prQ, open=openHit, pickFilter=prPickFilter, typed=prTyped)
+            PrsView(data=prData, filter=prFilter, q=prQ, focus=prFocus, wheel=prWheel, px=prPx, py=prPy, kick=prKick, repo=searchParam(e, "repo"), active=(e.id == top(nav).id), pickFilter=prPickFilter, typed=prTyped, allRepos=prAllRepos, press=prPress, move=prMove, hover=prHover, wheeled=prWheeled, key=prKey)
           if e.name == "fleet"
             FleetView(f=fleetData, focus=searchParam(e, "app"), open=openHit)
           if e.name == "commit"

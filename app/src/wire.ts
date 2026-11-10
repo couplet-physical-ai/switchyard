@@ -41,7 +41,10 @@ export type Pipeline = {
 export type Pr = {
   id?: string; repo: string; number: number; title: string; author: string; bot?: boolean; draft: boolean;
   created: number; updated: number; head_sha: string; head?: string; base: string; phase: PrPhase; ci?: CiState;
+  /** v0.4: only required checks and checks that have not passed (PrDetail has them all). */
   checks: { name: string; state: CiState; required?: boolean }[];
+  /** v0.4: how many other checks passed. */
+  checks_passed?: number;
   review: { ai?: 'pending' | 'commented' | 'approved' | 'skipped'; human?: string };
   merged_at?: number; merge_sha?: string; blocked_by?: string; stale_ms?: number; url: string;
 };
@@ -105,8 +108,9 @@ export type Frame =
 export type HistoryFrame = Frame | { t: 'snapshot'; seq: number; at: number; v: Snapshot };
 export type History = { from: number; to: number; base?: Snapshot; frames: HistoryFrame[] };
 
-/** cicd's Dagger spans, passed through by the server (shape not fixed by the contract). */
-export type Span = { id: string; parent?: string; name: string; start: number; end?: number; state?: CiState; pipeline?: string; cached?: boolean };
+/** A Dagger call: v0.3's `{id, name, call?, pipeline?, start, ms, spans?}`; the demo's
+ *  span tree adds `parent`, `end` and `state`. */
+export type Span = { id: string; parent?: string; name: string; start: number; end?: number; ms?: number; call?: string; spans?: number; state?: CiState; pipeline?: string | number; cached?: boolean };
 export type JourneyEntry = { at: number; k: string; label: string };
 export type Journey = {
   id?: string; repo?: string; sha?: string;
@@ -116,6 +120,8 @@ export type Journey = {
 };
 export type PrDetail = {
   pr: Pr; repo_state?: Repo | null; commits: Commit[]; pipelines: Pipeline[]; deploys?: Deploy[];
+  /** v0.4: every check (Pr.checks lists only required and not-passed ones). */
+  checks?: { name: string; state: CiState; required?: boolean }[];
   /** The demo's: phase changes. */
   timeline?: { at: number; phase: PrPhase; note?: string }[];
 };
