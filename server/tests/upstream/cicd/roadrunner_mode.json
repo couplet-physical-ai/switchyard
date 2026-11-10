@@ -1,0 +1,320 @@
+{
+ "fleet": {
+  "mode": "roadrunner",
+  "reason": null,
+  "updated_by": null,
+  "updated_at": null
+ },
+ "health": {
+  "roadrunner": {
+   "down": false,
+   "detail": "4 of 4 agents online; 2 of 2 Dagger engines up",
+   "checked_at": "2026-11-10T19:39:00.855456Z",
+   "bad_since": null,
+   "changed_at": null
+  },
+  "platform": {
+   "down": false,
+   "detail": "provisioning-api healthy",
+   "checked_at": "2026-11-10T19:39:00.855456Z",
+   "bad_since": null,
+   "changed_at": null
+  }
+ },
+ "failover": {
+  "down_minutes": 5.0,
+  "min_samples": 2,
+  "up_samples": 3,
+  "resume_minutes": 15.0,
+  "platform_probed": true,
+  "active": false
+ },
+ "counts": {
+  "roadrunner_first": 8,
+  "on_roadrunner": 5,
+  "on_github_actions": 4,
+  "held": 3,
+  "gha_first": 1
+ },
+ "repos": [
+  {
+   "repo": "Northwind-Labs/nimbus-predict",
+   "setting": "roadrunner_first",
+   "mode": "github-actions",
+   "why": "Roadrunner-first, on its GitHub Actions fallback (repo) \u2014 held until re-armed: no Roadrunner deploy for 33b2dd3 after 10 min",
+   "fallback_cause": null,
+   "fallback_since": "2026-10-12T19:30:11.968094Z",
+   "fallback_reason": "no Roadrunner deploy for 33b2dd3 after 10 min",
+   "held": true,
+   "drill_until": null,
+   "drill_kind": null,
+   "eligible": null,
+   "reason": "batch rollout",
+   "updated_by": "dev-01@example.com",
+   "updated_at": "2026-10-09T16:57:33.679365Z",
+   "head": {
+    "at": "2026-11-10T15:01:12.055535+00:00",
+    "sha": "c29040c88844a9a92c8a12745f53c2e256b48bab",
+    "lane": "github-actions",
+    "detail": "c29040c deployed by GitHub Actions",
+    "verdict": "deployed_gha",
+    "failsafe_state": ""
+   },
+   "workflows": [
+    {
+     "workflow": "deploy-app.yml",
+     "baseline_state": "active",
+     "state": "active"
+    }
+   ]
+  },
+  {
+   "repo": "Northwind-Labs/cirrus-hub",
+   "setting": "roadrunner_first",
+   "mode": "roadrunner",
+   "why": "Roadrunner-first: Roadrunner deploys every push; GitHub Actions is the automatic fallback",
+   "fallback_cause": null,
+   "fallback_since": null,
+   "fallback_reason": null,
+   "held": false,
+   "drill_until": null,
+   "drill_kind": null,
+   "eligible": null,
+   "reason": "batch rollout",
+   "updated_by": "dev-01@example.com",
+   "updated_at": "2026-10-09T20:31:20.701052Z",
+   "head": {
+    "at": "2026-11-10T15:47:12.046905+00:00",
+    "sha": "f917c191816f60e33bd397e5c528f3ed7b1f8c9f",
+    "lane": "roadrunner",
+    "detail": "f917c19 deployed by Roadrunner",
+    "verdict": "deployed",
+    "failsafe_state": "success"
+   },
+   "workflows": [
+    {
+     "workflow": "deploy-app.yml",
+     "baseline_state": "active",
+     "state": "disabled_manually"
+    }
+   ]
+  },
+  {
+   "repo": "Northwind-Labs/aurora-api",
+   "setting": "roadrunner_first",
+   "mode": "roadrunner",
+   "why": "Roadrunner-first: Roadrunner deploys every push; GitHub Actions is the automatic fallback",
+   "fallback_cause": null,
+   "fallback_since": null,
+   "fallback_reason": null,
+   "held": false,
+   "drill_until": null,
+   "drill_kind": null,
+   "eligible": null,
+   "reason": "batch rollout",
+   "updated_by": "dev-01@example.com",
+   "updated_at": "2026-10-09T20:31:20.701052Z",
+   "head": {
+    "at": "2026-11-09T20:28:47.184979+00:00",
+    "sha": "eed5b2a3b817f288f79cd4a0c9b015e008e6b452",
+    "lane": "roadrunner",
+    "detail": "eed5b2a deployed",
+    "verdict": "deployed_gha",
+    "failsafe_state": null
+   },
+   "workflows": [
+    {
+     "workflow": "deploy-app.yml",
+     "baseline_state": "active",
+     "state": "disabled_manually"
+    }
+   ]
+  },
+  {
+   "repo": "Northwind-Labs/harbor-board",
+   "setting": "gha_first",
+   "mode": "github-actions",
+   "why": "set to GitHub Actions-first (deploys moved off the platform lane)",
+   "fallback_cause": null,
+   "fallback_since": null,
+   "fallback_reason": null,
+   "held": false,
+   "drill_until": null,
+   "drill_kind": null,
+   "eligible": null,
+   "reason": "batch rollout",
+   "updated_by": "dev-01@example.com",
+   "updated_at": "2026-10-13T08:21:17.173167Z",
+   "head": {
+    "at": "2026-10-13T07:50:11.930031+00:00",
+    "sha": "0d5c96bb2b8a1dce9783ebf4323614e694cb3209",
+    "lane": "roadrunner",
+    "detail": "0d5c96b deployed by Roadrunner",
+    "verdict": "deployed",
+    "failsafe_state": "success"
+   },
+   "workflows": []
+  },
+  {
+   "repo": "Northwind-Labs/borealis-web",
+   "setting": "roadrunner_first",
+   "mode": "roadrunner",
+   "why": "Roadrunner-first: Roadrunner deploys every push; GitHub Actions is the automatic fallback",
+   "fallback_cause": null,
+   "fallback_since": null,
+   "fallback_reason": null,
+   "held": false,
+   "drill_until": null,
+   "drill_kind": null,
+   "eligible": null,
+   "reason": "batch rollout",
+   "updated_by": "dev-01@example.com",
+   "updated_at": "2026-10-09T18:44:43.432606Z",
+   "head": {
+    "at": "2026-11-10T19:37:12.178783+00:00",
+    "sha": "be13021ca83449d513f82b9ab0708be58e876780",
+    "lane": "roadrunner",
+    "detail": "be13021 deployed by Roadrunner",
+    "verdict": "deployed",
+    "failsafe_state": "success"
+   },
+   "workflows": [
+    {
+     "workflow": "deploy-app.yml",
+     "baseline_state": "active",
+     "state": "disabled_manually"
+    }
+   ]
+  },
+  {
+   "repo": "Northwind-Labs/summit-gale",
+   "setting": "roadrunner_first",
+   "mode": "roadrunner",
+   "why": "Roadrunner-first: Roadrunner deploys every push; GitHub Actions is the automatic fallback",
+   "fallback_cause": null,
+   "fallback_since": null,
+   "fallback_reason": null,
+   "held": false,
+   "drill_until": null,
+   "drill_kind": null,
+   "eligible": null,
+   "reason": "batch rollout",
+   "updated_by": "dev-01@example.com",
+   "updated_at": "2026-10-09T20:34:05.310835Z",
+   "head": {
+    "at": "2026-11-10T19:35:00.922775+00:00",
+    "sha": "9ed2b0fc3b0b5ca86e78157d51613cf56888e170",
+    "lane": "roadrunner",
+    "detail": "9ed2b0f is marked [skip ci]",
+    "verdict": "skipped",
+    "failsafe_state": ""
+   },
+   "workflows": [
+    {
+     "workflow": "deploy-app.yml",
+     "baseline_state": "active",
+     "state": "disabled_manually"
+    }
+   ]
+  },
+  {
+   "repo": "Northwind-Labs/delta-stock",
+   "setting": "roadrunner_first",
+   "mode": "roadrunner",
+   "why": "Roadrunner-first: Roadrunner deploys every push; GitHub Actions is the automatic fallback",
+   "fallback_cause": null,
+   "fallback_since": null,
+   "fallback_reason": null,
+   "held": false,
+   "drill_until": null,
+   "drill_kind": null,
+   "eligible": null,
+   "reason": "batch rollout",
+   "updated_by": "dev-01@example.com",
+   "updated_at": "2026-10-09T20:28:57.970055Z",
+   "head": {
+    "at": "2026-11-10T19:28:09.468378+00:00",
+    "sha": "be9ecc432e0e797ef223aa4c2d49757cb46f9de6",
+    "lane": "roadrunner",
+    "detail": "be9ecc4 pushed 0 min ago; no Roadrunner deploy yet",
+    "verdict": "waiting",
+    "failsafe_state": ""
+   },
+   "workflows": [
+    {
+     "workflow": "deploy-app.yml",
+     "baseline_state": "active",
+     "state": "disabled_manually"
+    }
+   ]
+  },
+  {
+   "repo": "Northwind-Labs/glacier-tracker",
+   "setting": "roadrunner_first",
+   "mode": "github-actions",
+   "why": "Roadrunner-first, on its GitHub Actions fallback (repo) \u2014 held until re-armed: no Roadrunner deploy for 56abd48 after 2 h 29 min",
+   "fallback_cause": "repo",
+   "fallback_since": "2026-11-10T14:48:03.847085Z",
+   "fallback_reason": "no Roadrunner deploy for 56abd48 after 2 h 29 min",
+   "held": true,
+   "drill_until": null,
+   "drill_kind": null,
+   "eligible": null,
+   "reason": "batch rollout",
+   "updated_by": "dev-01@example.com",
+   "updated_at": "2026-10-09T20:49:41.832399Z",
+   "head": {
+    "at": "2026-11-10T19:13:10.059394+00:00",
+    "sha": "56abd483d1857d5540418a1a3bbbe4f667ad0ea6",
+    "lane": "github-actions",
+    "detail": "56abd48 deployed",
+    "verdict": "deployed",
+    "failsafe_state": null
+   },
+   "workflows": [
+    {
+     "workflow": "deploy-app.yml",
+     "baseline_state": "active",
+     "state": "active"
+    }
+   ]
+  },
+  {
+   "repo": "Northwind-Labs/meridian-shop",
+   "setting": "roadrunner_first",
+   "mode": "github-actions",
+   "why": "Roadrunner-first, on its GitHub Actions fallback (repo): Roadrunner deploy of ad1474a failed",
+   "fallback_cause": "repo",
+   "fallback_since": "2026-11-01T12:33:12.174816Z",
+   "fallback_reason": "Roadrunner deploy of ad1474a failed",
+   "held": false,
+   "drill_until": null,
+   "drill_kind": null,
+   "eligible": null,
+   "reason": "batch rollout",
+   "updated_by": "dev-01@example.com",
+   "updated_at": "2026-10-09T20:34:05.310835Z",
+   "head": {
+    "at": "2026-11-10T17:01:12.171405+00:00",
+    "sha": "a988b12d5807cc1250dae2eae8b63ed942a3c59c",
+    "lane": "github-actions",
+    "detail": "no Roadrunner deploy for a988b12 after 10 min",
+    "verdict": "missing",
+    "failsafe_state": ""
+   },
+   "workflows": [
+    {
+     "workflow": "deploy-app.yml",
+     "baseline_state": "active",
+     "state": "active"
+    }
+   ]
+  }
+ ],
+ "repo": null,
+ "actor": {
+  "id": "github:dev-01",
+  "admin": true,
+  "via": "github"
+ }
+}

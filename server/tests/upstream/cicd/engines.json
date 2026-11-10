@@ -1,0 +1,48 @@
+{
+ "generated_at": "2026-11-10T19:39:00.855456Z",
+ "since": "2026-11-10T06:00:00Z",
+ "source": "node-exporter",
+ "engines": [
+  {
+   "key": "engine-101",
+   "label": "engine-101",
+   "host": "engine-101.example",
+   "reachable": true,
+   "engine_active": true,
+   "engine_uptime_s": 86400,
+   "sessions": 3,
+   "execs": 12,
+   "cpu_pct": 41.5,
+   "iowait_pct": 0.8,
+   "ncpu": 16,
+   "load1": 5.25,
+   "mem_pct": 62.0,
+   "disk_pct": 48.1,
+   "uptime_s": 1209600,
+   "agents": [
+    {"id": 1, "name": "dagger-ci-101-1", "capacity": 3, "running": 1, "online": true, "paused": false, "last_contact": 1794339482},
+    {"id": 2, "name": "dagger-ci-101-2", "capacity": 3, "running": 2, "online": true, "paused": false, "last_contact": 1794339482}
+   ],
+   "slots": 6,
+   "running": 3,
+   "today": {"pipelines": 140, "failed": 9, "minutes": 512.4, "wall_minutes": 233.0, "hung": 0}
+  },
+  {
+   "key": "engine-102",
+   "label": "engine-102",
+   "host": "engine-102.example",
+   "reachable": false,
+   "engine_active": false,
+   "agents": [],
+   "slots": 6,
+   "running": 0
+  },
+  {
+   "key": "unlabeled",
+   "reachable": true
+  }
+ ],
+ "unassigned_agents": [],
+ "queue": {"available": 3, "pending": 1, "waiting_on_deps": 0, "running": 5, "idle_workers": 2, "capacity": 12, "paused": false},
+ "problems": []
+}

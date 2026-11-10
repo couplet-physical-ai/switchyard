@@ -1,0 +1,627 @@
+{
+ "data": {
+  "rateLimit": {
+   "cost": 1,
+   "remaining": 4987
+  },
+  "organization": {
+   "repositories": {
+    "pageInfo": {
+     "hasNextPage": true,
+     "endCursor": "Y3Vyc29yOnYyOpK5"
+    },
+    "nodes": [
+     {
+      "nameWithOwner": "Northwind-Labs/aurora-api",
+      "pushedAt": "2026-11-10T19:40:07Z",
+      "isPrivate": true,
+      "defaultBranchRef": {
+       "name": "main",
+       "target": {
+        "oid": "cba1fed1817599ede1b917712f1ac8d2e629e690",
+        "statusCheckRollup": {
+         "contexts": {
+          "nodes": [
+           {
+            "__typename": "CheckRun",
+            "name": "Analyze (actions)",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "startedAt": "2026-11-10T19:40:20Z",
+            "completedAt": "2026-11-10T19:41:08Z",
+            "detailsUrl": "https://github.com/Northwind-Labs/aurora-api/actions/runs/42871000002/job/130000000001",
+            "checkSuite": {
+             "app": {
+              "slug": "github-actions"
+             },
+             "workflowRun": {
+              "databaseId": 42871000002,
+              "event": "push",
+              "createdAt": "2026-11-10T19:40:09Z",
+              "workflow": {
+               "name": "CodeQL"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "scan / gitleaks",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "startedAt": "2026-11-10T19:40:11Z",
+            "completedAt": "2026-11-10T19:40:18Z",
+            "detailsUrl": "https://github.com/Northwind-Labs/aurora-api/actions/runs/42871000001/job/130000000002",
+            "checkSuite": {
+             "app": {
+              "slug": "github-actions"
+             },
+             "workflowRun": {
+              "databaseId": 42871000001,
+              "event": "push",
+              "createdAt": "2026-11-10T19:40:09Z",
+              "workflow": {
+               "name": "Security Scan"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "Analyze (javascript-typescript)",
+            "status": "IN_PROGRESS",
+            "conclusion": null,
+            "startedAt": "2026-11-10T19:40:20Z",
+            "completedAt": null,
+            "detailsUrl": "https://github.com/Northwind-Labs/aurora-api/actions/runs/42871000002/job/130000000003",
+            "checkSuite": {
+             "app": {
+              "slug": "github-actions"
+             },
+             "workflowRun": {
+              "databaseId": 42871000002,
+              "event": "push",
+              "createdAt": "2026-11-10T19:40:09Z",
+              "workflow": {
+               "name": "CodeQL"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "StatusContext",
+            "context": "ci/woodpecker/push/deploy",
+            "state": "PENDING",
+            "createdAt": "2026-11-10T19:41:25Z",
+            "targetUrl": "https://ci.dev.example.com/repos/64/pipeline/28/3"
+           },
+           {
+            "__typename": "StatusContext",
+            "context": "ci/woodpecker/push/ci",
+            "state": "SUCCESS",
+            "createdAt": "2026-11-10T19:41:24Z",
+            "targetUrl": "https://ci.dev.example.com/repos/64/pipeline/28/1"
+           },
+           {
+            "__typename": "StatusContext",
+            "context": "ci/woodpecker/push/docs",
+            "state": "SUCCESS",
+            "createdAt": "2026-11-10T19:40:29Z",
+            "targetUrl": "https://ci.dev.example.com/repos/64/pipeline/28/2"
+           }
+          ]
+         }
+        },
+        "history": {
+         "nodes": [
+          {
+           "oid": "cba1fed1817599ede1b917712f1ac8d2e629e690",
+           "committedDate": "2026-11-10T19:40:05Z",
+           "messageHeadline": "feat: neutral change 1",
+           "author": {
+            "name": "Dev Person",
+            "user": {
+             "login": "dev-01"
+            }
+           },
+           "statusCheckRollup": {
+            "state": "PENDING"
+           }
+          },
+          {
+           "oid": "eed5b2a3b817f288f79cd4a0c9b015e008e6b452",
+           "committedDate": "2026-11-09T20:13:02Z",
+           "messageHeadline": "feat: neutral change 8",
+           "author": {
+            "name": "Dev Person",
+            "user": {
+             "login": "dev-01"
+            }
+           },
+           "statusCheckRollup": {
+            "state": "SUCCESS"
+           }
+          }
+         ]
+        }
+       }
+      }
+     },
+     {
+      "nameWithOwner": "Northwind-Labs/borealis-web",
+      "pushedAt": "2026-11-10T19:35:01Z",
+      "isPrivate": true,
+      "defaultBranchRef": {
+       "name": "main",
+       "target": {
+        "oid": "be13021ca83449d513f82b9ab0708be58e876780",
+        "statusCheckRollup": {
+         "contexts": {
+          "nodes": [
+           {
+            "__typename": "CheckRun",
+            "name": "Analyze (actions)",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "startedAt": "2026-11-10T19:35:10Z",
+            "completedAt": "2026-11-10T19:35:47Z",
+            "detailsUrl": "https://github.com/Northwind-Labs/borealis-web/actions/runs/42870000011/job/130000000011",
+            "checkSuite": {
+             "app": {
+              "slug": "github-actions"
+             },
+             "workflowRun": {
+              "databaseId": 42870000011,
+              "event": "push",
+              "createdAt": "2026-11-10T19:35:03Z",
+              "workflow": {
+               "name": "CodeQL"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "StatusContext",
+            "context": "ci/failsafe-deploy",
+            "state": "SUCCESS",
+            "createdAt": "2026-11-10T19:36:45Z",
+            "targetUrl": "https://ci.dev.example.com/repos/30/pipeline/23"
+           },
+           {
+            "__typename": "StatusContext",
+            "context": "ci/woodpecker/push/ci",
+            "state": "SUCCESS",
+            "createdAt": "2026-11-10T19:35:31Z",
+            "targetUrl": "https://ci.dev.example.com/repos/30/pipeline/23/1"
+           },
+           {
+            "__typename": "StatusContext",
+            "context": "ci/woodpecker/push/deploy",
+            "state": "SUCCESS",
+            "createdAt": "2026-11-10T19:36:46Z",
+            "targetUrl": "https://ci.dev.example.com/repos/30/pipeline/23/2"
+           }
+          ]
+         }
+        },
+        "history": {
+         "nodes": [
+          {
+           "oid": "be13021ca83449d513f82b9ab0708be58e876780",
+           "committedDate": "2026-11-10T19:34:59Z",
+           "messageHeadline": "feat: neutral change 9",
+           "author": {
+            "name": "Dev Person",
+            "user": {
+             "login": "dev-01"
+            }
+           },
+           "statusCheckRollup": {
+            "state": "SUCCESS"
+           }
+          }
+         ]
+        }
+       }
+      }
+     },
+     {
+      "nameWithOwner": "Northwind-Labs/cirrus-hub",
+      "pushedAt": "2026-11-10T15:39:32Z",
+      "isPrivate": true,
+      "defaultBranchRef": {
+       "name": "main",
+       "target": {
+        "oid": "f917c191816f60e33bd397e5c528f3ed7b1f8c9f",
+        "statusCheckRollup": {
+         "contexts": {
+          "nodes": [
+           {
+            "__typename": "CheckRun",
+            "name": "Verus (cirrus-core, --no-cheating)",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "startedAt": "2026-11-10T15:40:04Z",
+            "completedAt": "2026-11-10T15:40:39Z",
+            "detailsUrl": "https://github.com/Northwind-Labs/cirrus-hub/actions/runs/42846645351/job/129935790599",
+            "checkSuite": {
+             "app": {
+              "slug": "github-actions"
+             },
+             "workflowRun": {
+              "databaseId": 42846645351,
+              "event": "push",
+              "createdAt": "2026-11-10T15:39:34Z",
+              "workflow": {
+               "name": "Tests"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "Zero-Python guard",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "startedAt": "2026-11-10T15:39:41Z",
+            "completedAt": "2026-11-10T15:39:45Z",
+            "detailsUrl": "https://github.com/Northwind-Labs/cirrus-hub/actions/runs/42846645351/job/129935790582",
+            "checkSuite": {
+             "app": {
+              "slug": "github-actions"
+             },
+             "workflowRun": {
+              "databaseId": 42846645351,
+              "event": "push",
+              "createdAt": "2026-11-10T15:39:34Z",
+              "workflow": {
+               "name": "Tests"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "Frontend",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "startedAt": "2026-11-10T15:40:04Z",
+            "completedAt": "2026-11-10T15:41:11Z",
+            "detailsUrl": "https://github.com/Northwind-Labs/cirrus-hub/actions/runs/42846645351/job/129935790573",
+            "checkSuite": {
+             "app": {
+              "slug": "github-actions"
+             },
+             "workflowRun": {
+              "databaseId": 42846645351,
+              "event": "push",
+              "createdAt": "2026-11-10T15:39:34Z",
+              "workflow": {
+               "name": "Tests"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "Rust (fmt, clippy, build, lib tests, e2e)",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "startedAt": "2026-11-10T15:40:03Z",
+            "completedAt": "2026-11-10T15:43:53Z",
+            "detailsUrl": "https://github.com/Northwind-Labs/cirrus-hub/actions/runs/42846645351/job/129935789989",
+            "checkSuite": {
+             "app": {
+              "slug": "github-actions"
+             },
+             "workflowRun": {
+              "databaseId": 42846645351,
+              "event": "push",
+              "createdAt": "2026-11-10T15:39:34Z",
+              "workflow": {
+               "name": "Tests"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "StatusContext",
+            "context": "ci/failsafe-deploy",
+            "state": "SUCCESS",
+            "createdAt": "2026-11-10T15:47:56Z",
+            "targetUrl": "https://ci.dev.example.com/repos/44/pipeline/97"
+           },
+           {
+            "__typename": "StatusContext",
+            "context": "ci/woodpecker/push/ci",
+            "state": "SUCCESS",
+            "createdAt": "2026-11-10T15:43:57Z",
+            "targetUrl": "https://ci.dev.example.com/repos/44/pipeline/97/1"
+           },
+           {
+            "__typename": "StatusContext",
+            "context": "ci/woodpecker/push/deploy",
+            "state": "SUCCESS",
+            "createdAt": "2026-11-10T15:47:57Z",
+            "targetUrl": "https://ci.dev.example.com/repos/44/pipeline/97/2"
+           }
+          ]
+         }
+        },
+        "history": {
+         "nodes": [
+          {
+           "oid": "f917c191816f60e33bd397e5c528f3ed7b1f8c9f",
+           "committedDate": "2026-11-10T15:39:30Z",
+           "messageHeadline": "feat: neutral change 7",
+           "author": {
+            "name": "Dev Person",
+            "user": {
+             "login": "dev-01"
+            }
+           },
+           "statusCheckRollup": {
+            "state": "SUCCESS"
+           }
+          },
+          {
+           "oid": "f26d808471def73facfbe91b983f7185dca62555",
+           "committedDate": "2026-11-09T23:39:25Z",
+           "messageHeadline": "feat: neutral change 14",
+           "author": {
+            "name": "Dev Person",
+            "user": {
+             "login": "dev-02"
+            }
+           },
+           "statusCheckRollup": {
+            "state": "FAILURE"
+           }
+          },
+          {
+           "oid": "8d9a14d926b62e0db30c66a224258debed1d7de5",
+           "committedDate": "2026-11-09T20:06:35Z",
+           "messageHeadline": "feat: neutral change 15",
+           "author": {
+            "name": "Dev Person",
+            "user": {
+             "login": "dev-02"
+            }
+           },
+           "statusCheckRollup": {
+            "state": "FAILURE"
+           }
+          }
+         ]
+        }
+       }
+      }
+     },
+     {
+      "nameWithOwner": "Northwind-Labs/delta-stock",
+      "pushedAt": "2026-11-10T19:40:26Z",
+      "isPrivate": true,
+      "defaultBranchRef": {
+       "name": "main",
+       "target": {
+        "oid": "be9ecc432e0e797ef223aa4c2d49757cb46f9de6",
+        "statusCheckRollup": {
+         "contexts": {
+          "nodes": [
+           {
+            "__typename": "CheckRun",
+            "name": "Analyze (actions)",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "startedAt": "2026-11-10T19:24:55Z",
+            "completedAt": "2026-11-10T19:25:42Z",
+            "detailsUrl": "https://github.com/Northwind-Labs/delta-stock/actions/runs/42870000021/job/13000000020",
+            "checkSuite": {
+             "app": {
+              "slug": "github-actions"
+             },
+             "workflowRun": {
+              "databaseId": 42870000021,
+              "event": "push",
+              "createdAt": "2026-11-10T19:24:52Z",
+              "workflow": {
+               "name": "CodeQL"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "Analyze (javascript-typescript)",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "startedAt": "2026-11-10T19:24:55Z",
+            "completedAt": "2026-11-10T19:27:34Z",
+            "detailsUrl": "https://github.com/Northwind-Labs/delta-stock/actions/runs/42870000021/job/13000000021",
+            "checkSuite": {
+             "app": {
+              "slug": "github-actions"
+             },
+             "workflowRun": {
+              "databaseId": 42870000021,
+              "event": "push",
+              "createdAt": "2026-11-10T19:24:52Z",
+              "workflow": {
+               "name": "CodeQL"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "Analyze (python)",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "startedAt": "2026-11-10T19:24:55Z",
+            "completedAt": "2026-11-10T19:27:28Z",
+            "detailsUrl": "https://github.com/Northwind-Labs/delta-stock/actions/runs/42870000021/job/13000000022",
+            "checkSuite": {
+             "app": {
+              "slug": "github-actions"
+             },
+             "workflowRun": {
+              "databaseId": 42870000021,
+              "event": "push",
+              "createdAt": "2026-11-10T19:24:52Z",
+              "workflow": {
+               "name": "CodeQL"
+              }
+             }
+            }
+           }
+          ]
+         }
+        },
+        "history": {
+         "nodes": [
+          {
+           "oid": "be9ecc432e0e797ef223aa4c2d49757cb46f9de6",
+           "committedDate": "2026-11-10T19:24:48Z",
+           "messageHeadline": "feat: neutral change 16",
+           "author": {
+            "name": "Dev Person",
+            "user": {
+             "login": "dev-01"
+            }
+           },
+           "statusCheckRollup": {
+            "state": "SUCCESS"
+           }
+          }
+         ]
+        }
+       }
+      }
+     },
+     {
+      "nameWithOwner": "Northwind-Labs/meridian-shop",
+      "pushedAt": "2026-11-10T16:50:25Z",
+      "isPrivate": true,
+      "defaultBranchRef": {
+       "name": "main",
+       "target": {
+        "oid": "a988b12d5807cc1250dae2eae8b63ed942a3c59c",
+        "statusCheckRollup": {
+         "contexts": {
+          "nodes": [
+           {
+            "__typename": "CheckRun",
+            "name": "deploy / deploy",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "startedAt": "2026-11-10T16:50:30Z",
+            "completedAt": "2026-11-10T16:50:44Z",
+            "detailsUrl": "https://github.com/Northwind-Labs/meridian-shop/actions/runs/42860000031/job/130000000031",
+            "checkSuite": {
+             "app": {
+              "slug": "github-actions"
+             },
+             "workflowRun": {
+              "databaseId": 42860000031,
+              "event": "push",
+              "createdAt": "2026-11-10T16:50:25Z",
+              "workflow": {
+               "name": "Deploy App"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "deploy / verify",
+            "status": "COMPLETED",
+            "conclusion": "FAILURE",
+            "startedAt": "2026-11-10T16:50:46Z",
+            "completedAt": "2026-11-10T16:51:44Z",
+            "detailsUrl": "https://github.com/Northwind-Labs/meridian-shop/actions/runs/42860000031/job/130000000032",
+            "checkSuite": {
+             "app": {
+              "slug": "github-actions"
+             },
+             "workflowRun": {
+              "databaseId": 42860000031,
+              "event": "push",
+              "createdAt": "2026-11-10T16:50:25Z",
+              "workflow": {
+               "name": "Deploy App"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": ".github/dependabot.yml",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "startedAt": "2026-11-10T16:50:30Z",
+            "completedAt": "2026-11-10T16:51:00Z",
+            "detailsUrl": "https://github.com/Northwind-Labs/meridian-shop/network/updates/1",
+            "checkSuite": {
+             "app": {
+              "slug": "dependabot"
+             },
+             "workflowRun": null
+            }
+           }
+          ]
+         }
+        },
+        "history": {
+         "nodes": [
+          {
+           "oid": "a988b12d5807cc1250dae2eae8b63ed942a3c59c",
+           "committedDate": "2026-11-10T16:50:23Z",
+           "messageHeadline": "feat: neutral change 17",
+           "author": {
+            "name": "Dev Person",
+            "user": {
+             "login": "dev-01"
+            }
+           },
+           "statusCheckRollup": {
+            "state": "FAILURE"
+           }
+          }
+         ]
+        }
+       }
+      }
+     },
+     {
+      "nameWithOwner": "Northwind-Labs/kestrel-status",
+      "pushedAt": "2026-11-03T17:12:40Z",
+      "isPrivate": false,
+      "defaultBranchRef": {
+       "name": "main",
+       "target": {
+        "oid": "5b0e3c41d2f87a9e60c1b4d3a2e1f0c9b8a7d6e5",
+        "statusCheckRollup": null,
+        "history": {
+         "nodes": [
+          {
+           "oid": "5b0e3c41d2f87a9e60c1b4d3a2e1f0c9b8a7d6e5",
+           "committedDate": "2026-11-03T17:12:38Z",
+           "messageHeadline": "Bump example-lib from 1.0.0 to 1.0.1",
+           "author": {
+            "name": "Dev Person",
+            "user": {
+             "login": "dependabot[bot]"
+            }
+           },
+           "statusCheckRollup": null
+          }
+         ]
+        }
+       }
+      }
+     }
+    ]
+   }
+  }
+ }
+}

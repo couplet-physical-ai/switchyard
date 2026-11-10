@@ -1352,10 +1352,14 @@ impl Store {
                 continue;
             }
             let pr = p.event == PipelineEvent::PullRequest;
+            // A PR run's branch is the PR's head branch; if the adapter only knew the
+            // target (the default branch), it must not put the commit "on main".
+            let head_known =
+                !p.branch.is_empty() && self.repo_meta(&p.repo).is_none_or(|m| m.0 != p.branch);
             let c = CommitFact {
                 repo: p.repo.clone(),
                 sha: p.sha.clone(),
-                branch: if pr {
+                branch: if pr && !head_known {
                     p.pr.map(|n| format!("pull/{n}")).unwrap_or_default()
                 } else {
                     p.branch.clone()
@@ -1367,10 +1371,10 @@ impl Store {
                 prio: if pr { 0 } else { 1 },
             };
             branches.insert(c.branch.clone());
-            if best
-                .as_ref()
-                .is_none_or(|b| commit_version(b) < commit_version(&c))
-            {
+            // Within a source priority the FIRST observation describes the commit (a
+            // rerun must not move it later); order-independent: the minimum `at`.
+            let key = |x: &CommitFact| (x.prio, std::cmp::Reverse(x.at), content_hash(x));
+            if best.as_ref().is_none_or(|b| key(b) < key(&c)) {
                 best = Some(c);
             }
         }
@@ -1406,7 +1410,13 @@ impl Store {
             .flatten()
             .filter_map(|k| self.prs.get(k))
             .collect();
-        let pr = prs.iter().map(|p| p.number).min();
+        let pr = prs.iter().map(|p| p.number).min().or_else(|| {
+            pipes
+                .iter()
+                .filter_map(|id| self.pipelines.get(id))
+                .filter_map(|p| p.pr)
+                .min()
+        });
         let branch = if on_default {
             default_branch.clone()
         } else if let Some(b) = reg
@@ -1430,12 +1440,16 @@ impl Store {
             .flatten()
             .filter_map(|k| self.prs.get(k))
             .any(|p| p.state == PrState::Merged && prs.iter().any(|x| x.number == p.number));
-        let stage = if let Some(d) = &deploy {
-            match d.state {
-                DeployState::Pending | DeployState::Running => Stage::Deploying,
-                DeployState::Success => Stage::Deployed,
-                DeployState::Failure => Stage::Failed,
-            }
+        // A queued deploy workflow (waiting on `ci`) is not a deploy yet: until it runs,
+        // the commit is still where its CI is.
+        let deploy_stage = deploy.as_ref().and_then(|d| match d.state {
+            DeployState::Running => Some(Stage::Deploying),
+            DeployState::Pending => (!ci.is_active()).then_some(Stage::Deploying),
+            DeployState::Success => Some(Stage::Deployed),
+            DeployState::Failure => Some(Stage::Failed),
+        });
+        let stage = if let Some(st) = deploy_stage {
+            st
         } else {
             match ci {
                 CiState::Pending | CiState::Blocked => Stage::Queued,
@@ -1481,9 +1495,38 @@ impl Store {
         })
     }
 
+    /// The PR's checks with each `ci/woodpecker/<event>/<workflow>` status replaced by the
+    /// live Roadrunner run of the head (GitHub's rollup lags the event stream).
+    fn live_checks(&self, p: &PrFact) -> Vec<Check> {
+        let sk = sha_key(&p.repo, &p.head_sha);
+        let mut latest: Option<&Pipeline> = None;
+        for id in self.idx.sha_pipelines.get(&sk).into_iter().flatten() {
+            if let Some(x) = self.pipelines.get(id)
+                && x.lane == LaneKind::Roadrunner
+                && latest.is_none_or(|l| x.number > l.number)
+            {
+                latest = Some(x);
+            }
+        }
+        let mut checks = p.checks.clone();
+        if let Some(run) = latest {
+            for c in checks.iter_mut() {
+                if let Some(wf) = c
+                    .name
+                    .strip_prefix("ci/woodpecker/")
+                    .and_then(|r| r.rsplit('/').next())
+                    && let Some(w) = run.workflows.iter().find(|w| w.name == wf)
+                {
+                    c.state = w.state;
+                }
+            }
+        }
+        checks
+    }
+
     fn pr_ci(&self, p: &PrFact) -> CiState {
         let pipe = self.commit_ci(&p.repo, &p.head_sha);
-        let checks = combine_states(p.checks.iter().map(|c| c.state));
+        let checks = combine_states(self.live_checks(p).iter().map(|c| c.state));
         // The pipelines are live; GitHub's rollup lags. Prefer live when it is active.
         if pipe.is_active() {
             return pipe;
@@ -1521,8 +1564,8 @@ impl Store {
                 } else if ci.is_active() {
                     (PrPhase::Checks, None)
                 } else if ci.is_red() {
-                    let failing = p
-                        .checks
+                    let failing = self
+                        .live_checks(p)
                         .iter()
                         .filter(|c| c.state.is_red())
                         .map(|c| c.name.clone())
@@ -1538,7 +1581,7 @@ impl Store {
                 }
             }
         };
-        let mut checks = p.checks.clone();
+        let mut checks = self.live_checks(p);
         checks.sort_by(|a, b| b.required.cmp(&a.required).then(a.name.cmp(&b.name)));
         let idle = now - p.updated;
         Some(Pr {
@@ -1838,7 +1881,14 @@ impl Store {
             v.sort_unstable();
             v[v.len() / 2]
         };
-        let deploys_24h = self.deploys.values().filter(|d| d.started >= day).count() as u32;
+        // One deploy per commit, however many sources reported it.
+        let deploys_24h = self
+            .deploys
+            .values()
+            .filter(|d| d.started >= day)
+            .map(|d| (d.repo.as_str(), d.sha.as_str()))
+            .collect::<BTreeSet<_>>()
+            .len() as u32;
         let apps: Vec<Health> = self
             .app_list
             .iter()

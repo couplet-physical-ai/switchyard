@@ -238,7 +238,9 @@ pub fn contexts_to_facts(
                     .or(Some(u.to_string()))
             })
             .unwrap_or_else(|| format!("https://github.com/{repo}/actions/runs/{id}"));
-        let deploy = wf.to_ascii_lowercase().contains("deploy");
+        // A deploy-named workflow deploys only outside PRs (PR runs are previews/plans).
+        let deploy =
+            wf.to_ascii_lowercase().contains("deploy") && event != PipelineEvent::PullRequest;
         let pid = ids::gha_pipeline(id);
         let steps: Vec<Step> = jobs
             .iter()

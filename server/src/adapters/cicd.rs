@@ -104,8 +104,19 @@ pub fn facts_from_mode(m: &ModeOut, now: Ms) -> Vec<Fact> {
                 continue;
             };
             let at = h.at.as_deref().and_then(parse_time).unwrap_or(now);
+            // `head.lane` says which lane shipped it (a repo on its GitHub Actions
+            // fallback reports a plain `deployed`).
+            let gha_via = if fallback {
+                DeployVia::GhaFallback
+            } else {
+                DeployVia::Gha
+            };
+            let lane_via = match h.lane.as_deref() {
+                Some("github-actions") => gha_via,
+                _ => DeployVia::Roadrunner,
+            };
             let (state, via) = match verdict {
-                "deployed" => (DeployState::Success, DeployVia::Roadrunner),
+                "deployed" => (DeployState::Success, lane_via),
                 "deployed_gha" => (
                     DeployState::Success,
                     if fallback {
@@ -114,8 +125,8 @@ pub fn facts_from_mode(m: &ModeOut, now: Ms) -> Vec<Fact> {
                         DeployVia::Gha
                     },
                 ),
-                "deploying" => (DeployState::Running, DeployVia::Roadrunner),
-                "failed" => (DeployState::Failure, DeployVia::Roadrunner),
+                "deploying" => (DeployState::Running, lane_via),
+                "failed" => (DeployState::Failure, lane_via),
                 _ => continue,
             };
             out.push(Fact::Deploy(DeployFact {

@@ -1,0 +1,820 @@
+{
+ "data": {
+  "rateLimit": {
+   "cost": 1,
+   "remaining": 4980,
+   "resetAt": "2026-11-10T20:37:00Z"
+  },
+  "search": {
+   "issueCount": 900,
+   "pageInfo": {
+    "hasNextPage": true,
+    "endCursor": "Y3Vyc29yOjUw"
+   },
+   "nodes": [
+    {
+     "number": 119,
+     "title": "feat: neutral change 18",
+     "url": "https://github.com/Northwind-EMS/polaris-ui/pull/119",
+     "isDraft": false,
+     "state": "OPEN",
+     "createdAt": "2026-11-10T19:37:38Z",
+     "updatedAt": "2026-11-10T19:37:38Z",
+     "author": {
+      "__typename": "User",
+      "login": "dev-02"
+     },
+     "repository": {
+      "nameWithOwner": "Northwind-EMS/polaris-ui"
+     },
+     "baseRefName": "main",
+     "headRefName": "feature/change-1",
+     "headRefOid": "d6fbeb40b6daaa748ba0fd8c424d0e7d23240c9a",
+     "mergeable": "MERGEABLE",
+     "mergeStateStatus": "CLEAN",
+     "reviewDecision": null,
+     "autoMergeRequest": null,
+     "commits": {
+      "nodes": [
+       {
+        "commit": {
+         "oid": "d6fbeb40b6daaa748ba0fd8c424d0e7d23240c9a",
+         "committedDate": "2026-11-10T19:37:23Z",
+         "statusCheckRollup": {
+          "state": "SUCCESS",
+          "contexts": {
+           "totalCount": 5,
+           "nodes": [
+            {
+             "__typename": "CheckRun",
+             "name": "Analyze (actions)",
+             "status": "COMPLETED",
+             "conclusion": "SUCCESS",
+             "startedAt": "2026-11-10T19:37:44Z",
+             "completedAt": "2026-11-10T19:38:23Z",
+             "detailsUrl": "https://github.com/Northwind-EMS/polaris-ui/actions/runs/42887157019/job/130078404763",
+             "checkSuite": {
+              "app": {
+               "slug": "github-actions"
+              },
+              "workflowRun": {
+               "databaseId": 42887157019,
+               "workflow": {
+                "name": "CodeQL"
+               },
+               "event": "pull_request",
+               "createdAt": "2026-11-10T19:37:44Z"
+              }
+             }
+            },
+            {
+             "__typename": "CheckRun",
+             "name": "Analyze (javascript-typescript)",
+             "status": "COMPLETED",
+             "conclusion": "SUCCESS",
+             "startedAt": "2026-11-10T19:37:44Z",
+             "completedAt": "2026-11-10T19:39:08Z",
+             "detailsUrl": "https://github.com/Northwind-EMS/polaris-ui/actions/runs/42887157019/job/130078402749",
+             "checkSuite": {
+              "app": {
+               "slug": "github-actions"
+              },
+              "workflowRun": {
+               "databaseId": 42887157019,
+               "workflow": {
+                "name": "CodeQL"
+               },
+               "event": "pull_request",
+               "createdAt": "2026-11-10T19:37:44Z"
+              }
+             }
+            },
+            {
+             "__typename": "CheckRun",
+             "name": "CodeQL",
+             "status": "COMPLETED",
+             "conclusion": "SUCCESS",
+             "startedAt": "2026-11-10T19:38:12Z",
+             "completedAt": "2026-11-10T19:38:18Z",
+             "detailsUrl": "https://github.com/Northwind-EMS/polaris-ui/runs/130078683116",
+             "checkSuite": {
+              "app": {
+               "slug": "github-advanced-security"
+              },
+              "workflowRun": null
+             }
+            },
+            {
+             "__typename": "StatusContext",
+             "context": "ci/woodpecker/pr/ci",
+             "state": "SUCCESS",
+             "targetUrl": "https://ci.dev.example.com/repos/1/pipeline/85/1",
+             "createdAt": "2026-11-10T19:39:26Z"
+            },
+            {
+             "__typename": "StatusContext",
+             "context": "ci/woodpecker/pr/security",
+             "state": "SUCCESS",
+             "targetUrl": "https://ci.dev.example.com/repos/1/pipeline/85/2",
+             "createdAt": "2026-11-10T19:38:14Z"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     },
+     "mergedAt": null,
+     "closedAt": null,
+     "mergeCommit": null
+    },
+    {
+     "number": 102,
+     "title": "feat: neutral change 2",
+     "url": "https://github.com/Northwind-EMS/ember-api/pull/102",
+     "isDraft": false,
+     "state": "OPEN",
+     "createdAt": "2026-11-10T19:37:36Z",
+     "updatedAt": "2026-11-10T19:37:36Z",
+     "author": {
+      "__typename": "User",
+      "login": "dev-02"
+     },
+     "repository": {
+      "nameWithOwner": "Northwind-EMS/ember-api"
+     },
+     "baseRefName": "main",
+     "headRefName": "feature/change-1",
+     "headRefOid": "aad98fd9b169395a00cd2260d34490c1d1c0e6cb",
+     "mergeable": "MERGEABLE",
+     "mergeStateStatus": "BLOCKED",
+     "reviewDecision": null,
+     "autoMergeRequest": null,
+     "commits": {
+      "nodes": [
+       {
+        "commit": {
+         "oid": "aad98fd9b169395a00cd2260d34490c1d1c0e6cb",
+         "committedDate": "2026-11-10T19:37:21Z",
+         "statusCheckRollup": {
+          "state": "PENDING",
+          "contexts": {
+           "totalCount": 5,
+           "nodes": [
+            {
+             "__typename": "CheckRun",
+             "name": "Analyze (actions)",
+             "status": "COMPLETED",
+             "conclusion": "SUCCESS",
+             "startedAt": "2026-11-10T19:37:41Z",
+             "completedAt": "2026-11-10T19:38:27Z",
+             "detailsUrl": "https://github.com/Northwind-EMS/ember-api/actions/runs/42887148820/job/130078373510",
+             "checkSuite": {
+              "app": {
+               "slug": "github-actions"
+              },
+              "workflowRun": {
+               "databaseId": 42887148820,
+               "workflow": {
+                "name": "CodeQL"
+               },
+               "event": "pull_request",
+               "createdAt": "2026-11-10T19:37:41Z"
+              }
+             }
+            },
+            {
+             "__typename": "CheckRun",
+             "name": "Analyze (python)",
+             "status": "COMPLETED",
+             "conclusion": "SUCCESS",
+             "startedAt": "2026-11-10T19:37:41Z",
+             "completedAt": "2026-11-10T19:38:31Z",
+             "detailsUrl": "https://github.com/Northwind-EMS/ember-api/actions/runs/42887148820/job/130078373332",
+             "checkSuite": {
+              "app": {
+               "slug": "github-actions"
+              },
+              "workflowRun": {
+               "databaseId": 42887148820,
+               "workflow": {
+                "name": "CodeQL"
+               },
+               "event": "pull_request",
+               "createdAt": "2026-11-10T19:37:41Z"
+              }
+             }
+            },
+            {
+             "__typename": "StatusContext",
+             "context": "ci/woodpecker/pr/ci",
+             "state": "PENDING",
+             "targetUrl": "https://ci.dev.example.com/repos/38/pipeline/53/1",
+             "createdAt": "2026-11-10T19:37:48Z"
+            },
+            {
+             "__typename": "CheckRun",
+             "name": "CodeQL",
+             "status": "COMPLETED",
+             "conclusion": "SUCCESS",
+             "startedAt": "2026-11-10T19:38:16Z",
+             "completedAt": "2026-11-10T19:38:21Z",
+             "detailsUrl": "https://github.com/Northwind-EMS/ember-api/runs/130078720527",
+             "checkSuite": {
+              "app": {
+               "slug": "github-advanced-security"
+              },
+              "workflowRun": null
+             }
+            },
+            {
+             "__typename": "StatusContext",
+             "context": "ci/woodpecker/pr/security",
+             "state": "SUCCESS",
+             "targetUrl": "https://ci.dev.example.com/repos/38/pipeline/53/2",
+             "createdAt": "2026-11-10T19:37:54Z"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     },
+     "mergedAt": null,
+     "closedAt": null,
+     "mergeCommit": null
+    },
+    {
+     "number": 143,
+     "title": "deps: bump example-lib from 1.0.19 to 1.0.20",
+     "url": "https://github.com/Northwind-Labs/tundra-lab/pull/143",
+     "isDraft": false,
+     "state": "OPEN",
+     "createdAt": "2026-11-10T19:22:54Z",
+     "updatedAt": "2026-11-10T19:22:57Z",
+     "author": {
+      "__typename": "Bot",
+      "login": "dependabot"
+     },
+     "repository": {
+      "nameWithOwner": "Northwind-Labs/tundra-lab"
+     },
+     "baseRefName": "main",
+     "headRefName": "dependabot/npm_and_yarn/example-lib-5",
+     "headRefOid": "7fdef914108e7e65814e67c7215c724968447ee4",
+     "mergeable": "MERGEABLE",
+     "mergeStateStatus": "UNSTABLE",
+     "reviewDecision": null,
+     "autoMergeRequest": null,
+     "commits": {
+      "nodes": [
+       {
+        "commit": {
+         "oid": "7fdef914108e7e65814e67c7215c724968447ee4",
+         "committedDate": "2026-11-10T19:22:50Z",
+         "statusCheckRollup": {
+          "state": "FAILURE",
+          "contexts": {
+           "totalCount": 3,
+           "nodes": [
+            {
+             "__typename": "StatusContext",
+             "context": "ci/woodpecker/pr/security",
+             "state": "FAILURE",
+             "targetUrl": "https://ci.dev.example.com/repos/18/pipeline/148/2",
+             "createdAt": "2026-11-10T19:23:29Z"
+            },
+            {
+             "__typename": "CheckRun",
+             "name": "CodeQL",
+             "status": "COMPLETED",
+             "conclusion": "NEUTRAL",
+             "startedAt": "2026-11-10T19:22:57Z",
+             "completedAt": "2026-11-10T19:22:58Z",
+             "detailsUrl": "https://github.com/Northwind-Labs/tundra-lab/runs/130069789451",
+             "checkSuite": {
+              "app": {
+               "slug": "github-advanced-security"
+              },
+              "workflowRun": null
+             }
+            },
+            {
+             "__typename": "StatusContext",
+             "context": "ci/woodpecker/pr/ci",
+             "state": "SUCCESS",
+             "targetUrl": "https://ci.dev.example.com/repos/18/pipeline/148/1",
+             "createdAt": "2026-11-10T19:24:35Z"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     },
+     "mergedAt": null,
+     "closedAt": null,
+     "mergeCommit": null
+    },
+    {
+     "number": 380,
+     "title": "feat: neutral change 10",
+     "url": "https://github.com/Northwind-Labs/delta-stock/pull/380",
+     "isDraft": false,
+     "state": "OPEN",
+     "createdAt": "2026-11-10T19:07:20Z",
+     "updatedAt": "2026-11-10T19:38:20Z",
+     "author": {
+      "__typename": "User",
+      "login": "dev-03"
+     },
+     "repository": {
+      "nameWithOwner": "Northwind-Labs/delta-stock"
+     },
+     "baseRefName": "main",
+     "headRefName": "feature/change-3",
+     "headRefOid": "d23762fe1a7a7e8914b7406892eb1e05213422f3",
+     "mergeable": "MERGEABLE",
+     "mergeStateStatus": "CLEAN",
+     "reviewDecision": null,
+     "autoMergeRequest": null,
+     "commits": {
+      "nodes": [
+       {
+        "commit": {
+         "oid": "d23762fe1a7a7e8914b7406892eb1e05213422f3",
+         "committedDate": "2026-11-10T19:28:01Z",
+         "statusCheckRollup": {
+          "state": "SUCCESS",
+          "contexts": {
+           "totalCount": 5,
+           "nodes": [
+            {
+             "__typename": "CheckRun",
+             "name": "Analyze (actions)",
+             "status": "COMPLETED",
+             "conclusion": "SUCCESS",
+             "startedAt": "2026-11-10T19:28:09Z",
+             "completedAt": "2026-11-10T19:28:52Z",
+             "detailsUrl": "https://github.com/Northwind-Labs/delta-stock/actions/runs/42885548407/job/130072811792",
+             "checkSuite": {
+              "app": {
+               "slug": "github-actions"
+              },
+              "workflowRun": {
+               "databaseId": 42885548407,
+               "workflow": {
+                "name": "CodeQL"
+               },
+               "event": "pull_request",
+               "createdAt": "2026-11-10T19:28:09Z"
+              }
+             }
+            },
+            {
+             "__typename": "CheckRun",
+             "name": "Analyze (javascript-typescript)",
+             "status": "COMPLETED",
+             "conclusion": "SUCCESS",
+             "startedAt": "2026-11-10T19:28:09Z",
+             "completedAt": "2026-11-10T19:29:33Z",
+             "detailsUrl": "https://github.com/Northwind-Labs/delta-stock/actions/runs/42885548407/job/130072811412",
+             "checkSuite": {
+              "app": {
+               "slug": "github-actions"
+              },
+              "workflowRun": {
+               "databaseId": 42885548407,
+               "workflow": {
+                "name": "CodeQL"
+               },
+               "event": "pull_request",
+               "createdAt": "2026-11-10T19:28:09Z"
+              }
+             }
+            },
+            {
+             "__typename": "CheckRun",
+             "name": "Analyze (python)",
+             "status": "COMPLETED",
+             "conclusion": "SUCCESS",
+             "startedAt": "2026-11-10T19:28:09Z",
+             "completedAt": "2026-11-10T19:29:21Z",
+             "detailsUrl": "https://github.com/Northwind-Labs/delta-stock/actions/runs/42885548407/job/130072811878",
+             "checkSuite": {
+              "app": {
+               "slug": "github-actions"
+              },
+              "workflowRun": {
+               "databaseId": 42885548407,
+               "workflow": {
+                "name": "CodeQL"
+               },
+               "event": "pull_request",
+               "createdAt": "2026-11-10T19:28:09Z"
+              }
+             }
+            },
+            {
+             "__typename": "CheckRun",
+             "name": "CodeQL",
+             "status": "COMPLETED",
+             "conclusion": "SUCCESS",
+             "startedAt": "2026-11-10T19:28:40Z",
+             "completedAt": "2026-11-10T19:28:44Z",
+             "detailsUrl": "https://github.com/Northwind-Labs/delta-stock/runs/130073128650",
+             "checkSuite": {
+              "app": {
+               "slug": "github-advanced-security"
+              },
+              "workflowRun": null
+             }
+            },
+            {
+             "__typename": "StatusContext",
+             "context": "ci/woodpecker/pr/ci",
+             "state": "SUCCESS",
+             "targetUrl": "https://ci.dev.example.com/repos/3/pipeline/149/1",
+             "createdAt": "2026-11-10T19:38:16Z"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     },
+     "mergedAt": null,
+     "closedAt": null,
+     "mergeCommit": null
+    },
+    {
+     "number": 305,
+     "title": "feat: neutral change 20",
+     "url": "https://github.com/Northwind-Labs/ridge-code/pull/305",
+     "isDraft": false,
+     "state": "OPEN",
+     "createdAt": "2026-11-10T17:54:33Z",
+     "updatedAt": "2026-11-10T19:08:25Z",
+     "author": {
+      "__typename": "User",
+      "login": "dev-02"
+     },
+     "repository": {
+      "nameWithOwner": "Northwind-Labs/ridge-code"
+     },
+     "baseRefName": "exowatt/main",
+     "headRefName": "feature/change-6",
+     "headRefOid": "dd83da664d36424d72f08125d870793570946558",
+     "mergeable": "MERGEABLE",
+     "mergeStateStatus": "BLOCKED",
+     "reviewDecision": null,
+     "autoMergeRequest": null,
+     "commits": {
+      "nodes": [
+       {
+        "commit": {
+         "oid": "dd83da664d36424d72f08125d870793570946558",
+         "committedDate": "2026-11-10T18:26:21Z",
+         "statusCheckRollup": {
+          "state": "PENDING",
+          "contexts": {
+           "totalCount": 5,
+           "nodes": [
+            {
+             "__typename": "CheckRun",
+             "name": "Build unsigned arm64 DMG",
+             "status": "COMPLETED",
+             "conclusion": "SKIPPED",
+             "startedAt": "2026-11-10T18:26:40Z",
+             "completedAt": "2026-11-10T18:26:31Z",
+             "detailsUrl": "https://github.com/Northwind-Labs/ridge-code/actions/runs/42875219269/job/130036683102",
+             "checkSuite": {
+              "app": {
+               "slug": "github-actions"
+              },
+              "workflowRun": {
+               "databaseId": 42875219269,
+               "workflow": {
+                "name": "DMG Check"
+               },
+               "event": "pull_request",
+               "createdAt": "2026-11-10T18:26:40Z"
+              }
+             }
+            },
+            {
+             "__typename": "CheckRun",
+             "name": "Build preview JS bundle",
+             "status": "COMPLETED",
+             "conclusion": "SKIPPED",
+             "startedAt": "2026-11-10T19:08:28Z",
+             "completedAt": "2026-11-10T19:08:28Z",
+             "detailsUrl": "https://github.com/Northwind-Labs/ridge-code/actions/runs/42882258547/job/130061303315",
+             "checkSuite": {
+              "app": {
+               "slug": "github-actions"
+              },
+              "workflowRun": {
+               "databaseId": 42882258547,
+               "workflow": {
+                "name": "Desktop macOS Preview"
+               },
+               "event": "pull_request",
+               "createdAt": "2026-11-10T19:08:28Z"
+              }
+             }
+            },
+            {
+             "__typename": "CheckRun",
+             "name": "Build unsigned arm64 DMG",
+             "status": "COMPLETED",
+             "conclusion": "SUCCESS",
+             "startedAt": "2026-11-10T19:08:31Z",
+             "completedAt": "2026-11-10T19:14:29Z",
+             "detailsUrl": "https://github.com/Northwind-Labs/ridge-code/actions/runs/42882258502/job/130061301201",
+             "checkSuite": {
+              "app": {
+               "slug": "github-actions"
+              },
+              "workflowRun": {
+               "databaseId": 42882258502,
+               "workflow": {
+                "name": "DMG Check"
+               },
+               "event": "pull_request",
+               "createdAt": "2026-11-10T19:08:31Z"
+              }
+             }
+            },
+            {
+             "__typename": "StatusContext",
+             "context": "ci/woodpecker/pr/pr-check",
+             "state": "PENDING",
+             "targetUrl": "https://ci.dev.example.com/repos/369/pipeline/34/2",
+             "createdAt": "2026-11-10T19:32:08Z"
+            },
+            {
+             "__typename": "StatusContext",
+             "context": "ci/woodpecker/pr/ci",
+             "state": "SUCCESS",
+             "targetUrl": "https://ci.dev.example.com/repos/369/pipeline/34/1",
+             "createdAt": "2026-11-10T19:35:26Z"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     },
+     "mergedAt": null,
+     "closedAt": null,
+     "mergeCommit": null
+    },
+    {
+     "number": 267,
+     "title": "feat: neutral change 21",
+     "url": "https://github.com/Northwind-EMS/kestrel-deploy/pull/267",
+     "isDraft": false,
+     "state": "OPEN",
+     "createdAt": "2026-11-10T16:03:50Z",
+     "updatedAt": "2026-11-10T16:14:44Z",
+     "author": {
+      "__typename": "User",
+      "login": "dev-02"
+     },
+     "repository": {
+      "nameWithOwner": "Northwind-EMS/kestrel-deploy"
+     },
+     "baseRefName": "main",
+     "headRefName": "feature/change-7",
+     "headRefOid": "65fd0896bb7549c61e8b66f79d398ed77bd7e699",
+     "mergeable": "CONFLICTING",
+     "mergeStateStatus": "DIRTY",
+     "reviewDecision": null,
+     "autoMergeRequest": null,
+     "commits": {
+      "nodes": [
+       {
+        "commit": {
+         "oid": "65fd0896bb7549c61e8b66f79d398ed77bd7e699",
+         "committedDate": "2026-11-10T15:57:39Z",
+         "statusCheckRollup": {
+          "state": "SUCCESS",
+          "contexts": {
+           "totalCount": 4,
+           "nodes": [
+            {
+             "__typename": "StatusContext",
+             "context": "ci/woodpecker/pr/chart-render",
+             "state": "SUCCESS",
+             "targetUrl": "https://ci.dev.example.com/repos/207/pipeline/53/1",
+             "createdAt": "2026-11-10T16:05:59Z"
+            },
+            {
+             "__typename": "StatusContext",
+             "context": "ci/woodpecker/pr/ci",
+             "state": "SUCCESS",
+             "targetUrl": "https://ci.dev.example.com/repos/207/pipeline/53/2",
+             "createdAt": "2026-11-10T16:07:09Z"
+            },
+            {
+             "__typename": "StatusContext",
+             "context": "ci/woodpecker/pr/docs",
+             "state": "SUCCESS",
+             "targetUrl": "https://ci.dev.example.com/repos/207/pipeline/53/3",
+             "createdAt": "2026-11-10T16:04:30Z"
+            },
+            {
+             "__typename": "StatusContext",
+             "context": "ci/woodpecker/pr/security",
+             "state": "SUCCESS",
+             "targetUrl": "https://ci.dev.example.com/repos/207/pipeline/53/4",
+             "createdAt": "2026-11-10T16:04:24Z"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     },
+     "mergedAt": null,
+     "closedAt": null,
+     "mergeCommit": null
+    },
+    {
+     "number": 100,
+     "title": "deps: bump example-lib from 1.0.22 to 1.0.23",
+     "url": "https://github.com/Northwind-EMS/ember-api/pull/100",
+     "isDraft": false,
+     "state": "OPEN",
+     "createdAt": "2026-11-10T15:52:26Z",
+     "updatedAt": "2026-11-10T16:57:32Z",
+     "author": {
+      "__typename": "Bot",
+      "login": "dependabot"
+     },
+     "repository": {
+      "nameWithOwner": "Northwind-EMS/ember-api"
+     },
+     "baseRefName": "main",
+     "headRefName": "dependabot/npm_and_yarn/example-lib-8",
+     "headRefOid": "0c1e5c558eb43dc75d72a9d8b5d813ecaa20589a",
+     "mergeable": "MERGEABLE",
+     "mergeStateStatus": "CLEAN",
+     "reviewDecision": null,
+     "autoMergeRequest": null,
+     "commits": {
+      "nodes": [
+       {
+        "commit": {
+         "oid": "0c1e5c558eb43dc75d72a9d8b5d813ecaa20589a",
+         "committedDate": "2026-11-10T16:57:30Z",
+         "statusCheckRollup": {
+          "state": "SUCCESS",
+          "contexts": {
+           "totalCount": 2,
+           "nodes": [
+            {
+             "__typename": "StatusContext",
+             "context": "ci/woodpecker/pr/ci",
+             "state": "SUCCESS",
+             "targetUrl": "https://ci.dev.example.com/repos/38/pipeline/51/1",
+             "createdAt": "2026-11-10T17:11:18Z"
+            },
+            {
+             "__typename": "StatusContext",
+             "context": "ci/woodpecker/pr/security",
+             "state": "SUCCESS",
+             "targetUrl": "https://ci.dev.example.com/repos/38/pipeline/51/2",
+             "createdAt": "2026-11-10T17:01:10Z"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     },
+     "mergedAt": null,
+     "closedAt": null,
+     "mergeCommit": null
+    },
+    {
+     "number": 642,
+     "title": "feat: neutral change 23",
+     "url": "https://github.com/Northwind-EMS/quartz-infra/pull/642",
+     "isDraft": false,
+     "state": "OPEN",
+     "createdAt": "2026-11-10T15:43:25Z",
+     "updatedAt": "2026-11-10T15:50:15Z",
+     "author": {
+      "__typename": "User",
+      "login": "dev-02"
+     },
+     "repository": {
+      "nameWithOwner": "Northwind-EMS/quartz-infra"
+     },
+     "baseRefName": "main",
+     "headRefName": "feature/change-9",
+     "headRefOid": "18dea342fe0f37f52861407b574a17d480c1f361",
+     "mergeable": "MERGEABLE",
+     "mergeStateStatus": "UNSTABLE",
+     "reviewDecision": null,
+     "autoMergeRequest": null,
+     "commits": {
+      "nodes": [
+       {
+        "commit": {
+         "oid": "18dea342fe0f37f52861407b574a17d480c1f361",
+         "committedDate": "2026-11-10T15:33:31Z",
+         "statusCheckRollup": {
+          "state": "FAILURE",
+          "contexts": {
+           "totalCount": 5,
+           "nodes": [
+            {
+             "__typename": "CheckRun",
+             "name": "Typecheck + tests",
+             "status": "COMPLETED",
+             "conclusion": "FAILURE",
+             "startedAt": "2026-11-10T15:43:35Z",
+             "completedAt": "2026-11-10T16:39:39Z",
+             "detailsUrl": "https://github.com/Northwind-EMS/quartz-infra/actions/runs/42847337271/job/129938263430",
+             "checkSuite": {
+              "app": {
+               "slug": "github-actions"
+              },
+              "workflowRun": {
+               "databaseId": 42847337271,
+               "workflow": {
+                "name": "CDK Deploy"
+               },
+               "event": "pull_request",
+               "createdAt": "2026-11-10T15:43:35Z"
+              }
+             }
+            },
+            {
+             "__typename": "CheckRun",
+             "name": "deploy",
+             "status": "COMPLETED",
+             "conclusion": "SKIPPED",
+             "startedAt": "2026-11-10T16:39:39Z",
+             "completedAt": "2026-11-10T16:39:39Z",
+             "detailsUrl": "https://github.com/Northwind-EMS/quartz-infra/actions/runs/42847337271/job/129971797889",
+             "checkSuite": {
+              "app": {
+               "slug": "github-actions"
+              },
+              "workflowRun": {
+               "databaseId": 42847337271,
+               "workflow": {
+                "name": "CDK Deploy"
+               },
+               "event": "pull_request",
+               "createdAt": "2026-11-10T15:43:35Z"
+              }
+             }
+            },
+            {
+             "__typename": "StatusContext",
+             "context": "ci/woodpecker/pr/ci",
+             "state": "FAILURE",
+             "targetUrl": "https://ci.dev.example.com/repos/21/pipeline/105/1",
+             "createdAt": "2026-11-10T15:46:47Z"
+            },
+            {
+             "__typename": "StatusContext",
+             "context": "ci/woodpecker/pr/lambdas",
+             "state": "SUCCESS",
+             "targetUrl": "https://ci.dev.example.com/repos/21/pipeline/105/2",
+             "createdAt": "2026-11-10T15:43:41Z"
+            },
+            {
+             "__typename": "StatusContext",
+             "context": "ci/woodpecker/pr/security",
+             "state": "SUCCESS",
+             "targetUrl": "https://ci.dev.example.com/repos/21/pipeline/105/3",
+             "createdAt": "2026-11-10T15:43:45Z"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     },
+     "mergedAt": null,
+     "closedAt": null,
+     "mergeCommit": null
+    }
+   ]
+  }
+ }
+}

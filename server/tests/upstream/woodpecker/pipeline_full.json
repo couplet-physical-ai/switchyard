@@ -1,0 +1,85 @@
+{
+ "id": 29400,
+ "number": 54,
+ "author": "dev-02",
+ "parent": 0,
+ "event": "push",
+ "event_reason": null,
+ "status": "running",
+ "errors": null,
+ "created": 1794339643,
+ "updated": 1794339647,
+ "started": 1794339646,
+ "finished": 0,
+ "deploy_to": "",
+ "deploy_task": "",
+ "commit": "acff1d505dc63d47e78d4dec9946f8a6848053cb",
+ "branch": "main",
+ "rerun_count": 0,
+ "ref": "refs/heads/main",
+ "refspec": "",
+ "author_avatar": "https://avatars.example/u/1",
+ "forge_url": "https://github.com/Northwind-EMS/ember-api/commit/acff1d505dc63d47e78d4dec9946f8a6848053cb",
+ "reviewed_by": "",
+ "reviewed": 0,
+ "workflows": [
+  {
+   "id": 16695,
+   "pipeline_id": 29400,
+   "pid": 1,
+   "name": "ci",
+   "state": "running",
+   "started": 1794339646,
+   "agent_id": 4,
+   "children": [
+    {
+     "id": 43099,
+     "uuid": "01M73FM9N3K8SJ77Y6FSNNJKX3",
+     "pipeline_id": 29400,
+     "pid": 2,
+     "ppid": 1,
+     "name": "clone",
+     "state": "success",
+     "exit_code": 0,
+     "started": 1794339648,
+     "finished": 1794339650,
+     "type": "clone"
+    },
+    {
+     "id": 43100,
+     "uuid": "01M73FM9N3K8SJ77Y6FWGJE1EB",
+     "pipeline_id": 29400,
+     "pid": 3,
+     "ppid": 1,
+     "name": "tests",
+     "state": "running",
+     "exit_code": 0,
+     "started": 1794339650,
+     "type": "commands"
+    },
+    {
+     "id": 43101,
+     "uuid": "01M73FM9N3K8SJ77Y6G0DT5W3G",
+     "pipeline_id": 29400,
+     "pid": 4,
+     "ppid": 1,
+     "name": "db-migrations",
+     "state": "success",
+     "exit_code": 0,
+     "started": 1794339650,
+     "finished": 1794339657,
+     "type": "commands"
+    }
+   ]
+  }
+ ],
+ "changed_files": [
+  "src/file_0.txt"
+ ],
+ "version": "3.18.1",
+ "title": "",
+ "message": "feat: neutral change 3\n\nNeutral body line.\n",
+ "timestamp": 0,
+ "sender": "dev-02",
+ "author_email": "dev-02@example.com"
+}

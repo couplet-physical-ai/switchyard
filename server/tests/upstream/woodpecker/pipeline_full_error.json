@@ -1,0 +1,43 @@
+{
+ "id": 29323,
+ "number": 73,
+ "author": "dev-02",
+ "parent": 71,
+ "event": "push",
+ "event_reason": null,
+ "status": "error",
+ "errors": [
+  {
+   "type": "generic",
+   "message": "pipeline definition not found",
+   "is_warning": false,
+   "data": null
+  }
+ ],
+ "created": 1794338965,
+ "updated": 1794338965,
+ "started": 1794338965,
+ "finished": 1794338965,
+ "deploy_to": "",
+ "deploy_task": "",
+ "commit": "be83166efbf554f6fc5af32ebcb4f359bff0a4f1",
+ "branch": "main",
+ "rerun_count": 1,
+ "ref": "refs/heads/main",
+ "refspec": "",
+ "author_avatar": "https://avatars.example/u/1",
+ "forge_url": "https://github.com/Northwind-EMS/kestrel-deploy/commit/be83166efbf554f6fc5af32ebcb4f359bff0a4f1",
+ "reviewed_by": "",
+ "reviewed": 0,
+ "changed_files": [
+  "src/file_0.txt",
+  "src/file_1.txt",
+  "src/file_2.txt"
+ ],
+ "version": "3.18.1",
+ "title": "",
+ "message": "feat: neutral change 5\n\nNeutral body line.\n",
+ "timestamp": 0,
+ "sender": "dev-02",
+ "author_email": "dev-02@example.com"
+}

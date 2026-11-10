@@ -1,0 +1,100 @@
+[
+ {
+  "id": 1,
+  "created": 1791242543,
+  "updated": 1794339482,
+  "name": "dagger-ci-101-1",
+  "owner_id": -1,
+  "last_contact": 1794339482,
+  "last_work": 1794339436,
+  "platform": "linux/amd64",
+  "backend": "local",
+  "capacity": 3,
+  "version": "3.18.1",
+  "no_schedule": false,
+  "custom_labels": {
+   "engine-101": "prefer",
+   "engine-102": "*",
+   "tier": "0"
+  },
+  "org_id": -1
+ },
+ {
+  "id": 2,
+  "created": 1791242543,
+  "updated": 1794339482,
+  "name": "dagger-ci-101-2",
+  "owner_id": -1,
+  "last_contact": 1794339482,
+  "last_work": 1794339447,
+  "platform": "linux/amd64",
+  "backend": "local",
+  "capacity": 3,
+  "version": "3.18.1",
+  "no_schedule": false,
+  "custom_labels": {
+   "engine-101": "prefer",
+   "engine-102": "*",
+   "tier": "0"
+  },
+  "org_id": -1
+ },
+ {
+  "id": 3,
+  "created": 1791393357,
+  "updated": 1794339488,
+  "name": "dagger-ci-102-1",
+  "owner_id": -1,
+  "last_contact": 1794339488,
+  "last_work": 1794339487,
+  "platform": "linux/amd64",
+  "backend": "local",
+  "capacity": 3,
+  "version": "3.18.1",
+  "no_schedule": false,
+  "custom_labels": {
+   "engine-101": "*",
+   "engine-102": "prefer",
+   "tier": "0"
+  },
+  "org_id": -1
+ },
+ {
+  "id": 4,
+  "created": 1791393357,
+  "updated": 1794339482,
+  "name": "dagger-ci-102-2",
+  "owner_id": -1,
+  "last_contact": 1794339482,
+  "last_work": 1794339432,
+  "platform": "linux/amd64",
+  "backend": "local",
+  "capacity": 3,
+  "version": "3.18.1",
+  "no_schedule": false,
+  "custom_labels": {
+   "engine-101": "*",
+   "engine-102": "prefer",
+   "tier": "0"
+  },
+  "org_id": -1
+ },
+ {
+  "id": 37,
+  "created": 1794252776,
+  "updated": 1794255231,
+  "name": "rr-mac-mini-1",
+  "owner_id": -1,
+  "last_contact": 1794255231,
+  "last_work": 1794255210,
+  "platform": "darwin/arm64",
+  "backend": "local",
+  "capacity": 1,
+  "version": "3.18.1",
+  "no_schedule": false,
+  "custom_labels": {
+   "!tier": "macos"
+  },
+  "org_id": -1
+ }
+]
