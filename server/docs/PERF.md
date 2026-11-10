@@ -7,7 +7,7 @@ build; numbers are from the machines named in each table.
 |---|---|---|
 | `GET /api/v1/snapshot` p99 < 5 ms from memory | **p99 3.8 ms** at 16 concurrent clients, 31,850 req/s (p50 0.29 ms); **p99 1.0 ms** at 8 clients | `oha` against the server (gzip, 481 KiB per response) |
 | Delta fan-out to 1,000 clients | **1,000 real WebSocket clients**: 0 failed, 0 resets, delivery lag p50 3 ms / p99 35 ms / max 59 ms at 6.3 frames/s/client (6,260 frames/s total) | `examples/wsload.rs` against `--demo --speed 10` |
-| ≥ 20k events/s ingest | **47,400 pipeline events/s** through the reducer (apply + derive + diff + encode, flushing every 64 events) on a fleet-sized store | `cargo bench --bench core` → `ingest/pipeline_events_flush64` |
+| ≥ 20k events/s ingest | **33,700 pipeline events/s** through the reducer (apply + derive + diff + choose upsert / patch / dot + encode, flushing every 64 events) on a fleet-sized store (47,400/s before v0.4's patch encoding) | `cargo bench --bench core` → `ingest/pipeline_events_flush64` |
 | RSS < 256 MB steady | deployed, all five orgs: **61 MB** steady (peak 80 MB); demo + 1,000 WebSocket clients **190 MB** (212 MB peak) | `/api/v1/meta` → `process`, `/proc/<pid>/status` |
 | Zero per-client upstream calls | by construction: adapters are the only upstream callers; one SSE connection + polls, independent of clients (see `docs/SOURCES.md`); `/api/v1/meta` → `adapters[].requests` | |
 
@@ -18,7 +18,7 @@ release profile, other load present (load average ~2.5).
 
 | Bench | Time | Throughput |
 |---|---|---|
-| `ingest/pipeline_events_flush64` (380 events) | 8.01 ms | **47.4 K events/s** |
+| `ingest/pipeline_events_flush64` (380 events) | 11.3 ms | **33.7 K events/s** (v0.3, whole upserts only: 8.01 ms, 47.4 K/s) |
 | `snapshot/serve_cached` (what a request does: clone the pre-encoded `Arc`) | 23.8 ns | — |
 | `snapshot/build_from_store` (≤ 1/s rebuild from pre-serialized tables, ~3.1 MB) | 152 µs | 19.8 GiB/s |
 | `snapshot/gzip` (≤ 1/s, cached for every gzip request) | 17.0 ms | 181 MiB/s |
