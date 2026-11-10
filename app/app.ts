@@ -203,7 +203,7 @@ function overview(): Result<'overview'> {
   return {
     status: w.loaded ? 'ready' : 'waiting', mode: tl.mode, speed: tl.speed, sentence, summary, layoutKey: `${S.key}|${yard.budget.quality >= 3 ? 'lo' : 'hi'}`, repos: w.repos.size,
     building, queued, red, appsUp, appsTotal: w.apps.size, behind, seq: w.seq,
-    tick: Math.floor(clock / 250), host: hostLabel(), dial, dialPad: Math.round((S.m + 22) * k), dialFont: Math.round(11 * k), dialH: Math.round(26 * k),
+    tick: Math.floor(clock / 250), host: hostLabel(), dial, dialPad: Math.round((S.m + 22) * k), dialFont: Math.round(11 * k), dialH: Math.round(34 * k),
     hud: yard.hud.on, stress: yard.stress.on, quality: yard.budget.quality,
   };
 }
@@ -335,7 +335,7 @@ export const answer: Answer = ((source: keyof Sources, args: unknown, store: Sto
 
 // ---- canvases ------------------------------------------------------------------------------
 /** Surface → its arity (Contract passes that many arguments). */
-export const surfaces: Record<string, number> = { yardStatic: 2, yardInfo: 2, yardLive: 2, rowDots: 2 };
+export const surfaces: Record<string, number> = { yardStatic: 2, yardInfo: 2, yardLive: 2, yardTop: 2, rowDots: 2 };
 
 export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame): boolean {
   if (surface === 'yardStatic') {
@@ -351,6 +351,10 @@ export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
     advance(frame.time);
     yard.reduced = args[0] === 'reduced';
     return yard.drawLive(ctx, frame, clock);
+  }
+  if (surface === 'yardTop') {
+    advance(frame.time);
+    return yard.drawTop(ctx, frame, clock);
   }
   if (surface === 'rowDots') {
     const r = tl.world.repos.get(String(args[0]));

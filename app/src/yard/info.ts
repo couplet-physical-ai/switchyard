@@ -63,7 +63,7 @@ export class InfoLayer {
     const L = S.L, top = S.top;
     const stressT = v.stress.on ? Math.floor(t / 3000) : 0;
     return [
-      { id: 'header', rect: { x: 0, y: 0, w: S.dial.labelX - 150, h: 24 }, key: h(h(h(sec, v.tl.mode === 'live' ? min : sec), w.repos.size), (v.q << 4) | (v.stress.on ? 1 : 0) | (v.tl.speed === 1 ? 2 : 0)) + kv.pipeline, draw: drawHeader },
+      { id: 'header', rect: { x: 0, y: 0, w: S.dial.labelX - 150, h: S.header.h }, key: h(h(h(sec, Math.floor(t / 1000)), h(w.repos.size, v.tl.mode.length)), h((v.q << 4) | (v.stress.on ? 1 : 0) | (v.tl.speed === 1 ? 2 : 0), kv.app)) + kv.pipeline + kv.repo, draw: drawHeader },
       { id: 'sources', rect: { x: 0, y: top.y0 - 4, w: S.intake.x - 6, h: S.divY - 6 - (top.y0 - 4) }, key: h(h(kv.commit, min), h(S.sources.lod, fade('sources'))), draw: drawSources },
       { id: 'intake', rect: { x: S.intake.x - 6, y: top.y0 - 4, w: S.engines.x - S.intake.x, h: S.divY - 6 - (top.y0 - 4) }, key: h(h(kv.queue, kv.pipeline), Math.floor(now / 10000)), draw: drawIntake },
       { id: 'engines', rect: { x: S.engines.x - 4, y: top.y0 - 4, w: S.engines.w + 8, h: S.divY - 6 - (top.y0 - 4) }, key: h(h(h(kv.engine, kv.pipeline), sec), h(S.engines.lod, fade('lanes')) + stressT), draw: drawEngines },
@@ -91,10 +91,17 @@ export class InfoLayer {
     const repo = w.repos.get(p.repo);
     const el = p.started ? now - p.started : 0;
     const eng = (p.engine ?? '').toLowerCase();
-    const where = p.state === 'running' ? `building on ${eng || (p.lane === 'gha' ? 'github actions' : 'roadrunner')} · ${fmtDur(el)}` : p.state === 'pending' ? `waiting ${fmtDur(now - p.created)}` : `${p.state} · ${fmtDur((p.finished ?? now) - (p.started ?? p.created))}`;
+    let failStep = '';
+    if (p.state === 'failure' || p.state === 'error') for (const wf0 of p.workflows ?? []) { const st = wf0.steps.find((z) => z.state === 'failure' || z.state === 'error'); if (st) { failStep = st.name; break; } }
+    const where = p.state === 'running' ? `building on ${eng || (p.lane === 'gha' ? 'github actions' : 'roadrunner')} · ${fmtDur(el)}`
+      : p.state === 'pending' ? `waiting ${fmtDur(now - p.created)}`
+      : p.state === 'failure' || p.state === 'error' ? `broke main${failStep ? ` at ${failStep}` : ''} · ${fmtShort(now - (p.finished ?? now))} ago`
+      : `${p.state} · ${fmtDur((p.finished ?? now) - (p.started ?? p.created))}`;
+    const broke = p.state === 'failure' || p.state === 'error';
     const x0 = r.x + 4;
     let x = g.eyebrow([['now', C.ink3]], x0, y1, T.eyebrow);
-    x = g.runs([[' · ', C.ink3], [repo?.name ?? p.repo, C.ink, true], [p.lane === 'gha' ? ' (actions)' : ` #${p.number}`, C.ink2], [` · ${p.branch} · ${where}`, C.ink3]], x, y1, T.label, r.w - (x - x0) - 8);
+    x = g.runs([[' · ', C.ink3], [repo?.name ?? p.repo, C.ink, true], [p.lane === 'gha' ? ' (actions)' : ` #${p.number}`, C.ink2], [` · ${p.branch} · `, C.ink3], [where, broke ? C.redText : C.ink3],
+      [broke && p.author ? ` · ${p.sha.slice(0, 7)} ${p.author.replace(/\[bot\]$/, '')}` : '', C.ink3]], x, y1, T.label, r.w - (x - x0) - 8);
     // The right part: the repo's main line, its story in words.
     const split = Math.round(r.w * (r.w > 760 ? 0.6 : 0.56));
     const mx0 = r.x + split + 12, mx1 = r.x + r.w - 14;
@@ -203,16 +210,30 @@ function drawHeader(g: Gfx, v: View, r: Rect): void {
   const { tl, w, S, now } = v;
   const y = S.header.y;
   const mode = tl.mode;
+  // The mode keyword (the only uppercase on the line), then the headline (what is wrong, at
+  // 20 px: the first thing read), then the numbers behind it in plain case.
   const tag: [string, string] = mode === 'live' ? ['live', C.green] : mode === 'paused' ? ['paused', C.packet] : mode === 'replay' ? ['replay', C.packet] : ['behind', C.amberText];
-  const parts: [string, string][] = [tag];
-  if (v.stress.on) parts.push([' · stress 10×', C.redText]);
+  let x = g.eyebrow([tag], S.m, y, T.eyebrow);
+  if (v.stress.on) x = g.eyebrow([[' · stress 10×', C.redText]], x, y, T.eyebrow);
+  x += 14;
+  const reds = v.agg.repos.red;
+  let down = 0, degraded = 0;
+  for (const id of v.agg.apps.problems) { const hh = w.apps.get(id)?.health; if (hh === 'down') down++; else if (hh === 'degraded') degraded++; }
+  const hl: Run[] = [];
+  hl.push(reds ? [`${thousands(reds)} main ${reds === 1 ? 'line' : 'lines'} red`, C.redText, true] : ['every main line green', C.greenInk, true]);
+  if (down) hl.push([' · ', C.ink3], [`${down} ${down === 1 ? 'app' : 'apps'} down`, C.redText, true]);
+  else if (degraded) hl.push([' · ', C.ink3], [`${degraded} degraded`, C.amberText, true]);
+  else hl.push([' · ', C.ink3], ['every app up', C.ink2, true]);
+  const big = r.w > 900 ? T.headline : T.title + 2;
+  x = g.runs(hl, x, y + (big > 16 ? 1 : 0), big, Math.max(0, r.w - x - 8)) + 16;
   const lh = lastHour(w, now);
   const qt = queueTruth(w);
-  if (mode === 'live') parts.push([r.w > 1000 ? ` · all orgs · ${thousands(v.S.mains.heat.n)} repos · ${fmtClock(now, v.offsetMin)}` : ` · ${thousands(v.S.mains.heat.n)} repos`, C.ink3]);
-  else if (mode === 'replay') parts.push([` · ${fmtClock(tl.replayFrom, v.offsetMin)} → ${fmtClock(tl.replayTo, v.offsetMin)} · at ${fmtClock(tl.playhead, v.offsetMin)} · 60×`, C.amberText]);
-  else parts.push([` · ${fmtDur(tl.behindMs())} behind live${mode === 'behind' ? ` · ${tl.speed === 1 ? '1×' : '¼×'}` : ' · frozen'}`, C.amberText]);
-  parts.push([` · last hour ${lh.total} builds, ${lh.failed} failed · ${buildingIds(w).size} building · ${qt.waiting} waiting`, C.ink3]);
-  g.eyebrow(parts, S.m, y, T.eyebrow, r.w - S.m - 8);
+  const data: Run[] = [];
+  if (mode === 'live') data.push([r.w > 1100 ? `${thousands(v.S.mains.heat.n)} repos · ${fmtClock(now, v.offsetMin)} · ` : '', C.ink3]);
+  else if (mode === 'replay') data.push([`${fmtClock(tl.replayFrom, v.offsetMin)} → ${fmtClock(tl.replayTo, v.offsetMin)} · at ${fmtClock(tl.playhead, v.offsetMin)} · 60× · `, C.amberText]);
+  else data.push([`${fmtDur(tl.behindMs())} behind live${mode === 'behind' ? ` · ${tl.speed === 1 ? '1×' : '¼×'}` : ' · frozen'} · `, C.amberText]);
+  data.push([`last hour ${lh.total} builds, ${lh.failed} failed · ${buildingIds(w).size} building · ${qt.waiting} waiting`, C.ink3]);
+  g.runs(data, x, y, T.caption, Math.max(0, r.w - x - 8));
 }
 
 // ---- sources ------------------------------------------------------------------------------------
@@ -380,7 +401,8 @@ function enginesAt(g: Gfx, v: View, lod: Level, r: Rect): void {
       const st = laneStat(v, lane, li);
       const cpu = st.cpu >= 0 ? ` · cpu ${Math.round(st.cpu <= 1 ? st.cpu * 100 : st.cpu)}%` : '';
       const stat = lane.offline ? 'offline' : `${st.busy}/${st.slots}${cpu}`;
-      const statColor = lane.offline ? C.ink3 : st.busy ? C.amberText : C.ink3;
+      // amber only when the lane is full (the next push waits); otherwise a plain count
+      const statColor = lane.offline ? C.ink3 : st.busy >= st.slots && st.slots > 0 ? C.amberText : C.ink2;
       if (lod === 0) {
         const x1 = r.x + r.w - 6;
         const endX = g.runs([[lane.title, C.ink2], [` · ${lane.sub}`, C.ink3]], lane.x, lane.labelY, T.caption, x1 - lane.x - 90);
@@ -424,7 +446,7 @@ function enginesAt(g: Gfx, v: View, lod: Level, r: Rect): void {
       if (x + pw > c.x + c.w) { x = c.x; y += 17; }
       if (y > c.y + c.h - 4) break;
       g.begin_(); g.rrect(x, y - 6, pw, 13, 6.5); g.stroke(b ? C.packetDim : C.machineDim, 1);
-      g.text(s, x + 7, y + 3.5, b ? C.amberText : C.ink3, T.caption);
+      g.text(s, x + 7, y + 3.5, b >= l.slots ? C.amberText : b ? C.ink2 : C.ink3, T.caption);
       x += pw + 4;
     }
     return;
@@ -551,7 +573,8 @@ export function mainLine(g: Gfx, r: Repo, x0: number, x1: number, y: number, pit
   const left = cnt ? xAt(start) : x1;
   g.hline(Math.max(x0, left - 10), x1 + 8, y, C.wire, g.hair);
   if (red && streak < rec.length) {
-    g.begin_(); g.move(xAt(Math.max(start, streak)), y); g.line(x1 + 8, y); g.stroke(withA(C.red, 0.55), 1);
+    // the wire goes red from the culprit to the head: where it broke, and how long it stayed so
+    g.begin_(); g.move(xAt(Math.max(start, streak)), y); g.line(x1 + 8, y); g.stroke(withA(C.red, 0.8), 1.2);
   } else if (!red && r.main?.state === 'success' && cnt) {
     g.begin_(); g.move(left, y); g.line(x1 + 8, y); g.stroke(withA(C.green, 0.3), 1);
   }
@@ -562,8 +585,10 @@ export function mainLine(g: Gfx, r: Repo, x0: number, x1: number, y: number, pit
   const dotAt = (x: number, rr: number) => { if (square) g.rect(x - rr, y - rr, rr * 2, rr * 2); else g.circle(x, y, rr); };
   // greens/whites, grays, solid reds (streak), faint reds (history), running rings
   g.begin_();
-  for (let i = start; i < rec.length; i++) { const s = rec[i].state; if (s === 'success') dotAt(xAt(i), rad); }
+  for (let i = start; i < rec.length - 1; i++) { const s = rec[i].state; if (s === 'success') dotAt(xAt(i), rad); }
   g.fill(C.dot);
+  // the head: the brightest dot on the line, when it is green
+  if (rec[rec.length - 1].state === 'success') { g.begin_(); dotAt(x1, rad); g.fill(C.ink); }
   g.begin_();
   let any = false;
   for (let i = start; i < rec.length; i++) { const s = rec[i].state; if (s === 'skipped' || s === 'canceled' || s === 'none' || s === 'blocked') { dotAt(xAt(i), rad * 0.7); any = true; } }
@@ -583,10 +608,13 @@ export function mainLine(g: Gfx, r: Repo, x0: number, x1: number, y: number, pit
     g.stroke(C.packet, 1.2);
   }
   // deployed marks
+  // what is live: one tick under the newest deployed dot (ink3; amber is for motion)
   if (lod === 0) {
-    g.begin_(); any = false;
-    for (let i = start; i < rec.length; i++) if (rec[i].deployed) { const x = xAt(i); g.move(x - 2, y + rad + 3.5); g.line(x + 2, y + rad + 3.5); any = true; }
-    if (any) g.stroke(C.packetDim, 1.2);
+    for (let i = rec.length - 1; i >= start; i--) if (rec[i].deployed) {
+      const x = xAt(i);
+      g.begin_(); g.move(x - 2.5, y + rad + 3.5); g.line(x + 2.5, y + rad + 3.5); g.stroke(C.ink3, 1.2);
+      break;
+    }
   }
   // the culprit: a ring, and on LOD0 its sha and author over it
   const ci = red && r.main.culprit ? rec.findIndex((d) => d.sha === r.main.culprit) : -1;
@@ -660,7 +688,7 @@ function drawApps(g: Gfx, v: View, r: Rect): void {
     if (d.via === 'roadrunner') rr++; else if (d.via === 'gha') gha++; else if (d.via === 'gha_fallback') fb++;
   }
   const tx = D.x + D.w + 12;
-  g.runs([['deploy', C.ink, true], [' · ', C.ink3], [deploying ? `${deploying} deploying` : `${w.stats.deploys_24h} today`, C.amberText], [` · roadrunner ${rr} · gha ${gha}`, C.ink3], [' · fallback ', C.ink3], [`${fb}`, fb ? C.amberText : C.ink3]], tx, D.y + D.h / 2 + 4, T.caption, r.x + r.w - tx - 4);
+  g.runs([['deploy', C.ink, true], [' · ', C.ink3], [deploying ? `${deploying} deploying` : `${w.stats.deploys_24h} today`, C.amberText], [` · roadrunner ${rr} · gha ${gha}`, C.ink3], [' · fallback ', C.ink3], [`${fb}`, fb ? C.ink2 : C.ink3]], tx, D.y + D.h / 2 + 4, T.caption, r.x + r.w - tx - 4);
   const aa = v.agg.apps;
   const up = S.stress ? v.stress.appHealth.reduce((n, x) => n + (x === 0 || x === 4 ? 1 : 0), 0) : aa.up;
   const parts: Run[] = [['apps', C.ink, true], [` · ${thousands(up)} of ${thousands(A.n)} up`, C.ink3]];

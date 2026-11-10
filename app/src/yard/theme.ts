@@ -38,7 +38,8 @@ export const C = {
   port: '#19191A',
   portEdge: '#545456',
   packetDim: '#8A7146',
-  dot: '#CFCFD1',
+  packetDock: '#8A7146', // a packet at rest: amber is for motion
+  dot: '#A3A3A3', // success dots; the head dot is ink
   dotDim: '#4E4E50',
   cellOff: '#232325',
   cellGreen: '#3E5244',
@@ -64,6 +65,7 @@ export const T = {
   label: 11.5,
   title: 12,
   chip: 11,
+  headline: 19,
 } as const;
 
 export const TAU = Math.PI * 2;

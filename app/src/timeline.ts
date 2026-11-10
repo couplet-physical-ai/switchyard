@@ -36,6 +36,11 @@ export class Timeline {
   private replayIdx = 0;
   replayFrom = 0;
   replayTo = 0;
+  /** The replay's hour in 240 buckets: events per bucket and failures per bucket, filled as
+   *  chunks arrive (the yard draws them as a 1 px density strip with the playhead). */
+  readonly density = new Uint16Array(240);
+  readonly fails = new Uint16Array(240);
+  densityVer = 0;
   /** The replay's frames are loaded up to here (it streams in chunks; the playhead waits). */
   replayLoadedTo = 0;
   /** The world no longer follows the server (replay, or too much kept): refetch to go live. */
@@ -175,6 +180,9 @@ export class Timeline {
       }
     }
     frames.sort((a, b) => atOf(a) - atOf(b));
+    this.density.fill(0); this.fails.fill(0);
+    this.replayFrom = h.from; this.replayTo = to;
+    for (const f of frames) this.countFrame(f);
     this.replay = frames;
     this.replayIdx = 0;
     this.replayFrom = h.from;
@@ -197,10 +205,23 @@ export class Timeline {
     if (this.mode !== 'replay') return;
     if (this.replayIdx > 0) { this.replay = this.replay.slice(this.replayIdx); this.replayIdx = 0; }
     for (const f of h.frames ?? []) {
-      if (f.t === 'delta' && f.at > this.replayLoadedTo - 1) this.replay.push(f);
+      if (f.t === 'delta' && f.at > this.replayLoadedTo - 1) { this.replay.push(f); this.countFrame(f); }
       else if (f.t === 'snapshot' && f.at > this.replayLoadedTo) this.replay.push({ t: 'delta', seq: f.seq, at: f.at, ops: [] }); // a restart: nothing to animate
     }
     this.replayLoadedTo = Math.max(this.replayLoadedTo, h.to);
+  }
+
+  private countFrame(f: WireFrame): void {
+    if (f.t !== 'delta') return;
+    const span = Math.max(1, this.replayTo - this.replayFrom);
+    const b = Math.floor(((f.at - this.replayFrom) / span) * 240);
+    if (b < 0 || b >= 240) return;
+    for (const o of f.ops) {
+      if (o.op !== 'event') continue;
+      if (this.density[b] < 65535) this.density[b]++;
+      if (o.e.k === 'finish' && (o.e.state === 'failure' || o.e.state === 'error') && this.fails[b] < 65535) this.fails[b]++;
+    }
+    this.densityVer++;
   }
 
   /** Where the next replay chunk starts, or 0 when none is needed yet (or ever). */

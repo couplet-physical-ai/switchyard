@@ -42,7 +42,7 @@ export type HitRegion = Rect & { kind: string; id: string; label: string; grid?:
 export type Scene = {
   W: number; H: number; k: number; px: number; m: number; stress: boolean;
   key: string;
-  header: { y: number };
+  header: { y: number; h: number };
   dial: Pt & { r: number; labelX: number };
   L: { x0: number; x1: number }; R: { x0: number; x1: number };
   top: { y0: number; y1: number; head: number; body: number };
@@ -145,8 +145,8 @@ export function layout(Wc: number, Hc: number, deviceScale: number, c: Census, l
   const L = { x0: m, x1: m + Lw };
   const busX = L.x1 + 14;
   const R = { x0: busX + 14, x1: W - m };
-  const headerY = 17;
-  const y0 = 28;
+  const headerY = 22;
+  const y0 = 38;
 
   // ---- top-left columns
   // Gaps: the fan-in from the sources and the hand-off to the lanes need room to curve.
@@ -362,9 +362,9 @@ export function layout(Wc: number, Hc: number, deviceScale: number, c: Census, l
   // COMING gets its rows (the queue, then up to 8 "just finished"), PULSE the rest (taller
   // bars read better than more history rows).
   const pulseMin = clamp(Math.round(lowerH * 0.24), 62, 110);
-  const queueWant = 38 + 22 * 9;
+  const queueWant = 38 + 22 * Math.max(9, Math.floor((lowerH - nowH - 180) / 22));
   const queueH = Math.max(40, Math.min(queueWant, H - m - ly - pulseMin - 12));
-  const pulseH = Math.max(pulseMin, Math.min(220, H - m - ly - queueH - 12));
+  const pulseH = Math.max(pulseMin, Math.min(150, H - m - ly - queueH - 12));
   const queue: Rect = { x: lx0, y: ly, w: lw, h: queueH };
   ly += queueH + 12;
   const pw = Math.round(lw * (lw > 700 ? 0.58 : 0.55));
@@ -373,7 +373,7 @@ export function layout(Wc: number, Hc: number, deviceScale: number, c: Census, l
   hits.push({ x: now.x, y: now.y, w: now.w, h: 22, kind: 'now', id: '', label: '' });
 
   // ---- header: the dial ("1 hour, sped up") at the right; a Contract button sits over it.
-  const dial = { x: W - m - 8, y: 13, r: 7, labelX: W - m - 22 };
+  const dial = { x: W - m - 8, y: 17, r: 7, labelX: W - m - 22 };
 
   // ---- the wire graph (static layer draws it; packets ride it)
   const fan: Leg[] = rows.map((s) => bezLeg(s.port.x, s.port.y, junction.x, junction.y));
@@ -409,7 +409,7 @@ export function layout(Wc: number, Hc: number, deviceScale: number, c: Census, l
 
   return {
     W, H, k, px, m, stress: c.stress, key,
-    header: { y: headerY }, dial, L, R, top, divY,
+    header: { y: headerY, h: 30 }, dial, L, R, top, divY,
     sources: { x: xs, w: ws, rows, lod: srcLod, cellsY: body0 },
     intake: { x: xi, w: wi, rr, gha, junction },
     engines: { x: xe, w: we, lanes, lod: laneLod, slotByEngine, cells },

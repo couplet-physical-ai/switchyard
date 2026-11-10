@@ -16,7 +16,7 @@
 import type { Event, Pipeline } from '../wire.ts';
 import { BOTS, type World } from '../world.ts';
 import { GHA, enginesOf, type Leg, type Scene } from './layout.ts';
-import { queueTruth } from './select.ts';
+import { buildingIds, queueTruth } from './select.ts';
 import { STRESS_PACKETS, hash, unit } from './stress.ts';
 import { clamp, easeInOut } from './theme.ts';
 
@@ -80,6 +80,9 @@ export class Pool {
   private sn = 0;
   readonly tmpl = new Float32Array(1 << 17);
   readonly tOff = new Int32Array(64); readonly tN = new Int32Array(64); readonly tLen = new Float32Array(64);
+  /** Per template sample: the spatial cell (40 px and 120 px grids) it lies in, so stress trains
+   *  bucket by place with one array read per packet (no point lookups for 10,000 packets). */
+  readonly tCell = new Int32Array(1 << 16); readonly tCellWide = new Int32Array(1 << 16);
   nTmpl = 0;
 
   // ---- effects (SoA)
@@ -280,8 +283,11 @@ export class Pool {
     if (!eng) return null;
     const slots = S.engines.slotByEngine.get(eng.id);
     if (!slots?.length) return null;
-    let k = eng.running.indexOf(p.id ?? '');
-    if (k < 0) k = 0;
+    // The k-th *building* pipeline on the engine sits in slot k: the same count the rings use,
+    // so a packet docks exactly in its ring (stuck or queued ids in `running` take no slot).
+    const b = buildingIds(w);
+    let k = 0;
+    for (const id of eng.running) { if (id === p.id) break; if (b.has(id)) k++; }
     return slots[Math.min(k, slots.length - 1)];
   }
 
@@ -341,6 +347,7 @@ export class Pool {
         break;
       }
       case ST_RET: {
+        this.labelUntil[i] = t + 3200;
         const row = S.sources.rows[Math.max(0, Math.min(S.sources.rows.length - 1, this.srcRow[i]))];
         const retX = S.L.x0 - 6;
         if (from === ST_MAIN) { this.rTo(S.mains.x0, sy); this.rTo(S.bus.x, sy); this.rTo(S.bus.x, S.divY); }
@@ -366,6 +373,11 @@ export class Pool {
     const len = this.rlen[i];
     this.dur[i] = this.reduced ? 1 : clamp(len / SPEED, 420, 1500);
     if (!(this.flags[i] & F_TRAVEL)) { this.flags[i] |= F_TRAVEL; this.traveling++; }
+  }
+
+  /** Whether packet i is moving between stations (docked packets dim, travellers are amber). */
+  moving(i: number): boolean {
+    return (this.flags[i] & F_TRAVEL) !== 0;
   }
 
   private queueNext(i: number, kind: number, arg: string, dwell: number): void {
@@ -435,13 +447,16 @@ export class Pool {
   }
 
   /** Recomputes resting targets (the queue moved up, a slot changed, the layout changed). */
-  reseat(w: World): void {
+  reseat(w: World, snap = false): void {
     if (!this.S) return;
     for (let k = 0; k < this.nAct; k++) {
       const i = this.act[k];
       if (this.flags[i] & (F_STRESS | F_TRAVEL)) continue;
       const a = this.anchor(i, this.st[i], this.stArg[i], w);
       this.tx[i] = a.x; this.ty[i] = a.y;
+      // The layout moved: a docked packet goes where its station now is, at once (an ease
+      // would show it sliding off its slot for frames, and never converge if frames are slow).
+      if (snap) { this.x[i] = this.px[i] = a.x; this.y[i] = this.py[i] = a.y; }
     }
   }
 
@@ -507,6 +522,8 @@ export class Pool {
           this.queueNext(i, onMain ? ST_MAIN : ST_REVIEW, onMain ? p.repo : '', 220);
         } else if (e.state === 'failure' || e.state === 'error') {
           this.tint[i] = T_RED;
+          // Failure is the main character: the packet rides home named by what broke.
+          this.label[i] = failLabel(w, p);
           this.hop(i, ST_GATE, '', w, t);
           if (onMain) { this.queueNext(i, ST_MAIN, p.repo, 160); this.queueNext(i, ST_RET, '', 500); }
           else this.queueNext(i, ST_RET, '', 160);
@@ -531,6 +548,7 @@ export class Pool {
         const i = this.spawn(id, '', repo, 0, false, t, false, w);
         if (i < 0) return;
         this.label[i] = e.app;
+        this.labelUntil[i] = 0; // the deploy line says what is deploying; no name on the bus
         this.st[i] = ST_MAIN;
         const a = this.mainPt(repo);
         this.x[i] = this.px[i] = a.x; this.y[i] = this.py[i] = a.y;
@@ -693,11 +711,11 @@ export class Pool {
       const out = hash(j, 4) % 10;
       if (out < 6 && S.mains.rows.length) {
         const r = S.mains.rows[hash(j, 5) % S.mains.rows.length];
-        this.rTo(g.outPort.x, g.outPort.y); this.rTo(S.bus.x, g.outPort.y); this.rTo(S.bus.x, r.y); this.rTo(S.mains.x0, r.y); this.rTo(r.dx1, r.y);
+        this.rTo(g.outPort.x, g.outPort.y); this.rTo(S.bus.x, g.outPort.y); this.rTo(S.bus.x, r.y); this.rTo(S.mains.x0 - 6, r.y);
       } else if (out < 8) {
         const b = S.mains.heat.blocks[hash(j, 6) % Math.max(1, S.mains.heat.blocks.length)];
         this.rTo(g.outPort.x, g.outPort.y); this.rTo(S.bus.x, g.outPort.y);
-        if (b) { this.rTo(S.bus.x, b.y + 2); this.rTo(b.x + (hash(j, 7) % Math.max(1, b.cols)) * S.mains.heat.pitch, b.y + 2); }
+        if (b) { this.rTo(S.bus.x, b.y + 2); this.rTo(S.mains.x0 - 6, b.y + 2); }
       } else {
         this.rLeg(L.reject);
         const retX = S.L.x0 - 6;
@@ -708,6 +726,11 @@ export class Pool {
       if (off + need > capPts) break;
       const [n, len] = this.resample(this.tmpl, off, need);
       this.tOff[this.nTmpl] = off; this.tN[this.nTmpl] = n; this.tLen[this.nTmpl] = len;
+      for (let k = 0; k < n && off + k < this.tCell.length; k++) {
+        const x = this.tmpl[(off + k) * 2], y = this.tmpl[(off + k) * 2 + 1];
+        this.tCell[off + k] = (Math.floor(x / 40) << 12) | (Math.floor(y / 40) & 0xfff);
+        this.tCellWide[off + k] = (Math.floor(x / 120) << 12) | (Math.floor(y / 120) & 0xfff);
+      }
       this.nTmpl++;
       off += n;
     }
@@ -734,6 +757,13 @@ export class Pool {
     }
   }
 
+  /** The spatial cell of stress packet i (40 px grid, or 120 px when `wide`). */
+  cellOf(i: number, wide: boolean): number {
+    const tt = this.roff[i], n = this.tN[tt];
+    const k = Math.min(n - 1, Math.max(0, Math.floor((this.d[i] / (this.tLen[tt] || 1)) * (n - 1))));
+    return (wide ? this.tCellWide : this.tCell)[this.tOff[tt] + k];
+  }
+
   private nextJourney(i: number): void {
     const c = ++this.stressCycle[i];
     this.roff[i] = hash(i, c) % Math.max(1, this.nTmpl);
@@ -755,4 +785,15 @@ export function engineOf(w: World, p: Pipeline) {
     if (e) return e;
   }
   return p.lane === 'gha' ? all.find((x) => x.id === GHA) : undefined;
+}
+
+/** "phi · dd8c9e5 · clippy": the repo, the commit and the step that failed. */
+function failLabel(w: World, p: Pipeline): string {
+  let step = '';
+  for (const wf of p.workflows ?? []) {
+    for (const st of wf.steps) if (st.state === 'failure' || st.state === 'error') { step = st.name; break; }
+    if (step) break;
+  }
+  const name = w.repos.get(p.repo)?.name ?? p.repo.split('/')[1] ?? p.repo;
+  return `${name} · ${(p.sha ?? '').slice(0, 7)}${step ? ` · ${step}` : ''}`;
 }

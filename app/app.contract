@@ -173,8 +173,9 @@ component App
             column flex=1 min-height=0 position="relative" testId="yard"
               canvas surface=yardStatic(ov.layoutKey, ov.stress) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-static"
               canvas surface=yardInfo(ov.layoutKey, ov.tick) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-info"
-              canvas surface=yardLive(reduced ? "reduced" : "full", picked) position="absolute" left=0 top=0 width="100%" height="100%"
-                role="img" aria-label=ov.summary pointerdown=pressYard pointermove=moveYard touch-action="none" testId="yard-live"
+              canvas surface=yardLive(reduced ? "reduced" : "full", picked) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-live"
+              canvas surface=yardTop(ov.hud, hovering) position="absolute" left=0 top=0 width="100%" height="100%"
+                role="img" aria-label=ov.summary pointerdown=pressYard pointermove=moveYard touch-action="none" testId="yard-top"
               // The dial is the replay: the canvas draws its face, this button is its words and its press.
               button appearance="none" press=startReplay testId="replay" aria-label="Replay the last hour, sped up" disabled=(ov.mode == "replay" or not conn.ok)
                 position="absolute" top=0 right=0 height=(ov.dialH > 0 ? ov.dialH : 26) padding-left=12 padding-right=(ov.dialPad > 0 ? ov.dialPad : 38) display="flex" align-items="center"
