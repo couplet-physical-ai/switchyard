@@ -25,6 +25,10 @@ on:
       prerelease:
         type: boolean
         default: false
+      publish:
+        description: "Publish a GitHub release (off = build, smoke and upload the artifact only, e.g. to warm the cache)"
+        type: boolean
+        default: true
 permissions:
   contents: write
 concurrency:
@@ -120,7 +124,7 @@ jobs:
             dist/SHA256SUMS
           retention-days: 14
       - name: GitHub release
-        if: env.MODE != 'exact-probe'
+        if: env.MODE != 'exact-probe' && inputs.publish != false
         env:
           GH_TOKEN: ${{ github.token }}
           V: ${{ steps.v.outputs.version }}
