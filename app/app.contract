@@ -256,7 +256,7 @@ component App
                   text "Cancel"
       dialog id="palette" aria-label="Search" testId="palette" color="sy.ink" width=640 max-width="90vw" padding=0 border-radius=12 background-color="sy.raised" border="1px solid sy.edge"
         column padding=10 gap=6
-          input type="search" value=q input=typed key=palKey aria-label="Search" autofocus=true placeholder="repo, #pr, sha, app" testId="palette-input" class=Field
+          input type="text" value=q input=typed key=palKey aria-label="Search" autofocus=true placeholder="repo, #pr, sha, app" testId="palette-input" class=Field
             padding="10px 12px" font-size=15 border-radius=8 background-color="sy.canvas" border="1px solid sy.edge" color="sy.ink"
           list id="palette-results" max-height=420 testId="palette-results"
             for h, i in found.hits key=h.id
