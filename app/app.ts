@@ -229,7 +229,32 @@ function route(kind: string, id: string): string {
   }
 }
 
+/** `switchyard://connect?server=…&token=…` (it arrives as `/connect?u=<the whole URL>`), or a
+ *  web link `/connect?server=…&token=…`. Only an http(s) server or a bare host is taken, and a
+ *  token of URL-safe characters; anything else leaves the link refused (ok false). */
+export function parseLink(u: string, server: string, token: string): { server: string; token: string; ok: boolean } {
+  let sv = server, tk = token;
+  if (u) {
+    sv = ''; tk = '';
+    const q = u.indexOf('?');
+    const query = q < 0 ? '' : u.slice(q + 1).split('#')[0];
+    for (const part of query.split('&')) {
+      const eq = part.indexOf('=');
+      if (eq < 0) continue;
+      let v = '';
+      try { v = decodeURIComponent(part.slice(eq + 1).replace(/\+/g, ' ')); } catch { continue; }
+      const k = part.slice(0, eq);
+      if (k === 'server') sv = v; else if (k === 'token') tk = v;
+    }
+  }
+  sv = sv.trim(); tk = tk.trim();
+  const okServer = /^(https?:\/\/)?[A-Za-z0-9.-]+(:\d{1,5})?(\/[A-Za-z0-9._~\/-]*)?$/.test(sv);
+  const okToken = tk === '' || /^[A-Za-z0-9._~-]{1,512}$/.test(tk);
+  return okServer && okToken ? { server: sv, token: tk, ok: true } : { server: okServer ? sv : '', token: '', ok: false };
+}
+
 export const sources: Sources = {
+  parseLink: ([u, server, token]) => parseLink(u, server, token),
   loadToken: (_a, store: Store) => {
     const t = store.get(TOKEN) ?? '';
     return { token: t, has: t !== '' };

@@ -26,5 +26,11 @@
       "web": "0",
       "macos": "0"
     }
-  }
+  },
+  "protocol_handlers": [
+    {
+      "protocol": "switchyard",
+      "url": "/connect?u=%s"
+    }
+  ]
 }

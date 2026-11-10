@@ -11,6 +11,11 @@ shape Tok
   token: string
   has: bool
 
+shape Link
+  server: string
+  token: string
+  ok: bool
+
 shape Conn
   ok: bool
   status: string

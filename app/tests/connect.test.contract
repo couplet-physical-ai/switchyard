@@ -1,0 +1,25 @@
+// A connect link (switchyard://connect?server=…&token=…) asks first, then connects. The
+// system hands the app `/connect?u=<the whole URL>`; the web takes `/connect?server=…`.
+
+test "a switchyard:// link asks before it connects"
+  clock data
+  tap "setup-demo"
+  clock data
+  type "root" "/connect?u=switchyard%3A%2F%2Fconnect%3Fserver%3Dhttps%253A%252F%252Fswitchyard.example.com%26token%3Dsyd_abc123"
+  clock settle
+  expect tree has "connect"
+  expect text "connect-server" == "https://switchyard.example.com"
+  expect state link.ok == true
+  expect state link.token == "syd_abc123"
+  tap "connect-no"
+  clock settle
+  expect tree missing "connect"
+
+test "a link with a bad server is refused"
+  clock data
+  tap "setup-demo"
+  clock data
+  type "root" "/connect?server=javascript%3Aalert(1)"
+  clock settle
+  expect tree has "connect"
+  expect state link.ok == false
