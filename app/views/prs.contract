@@ -92,6 +92,7 @@ component PrsView
     kick: number
     repo: string
     active: bool
+    mode: string
     pickFilter: action
     typed: action
     allRepos: action
@@ -106,6 +107,9 @@ component PrsView
         row gap=10 align-items="baseline" flex="1 1 360px" min-width=0
           text "Pull requests" role="heading" aria-level=2 font-weight=700 font-size=14
           text `${data.open} open · ${data.ready} ready to merge · ${data.blocked} blocked · ${data.bots} from bots` color="sy.ink3" font-size=12 white-space="nowrap" testId="prs-count"
+          row gap=5 align-items="center" testId="prs-mode"
+            column width=6 height=6 border-radius=3 background-color=(mode == "live" ? "sy.green" : "sy.amber")
+            text (mode == "live" ? "live" : (mode == "paused" ? "paused" : (mode == "replay" ? "replaying the hour" : "behind live"))) font-size=11 white-space="nowrap" color=(mode == "live" ? "sy.green" : "sy.amber-text")
           if repo != ""
             button appearance="none" press=allRepos testId="prs-repo" padding="1px 7px" border-radius=5 border="1px solid sy.edge"
               text `${repo} ×` font-size=11 color="sy.ink2"

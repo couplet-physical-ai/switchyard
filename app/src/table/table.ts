@@ -511,3 +511,61 @@ export class RectBatch {
     this.looks.clear();
   }
 }
+
+/** A frame's primitives sorted by style across its rows: rects by colour, texts by font and
+ *  colour, rings by colour, dots in runs. Flushed once, they cost one style switch a style and
+ *  one op a primitive (a row painted alone switches styles a dozen times). Order: rects, dots,
+ *  rings, texts. Texts are left-aligned (a monospace column right-aligns by its length). */
+export class Layers {
+  readonly dots = new DotBatch();
+  private rects = new Map<string, number[]>();
+  private texts = new Map<string, { font: string; color: string; items: (string | number)[] }>();
+  private rings = new Map<string, { color: string; width: number; xs: number[] }>();
+
+  rect(color: string, x: number, y: number, w: number, h: number): void {
+    let a = this.rects.get(color);
+    if (!a) this.rects.set(color, (a = []));
+    a.push(x, y, w, h);
+  }
+
+  text(font: string, color: string, s: string, x: number, y: number): void {
+    if (!s) return;
+    const key = `${font}|${color}`;
+    let t = this.texts.get(key);
+    if (!t) this.texts.set(key, (t = { font, color, items: [] }));
+    t.items.push(s, x, y);
+  }
+
+  ring(color: string, width: number, x: number, y: number, r: number): void {
+    const key = `${color}|${width}`;
+    let g = this.rings.get(key);
+    if (!g) this.rings.set(key, (g = { color, width, xs: [] }));
+    g.xs.push(x, y, r);
+  }
+
+  flush(ctx: Ctx2D): void {
+    for (const [color, a] of this.rects) {
+      ctx.fillStyle = color;
+      for (let i = 0; i < a.length; i += 4) ctx.fillRect(a[i], a[i + 1], a[i + 2], a[i + 3]);
+    }
+    this.rects.clear();
+    this.dots.flush(ctx);
+    for (const g of this.rings.values()) {
+      ctx.beginPath();
+      const xs = g.xs;
+      for (let i = 0; i < xs.length; i += 3) { ctx.moveTo(xs[i] + xs[i + 2], xs[i + 1]); ctx.arc(xs[i], xs[i + 1], xs[i + 2], 0, Math.PI * 2); }
+      ctx.strokeStyle = g.color;
+      ctx.lineWidth = g.width;
+      ctx.stroke();
+    }
+    this.rings.clear();
+    ctx.textAlign = 'left';
+    for (const t of this.texts.values()) {
+      ctx.font = t.font;
+      ctx.fillStyle = t.color;
+      const it = t.items;
+      for (let i = 0; i < it.length; i += 3) ctx.fillText(it[i] as string, it[i + 1] as number, it[i + 2] as number);
+    }
+    this.texts.clear();
+  }
+}

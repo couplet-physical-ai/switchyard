@@ -9,7 +9,7 @@ import { ago, laneText, mainState, short } from '../project.ts';
 import { orgLabel } from '../yard/layout.ts';
 import { withAlpha } from '../yard/paint.ts';
 import { C, FACE, TAU, clamp } from '../yard/theme.ts';
-import { CanvasTable, DotBatch, type RowCtx, type SubHit, advance, fit } from './table.ts';
+import { CanvasTable, Layers, type RowCtx, type SubHit, advance, fit } from './table.ts';
 
 export type MlState = 'red' | 'building' | 'green' | 'quiet';
 export type MlRow = { id: string; r: Repo; st: MlState; heat: number };
@@ -88,11 +88,11 @@ type Cols = {
   state: number; stateW: number; dots0: number; dots1: number; head: number; headW: number; right: number;
   open1: number; prsR: number;
   /** The 11 px columns as character cells from `org` (monospace): one fillText paints them all. */
-  a: number; cOrg: number; cLane: number; cState: number; cHead: number; cPrs: number; cEnd: number;
+  a: number; a12b: number; cOrg: number; cLane: number; cState: number; cHead: number; cPrs: number; cEnd: number;
 };
 
 /** The columns at width W; the 11 px ones snapped to character cells of advance `a`. */
-function columns(W: number, maxDots: number, a: number): Cols {
+function columns(W: number, maxDots: number, a: number, a12b: number): Cols {
   const m = 12;
   const glyph = m;
   const name = m + 12;
@@ -119,7 +119,7 @@ function columns(W: number, maxDots: number, a: number): Cols {
   const open1 = Math.max(dots1, Math.min(at(cPrs) - 70, dots0 + (n - 1) * 15 + 14));
   return {
     W, glyph, name, nameW, org, orgW, lane: at(cLane), laneW, state: at(cState), stateW, dots0, dots1, head: at(cHead), headW: headW >= 120 ? headW : 0,
-    right: at(cEnd), open1, prsR: at(cPrs), a, cOrg: 0, cLane, cState, cHead, cPrs, cEnd,
+    right: at(cEnd), open1, prsR: at(cPrs), a, a12b, cOrg: 0, cLane, cState, cHead, cPrs, cEnd,
   };
 }
 
@@ -146,7 +146,7 @@ export class MainlinesModel {
   counts = { total: 0, red: 0, building: 0, shown: 0 };
   private cols: Cols | null = null;
   private maxDots = 12;
-  private dots = new DotBatch();
+  private layers = new Layers();
 
   constructor() {
     this.table.padTop = HEAD;
@@ -200,11 +200,11 @@ export class MainlinesModel {
   }
 
   draw(ctx: Ctx2D, frame: Frame, now: number, loaded: boolean): boolean {
-    if (!this.cols || this.cols.W !== frame.width) this.cols = columns(frame.width, this.maxDots, advance(ctx, F11));
+    if (!this.cols || this.cols.W !== frame.width) this.cols = columns(frame.width, this.maxDots, advance(ctx, F11), advance(ctx, F12B));
     const cols = this.cols;
-    const rows = this.rows, batch = this.dots;
-    const moving = this.table.draw(ctx, frame, (c, row, rc) => paintRow(c, row, rc, cols, rows[rc.index + 1]?.st, batch), now, loaded ? 'No repo matches.' : 'Waiting for the fleet…');
-    batch.flush(ctx);
+    const rows = this.rows, L = this.layers;
+    const moving = this.table.draw(ctx, frame, (c, row, rc) => paintRow(c, row, rc, cols, rows[rc.index + 1]?.st, L), now, loaded ? 'No repo matches.' : 'Waiting for the fleet…');
+    L.flush(ctx);
     paintHeader(ctx, cols, frame.width);
     return moving;
   }
@@ -236,10 +236,11 @@ function paintHeader(ctx: Ctx2D, k: Cols, W: number): void {
   ctx.letterSpacing = '0px';
 }
 
-function paintRow(ctx: Ctx2D, row: MlRow, rc: RowCtx, k: Cols, nextSt: MlState | undefined, batch: DotBatch): void {
+function paintRow(ctx: Ctx2D, row: MlRow, rc: RowCtx, k: Cols, nextSt: MlState | undefined, L: Layers): void {
   const { y, h, W, e, focused, hits, now } = rc;
   const r = row.r;
-  // ground: the focused row raised with a brand edge, a hovered one lifted
+  // ground: the focused row raised with a brand edge, a hovered one lifted (drawn now, under
+  // the frame's layers)
   if (e > 0 || focused) {
     ctx.fillStyle = withAlpha(focused ? C.raised : '#141415', focused ? Math.max(0.6, e) : e);
     ctx.fillRect(0, y, W, h);
@@ -247,20 +248,11 @@ function paintRow(ctx: Ctx2D, row: MlRow, rc: RowCtx, k: Cols, nextSt: MlState |
   }
   // hairline under the row; a stronger, full one where the state group changes
   const edge = nextSt !== undefined && nextSt !== row.st;
-  ctx.fillStyle = edge ? GROUP : HAIR;
-  ctx.fillRect(edge ? 0 : k.name, y + h - 1, edge ? W : W - k.name - 12, 1);
+  L.rect(edge ? GROUP : HAIR, edge ? 0 : k.name, y + h - 1, edge ? W : W - k.name - 12, 1);
 
   const cy = y + 14; // line 1 baseline
-  // state glyph
-  const gc = row.st === 'red' ? C.red : row.st === 'building' ? C.packet : row.st === 'green' ? C.greenEdge : C.machineDim;
-  ctx.fillStyle = gc;
-  ctx.fillRect(k.glyph, y + 7, 6, 6);
-
-  ctx.textAlign = 'left';
-  const a12b = advance(ctx, F12B);
-  ctx.font = F12B;
-  ctx.fillStyle = row.st === 'quiet' ? C.ink2 : C.ink;
-  ctx.fillText(fit(String(r.name ?? row.id), k.nameW, a12b), k.name, cy);
+  L.rect(row.st === 'red' ? C.red : row.st === 'building' ? C.packet : row.st === 'green' ? C.greenEdge : C.machineDim, k.glyph, y + 7, 6, 6);
+  L.text(F12B, row.st === 'quiet' ? C.ink2 : C.ink, fit(String(r.name ?? row.id), k.nameW, k.a12b), k.name, cy);
   const a11 = k.a;
   const dots = dotsOf(r);
   const prs = Number(r.open_prs) || 0;
@@ -281,15 +273,12 @@ function paintRow(ctx: Ctx2D, row: MlRow, rc: RowCtx, k: Cols, nextSt: MlState |
   ];
   const headText = k.headW && last ? `${short(last.sha ?? '')} ${last.title ?? ''}${last.author ? ` · ${author(last.author)}` : ''}` : '';
   if (e === 0) gray.push([k.cHead, headText, Math.floor(k.headW / a11), false]);
-  ctx.font = F11;
-  ctx.fillStyle = TXT3;
-  ctx.fillText(cells(k.cEnd, gray), k.org, cy);
-  if (!plain) {
-    ctx.fillStyle = row.st === 'red' ? C.redText : C.amberText;
-    ctx.fillText(fit(words, k.stateW, a11), k.state, cy);
-  }
+  L.text(F11, TXT3, cells(k.cEnd, gray), k.org, cy);
+  if (!plain) L.text(F11, row.st === 'red' ? C.redText : C.amberText, fit(words, k.stateW, a11), k.state, cy);
   if (e > 0 && e < 1 && headText) {
     ctx.globalAlpha = 1 - e;
+    ctx.font = F11;
+    ctx.textAlign = 'left';
     ctx.fillStyle = TXT3;
     ctx.fillText(fit(headText, k.headW, a11), k.head, cy);
     ctx.globalAlpha = 1;
@@ -301,7 +290,8 @@ function paintRow(ctx: Ctx2D, row: MlRow, rc: RowCtx, k: Cols, nextSt: MlState |
   const avail = x1 - k.dots0;
   const pitch = Math.min(9 + 6 * e, avail / Math.max(1, Math.min(40, dots.length)));
   const red = row.st === 'red';
-  if (pitch >= 4.5 || e > 0.5) mainLine(ctx, dots, k.dots0, x1, lineY, Math.max(4.5, pitch), 2.6 + 1.6 * e, e, red, red ? r.main?.culprit ?? null : null, hits, row.id, batch);
+  if (e < 0.05 && pitch >= 4.5) denseLine(L, dots, k.dots0, x1, lineY, pitch, red, red ? r.main?.culprit ?? null : null);
+  else if (pitch >= 4.5 || e > 0.5) mainLine(ctx, dots, k.dots0, x1, lineY, Math.max(4.5, pitch), 2.6 + 1.6 * e, e, red, red ? r.main?.culprit ?? null : null, hits, row.id);
   else bars(ctx, dots, k.dots0, x1, lineY, now, red);
 
   if (e <= 0.05) return;
@@ -368,7 +358,39 @@ function focusedHint(rc: RowCtx): string {
 }
 
 /** The dots, newest at `x1`: reds older than the last green as rings, the current streak solid. */
-function mainLine(ctx: Ctx2D, dots: Dot[], x0: number, x1: number, y: number, pitch: number, r: number, e: number, red: boolean, culprit: string | null, hits: SubHit[] | null, repo: string, batch: DotBatch): void {
+/** LOD2's line into the frame's layers: rail, cap, dots in runs, rings for old reds and the
+ *  culprit. A dozen ops a row. */
+function denseLine(L: Layers, dots: Dot[], x0: number, x1: number, y: number, pitch: number, red: boolean, culprit: string | null): void {
+  const r = 2.6;
+  const n = Math.max(0, Math.min(dots.length, Math.floor((x1 - x0) / pitch) + 1, 40));
+  const list = dots.slice(dots.length - n);
+  const left = x1 - (list.length - 1) * pitch;
+  const lg = lastGreen(list);
+  const ci = culprit ? list.findIndex((d) => d?.sha === culprit) : -1;
+  const ry = Math.round(y);
+  const railX = list.length ? left - 4 : x0;
+  L.rect(C.wire, railX, ry, x1 + 6 - railX, 1);
+  if (red && ci >= 0) { const cx = x1 - (list.length - 1 - ci) * pitch; L.rect(RED_RAIL, cx, ry, x1 + 6 - cx, 1); }
+  L.rect(C.portEdge, x1 + 6, y - 4.5, 3, 9);
+  let i = 0;
+  while (i < list.length) {
+    const c = colorAt(list, i, lg);
+    let j = i + 1;
+    while (j < list.length && colorAt(list, j, lg) === c) j++;
+    const xi = x1 - (list.length - 1 - i) * pitch;
+    if (c) L.dots.add(c, c === C.dotDim ? r * 0.7 : r, pitch, xi, y, j - i);
+    else for (let q = i; q < j; q++) L.ring(OLD_RED, 1, x1 - (list.length - 1 - q) * pitch, y, r - 0.5);
+    if (c === C.ink) for (let q = i; q < j; q++) L.ring(C.packet, 1.2, x1 - (list.length - 1 - q) * pitch, y, r + 2);
+    i = j;
+  }
+  if (ci >= 0) L.ring(CULPRIT_RING, 1, x1 - (list.length - 1 - ci) * pitch, y, r + 2);
+}
+
+const RED_RAIL = withAlpha(C.red, 0.5);
+const OLD_RED = withAlpha(C.red, 0.45);
+const CULPRIT_RING = withAlpha(C.red, 0.7);
+
+function mainLine(ctx: Ctx2D, dots: Dot[], x0: number, x1: number, y: number, pitch: number, r: number, e: number, red: boolean, culprit: string | null, hits: SubHit[] | null, repo: string): void {
   const n = Math.max(0, Math.min(dots.length, Math.floor((x1 - x0) / pitch) + 1, 40));
   const list = dots.slice(dots.length - n);
   const left = x1 - (list.length - 1) * pitch;
@@ -402,24 +424,12 @@ function mainLine(ctx: Ctx2D, dots: Dot[], x0: number, x1: number, y: number, pi
     else if (s === 'pending' || s === 'blocked') push(solid, TXT3, x);
     else push(solid, C.dotDim, x);
   }
-  if (e < 0.05) {
-    // LOD2: the dots go to the frame's batch, a run of one colour at a time
-    let i = 0;
-    while (i < list.length) {
-      const c = colorAt(list, i, lg);
-      let j = i + 1;
-      while (j < list.length && colorAt(list, j, lg) === c) j++;
-      if (c) batch.add(c, c === C.dotDim ? r * 0.7 : r, pitch, x1 - (list.length - 1 - i) * pitch, y, j - i);
-      i = j;
-    }
-  } else {
-    for (const [c, xs] of solid) {
-      const rr = c === C.dotDim ? r * 0.7 : r;
-      ctx.beginPath();
-      for (const x of xs) { ctx.moveTo(x + rr, y); ctx.arc(x, y, rr, 0, TAU); }
-      ctx.fillStyle = c;
-      ctx.fill();
-    }
+  for (const [c, xs] of solid) {
+    const rr = c === C.dotDim ? r * 0.7 : r;
+    ctx.beginPath();
+    for (const x of xs) { ctx.moveTo(x + rr, y); ctx.arc(x, y, rr, 0, TAU); }
+    ctx.fillStyle = c;
+    ctx.fill();
   }
   if (oldRed.length) {
     ctx.beginPath();
@@ -459,7 +469,7 @@ function mainLine(ctx: Ctx2D, dots: Dot[], x0: number, x1: number, y: number, pi
       ctx.font = F10;
       ctx.textAlign = 'center';
       ctx.fillStyle = withAlpha(C.redText, 0.75 * e);
-      ctx.fillText('culprit', x, y - r - 5);
+      ctx.fillText(short(culprit), x, y - r - 5); // the culprit, by its sha, once
       ctx.textAlign = 'left';
     }
   }

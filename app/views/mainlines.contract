@@ -80,6 +80,7 @@ component MainlinesView
     py: number
     kick: number
     active: bool
+    mode: string
     pickOrg: action
     pickFilter: action
     typed: action
@@ -94,6 +95,9 @@ component MainlinesView
         row gap=10 align-items="baseline" flex="1 1 360px" min-width=0
           text "Main lines" role="heading" aria-level=2 font-weight=700 font-size=14
           text (data.shown == data.total ? `${data.total} ${data.total == 1 ? "repo" : "repos"} · ${data.red} red · ${data.building} building` : `${data.shown} of ${data.total} ${data.total == 1 ? "repo" : "repos"} · ${data.red} red · ${data.building} building`) color="sy.ink3" font-size=12 white-space="nowrap" testId="mainlines-count"
+          row gap=5 align-items="center" testId="mainlines-mode"
+            column width=6 height=6 border-radius=3 background-color=(mode == "live" ? "sy.green" : "sy.amber")
+            text (mode == "live" ? "live" : (mode == "paused" ? "paused" : (mode == "replay" ? "replaying the hour" : "behind live"))) font-size=11 white-space="nowrap" color=(mode == "live" ? "sy.green" : "sy.amber-text")
           if data.focusText != ""
             text data.focusText color="sy.ink2" font-size=12 white-space="nowrap" overflow="hidden" text-overflow="ellipsis" min-width=0 testId="mainlines-focus"
         row role="radiogroup" aria-label="Organization" gap=2 padding=2 border-radius=7 background-color="sy.control"

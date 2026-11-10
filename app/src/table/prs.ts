@@ -8,7 +8,7 @@ import type { World } from '../world.ts';
 import { ago, phaseIndex, short } from '../project.ts';
 import { arrow, withAlpha } from '../yard/paint.ts';
 import { C, FACE } from '../yard/theme.ts';
-import { CanvasTable, DotBatch, RectBatch, type RowCtx, advance, fit } from './table.ts';
+import { CanvasTable, Layers, RectBatch, type RowCtx, advance, fit } from './table.ts';
 import { TXT3, author, coarse } from './mainlines.ts';
 
 export type PrTableRow = { id: string; pr: Pr; bad: boolean; group: number; updated: number };
@@ -94,20 +94,35 @@ export function phaseWord(pr: Pr): [string, string] {
   }
 }
 
-type Cols = { W: number; glyph: number; name: number; nameW: number; title: number; titleW: number; author: number; authorW: number; track: number; word: number; checks: number; right: number };
+type Cols = { a11: number; a12: number; a12b: number; a10: number; W: number; glyph: number; name: number; nameW: number; title: number; titleW: number; author: number; authorW: number; track: number; word: number; review: number; reviewW: number; checks: number; right: number };
 
-function columns(W: number): Cols {
+/** The columns at width W; REVIEW only when some row has a review to show (hide empty columns). */
+function columns(W: number, adv: { a11: number; a12: number; a12b: number; a10: number }, hasReview: boolean): Cols {
   const m = 12;
   const right = W - m;
-  const ageW = 76, checksW = 104, wordW = 70, trackW = 6 * 15 - 3, authorW = W >= 1200 ? 120 : 96;
+  const ageW = 64, checksW = 112, reviewW = W >= 1200 && hasReview ? 96 : 0, wordW = 64, trackW = 6 * 15 - 3, authorW = W >= 1200 ? 120 : 96;
   const checks = right - ageW - 12 - checksW;
-  const word = checks - 12 - wordW;
+  const review = checks - (reviewW ? reviewW + 12 : 0);
+  const word = review - 8 - wordW;
   const track = word - 8 - trackW;
   const authorX = track - 16 - authorW;
   const name = m + 12;
   const nameW = W >= 1280 ? 220 : 180;
   const title = name + nameW + 10;
-  return { W, glyph: m, name, nameW, title, titleW: Math.max(0, authorX - 12 - title), author: authorX, authorW, track, word, checks, right };
+  return { ...adv, W, glyph: m, name, nameW, title, titleW: Math.max(0, authorX - 12 - title), author: authorX, authorW, track, word, review, reviewW, checks, right };
+}
+
+/** The review in a word or two: a person's first (approved, changes, needs review), else the
+ *  AI reviewer's. [text, colour]. */
+export function reviewWord(pr: Pr): [string, string] {
+  const rv = pr.review && typeof pr.review === 'object' ? pr.review : {};
+  if (rv.human === 'approved') return ['approved', C.greenInk];
+  if (rv.human === 'changes_requested') return ['changes asked', C.redText];
+  if (rv.ai === 'approved') return ['ai approved', C.greenInk];
+  if (rv.ai === 'commented') return ['ai commented', C.amberText];
+  if (rv.ai === 'pending') return ['ai reviewing', TXT3];
+  if (rv.human === 'review_required') return ['needs review', TXT3];
+  return ['', TXT3];
 }
 
 export class PrsModel {
@@ -119,7 +134,8 @@ export class PrsModel {
   seq = 0;
   counts = { open: 0, ready: 0, blocked: 0, bots: 0, total: 0 };
   private cols: Cols | null = null;
-  private batches: Batches = { dots: new DotBatch(), rects: new RectBatch() };
+  private batches: Batches = { L: new Layers(), rects: new RectBatch() };
+  private hasReview = false;
 
   constructor() {
     this.table.padTop = HEAD;
@@ -159,6 +175,8 @@ export class PrsModel {
     this.key = key;
     this.rows = rows;
     this.counts = { open, ready, blocked, bots, total: rows.length };
+    const hasReview = rows.some((r) => reviewWord(r.pr)[0] !== '');
+    if (hasReview !== this.hasReview) { this.hasReview = hasReview; this.cols = null; }
     this.seq++;
     this.table.setRows(rows);
     return rows;
@@ -171,12 +189,12 @@ export class PrsModel {
   }
 
   draw(ctx: Ctx2D, frame: Frame, now: number, loaded: boolean): boolean {
-    if (!this.cols || this.cols.W !== frame.width) this.cols = columns(frame.width);
+    if (!this.cols || this.cols.W !== frame.width) this.cols = columns(frame.width, { a11: advance(ctx, F11), a12: advance(ctx, F12), a12b: advance(ctx, F12B), a10: advance(ctx, F10) }, this.hasReview);
     const cols = this.cols;
     const rows = this.rows, b = this.batches;
     const moving = this.table.draw(ctx, frame, (c, row, rc) => paintPr(c, row, rc, cols, rows[rc.index + 1]?.group, b), now, loaded ? 'No pull request matches.' : 'Waiting for the fleet…');
     b.rects.flush(ctx);
-    b.dots.flush(ctx);
+    b.L.flush(ctx);
     paintHeader(ctx, cols, frame.width);
     return moving;
   }
@@ -196,17 +214,19 @@ function paintHeader(ctx: Ctx2D, k: Cols, W: number): void {
   if (k.titleW > 40) ctx.fillText('TITLE', k.title, y);
   ctx.fillText('AUTHOR', k.author, y);
   ctx.fillText('PHASE', k.track, y);
+  if (k.reviewW) ctx.fillText('REVIEW', k.review, y);
   ctx.fillText('CHECKS', k.checks, y);
   ctx.textAlign = 'right';
   ctx.fillText('UPDATED', k.right, y);
   ctx.letterSpacing = '0px';
 }
 
-type Batches = { dots: DotBatch; rects: RectBatch };
+type Batches = { L: Layers; rects: RectBatch };
 
 function paintPr(ctx: Ctx2D, row: PrTableRow, rc: RowCtx, k: Cols, nextGroup: number | undefined, b: Batches): void {
   const { y, h, W, e, focused, hits, now } = rc;
   const pr = row.pr;
+  const L = b.L;
   if (e > 0 || focused) {
     ctx.fillStyle = withAlpha(focused ? C.raised : '#141415', focused ? Math.max(0.6, e) : e);
     ctx.fillRect(0, y, W, h);
@@ -214,31 +234,19 @@ function paintPr(ctx: Ctx2D, row: PrTableRow, rc: RowCtx, k: Cols, nextGroup: nu
   }
   // hairline under the row; a stronger, full one where the group changes
   const edge = nextGroup !== undefined && nextGroup !== row.group;
-  ctx.fillStyle = edge ? '#262628' : HAIR;
-  ctx.fillRect(edge ? 0 : k.name, y + h - 1, edge ? W : W - k.name - 12, 1);
+  L.rect(edge ? '#262628' : HAIR, edge ? 0 : k.name, y + h - 1, edge ? W : W - k.name - 12, 1);
   const cy = y + 14;
   const states = chipStates(pr);
   const [word, wordC] = phaseWord(pr);
   // glyph: where it stands
   const bad = states.includes('bad');
-  ctx.fillStyle = bad ? C.red : pr.phase === 'mergeable' ? C.green : !isOpenPhase(pr.phase) ? C.greenEdge : pr.phase === 'draft' ? C.machineDim : C.packet;
-  ctx.fillRect(k.glyph, y + 7, 6, 6);
+  L.rect(bad ? C.red : pr.phase === 'mergeable' ? C.green : !isOpenPhase(pr.phase) ? C.greenEdge : pr.phase === 'draft' ? C.machineDim : C.packet, k.glyph, y + 7, 6, 6);
 
-  ctx.textAlign = 'left';
-  const a12b = advance(ctx, F12B), a11 = advance(ctx, F11), a12 = advance(ctx, F12);
-  const name = `${String(pr.repo).split('/')[1] ?? pr.repo} #${pr.number}`;
-  ctx.font = F12B;
-  ctx.fillStyle = C.ink;
-  ctx.fillText(fit(name, k.nameW, a12b), k.name, cy);
-  if (k.titleW > 40) {
-    ctx.font = F12;
-    ctx.fillStyle = C.ink2;
-    ctx.fillText(fit(String(pr.title ?? ''), k.titleW, a12), k.title, cy);
-  }
-  ctx.font = F11;
+  const a12b = k.a12b, a11 = k.a11, a12 = k.a12;
+  L.text(F12B, C.ink, fit(`${String(pr.repo).split('/')[1] ?? pr.repo} #${pr.number}`, k.nameW, a12b), k.name, cy);
+  if (k.titleW > 40) L.text(F12, C.ink2, fit(String(pr.title ?? ''), k.titleW, a12), k.title, cy);
   const bot = isBot(pr);
-  ctx.fillStyle = bot ? C.amberText : TXT3;
-  ctx.fillText(bot ? `${fit(author(pr.author), k.authorW - 4 * a11, a11)} bot` : fit(author(pr.author), k.authorW, a11), k.author, cy);
+  L.text(F11, bot ? C.amberText : TXT3, bot ? `${fit(author(pr.author), k.authorW - 4 * a11, a11)} bot` : fit(author(pr.author), k.authorW, a11), k.author, cy);
 
   // the phase track: mini-chips at LOD2 (fading out as the row opens to the labelled one)
   const mini = 1 - Math.min(1, e * 1.6);
@@ -251,22 +259,19 @@ function paintPr(ctx: Ctx2D, row: PrTableRow, rc: RowCtx, k: Cols, nextGroup: nu
     own.flush(ctx);
     ctx.globalAlpha = 1;
   }
-  ctx.font = F11;
-  ctx.fillStyle = wordC;
-  ctx.fillText(word, k.word, cy);
+  L.text(F11, wordC, word, k.word, cy);
+  if (k.reviewW) { const [rw, rc2] = reviewWord(pr); L.text(F11, rc2, fit(rw, k.reviewW, a11), k.review, cy); }
 
-  // checks: "✓ N" for those that passed beyond the list (v0.4's checks_passed), then a dot for
+  // checks: "✓N" for those that passed beyond the list (v0.4's checks_passed), then a dot for
   // each listed one (required first, then those that have not passed: the server's order)
   const checks = checksOf(pr);
   const passed = Math.max(0, Number(pr.checks_passed) || 0);
   const shown = checks.slice(0, 8);
   const failed = checks.filter((c) => isFail(c.state)).length;
-  ctx.font = F11;
   let cx = k.checks;
   if (passed) {
     const t = `✓${passed}`;
-    ctx.fillStyle = C.greenInk;
-    ctx.fillText(t, cx, cy);
+    L.text(F11, C.greenInk, t, cx, cy);
     cx += (t.length + 0.5) * a11;
   }
   const dotColor = (st: string) => (st === 'success' ? C.ink2 : isFail(st) ? C.red : st === 'running' || st === 'pending' ? C.packet : C.dotDim);
@@ -274,31 +279,29 @@ function paintPr(ctx: Ctx2D, row: PrTableRow, rc: RowCtx, k: Cols, nextGroup: nu
     const col = dotColor(shown[i].state);
     let j = i + 1;
     while (j < shown.length && dotColor(shown[j].state) === col) j++;
-    b.dots.add(col, 2.2, 6, cx + 3 + i * 6, y + 10, j - i);
+    L.dots.add(col, 2.2, 6, cx + 3 + i * 6, y + 10, j - i);
     i = j;
   }
   cx += shown.length ? shown.length * 6 + 4 : 0;
-  if (failed) { ctx.fillStyle = C.redText; ctx.fillText(`${failed} red`, cx, cy); }
-  else if (!passed && !checks.length) { ctx.fillStyle = TXT3; ctx.fillText('–', cx, cy); }
+  if (failed) L.text(F11, C.redText, `${failed} red`, cx, cy);
+  else if (!passed && !checks.length) L.text(F11, TXT3, '–', cx, cy);
 
-  // updated, or stale in amber
-  ctx.textAlign = 'right';
+  // updated, or stale in amber; right-aligned by its length (monospace)
   const stale = Number(pr.stale_ms) || 0;
-  if (stale > 86_400_000 && isOpenPhase(pr.phase)) { ctx.fillStyle = C.amberText; ctx.fillText(`stale ${coarse(stale)}`, k.right, cy); }
-  else { ctx.fillStyle = TXT3; ctx.fillText(pr.updated ? coarse(now - pr.updated) : '–', k.right, cy); }
-  ctx.textAlign = 'left';
+  const upd = stale > 86_400_000 && isOpenPhase(pr.phase) ? `stale ${coarse(stale)}` : pr.updated ? coarse(now - pr.updated) : '–';
+  L.text(F11, upd.startsWith('stale') ? C.amberText : TXT3, upd, k.right - upd.length * a11, cy);
 
   if (e <= 0.05) return;
   // LOD0: the labelled track, what blocks it, the review and the head
   ctx.globalAlpha = Math.min(1, Math.max(0, (e - 0.2) / 0.8));
   const y2 = y + 31, y3 = y + 50;
   let x = k.name;
-  const a10 = advance(ctx, F10);
+  const a10 = k.a10, chipW = 9 * a10 + 12; // one width: the phases line up row to row
   states.forEach((st, i) => {
     if (i === 0 && st === 'skip') return; // never a draft: no draft chip at all
     const label = st === 'bad' ? (pr.phase === 'conflict' ? 'conflict' : pr.phase === 'changes_requested' ? 'changes' : 'failing') : LABELS[i];
     if (x > k.name) { arrow(ctx, x + 2, x + 13, y2); x += 15; }
-    x += bigChip(ctx, label, x, y2, st, a10);
+    x += bigChip(ctx, label, x, y2, st, chipW);
   });
   x += 16;
   ctx.font = F11;
@@ -326,9 +329,9 @@ function paintPr(ctx: Ctx2D, row: PrTableRow, rc: RowCtx, k: Cols, nextGroup: nu
   ctx.globalAlpha = 1;
 }
 
-/** A labelled phase chip, 15 px tall (10 px type): the open row's track. */
-function bigChip(ctx: Ctx2D, label: string, x: number, cy: number, st: string, a10: number): number {
-  const w = Math.ceil(label.length * a10) + 12;
+/** A labelled phase chip, 15 px tall (10 px type), all one width: the open row's track. The
+ *  stuck one carries a red packet. */
+function bigChip(ctx: Ctx2D, label: string, x: number, cy: number, st: string, w: number): number {
   ctx.beginPath();
   ctx.roundRect(x + 0.5, cy - 7, w, 14, 3);
   if (st === 'ok') { ctx.fillStyle = C.greenFill; ctx.fill(); }
@@ -343,6 +346,7 @@ function bigChip(ctx: Ctx2D, label: string, x: number, cy: number, st: string, a
   ctx.textAlign = 'left';
   ctx.fillStyle = st === 'ok' ? C.greenInk : st === 'bad' ? C.redText : st === 'active' ? C.amberText : TXT3;
   ctx.fillText(label, x + 6.5, cy + 3.5);
+  if (st === 'bad') { ctx.fillStyle = C.red; ctx.fillRect(x + w - 10, cy - 3, 6, 6); }
   return w + 1;
 }
 
@@ -353,7 +357,7 @@ function miniTrack(rects: RectBatch, states: string[], x0: number, cy: number): 
     const st = states[i];
     const x = x0 + i * 15 + 0.5, y = cy - 3.5;
     if (st === 'ok') rects.add(C.greenFill, C.greenEdge, false, x, y, 11, 7);
-    else if (st === 'bad') rects.add(C.redFill, C.red, false, x, y, 11, 7);
+    else if (st === 'bad') { rects.add(C.redFill, C.red, false, x, y, 11, 7); rects.add(C.red, null, false, x + 3, y + 2, 5, 3); }
     else if (st === 'active') rects.add(C.packet, null, false, x, y, 11, 7);
     else if (st === 'idle') rects.add(null, C.chipEdge, true, x, y, 11, 7);
     else rects.add(null, SKIP_EDGE, true, x, y, 11, 7);
