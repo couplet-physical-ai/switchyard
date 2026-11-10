@@ -13,18 +13,19 @@ const defaultYield: Yield = async () => {
   if (s?.yield) await s.yield();
 };
 
-/** Parses `text` like JSON.parse, yielding between pieces. */
-export async function parseLarge<T = unknown>(text: string, yieldTurn: Yield = defaultYield): Promise<T> {
-  if (text.length <= CHUNK) return JSON.parse(text) as T;
+/** Parses `text` like JSON.parse, yielding between pieces. `skip`: top-level keys left out
+ *  (never parsed: a history's `base` when the caller already has the state). */
+export async function parseLarge<T = unknown>(text: string, yieldTurn: Yield = defaultYield, skip?: Set<string>): Promise<T> {
+  if (text.length <= CHUNK && !skip) return JSON.parse(text) as T;
   const i = skipWs(text, 0);
-  const [v] = await parseValue(text, i, endOfValue(text, i), yieldTurn);
+  const [v] = await parseValue(text, i, endOfValue(text, i), yieldTurn, skip);
   return v as T;
 }
 
 /** The value in text[i, end): small ones in one JSON.parse, large objects and arrays piece by piece. */
-async function parseValue(text: string, i: number, end: number, yieldTurn: Yield): Promise<[unknown, number]> {
+async function parseValue(text: string, i: number, end: number, yieldTurn: Yield, skip?: Set<string>): Promise<[unknown, number]> {
   const c = text.charCodeAt(i);
-  if (end - i <= CHUNK || (c !== 0x7b && c !== 0x5b)) return [JSON.parse(text.slice(i, end)), end];
+  if ((end - i <= CHUNK && !skip) || (c !== 0x7b && c !== 0x5b)) return [JSON.parse(text.slice(i, end)), end];
   if (c === 0x5b) return parseArray(text, i, yieldTurn);
   const out: Record<string, unknown> = {};
   i++;
@@ -37,8 +38,10 @@ async function parseValue(text: string, i: number, end: number, yieldTurn: Yield
     i = skipWs(text, keyEnd);
     i = skipWs(text, i + 1); // the colon
     const vEnd = endOfValue(text, i);
-    const [v] = await parseValue(text, i, vEnd, yieldTurn);
-    out[key] = v;
+    if (!skip?.has(key)) {
+      const [v] = await parseValue(text, i, vEnd, yieldTurn);
+      out[key] = v;
+    }
     budget += vEnd - i;
     i = vEnd;
     if (budget > CHUNK) { await yieldTurn(); budget = 0; }

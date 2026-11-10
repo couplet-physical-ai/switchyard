@@ -55,11 +55,29 @@ function advance(t: number): void {
     if (tl.replayDone()) tl.resumeLive();
   } else if (tl.replayDone()) {
     void reloadLive();
+  } else {
+    const next = tl.replayWants(REPLAY_LOOKAHEAD);
+    if (next) void fetchChunk(next);
   }
   if (tl.epoch !== seenEpoch) {
     seenEpoch = tl.epoch;
     motion.sync(tl.world);
   }
+}
+
+/** A replay streams in chunks of this much server time, fetched this far ahead of the
+ *  playhead: an hour of real frames is ~10 MB, too much to hold beside the world at once. */
+const REPLAY_CHUNK = 6 * 60_000;
+const REPLAY_LOOKAHEAD = 3 * 60_000;
+let chunking: Promise<void> | null = null;
+function fetchChunk(from: number): Promise<void> {
+  if (!up || demo || chunking) return chunking ?? Promise.resolve();
+  const to = Math.min(from + REPLAY_CHUNK, tl.replayTo);
+  chunking = up.history(from, to, false).then(
+    (h) => { tl.appendReplay(h); },
+    () => { /* asked again on the next frame */ },
+  ).finally(() => { chunking = null; });
+  return chunking;
 }
 
 /** The world stopped following the server (a replay, a long pause, a reset): refetch it. */
@@ -149,8 +167,9 @@ function liveFeed(server: string, token: string, seq: number, ok: boolean) {
   if (!base) return { ok: false, status: 'idle' };
   let status = 'connecting';
   return fetch(wsUrl(base, `/api/v1/stream?since=${seq}`, token), {
-    // A resume's first message can carry many merged frames: allow 8 MiB a message.
-    exactIndependentHttp: { maxResponseBytes: 8 << 20 },
+    // A resume's first message can carry many merged frames: allow 4 MiB a message. (An open
+    // stream holds twice its ceiling of the native lanes' 64 MiB, beside a history read.)
+    exactIndependentHttp: { maxResponseBytes: 4 << 20 },
     exactStream(ev) {
       if (ev.type === 'open') status = 'live';
       else if (ev.type === 'message' && typeof ev.data === 'string') {
@@ -249,8 +268,9 @@ export const sources: Sources = {
         return { ok: true, status: 'replay' };
       }
       const to = tl.liveNow();
-      const h = await up.history(to - 3_600_000, to);
-      return { ok: tl.startReplay(h), status: 'replay' };
+      const from = to - 3_600_000;
+      const h = await up.history(from, from + REPLAY_CHUNK);
+      return { ok: tl.startReplay(h, to), status: 'replay' };
     } catch (e) {
       return { ok: false, status: String((e as Error).message ?? e) };
     }

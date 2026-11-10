@@ -36,6 +36,8 @@ export class Timeline {
   private replayIdx = 0;
   replayFrom = 0;
   replayTo = 0;
+  /** The replay's frames are loaded up to here (it streams in chunks; the playhead waits). */
+  replayLoadedTo = 0;
   /** The world no longer follows the server (replay, or too much kept): refetch to go live. */
   stale = false;
   /** Bumps when the world is replaced or jumps: the motion system re-syncs. */
@@ -120,7 +122,7 @@ export class Timeline {
         break;
       }
       case 'replay': {
-        this.playhead += dt * this.speed;
+        this.playhead = Math.min(this.playhead + dt * this.speed, Math.max(this.replayLoadedTo, this.replayFrom));
         while (this.replayIdx < this.replay.length && atOf(this.replay[this.replayIdx]) <= this.playhead) {
           this.world.apply(this.replay[this.replayIdx++], this.listener);
         }
@@ -156,8 +158,9 @@ export class Timeline {
     this.mode = 'behind';
   }
 
-  /** Replaces the world with history's base and plays its frames at 60×. */
-  startReplay(h: History): boolean {
+  /** Replaces the world with history's base and plays its frames at 60×, through `to` (later
+   *  chunks arrive by `appendReplay`; by default the window is `h` alone). */
+  startReplay(h: History, to = h.to): boolean {
     if (!h.base) return false;
     const w = new World();
     w.load(h.base);
@@ -175,8 +178,10 @@ export class Timeline {
     this.replay = frames;
     this.replayIdx = 0;
     this.replayFrom = h.from;
-    this.replayTo = h.to;
+    this.replayTo = to;
     this.playhead = Math.max(h.from, w.at);
+    // History may start later than asked (a young server): the replay starts where it does.
+    this.replayLoadedTo = Math.max(h.to, this.playhead);
     // Frames before `from` only fast-forward the base (no motion for them).
     while (this.replayIdx < frames.length && atOf(frames[this.replayIdx]) <= this.playhead) w.apply(frames[this.replayIdx++]);
     this.clearKept();
@@ -185,6 +190,23 @@ export class Timeline {
     this.speed = 60;
     this.epoch++;
     return true;
+  }
+
+  /** The next chunk of a streaming replay: its frames after what is loaded. */
+  appendReplay(h: History): void {
+    if (this.mode !== 'replay') return;
+    if (this.replayIdx > 0) { this.replay = this.replay.slice(this.replayIdx); this.replayIdx = 0; }
+    for (const f of h.frames ?? []) {
+      if (f.t === 'delta' && f.at > this.replayLoadedTo - 1) this.replay.push(f);
+      else if (f.t === 'snapshot' && f.at > this.replayLoadedTo) this.replay.push({ t: 'delta', seq: f.seq, at: f.at, ops: [] }); // a restart: nothing to animate
+    }
+    this.replayLoadedTo = Math.max(this.replayLoadedTo, h.to);
+  }
+
+  /** Where the next replay chunk starts, or 0 when none is needed yet (or ever). */
+  replayWants(lookaheadMs: number): number {
+    if (this.mode !== 'replay' || this.replayLoadedTo >= this.replayTo) return 0;
+    return this.playhead + lookaheadMs >= this.replayLoadedTo ? this.replayLoadedTo : 0;
   }
 
   /** A frame the demo made for the playhead (behind or rewinding): applied at once. */
@@ -200,6 +222,7 @@ export class Timeline {
     this.replayIdx = 0;
     this.replayFrom = from;
     this.replayTo = to;
+    this.replayLoadedTo = to;
     this.playhead = from;
     this.clearKept();
     this.stale = false;
