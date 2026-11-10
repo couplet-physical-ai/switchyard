@@ -32,5 +32,8 @@
       "protocol": "switchyard",
       "url": "/connect?u=%s"
     }
+  ],
+  "env": [
+    "SWITCHYARD_DEFAULT_SERVER"
   ]
 }

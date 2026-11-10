@@ -65,7 +65,7 @@ component App
   state picked = ""
   resource tok = loadToken(tokGen) as shape Tok else empty(token="", has=false)
   resource link = parseLink(searchParam(top(nav), "u"), searchParam(top(nav), "server"), searchParam(top(nav), "token")) as shape Link else empty(server="", token="", ok=false)
-  resource conn = connect(server, tok.token, gen) with time.epochAtZero, time.utcOffset as shape Conn else empty(ok=false, status="connecting", error="", seq=0, label="", kind="", needsSetup=false)
+  resource conn = connect(server, tok.token, gen) with time.epochAtZero, time.utcOffset as shape Conn else empty(ok=false, status="connecting", error="", seq=0, label="", kind="", needsSetup=false, signIn="")
   resource feed = liveFeed(server, tok.token, conn.seq, gen, conn.ok) as shape Ack else empty(ok=false, status="idle")
   resource ov = overview(clockMs, conn.seq, conn.ok) as shape Overview else empty()
   resource found = search(q, clockMs) as shape Found else empty(hits=[])
@@ -206,8 +206,11 @@ component App
                   text (conn.needsSetup ? "Connect Switchyard to a server" : "The server is not answering") font-weight=700 font-size=16
                   text (conn.error != "" ? conn.error : "Its address and a token, or watch the built-in demo fleet.") color="sy.ink3" font-size=13 max-width=560 text-align="center" testId="setup-error"
                   row gap=10
-                    button press=openSettings class=Primary testId="setup-connect"
-                      text "Connect…"
+                    if conn.signIn != ""
+                      link href=conn.signIn class=Primary testId="setup-signin"
+                        text "Sign in on the web…"
+                    button press=openSettings class=(conn.signIn != "" ? Quiet : Primary) testId="setup-connect"
+                      text (conn.signIn != "" ? "Use a token…" : "Connect…")
                     button press=useDemo testId="setup-demo" class=Quiet
                       text "Watch the demo"
             footer display="flex" align-items="center" gap=12 padding="10px 20px 12px" border-top="1px solid sy.rule" testId="timebar"

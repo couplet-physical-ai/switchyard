@@ -16,11 +16,17 @@ export interface Upstream {
 }
 
 /** The server's base URL: the setting, else (on the web) the page's own origin. */
+/** The server a release build talks to when none is set and no page origin exists (native):
+ *  app.ts sets it from the build's SWITCHYARD_DEFAULT_SERVER. Empty in dev and test builds. */
+let defaultServer = '';
+export function setDefaultServer(s: string): void { defaultServer = s.trim().replace(/\/+$/, ''); }
+
 export function resolveBase(server: string): string {
   const s = server.trim().replace(/\/+$/, '');
   if (s && s !== 'demo') return /^https?:\/\//.test(s) ? s : `https://${s}`;
   const origin = (globalThis as { origin?: unknown }).origin;
-  return typeof origin === 'string' && /^https?:\/\//.test(origin) ? origin : '';
+  if (typeof origin === 'string' && /^https?:\/\//.test(origin)) return origin;
+  return s === 'demo' ? '' : defaultServer;
 }
 
 /** The stream's WebSocket URL. A WebSocket cannot carry the Bearer header, so with a device
@@ -59,8 +65,11 @@ export class HttpUpstream implements Upstream {
     const r = await fetch(this.base + path, init as RequestInit);
     if (r.status === 404) return null as T;
     if (!r.ok) throw new Error(r.status === 401 || r.status === 403 ? `the server refused the token (${r.status})` : `${path} answered ${r.status}`);
+    const body = await r.text();
+    // With no token the platform's SSO edge redirects to its sign-in page: a page, not JSON.
+    if (/^\s*</.test(body)) throw new Error('the server needs sign-in (it answered with a sign-in page)');
     // Large replies (the snapshot, history) parse piece by piece across turns.
-    return parseLarge<T>(await r.text(), undefined, skip);
+    return parseLarge<T>(body, undefined, skip);
   }
   async snapshot(): Promise<Snapshot> {
     const s = await this.get<Snapshot | null>('/api/v1/snapshot', 30000, 12 << 20);

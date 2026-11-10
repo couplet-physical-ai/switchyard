@@ -24,6 +24,7 @@ shape Conn
   label: string
   kind: string
   needsSetup: bool
+  signIn: string
 
 shape Ack
   ok: bool

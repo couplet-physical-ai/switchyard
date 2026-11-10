@@ -3,7 +3,12 @@
 // the canvases read the world directly every frame (`draw`).
 
 import type { Answer, Ctx2D, Frame, Result, Sources, Store } from './app.contract.d.ts';
-import { HttpUpstream, resolveBase, wsUrl, type Upstream } from './src/api.ts';
+import { HttpUpstream, resolveBase, setDefaultServer, wsUrl, type Upstream } from './src/api.ts';
+
+// A release build bakes the team's server in (app/scripts/build-macos-release.sh sets it);
+// dev and test builds leave it empty and ask on first launch.
+const DEFAULT_SERVER = import.meta.env.SWITCHYARD_DEFAULT_SERVER ?? '';
+setDefaultServer(DEFAULT_SERVER);
 import { DEMO_REPLAY, DemoUpstream } from './src/demo.ts';
 import { fleet, journeyView, mainlines, prDetailView, prs, search } from './src/project.ts';
 import { Timeline } from './src/timeline.ts';
@@ -129,7 +134,7 @@ type Conn = Result<'connect'>;
 
 async function connect(server: string, token: string, epoch0: number): Promise<Conn> {
   epochAtZero = epoch0;
-  const none: Conn = { ok: false, status: 'not connected', error: '', seq: 0, label: '', kind: '', needsSetup: false };
+  const none: Conn = { ok: false, status: 'not connected', error: '', seq: 0, label: '', kind: '', needsSetup: false, signIn: '' };
   try {
     if (server === 'demo') {
       tl.wallNow = (c) => epochAtZero + c;
@@ -156,7 +161,14 @@ async function connect(server: string, token: string, epoch0: number): Promise<C
     motion.sync(tl.world);
     return { ...none, ok: true, status: 'connected', seq: tl.world.seq, label: up.label, kind: 'http' };
   } catch (e) {
-    return { ...none, status: 'offline', error: `Could not reach ${resolveBase(server) || 'the server'}: ${(e as Error).message ?? e}`, needsSetup: !resolveBase(server) };
+    const base = resolveBase(server);
+    const msg = String((e as Error).message ?? e);
+    // The server is there but wants a device token: its /connect page (behind SSO) mints one
+    // and hands it back as a switchyard:// link.
+    if (base && (/ answered 40[13]\b/.test(msg) || /refused the token|needs sign-in/.test(msg))) {
+      return { ...none, status: 'sign in', error: `${base.replace(/^https?:\/\//, '')} needs a device token: sign in on the web to get one.`, needsSetup: true, signIn: `${base}/connect` };
+    }
+    return { ...none, status: 'offline', error: `Could not reach ${base || 'the server'}: ${msg}`, needsSetup: !base };
   }
 }
 
