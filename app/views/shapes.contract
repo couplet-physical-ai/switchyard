@@ -45,6 +45,15 @@ shape Overview
   appsTotal: number
   behind: string
   seq: number
+  tick: number
+  host: string
+  dial: string
+  dialPad: number
+  dialFont: number
+  dialH: number
+  hud: bool
+  stress: bool
+  quality: number
 
 shape SearchHit
   kind: string

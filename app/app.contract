@@ -47,11 +47,13 @@ component App
   mutation ctl as shape Ack refreshes ov
   mutation replayed as shape Ack refreshes ov then afterReplay
   mutation hit as shape Hit then afterHit
+  mutation hov as shape Hit
   mutation saved as shape Ack then afterSave
   derive reduced = media.prefersReducedMotion
   derive here = top(nav).name
   derive hitNow = match hit { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }
   derive replayOk = match replayed { case some(r) => r.ok, case none => false }
+  derive hovering = match hov { case some(h) => h.kind != "", case none => false }
   members "./views/mainlines.contract"
   members "./views/prs.contract"
   members "./views/fleet.contract"
@@ -100,9 +102,21 @@ component App
       mode = "replay"
       speed = 60
 
-  // The yard: a press picks what is under it
+  // The yard: a press picks what is under it; the pointer over it promotes what is under it
+  // to full detail (a lens); leaving the canvas lets the lens go.
   action pressYard(e: PointerEvent)
     send hit = pickAt(e.offsetX, e.offsetY)
+  action moveYard(e: PointerEvent)
+    send hov = hoverAt(e.offsetX, e.offsetY)
+  action leaveYard
+    if hovering
+      send hov = hoverAt(-1, -1)
+
+  // Developer: the HUD (⌘⇧D) and stress mode (a 10× synthetic fleet for the renderer)
+  action toggleHud
+    send ctl = devToggle("hud", ov.hud ? 0 : 1)
+  action toggleStress
+    send ctl = devToggle("stress", ov.stress ? 0 : 1)
   action afterHit
     if hitNow.kind == "replay"
       startReplay()
@@ -151,15 +165,20 @@ component App
     nav = go(nav, "/")
 
   view
-    main navigationKey=`${top(nav).id}` navigationBack="back" navigate=follow testId="root" width="100%" height="100%" background-color="sy.canvas" color="sy.ink" font-family="Commit Mono" -exact-menu-remove="show-tab-bar"
+    main navigationKey=`${top(nav).id}` navigationBack="back" navigate=follow testId="root" width="100%" height="100%" background-color="sy.canvas" color="sy.ink" font-family="Commit Mono" -exact-menu-remove="show-tab-bar" pointermove=leaveYard
       for e in stack(nav) key=e.id
         column navigationKey=`${e.id}` position="absolute" inset=0 display="flex" flex-direction="column"
-          TopBar(here=e.name, connOk=conn.ok, connText=(conn.ok ? `${conn.kind == "demo" ? "demo" : feed.status} · ${conn.label}` : conn.status), live=(feed.status == "live" or feed.status == "demo"), goTo=goTo, openPalette=openPalette, openSettings=openSettings)
+          TopBar(here=e.name, goTo=goTo, openPalette=openPalette)
           if e.name == "yard"
             column flex=1 min-height=0 position="relative" testId="yard"
-              canvas surface=yardStatic(ov.layoutKey) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-static"
+              canvas surface=yardStatic(ov.layoutKey, ov.stress) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-static"
+              canvas surface=yardInfo(ov.layoutKey, ov.tick) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-info"
               canvas surface=yardLive(reduced ? "reduced" : "full", picked) position="absolute" left=0 top=0 width="100%" height="100%"
-                role="img" aria-label=ov.summary pointerdown=pressYard touch-action="none" testId="yard-live"
+                role="img" aria-label=ov.summary pointerdown=pressYard pointermove=moveYard touch-action="none" testId="yard-live"
+              // The dial is the replay: the canvas draws its face, this button is its words and its press.
+              button appearance="none" press=startReplay testId="replay" aria-label="Replay the last hour, sped up" disabled=(ov.mode == "replay" or not conn.ok)
+                position="absolute" top=0 right=0 height=(ov.dialH > 0 ? ov.dialH : 26) padding-left=12 padding-right=(ov.dialPad > 0 ? ov.dialPad : 38) display="flex" align-items="center"
+                text (ov.dial != "" ? ov.dial : "1 hour, sped up") font-size=(ov.dialFont > 0 ? ov.dialFont : 11) color=(ov.mode == "replay" or ov.mode == "paused" ? "sy.amber-text" : "sy.ink3")
               if not conn.ok and conn.status != "connecting"
                 column position="absolute" inset=0 align-items="center" justify-content="center" background-color="sy.canvas" gap=14 testId="setup"
                   text (conn.needsSetup ? "Connect Switchyard to a server" : "The server is not answering") font-weight=700 font-size=16
@@ -169,26 +188,6 @@ component App
                       text "Connect…"
                     button press=useDemo testId="setup-demo"
                       text "Watch the demo"
-            footer display="flex" align-items="center" gap=12 padding="10px 20px 12px" border-top="1px solid sy.rule" testId="timebar"
-              text ov.sentence color="sy.ink3" font-size=12 flex=1 testId="sentence"
-              if ov.mode != "live"
-                button press=goLive testId="go-live" padding="6px 12px" border-radius=8 aria-keyshortcuts="L"
-                  text "back to live" color="sy.green" font-size=13
-              button press=startReplay testId="replay" aria-label="Replay the last hour, sped up" padding="8px 14px" border-radius=8 disabled=(ov.mode == "replay")
-                row gap=8 align-items="center"
-                  svg width=16 height=16 viewBox="0 0 16 16" aria-hidden=true
-                    circle cx=8 cy=8 r=6.5 fill="none" stroke="sy.ink2" stroke-width=1.4
-                    path d="M8 8 L11 5" stroke="sy.ink2" stroke-width=1.4 stroke-linecap="round"
-                  text (ov.mode == "replay" ? "replaying the hour" : "last hour") font-size=13 color=(ov.mode == "replay" ? "sy.amber-text" : "sy.ink3")
-              button press=togglePause testId="pause" aria-keyshortcuts="Space" padding="8px 18px" border-radius=8 border="1px solid sy.edge"
-                text (ov.mode == "paused" ? "Play" : "Pause") font-size=14 color="sy.ink2"
-              row role="radiogroup" aria-label="Speed" padding=3 gap=2 border-radius=9 background-color="sy.control"
-                button role="radio" aria-checked=(ov.speed == 1 and ov.mode != "paused") press=playAt(1) testId="speed-1" padding="6px 16px" border-radius=7
-                  background-color=(ov.speed == 1 and ov.mode != "paused" ? "sy.control-on" : "transparent")
-                  text "1×" font-size=14 color=(ov.speed == 1 and ov.mode != "paused" ? "sy.ink" : "sy.ink3")
-                button role="radio" aria-checked=(ov.speed == 0.25 and ov.mode != "paused") press=playAt(0.25) testId="speed-quarter" padding="6px 16px" border-radius=7
-                  background-color=(ov.speed == 0.25 and ov.mode != "paused" ? "sy.control-on" : "transparent")
-                  text "¼×" font-size=14 color=(ov.speed == 0.25 and ov.mode != "paused" ? "sy.ink" : "sy.ink3")
           if e.name == "mainlines"
             MainlinesView(data=mlData, org=mlOrg, filter=mlFilter, q=mlQ, focus=searchParam(e, "repo"), open=openHit, pickOrg=mlPickOrg, pickFilter=mlPickFilter, typed=mlTyped)
           if e.name == "prs"
@@ -208,6 +207,28 @@ component App
                   text "Connect"
                 button press=back testId="connect-no"
                   text "Cancel"
+          // The status line: where the fleet comes from, what time is shown, the time controls.
+          footer display="flex" align-items="center" gap=8 height=26 padding="0 10px 0 12px" border-top="1px solid sy.rule" testId="timebar"
+            row align-items="center" gap=6
+              column width=6 height=6 border-radius=3 background-color=(not conn.ok ? "sy.red" : (ov.mode == "live" ? "sy.green" : "sy.amber"))
+              text (not conn.ok ? (conn.status == "connecting" ? "connecting" : "offline") : ov.mode) font-size=11 color=(not conn.ok ? "sy.red-text" : (ov.mode == "live" ? "sy.green" : "sy.amber-text")) testId="mode-pill"
+            button appearance="none" press=openSettings aria-label="Connection" testId="open-settings" padding="2px 6px" border-radius=5
+              text (conn.ok ? ov.host : conn.status) font-size=11 color="sy.ink3" testId="conn-status"
+            text ov.sentence color="sy.ink3" font-size=11 flex=1 min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis" testId="sentence"
+            if ov.mode != "live"
+              button appearance="none" press=goLive testId="go-live" padding="2px 8px" border-radius=5 aria-keyshortcuts="L"
+                text "back to live" color="sy.green" font-size=11
+            button appearance="none" press=toggleHud aria-keyshortcuts="Meta+Shift+D" aria-label="Developer HUD" testId="hud-toggle" padding="2px 6px" border-radius=5
+              text "hud" font-size=11 color=(ov.hud ? "sy.amber-text" : "sy.ink3")
+            button appearance="none" press=togglePause testId="pause" aria-keyshortcuts="Space" padding="2px 10px" border-radius=5 border="1px solid sy.edge" disabled=(not conn.ok)
+              text (ov.mode == "paused" ? "Play" : "Pause") font-size=11 color="sy.ink2"
+            row role="radiogroup" aria-label="Speed" padding=2 gap=1 border-radius=6 background-color="sy.control"
+              button role="radio" appearance="none" aria-checked=(ov.speed == 1 and ov.mode != "paused") press=playAt(1) testId="speed-1" padding="1px 9px" border-radius=4 disabled=(not conn.ok)
+                background-color=(ov.speed == 1 and ov.mode != "paused" ? "sy.control-on" : "transparent")
+                text "1×" font-size=11 color=(ov.speed == 1 and ov.mode != "paused" ? "sy.ink" : "sy.ink3")
+              button role="radio" appearance="none" aria-checked=(ov.speed == 0.25 and ov.mode != "paused") press=playAt(0.25) testId="speed-quarter" padding="1px 9px" border-radius=4 disabled=(not conn.ok)
+                background-color=(ov.speed == 0.25 and ov.mode != "paused" ? "sy.control-on" : "transparent")
+                text "¼×" font-size=11 color=(ov.speed == 0.25 and ov.mode != "paused" ? "sy.ink" : "sy.ink3")
       dialog id="palette" aria-label="Search" testId="palette" width=640 max-width="90vw" padding=0 border-radius=12 background-color="sy.raised" border="1px solid sy.edge"
         column padding=10 gap=6
           input type="search" value=q input=typed aria-label="Search" autofocus=true placeholder="repo, #pr, sha, app" testId="palette-input"
@@ -234,6 +255,9 @@ component App
             text (tok.has ? "Token (one is saved; type to replace it)" : "Token") font-size=12 color="sy.ink3"
             input type="password" value=draftToken input=editToken aria-label="Token" placeholder="kept in the Keychain on macOS" testId="token-field"
               padding="8px 10px" font-size=13 border-radius=8 background-color="sy.canvas" border="1px solid sy.edge" color="sy.ink"
+          row gap=8 align-items="center"
+            button appearance="none" press=toggleStress testId="settings-stress" padding="4px 10px" border-radius=6 border="1px solid sy.edge"
+              text (ov.stress ? "Stress mode: on (10× synthetic fleet)" : "Stress mode: off") font-size=12 color=(ov.stress ? "sy.red-text" : "sy.ink3")
           row gap=10 justify-content="flex-end"
             button press=useDemo commandfor="settings" command="close" testId="settings-demo"
               text "Watch the demo"
@@ -245,31 +269,23 @@ component App
 component TopBar
   props
     here: string
-    connOk: bool
-    connText: string
-    live: bool
     goTo: action
     openPalette: action
-    openSettings: action
   view
-    header appearance="none" display="flex" align-items="center" gap=4 padding="10px 20px 8px" border-bottom="1px solid sy.rule" testId="topbar"
-      row align-items="center" gap=10 margin-right=18
-        svg width=18 height=18 viewBox="0 0 24 24" aria-hidden=true
-          circle cx=12 cy=12 r=10 fill="none" stroke="sy.brand" stroke-width=2
-          path d="M7 12h10M12 7v10" stroke="sy.brand" stroke-width=2 stroke-linecap="round"
-        text "switchyard" role="heading" aria-level=1 font-weight=700 font-size=15 letter-spacing="0.02em"
-      row role="tablist" appearance="none" aria-label="Views" gap=2
+    header appearance="none" display="flex" align-items="center" gap=2 height=32 padding="0 10px 0 14px" border-bottom="1px solid sy.rule" testId="topbar"
+      row align-items="center" gap=8 margin-right=14
+        svg width=14 height=14 viewBox="0 0 24 24" aria-hidden=true
+          circle cx=12 cy=12 r=10 fill="none" stroke="sy.ink" stroke-width=2
+          path d="M5 12a7 7 0 0 1 14 0M8.5 12a3.5 3.5 0 0 1 7 0" fill="none" stroke="sy.brand" stroke-width=2 stroke-linecap="round"
+        text "switchyard" role="heading" aria-level=1 font-weight=700 font-size=13 letter-spacing="0.02em"
+      row role="tablist" appearance="none" aria-label="Views" gap=1
         for v in ["yard", "mainlines", "prs", "fleet"] key=v
           button role="tab" appearance="none" aria-selected=(here == v) press=goTo(v) testId=`tab-${v}` aria-keyshortcuts=`Meta+${v == "yard" ? "1" : v == "mainlines" ? "2" : v == "prs" ? "3" : "4"}`
-            padding="5px 10px" border-radius=6 background-color=(here == v ? "sy.control" : "transparent")
-            text v color=(here == v ? "sy.ink" : "sy.ink3") font-size=13
+            padding="3px 9px" border-radius=5 background-color=(here == v ? "sy.control" : "transparent")
+            text v color=(here == v ? "sy.ink" : "sy.ink3") font-size=12
       row flex=1
       button appearance="none" press=openPalette aria-keyshortcuts="Meta+K" aria-label="Search" testId="open-palette"
-        padding="5px 10px" border-radius=6 border="1px solid sy.edge" background-color="sy.raised"
-        row gap=18 align-items="center"
-          text "search repos, prs, commits" color="sy.ink3" font-size=12
-          text "⌘K" color="sy.ink4" font-size=12
-      button appearance="none" press=openSettings aria-label="Connection" testId="open-settings" padding="5px 10px" margin-left=8 border-radius=6
-        row gap=7 align-items="center"
-          column width=7 height=7 border-radius=4 background-color=(connOk ? (live ? "sy.green" : "sy.amber") : "sy.red")
-          text connText color="sy.ink3" font-size=12 testId="conn-status"
+        padding="3px 9px" border-radius=5 border="1px solid sy.edge"
+        row gap=16 align-items="center"
+          text "search repos, prs, commits" color="sy.ink3" font-size=11
+          text "⌘K" color="sy.ink3" font-size=11
