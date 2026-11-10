@@ -187,7 +187,7 @@ function fmtNum(n: number): string {
 /** The commit journey as rows on one time axis. */
 const EMPTY_JOURNEY = {
   ok: false, error: '', repo: '', sha: '', short: '', title: '', author: '', branch: '', stage: '', pushed: '', total: '',
-  spans: [] as JSpan[], pipelines: [] as JPipe[], deploys: [] as JDep[], deployVia: '', app: '', health: '', healthText: '', url: '', events: [] as JEv[],
+  spans: [] as JSpan[], pipelines: [] as JPipe[], deploys: [] as JDep[], deployVia: '', app: '', health: '', healthText: '', url: '', events: [] as JEv[], ciState: '', deployState: '', ticks: [] as string[],
 };
 type JSpan = { id: string; name: string; depth: number; start: number; width: number; state: string; dur: string; cached: boolean };
 type JPipe = { id: string; number: number; lane: string; state: string; dur: string; wait: string; url: string; engine: string };
@@ -252,11 +252,22 @@ export function journeyView(j: Journey | null, now: number, error = '', offsetMi
     deploys: deploys.map((d) => ({ app: d.app, via: via(d.via), state: d.state, dur: fmtDur((d.finished ?? now) - d.started), start: pos(d.started), width: wid(d.started, d.finished ?? now) })),
     deployVia: deploys[0] ? via(deploys[0].via) : 'none',
     app: app ? app.url.replace(/^https?:\/\//, '') : '', health: app?.health ?? '',
-    healthText: app ? `${app.health}${app.latency_ms != null ? ` · ${Math.round(app.latency_ms)} ms` : ''}${app.behind ? ` · ${app.behind} behind main` : ''}` : '',
+    healthText: app
+      ? (deploys.length === 0 ? `not deployed by this commit${app.live_sha ? ` · it still runs ${short(app.live_sha)}` : ''} · ` : '')
+        + `${app.health}${app.latency_ms != null ? ` · ${Math.round(app.latency_ms)} ms` : ''}${app.behind ? ` · ${app.behind} behind main` : ''}`
+      : '',
     url: repo && sha ? `https://github.com/${repo}/commit/${sha}` : '',
-    events: (j.timeline ?? []).slice(-24).map((e, i) => ({ id: `${i}:${e.at}`, k: e.k, label: e.label, at: fmtClock(e.at, offsetMin), ago: ago(now, e.at) })),
+    events: (j.timeline ?? []).slice()
+      .sort((a, b) => a.at - b.at || (EV_ORDER[a.k] ?? 9) - (EV_ORDER[b.k] ?? 9))
+      .slice(-24).map((e, i) => ({ id: `${i}:${e.at}`, k: e.k, label: e.label, at: fmtClock(e.at, offsetMin), ago: ago(now, e.at) })),
+    ciState: pipes.some((p) => p.state === 'failure' || p.state === 'error') ? 'failure' : pipes.some((p) => p.state === 'running' || p.state === 'pending') ? 'running' : pipes.length ? 'success' : '',
+    deployState: deploys.some((d) => d.state === 'failure') ? 'failure' : deploys.some((d) => d.state === 'running' || d.state === 'pending') ? 'running' : deploys.length ? 'success' : '',
+    ticks: [0, 1, 2, 3, 4].map((k) => fmtDur((total * k) / 4)),
   };
 }
+
+/** Same-instant events read in the order they happen: a push, then its queueing, start, end. */
+const EV_ORDER: Record<string, number> = { push: 0, enqueue: 1, queued: 1, start: 2, finish: 3, deploy: 4, deployed: 5, health: 6 };
 
 export function prDetailView(d: PrDetail | null, now: number, w: World) {
   if (!d) return { ok: false, row: null, commits: [], pipelines: [], timeline: [] };

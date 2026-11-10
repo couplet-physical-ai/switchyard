@@ -218,6 +218,9 @@ shape Journey
   healthText: string
   url: string
   events: JEvent[]
+  ciState: string
+  deployState: string
+  ticks: string[]
 
 shape PCommit
   sha: string
