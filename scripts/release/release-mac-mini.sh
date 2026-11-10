@@ -37,15 +37,19 @@ timeout 7200 "${SSH[@]}" "set -e
 rm -rf dist && mkdir -p dist
 timeout 600 "${SSH[@]}" "tar -C '$src/dist' -cf - Switchyard-$V-arm64.zip Switchyard-$V-arm64.dmg SHA256SUMS" | tar -C dist -xf -
 (cd dist && sha256sum -c SHA256SUMS)
+# latest.json (the in-app updater's feed) needs Info.plist: pull it from the mini's bundle.
+mkdir -p dist/Switchyard.app/Contents
+timeout 60 "${SSH[@]}" "cat '$src/dist/Switchyard.app/Contents/Info.plist'" > dist/Switchyard.app/Contents/Info.plist
+python3 scripts/release/latest-json.py "$V" "$sha"
 [[ $PUBLISH == 1 ]] || { echo "built: $(ls dist)"; exit 0; }
 REPO=couplet-physical-ai/switchyard
 if gh release view "v$V" -R "$REPO" >/dev/null 2>&1; then
-  gh release upload "v$V" -R "$REPO" dist/*.zip dist/*.dmg dist/SHA256SUMS --clobber
+  gh release upload "v$V" -R "$REPO" dist/*.zip dist/*.dmg dist/SHA256SUMS dist/latest.json --clobber
 else
   notes=$(mktemp)
   python3 scripts/release/notes.py "$V" "$sha" > "$notes"
   printf '\n_Built on the Mac mini (fallback path), mode %s, commit %s._\n' "$MODE" "${sha::7}" >> "$notes"
-  gh release create "v$V" -R "$REPO" dist/*.zip dist/*.dmg dist/SHA256SUMS --target "$sha" \
+  gh release create "v$V" -R "$REPO" dist/*.zip dist/*.dmg dist/SHA256SUMS dist/latest.json --target "$sha" \
     --title "Switchyard $V" --notes-file "$notes"
   rm -f "$notes"
 fi

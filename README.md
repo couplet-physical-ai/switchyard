@@ -37,8 +37,8 @@ brew tap couplet-physical-ai/tap && brew trust couplet-physical-ai/tap && brew i
 
 ## Install
 
-- **macOS** (Apple Silicon, macOS 14+): the one-liner above. Update with
-  `brew update && brew upgrade --cask switchyard`.
+- **macOS** (Apple Silicon, macOS 14+): the one-liner above. It updates itself: **Update** in the
+  app (or `brew upgrade --cask --greedy switchyard`).
 - **Web**: <https://switchyard.apps.example.com> (Exowatt SSO).
 
 Details, the dmg route and troubleshooting: [packaging/INSTALL.md](packaging/INSTALL.md).

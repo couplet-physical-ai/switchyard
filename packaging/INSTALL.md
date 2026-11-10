@@ -23,7 +23,9 @@ What each part does:
    `/Applications/Switchyard.app` and removes the download quarantine flag (the app is
    ad-hoc signed; there is no Apple Developer ID), so it opens without a Gatekeeper prompt.
 
-Update: `brew update && brew upgrade --cask switchyard`. Remove: `brew uninstall --cask switchyard`
+Update: the app updates itself (**Update** in the app, fed by the release's `latest.json`); the
+cask is marked `auto_updates`, so plain `brew upgrade` leaves it alone and
+`brew upgrade --cask --greedy switchyard` forces it. Remove: `brew uninstall --cask switchyard`
 (add `--zap` to also remove its settings and caches).
 
 ## First run: connect the app

@@ -106,8 +106,10 @@ jobs:
         run: xcrun -sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
       - name: Build
         run: scripts/release/build-macos.sh --mode "$MODE" --version "${{ steps.v.outputs.version }}"
-      - name: Package (ad-hoc sign, zip, dmg, sha256)
-        run: scripts/release/package-macos.sh "${{ steps.v.outputs.version }}"
+      - name: Package (ad-hoc sign, zip, dmg, sha256, latest.json)
+        run: |
+          scripts/release/package-macos.sh "${{ steps.v.outputs.version }}"
+          python3 scripts/release/latest-json.py "${{ steps.v.outputs.version }}" "$GITHUB_SHA"
       - name: Smoke (launch the packaged app for 5 s)
         run: |
           set -euo pipefail
@@ -132,6 +134,7 @@ jobs:
             dist/*.zip
             dist/*.dmg
             dist/SHA256SUMS
+            dist/latest.json
           retention-days: 14
       - name: GitHub release
         if: env.MODE != 'exact-probe' && inputs.publish != false
@@ -145,10 +148,10 @@ jobs:
           cat "$RUNNER_TEMP/notes.md"
           pre=(); [[ "${{ inputs.prerelease }}" == true ]] && pre=(--prerelease)
           if gh release view "v$V" >/dev/null 2>&1; then
-            gh release upload "v$V" dist/*.zip dist/*.dmg dist/SHA256SUMS --clobber
+            gh release upload "v$V" dist/*.zip dist/*.dmg dist/SHA256SUMS dist/latest.json --clobber
             gh release edit "v$V" --notes-file "$RUNNER_TEMP/notes.md"
           else
-            gh release create "v$V" dist/*.zip dist/*.dmg dist/SHA256SUMS --target "$GITHUB_SHA" \
+            gh release create "v$V" dist/*.zip dist/*.dmg dist/SHA256SUMS dist/latest.json --target "$GITHUB_SHA" \
               --title "Switchyard $V" --notes-file "$RUNNER_TEMP/notes.md" "${pre[@]}"
           fi
           gh release view "v$V" --json url,assets --jq '.url, (.assets[] | "  \(.name) \(.size)")'

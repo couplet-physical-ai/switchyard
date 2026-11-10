@@ -12,6 +12,10 @@ cask "switchyard" do
     strategy :github_latest
   end
 
+  # The app updates itself in place (Update button, latest.json feed), so `brew upgrade`
+  # leaves it alone unless asked with --greedy; brew still installs the newest on a fresh install.
+  auto_updates true
+
   depends_on arch: :arm64
   depends_on macos: :sonoma
 
@@ -33,5 +37,6 @@ cask "switchyard" do
   caveats <<~CAVEATS
     Switchyard connects to https://switchyard.apps.example.com (Exowatt SSO).
     The app is ad-hoc signed; this cask removes the quarantine flag on install.
+    It updates itself (Update in the app); `brew upgrade --cask --greedy switchyard` also works.
   CAVEATS
 end
