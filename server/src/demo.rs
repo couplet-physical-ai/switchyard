@@ -124,7 +124,13 @@ pub async fn run_demo(
             let rel = f.get("at").and_then(Value::as_i64).unwrap_or(t0) - t0;
             let wait = Duration::from_millis(((rel.max(0) as f64) / speed) as u64);
             tokio::time::sleep_until(wall0 + wait).await;
-            let at = t0 + rel + delta;
+            // At speed 1 the shifted recording time is "now"; faster playback stamps
+            // frames with the wall clock (entity times stay on the recording's scale).
+            let at = if speed == 1.0 {
+                t0 + rel + delta
+            } else {
+                clock()
+            };
             hub.publish(&ops_bytes(f, delta), at);
             adapters.ok("demo", clock(), Some(0));
         }

@@ -195,7 +195,12 @@ async fn stream_ws(
     Query(q): Query<StreamQ>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    ws.on_upgrade(move |socket| ws_client(socket, st, q.since))
+    // Clients only read: small buffers keep 1,000 sockets cheap (tungstenite's
+    // defaults are 128 KiB each way per connection). Frames are flushed whole.
+    ws.read_buffer_size(4 * 1024)
+        .write_buffer_size(0)
+        .max_message_size(64 * 1024)
+        .on_upgrade(move |socket| ws_client(socket, st, q.since))
 }
 
 /// Where a client's bytes go.

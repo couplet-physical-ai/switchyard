@@ -204,6 +204,10 @@ async fn serve(cli: Cli) -> Result<()> {
         auth.trust_headers_without_jwt =
             std::env::var("SWITCHYARD_TRUST_HEADERS_WITHOUT_JWT").is_ok_and(|v| v == "true");
     }
+    if let Ok(v) = std::env::var("SWITCHYARD_SERVICE_TOKENS") {
+        auth.service_tokens = switchyard::auth::parse_service_tokens(&v);
+        tracing::info!(n = auth.service_tokens.len(), "service tokens configured");
+    }
     let auth = Arc::new(auth);
 
     let (hub, store) = if cli.demo {

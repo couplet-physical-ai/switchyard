@@ -27,6 +27,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
 use crate::api::AppState;
 use crate::google::GoogleVerifier;
@@ -63,6 +64,9 @@ pub struct Principal {
 
 pub struct Auth {
     pub mode: AuthMode,
+    /// Read-only service identities (`SWITCHYARD_SERVICE_TOKENS`: `name:sha256hex,…`)
+    /// for monitors and the live e2e check. Only hashes are configured.
+    pub service_tokens: Vec<(String, String)>,
     /// Verifies the Google ID token the edge forwards (and gcloud identity tokens).
     pub google: Option<Arc<GoogleVerifier>>,
     /// Dev-only escape hatch: trust the e-mail header without a verified token.
@@ -77,6 +81,19 @@ pub struct Auth {
 }
 
 pub const TOKEN_PREFIX: &str = "syd_";
+pub const SERVICE_PREFIX: &str = "sys_";
+
+/// Parse `name:sha256hex,name2:sha256hex` (malformed entries are skipped).
+pub fn parse_service_tokens(v: &str) -> Vec<(String, String)> {
+    v.split(',')
+        .filter_map(|e| {
+            let (n, h) = e.trim().split_once(':')?;
+            let h = h.trim().to_ascii_lowercase();
+            (!n.trim().is_empty() && h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+                .then(|| (n.trim().to_string(), h))
+        })
+        .collect()
+}
 
 pub fn sha256_hex(s: &str) -> String {
     let d = Sha256::digest(s.as_bytes());
@@ -101,6 +118,7 @@ impl Auth {
         }
         Auth {
             mode,
+            service_tokens: Vec::new(),
             google: None,
             trust_headers_without_jwt: false,
             email_header: email_header.to_ascii_lowercase(),
@@ -200,7 +218,22 @@ impl Auth {
         {
             return self.check_token(t, now);
         }
-        // 3. A Google ID token sent directly (gcloud identity token on the VPN).
+        // 3. A read-only service identity (monitors, the live e2e check).
+        if let Some(t) = bearer.as_deref()
+            && t.starts_with(SERVICE_PREFIX)
+        {
+            let h = sha256_hex(t);
+            let hit = self
+                .service_tokens
+                .iter()
+                .find(|(_, want)| bool::from(h.as_bytes().ct_eq(want.as_bytes())));
+            return hit.map(|(name, _)| Principal {
+                email: format!("service:{name}"),
+                via: "service",
+                token_id: None,
+            });
+        }
+        // 4. A Google ID token sent directly (gcloud identity token on the VPN).
         if let (Some(t), Some(g)) = (bearer, &self.google)
             && let Some(c) = g.verify(&t, now / 1000).await
         {
@@ -459,3 +492,103 @@ fn html_escape(s: &str) -> String {
 }
 
 const CONNECT_HTML: &str = include_str!("connect.html");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    fn auth() -> Auth {
+        let mut a = Auth::new(
+            AuthMode::Platform,
+            "x-auth-request-email",
+            vec!["example.com".into()],
+            None,
+        );
+        a.service_tokens =
+            parse_service_tokens(&format!("e2e:{},bad:xyz", sha256_hex("sys_secret")));
+        a
+    }
+
+    fn bearer(t: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(
+            "authorization",
+            HeaderValue::from_str(&format!("Bearer {t}")).unwrap(),
+        );
+        h
+    }
+
+    #[test]
+    fn service_tokens_parse_hashes_only() {
+        let v = parse_service_tokens(&format!(
+            " a:{} , b:short, :{}",
+            "A".repeat(64),
+            "b".repeat(64)
+        ));
+        assert_eq!(v, vec![("a".to_string(), "a".repeat(64))]);
+    }
+
+    #[tokio::test]
+    async fn bearer_paths() {
+        let a = auth();
+        let p = a
+            .authenticate(&bearer("sys_secret"), None, 0)
+            .await
+            .unwrap();
+        assert_eq!((p.email.as_str(), p.via), ("service:e2e", "service"));
+        assert!(
+            a.authenticate(&bearer("sys_wrong"), None, 0)
+                .await
+                .is_none()
+        );
+        assert!(
+            a.authenticate(&bearer("syd_unknown"), None, 0)
+                .await
+                .is_none()
+        );
+        assert!(a.authenticate(&HeaderMap::new(), None, 0).await.is_none());
+        // A service token cannot be smuggled through ?token= (device tokens only).
+        assert!(
+            a.authenticate(&HeaderMap::new(), Some("sys_secret"), 0)
+                .await
+                .is_none()
+        );
+        // Device tokens: mint → accepted (header or query) → revoked → rejected.
+        let (tok, rec) = a.mint("a@example.com", "laptop", 0);
+        assert_eq!(
+            a.authenticate(&bearer(&tok), None, 1).await.unwrap().email,
+            "a@example.com"
+        );
+        assert!(
+            a.authenticate(&HeaderMap::new(), Some(&tok), 1)
+                .await
+                .is_some()
+        );
+        assert!(a.revoke("a@example.com", &rec.id));
+        assert!(a.authenticate(&bearer(&tok), None, 2).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn edge_headers_need_a_verified_id_token() {
+        let a = auth();
+        let mut h = HeaderMap::new();
+        h.insert(
+            "x-auth-request-email",
+            HeaderValue::from_static("a@example.com"),
+        );
+        // No verifier configured and no dev override: a bare header is not an identity.
+        assert!(a.authenticate(&h, None, 0).await.is_none());
+        let mut dev = auth();
+        dev.trust_headers_without_jwt = true;
+        assert_eq!(dev.authenticate(&h, None, 0).await.unwrap().via, "sso");
+        h.insert(
+            "x-auth-request-email",
+            HeaderValue::from_static("a@evil.com"),
+        );
+        assert!(
+            dev.authenticate(&h, None, 0).await.is_none(),
+            "domain allow-list"
+        );
+    }
+}
