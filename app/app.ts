@@ -9,6 +9,7 @@ import { HttpUpstream, resolveBase, setDefaultServer, wsUrl, type Upstream } fro
 // dev and test builds leave it empty and ask on first launch.
 const DEFAULT_SERVER = import.meta.env.SWITCHYARD_DEFAULT_SERVER ?? '';
 const WEB_SHA = import.meta.env.SWITCHYARD_WEB_SHA ?? '';
+const WEB_TREE = import.meta.env.SWITCHYARD_WEB_TREE ?? '';
 setDefaultServer(DEFAULT_SERVER);
 import { DEMO_REPLAY, DemoUpstream } from './src/demo.ts';
 import { EngineHistory } from './src/enginehist.ts';
@@ -318,8 +319,11 @@ async function webVersion(): Promise<{ stale: boolean; served: string }> {
   try {
     const r = await fetch(`${origin}/api/v1/meta`, { headers: { accept: 'application/json' } });
     if (!r.ok) return { stale: false, served: '' };
-    const m = (await r.json()) as { web?: { sha?: string } | null };
+    const m = (await r.json()) as { web?: { sha?: string; tree?: string } | null };
     const served = m.web?.sha ?? '';
+    // a server that reports the app/ tree it serves: stale only when the web itself changed (a
+    // server-only deploy moves the sha, not the tree); otherwise compare commits
+    if (WEB_TREE && m.web?.tree) return { stale: m.web.tree !== WEB_TREE, served };
     return { stale: !!served && served !== WEB_SHA, served };
   } catch {
     return { stale: false, served: '' };
