@@ -205,9 +205,10 @@ members App
   action nowFilter(kind: string, v: string)
     nowSel = ""
     nowOpen = ""
-    nav = go(nav, v == "" ? "/" : `/?${kind}=${encodeURIComponent(v)}`)
+    // the filter replaces Live's visit (one Live mounted, no stack of filtered copies)
+    nav = replace(nav, v == "" ? "/" : `/?${kind}=${encodeURIComponent(v)}`)
   action nowClear
-    nav = go(nav, "/")
+    nav = replace(nav, "/")
   action nowKey(k: string)
     if k == "Escape" and (nowSel != "" or nowOpen != "")
       preventDefault()
