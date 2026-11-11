@@ -1372,7 +1372,7 @@ export class Lenses {
     if (!a || !b) return;
     const cu = b.u + b.d / 2, cv = b.v + b.d / 2;
     this.healthRing(g, l.id, cam.x(cu, cv), cam.y(cu, cv, 0), 9 * cam.s + 9);
-    const behind = Math.min(12, a.behind ?? 0);
+    if (f.city.appStory(g, l.id)) return; const behind = Math.min(12, a.behind ?? 0); // fab-w5: the city draws the ghost storeys (solid, ≤ 5 + notch) and the amber tether (city.ts)
     // ghost storeys: dashed, hollow, faint; each a commit main has and the app does not
     g.dash(true, 2, 2);
     for (let i = 0; i < behind; i++) {
