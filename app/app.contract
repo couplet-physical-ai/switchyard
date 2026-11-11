@@ -6,6 +6,7 @@ use MainlinesView from "./views/mainlines.contract"
 use PrsView, PrView from "./views/prs.contract"
 use FleetView from "./views/fleet.contract"
 use JourneyView from "./views/journey.contract"
+use UpdatePill from "./views/update.contract"
 use Conn, Tok, Ack, Overview, Hit, Media, Time, Found, Mainlines, Prs, PrDetail, Fleet, Journey, Link from "./views/shapes.contract"
 use WebReload from "./views/webreload.contract"
 
@@ -87,6 +88,7 @@ component App
   members "./views/fleet.contract"
   members "./views/journey.contract"
   members "./views/webreload.contract"
+  members "./views/update.contract"
 
   task pulse mount
     every(250, tick)
@@ -297,6 +299,7 @@ component App
                 background-color=(ov.speed == 0.25 and ov.mode != "paused" ? "sy.control-on" : "transparent")
                 text "¼×" font-size=11 color=(ov.speed == 0.25 and ov.mode != "paused" ? "sy.ink" : "sy.ink3")
       WebReload(v=webVer, go=webReload)
+      UpdatePill(u=upd, notesOpen=updNotes, check=checkUpdates, install=installUpdate, toggleNotes=updToggleNotes)
       dialog id="palette" aria-label="Search" testId="palette" color="sy.ink" width=640 max-width="90vw" padding=0 border-radius=12 background-color="sy.raised" border="1px solid sy.edge"
         column padding=10 gap=6
           input type="text" value=q input=typed key=palKey aria-label="Search" autofocus=true placeholder="repo, #pr, sha, app" testId="palette-input" class=Field
@@ -335,6 +338,19 @@ component App
               text "Cancel"
             button press=saveSettings commandfor="settings" command="close" class=Primary testId="settings-save"
               text "Connect"
+          // UPDATES (macOS only; views/update.contract): this version, what the updater is doing, the buttons.
+          if upd.supported
+            column gap=6 padding-top=12 border-top="1px solid sy.rule" testId="update-settings"
+              text "UPDATES" font-size=10 letter-spacing="0.08em" color="sy.ink3" font-weight=700
+              row align-items="center" gap=10
+                column gap=2 flex=1 min-width=0
+                  text `Switchyard ${upd.current}` font-size=12 color="sy.ink" testId="update-version"
+                  text upd.status font-size=11 color=(upd.state == "error" ? "sy.red-text" : "sy.ink3") testId="update-status"
+                if upd.state == "ready"
+                  button press=installUpdate class=Primary testId="update-install-settings"
+                    text "Relaunch to update"
+                button press=checkUpdates class=Quiet testId="update-check-settings" disabled=(upd.state == "checking" or upd.state == "downloading" or upd.state == "installing")
+                  text "Check for updates"
 
 component TopBar
   props
