@@ -202,6 +202,8 @@ export class Labels implements Layer {
     const detail = level >= 1;
     const q = f.budget.quality;
     const jobsPer = !detail ? 0 : q === 0 ? 3 : q === 1 ? 2 : 0;
+    // fx-lanes: the lanes' names first (one each, on its road, in its hue)
+    this.laneNames(g);
     // the stage titles: one run each at fleet zoom (their numbers on hover, `stageHover`), with
     // their stat lines once zoomed in; anchored at each stage's back edge, lifted into the band
     for (const st of STAGES) {
@@ -302,25 +304,64 @@ export class Labels implements Layer {
     }
   }
 
+  /** The lanes' names (fx-lanes; REVIEW-iter2 #2, overseer notes 7–8): one per lane, centred in its
+   *  lane at its approach road's midpoint (floor.ts `roadMid`), in the lane's hue at L 0.80, an org
+   *  lane's name after a dim ◇ (a stroked glyph: no extra text run). A lane under 16 px deep at the
+   *  fleet zoom goes unnamed (its road's hover names it); nothing hangs off the screen's left edge;
+   *  the bots' hatch names the siding at the fleet zoom. */
+  private laneNames(g: Gfx): void {
+    const f = this.f, fl = f.floor, cam = f.cam;
+    if (!fl.on) return;
+    const G = floorGroups();
+    const fleet = fl.level === 0 && !fl.focusId;
+    for (const L of fl.lanesNow) {
+      const lane = G.lane(L.id);
+      if (!lane || (lane.kind === 'bots' && fleet)) continue;
+      const [u, v] = fl.roadMid(L);
+      const px = Math.abs(cam.y(u, L.b1) - cam.y(u, L.b0));
+      if (px < (fleet ? 16 : 13)) continue;
+      const org = lane.kind === 'org';
+      const name = org ? lane.bare : lane.short;
+      const gw = org ? 11 : 0, wv = g.width(name, SMALL), w = gw + wv;
+      const ax = cam.x(u, v), ay = cam.y(u, v);
+      if (ax < -w || ay < 40 || ay > cam.H - 30) continue;
+      const x = Math.max(6, Math.round(ax - w / 2)), y = Math.round(ay + 4);
+      if (x + w > cam.W - 6) continue;
+      const at = this.placeAt(x, y, w, 13, 0, false);
+      if (!at) continue;
+      g.fillRect(x - 3, y - 11, w + 6, 15, withAlpha(C.canvas, 0.74));
+      if (org) {
+        // ◇: the group is an org (its repos have no app team), dim
+        const cx = x + 4, cy = y - 4;
+        g.begin_(); g.move(cx, cy - 4); g.line(cx + 4, cy); g.line(cx, cy + 4); g.line(cx - 4, cy); g.ctx.closePath(); g.stroke(withAlpha(L.tint.ink, 0.5), 1.1);
+      }
+      g.text(name, x + gw, y, L.tint.ink, SMALL);
+    }
+  }
+
   /** The lanes' words at group zoom: the phases over the yard, the open lane's cell counts, its
-   *  age axis and its red posts' names; at the repo level its sub-rows' repos and "+N". */
+   *  age axis and its red posts' names; with the lane open (fx-lanes: the group level, §F), its
+   *  sub-rows' repos and "+N", the phases' counts and the age bays' ends. */
   private lanes(g: Gfx, level: number, q: number): void {
     const f = this.f, cam = f.cam, fl = f.floor;
     const lanes = fl.lanesNow, cnt = fl.data.last;
     if (!lanes.length) return;
-    // the phases, along the yard's back edge
-    if (q < 3) PHASES.forEach((ph, r) => {
-      const x = cam.x(ROW_U[r] - LANE_U.CELL_DU / 2 + 4, LANE_V0), y = cam.y(ROW_U[r] - LANE_U.CELL_DU / 2 + 4, LANE_V0) - 4;
-      const yy = this.place(x, y, g.width(ph, SMALL), 13, 1);
-      if (yy >= 0) g.text(ph, x, yy, C.ink3, SMALL);
-    });
+    void level;
     const L = lanes[fl.lanes.index(fl.focusId)];
-    if (!L || L.s.stripe) return;
-    const info = cnt.lanes.get(L.id);
-    if (!info) return;
-    if (level >= 2 && L.v1 - L.v0 > 120) {
-      // the sub-rows: each repo's name at the row's start, the rest as "+N"
-      for (const r of fl.rowsOf(L, info)) {
+    const info = L ? cnt.lanes.get(L.id) : undefined;
+    const rows = !!L && !!info && fl.subRowsOn(L);
+    // the phases, along the yard's back edge (an open lane: its counts with them)
+    if (q < 3) PHASES.forEach((ph, r) => {
+      const s = rows && info ? `${ph} ${info.cells[r].n}` : ph;
+      const x = cam.x(ROW_U[r] - LANE_U.CELL_DU / 2 + 4, LANE_V0), y = cam.y(ROW_U[r] - LANE_U.CELL_DU / 2 + 4, LANE_V0) - 4;
+      const yy = this.place(x, y, g.width(s, SMALL), 13, 1);
+      if (yy >= 0) g.text(s, x, yy, C.ink3, SMALL);
+    });
+    if (!L || L.s.stripe || !info) return;
+    if (rows) {
+      // the sub-rows: each repo's name at the row's start (red: its main is red), the rest as "+N"
+      const rs = fl.rowsOf(L, info);
+      for (const r of rs) {
         const v = (r.v0 + r.v1) / 2;
         const x = cam.x(YARD_U0 - 2, v), y = cam.y(YARD_U0 - 2, v) + 4;
         const s = r.repo ? r.repo.name : `+${r.more} more`;
@@ -330,32 +371,34 @@ export class Labels implements Layer {
         g.fillRect(x - wv - 2, yy - 10, wv + 4, 13, withAlpha(C.canvas, 0.75));
         g.text(s, x - wv, yy, r.repo ? (r.repo.post.st === 0 ? C.redText : C.ink2) : C.ink3, SMALL);
       }
-      return;
+      // the age bays' ends over the first row's first cell: new → old, left → right
+      const r0 = rs[0];
+      if (r0 && q < 2) {
+        const u0 = ROW_U[0] - LANE_U.CELL_DU / 2 + 4, u1 = ROW_U[0] + LANE_U.CELL_DU / 2 - 4;
+        for (const [s, u, right] of [[AGE_WORDS[0]!, u0, false], [AGE_WORDS[AGE_WORDS.length - 1]!, u1, true]] as [string, number, boolean][]) {
+          const wv = g.width(s, SMALL), x = cam.x(u, r0.v0) - (right ? wv : 0), y = cam.y(u, r0.v0) - 3;
+          const yy = this.place(x, y, wv, 13, 0);
+          if (yy >= 0) g.text(s, x, yy, C.ink3, SMALL);
+        }
+      }
     }
+    const inRows = rows ? new Set(fl.rowsOf(L, info).map((r) => r.repo?.repo ?? '')) : null;
     // the cells' counts over their stacks
-    if (q < 2) info.cells.forEach((C_, r) => {
+    if (q < 2 && !rows) info.cells.forEach((C_, r) => {
       if (!C_.n) return;
       const u = ROW_U[r], v = (L.s.cell0 + L.s.cell1) / 2;
-      const x = cam.x(u, v), y = cam.y(u, v, L.v1 - L.v0 > 90 ? 28 : stackH(C_.n)) - 4;
+      const x = cam.x(u, v), y = cam.y(u, v, stackH(C_.n)) - 4;
       const s = String(C_.n), wv = g.width(s, SMALL, true);
       const yy = this.place(x - wv / 2, y, wv, 13, 1);
       if (yy >= 0) g.text(s, x, yy, C_.red >= C_.n / 2 ? C.redText : C.ink, SMALL, true, 'center');
     });
-    // the age axis beside the first cell: new at the back, old in front
-    if (L.v1 - L.v0 > 90) {
-      const u = ROW_U[0] - LANE_U.CELL_DU / 2;
-      for (const [b, v] of [[0, L.s.cell0 + 4], [AGE_WORDS.length - 1, L.s.cell1 - 4]] as [number, number][]) {
-        const x = cam.x(u, v) - 4, y = cam.y(u, v) + 4, s = AGE_WORDS[b]!, wv = g.width(s, SMALL);
-        const yy = this.place(x - wv, y, wv, 13, 0);
-        if (yy >= 0) g.text(s, x - wv, yy, C.ink3, SMALL);
-      }
-    }
-    // the red posts' repos (the newest red first), over their lamps
+    // the red posts' repos (the newest red first), over their lamps (an open lane: those its rows
+    // do not already name)
     const span = RAIL_U1 - RAIL_U0 - 8, max = Math.floor(span / 3.6);
     const list = info.posts.slice(0, max), pitch = Math.min(7, span / Math.max(1, list.length));
     let named = 0;
     list.forEach((p, j) => {
-      if (p.st !== 0 || named >= 8) return;
+      if (p.st !== 0 || named >= (rows ? 4 : 8) || inRows?.has(p.repo)) return;
       const u = RAIL_U0 + 4 + j * pitch, v = L.s.curb;
       const x = cam.x(u, v), y = cam.y(u, v, 16) - 2;
       const wv = g.width(p.name, SMALL);
