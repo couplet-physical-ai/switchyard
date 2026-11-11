@@ -61,6 +61,7 @@ component App
   state mode = "live"
   state speed = 1
   state q = ""
+  state retries = 0
   state palSel = 0
   state picked = ""
   resource tok = loadToken(tokGen) as shape Tok else empty(token="", has=false)
@@ -75,6 +76,7 @@ component App
   mutation saved as shape Ack then afterSave
   derive reduced = media.prefersReducedMotion
   derive here = top(nav).name
+  derive dropped = feed.status == "closed" or feed.status == "error" or conn.status == "offline"
   derive hitNow = match hit { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }
   derive replayOk = match replayed { case some(r) => r.ok, case none => false }
   members "./views/mainlines.contract"
@@ -84,13 +86,29 @@ component App
 
   task pulse mount
     every(250, tick)
-  task reconnect when feed.status == "closed" or feed.status == "error" or feed.status == "reset" key=feed.status
+  // A dropped stream reconnects after 2, 4, 8, 16, then every 30 s; a reset (a gap) refetches at once.
+  task resync when feed.status == "reset" key=`${retries}`
+    after(250, retry)
+  task reconnect0 when dropped and retries == 0
     after(2000, retry)
+  task reconnect1 when dropped and retries == 1
+    after(4000, retry)
+  task reconnect2 when dropped and retries == 2
+    after(8000, retry)
+  task reconnect3 when dropped and retries == 3
+    after(16000, retry)
+  task reconnect4 when dropped and retries >= 4 key=`${retries}`
+    after(30000, retry)
+  task steady when feed.status == "live" and retries > 0
+    after(20000, steadyAgain)
 
   action tick
     clockMs = performanceNow()
   action retry
+    retries = retries + 1
     gen = gen + 1
+  action steadyAgain
+    retries = 0
   action follow(url: string)
     nav = go(nav, url)
   action back
