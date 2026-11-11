@@ -306,10 +306,13 @@ async fn snapshot_at(st: Arc<AppState>, at: Ms) -> Response {
             .into_response();
     }
     let hub = st.hub.clone();
+    // History from before contract 0.5 has no groups: filled from the live map.
+    let map = crate::regroup::GroupMap::from_view(&st.mirror.read());
     let out = tokio::task::spawn_blocking(move || {
-        hub.history
-            .query(at, at)
-            .map(|h| h.fold_to(at, true, PROTOCOL, &hub.epoch).1)
+        hub.history.query(at, at).map(|h| {
+            let h = h.fold_to(at, true, PROTOCOL, &hub.epoch).1;
+            crate::regroup::history(h, &map, PROTOCOL, &hub.epoch)
+        })
     })
     .await
     .ok()
@@ -613,15 +616,24 @@ async fn history(State(st): State<Arc<AppState>>, Query(q): Query<HistoryQ>) -> 
             .into_response();
     }
     let hub = st.hub.clone();
+    let map = crate::regroup::GroupMap::from_view(&st.mirror.read());
     let out = tokio::task::spawn_blocking(move || {
         let h = hub.history.query(from, to)?;
-        if q.base == Some(0) && !h.has_restarts() {
+        // History from before contract 0.5 has no groups: filled from the live map, which
+        // needs the replayed state too.
+        let fill = crate::regroup::maybe_ungrouped(&h.base);
+        if q.base == Some(0) && !h.has_restarts() && !fill {
             return Some((from, h.after(from)));
         }
         // A restart inside the window goes out as a delta against the replayed state,
         // never as a whole snapshot; that needs the state at `from` even for base=0.
         let (from, h) = h.fold_to(from, false, PROTOCOL, &hub.epoch);
         let h = h.inline_restarts(PROTOCOL >= "0.4");
+        let h = if fill {
+            crate::regroup::history(h, &map, PROTOCOL, &hub.epoch)
+        } else {
+            h
+        };
         if q.base == Some(0) {
             return Some((from, h.after(from)));
         }
