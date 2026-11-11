@@ -126,6 +126,11 @@ export class City implements Layer {
   private queue: string[] = [];
   private qi = 0;
   private inflight = 0;
+  // deploys whose crate was sent (app@sha → when it arrives), landed deploys waiting for their
+  // crate (their storey is built on arrival; their sha is held out of the world's count till then)
+  private sent = new Map<string, number>();
+  private landing: { id: string; sha: string; at: number; t: number }[] = [];
+  private pending = new Set<string>();
   // ring flashes as deploys arrive: app, when (frame clock), 0 amber · 1 ok · 2 red
   private flashes: { id: string; at: number; k: number }[] = [];
   // the projection of a roof circle (an ellipse): its axes per world unit, rotation, phase
@@ -137,6 +142,7 @@ export class City implements Layer {
   invalidate(): void { this.cityKey = ''; this.adopted = null; this.hKey = ''; }
 
   census(w: World): void {
+    if (this.landing.length) this.landDue(this.f.tl.clock - 6000);
     this.adoptDistricts(w);
     this.layoutCity();
     this.layoutHeights(w);
@@ -149,7 +155,13 @@ export class City implements Layer {
   pump(clock: number): void {
     const w = this.f.world, tl = this.f.tl;
     if (!w.loaded || this.f.census.skeleton) return;
-    if (this.histEpoch !== tl.epoch) { this.histEpoch = tl.epoch; this.hist.clear(); this.asked.clear(); this.queue = []; this.qi = 0; this.histVer++; }
+    if (this.histEpoch !== tl.epoch) {
+      // a new world (a reload, a replay): app histories are the server's and outlive it (the 7 d
+      // window follows the playhead); another server's apps are forgotten
+      this.histEpoch = tl.epoch;
+      for (const id of [...this.hist.keys()]) if (!w.apps.has(id)) { this.hist.delete(id); this.asked.delete(id); }
+      this.queue = []; this.qi = 0; this.sent.clear(); this.landing.length = 0; this.pending.clear(); this.histVer++;
+    }
     let started = 0;
     while (this.inflight < IN_FLIGHT && started < PER_TURN) {
       if (this.qi >= this.queue.length) {
@@ -167,7 +179,7 @@ export class City implements Layer {
       this.asked.set(id, clock);
       this.inflight++; started++;
       const epoch = tl.epoch;
-      appHistoryAsync(id).then((r) => { if (r && this.histEpoch === epoch) this.take(id, r, clock); }, () => {}).finally(() => { this.inflight--; });
+      appHistoryAsync(id).then((r) => { if (r && this.histEpoch === epoch && w.apps.has(id)) this.take(id, r, clock); }, () => {}).finally(() => { this.inflight--; });
     }
   }
 
@@ -193,28 +205,34 @@ export class City implements Layer {
   // ---- events: a deploy's crate rides via → ladder → its district's spur → its building, whose
   // ring flashes as it arrives; a landed deploy adds its storey; a health change rings at once ----
   onEvent(e: Event, w: World, t: number): void {
-    void w;
     const R = this.f.reactions.rp;
     switch (e.k) {
       case 'deploy': {
         if (e.state !== 'running' && e.state !== 'success' && e.state !== 'failure') break;
         const b = this.blockAt.get(e.app);
         const vi = Math.max(0, VIAS.indexOf((e.via === 'manual' ? 'gha_fallback' : e.via) as typeof VIAS[number]));
-        if (e.state === 'success') { const h = this.histOf(e.app); h.shas.set(e.sha, e.at); h.newest = Math.max(h.newest, e.at); this.histVer++; }
-        if (!b) break;
-        const top = b.h + 1.5;
-        if (e.state === 'running') {
+        const key = `${e.app}@${e.sha}`;
+        if (!b) { if (e.state === 'success') this.land(e.app, e.sha, e.at); break; }
+        const top = b.h + 1.5, ok = e.state === 'success', bad = e.state === 'failure';
+        // the crate rides from the deploy stage to the building: sent when the deploy starts, or
+        // with its verdict when its start was never seen; everything at the building happens as
+        // it ARRIVES (§G: deploy → track → building)
+        let arrive = this.sent.get(key);
+        if (e.state === 'running' || arrive === undefined) {
           const route = this.route(e.app, vi);
           let len = 0;
           for (let i = 1; i < route.length; i++) len += Math.abs(route[i]![0] - route[i - 1]![0]) + Math.abs(route[i]![1] - route[i - 1]![1]);
-          const cr = this.f.crates.spawn(`${e.app}@${e.sha}`, 'deploy', route, t, clamp(len * 4.2, 2400, 4600), false, '', '');
-          const arrive = this.f.crates.arrives(cr, route.length - 1);
-          R.add(R_RING, b.u + b.d / 2, b.v + b.d / 2, top, arrive, false, 1200);
-          this.flashAt(e.app, arrive, 0);
-        } else {
-          R.add(R_RING, b.u + b.d / 2, b.v + b.d / 2, top, t, e.state === 'failure', 1600, e.state === 'success');
-          this.flashAt(e.app, t, e.state === 'failure' ? 2 : 1);
+          const cr = this.f.crates.spawn(`${w.apps.get(e.app)?.repo ?? e.app}@${e.sha}`, 'deploy', route, t, clamp(len * 4.2, 2400, 4600), bad, '', '');
+          arrive = this.f.crates.arrives(cr, route.length - 1);
+          this.sent.set(key, arrive);
+          if (this.sent.size > 64) { const k0 = this.sent.keys().next().value; if (k0 !== undefined) this.sent.delete(k0); }
+          if (e.state === 'running') { R.add(R_RING, b.u + b.d / 2, b.v + b.d / 2, top, arrive, false, 1200); this.flashAt(e.app, arrive, 0); break; }
         }
+        const at = Math.max(t, arrive);
+        R.add(R_RING, b.u + b.d / 2, b.v + b.d / 2, top, at, bad, 1600, ok);
+        this.flashAt(e.app, at, bad ? 2 : 1);
+        // a landed deploy is a new storey, built when its crate arrives
+        if (ok) { this.landing.push({ id: e.app, sha: e.sha, at: e.at, t: at }); this.pending.add(e.sha); }
         break;
       }
       case 'health': {
@@ -223,6 +241,26 @@ export class City implements Layer {
         break;
       }
       default: break;
+    }
+  }
+
+  /** A successful deploy's storey: into the app's history now. */
+  private land(id: string, sha: string, at: number): void {
+    const h = this.histOf(id);
+    h.shas.set(sha, at);
+    h.newest = Math.max(h.newest, at);
+    this.histVer++;
+    this.hAt = -1e12;
+  }
+
+  /** Builds the storeys of the deploys whose crate has arrived by `t` (the frame clock). */
+  private landDue(t: number): void {
+    for (let i = this.landing.length - 1; i >= 0; i--) {
+      const x = this.landing[i]!;
+      if (x.t > t) continue;
+      this.landing.splice(i, 1);
+      this.pending.delete(x.sha);
+      this.land(x.id, x.sha, x.at);
     }
   }
 
@@ -383,7 +421,7 @@ export class City implements Layer {
     // the world's successful deploys (24 h) by app
     const live = new Map<string, Map<string, number>>();
     for (const d of w.deploys.values()) {
-      if (d.state !== 'success') continue;
+      if (d.state !== 'success' || this.pending.has(d.sha)) continue;
       const at = d.finished ?? d.started;
       let m = live.get(d.app);
       if (!m) live.set(d.app, (m = new Map()));
@@ -713,17 +751,21 @@ export class City implements Layer {
   live(g: Gfx, fr: LiveFrame): boolean {
     const cam = this.f.cam, t = fr.t, q = fr.q;
     const offX = (x: number) => x < -24 || x > cam.W + 24;
+    if (this.landing.length) this.landDue(t);
     // a hit per building big enough to point at (LOD0/1), its ghost storeys included
     if (this.cityPitch * LOT * cam.s >= 5) {
+      // a column through the building's middle, ghost storeys included: a row's columns never
+      // overlap, and a nearer building's (pushed later) wins where it stands in front
       for (const b of this.blocks) {
-        const x = cam.x(b.u, b.v + b.d);
+        const cu = b.u + b.d / 2, cv = b.v + b.d / 2, x = cam.x(cu, cv);
         if (offX(x)) continue;
-        const top = b.h + b.ghosts * STOREY;
-        this.f.hit(x, cam.y(b.u, b.v, top) - 2, b.d * 1.3 * cam.s, (b.d * 0.75 + top) * cam.s + 4, 'app', b.id, b.id);
+        const top = b.h + b.ghosts * STOREY, hw = b.d * 0.42 * cam.s, y0 = cam.y(cu, cv, top) - b.d * 0.3 * cam.s;
+        this.f.hit(x - hw, y0, hw * 2, cam.y(cu, cv, 0) + b.d * 0.3 * cam.s - y0, 'app', b.id, b.id);
       }
     }
+    if (cam.zoom === 1) this.logAnchors();
     if (q < 4) this.drawTrouble(g, t);
-    const moving = this.drawFlashes(g, t, q);
+    const moving = this.drawFlashes(g, t, q) || this.landing.length > 0;
     // the tether: an app behind main, pointed at or under the app lens
     const top = this.f.lens.topLens;
     const hb = this.f.hoverId ? this.blockAt.get(this.f.hoverId) : undefined;
@@ -743,6 +785,28 @@ export class City implements Layer {
     }
     return moving;
   }
+
+  /** For drivers (tools/factory-shots.mjs, as lens.ts logs its anchors): at the fit zoom, once
+   *  per layout, a building of each story (the most ghost storeys, the tallest, a down, a
+   *  degraded, an idle one) and each district's plate, in screen px. */
+  private logAnchors(): void {
+    const cam = this.f.cam;
+    const key = `${cam.key}|${this.sig}|${this.f.census.healthSig}`;
+    if (key === this.logged || !this.blocks.length) return;
+    this.logged = key;
+    // the footprint's centre on the floor: a wheel zoom about it keeps it under the pointer
+    const at = (b: CityBlock | undefined) => b ? [Math.round(cam.x(b.u + b.d / 2, b.v + b.d / 2)), Math.round(cam.y(b.u + b.d / 2, b.v + b.d / 2, 0))] : undefined;
+    const best = (k: (b: CityBlock) => number) => { let o: CityBlock | undefined, v = 0; for (const b of this.blocks) { const x = k(b); if (x > v) { v = x; o = b; } } return o; };
+    const out: Record<string, unknown> = {
+      behind: at(best((b) => b.behind)), behindId: best((b) => b.behind)?.id ?? '',
+      tallest: at(best((b) => b.storeys)), tallestId: best((b) => b.storeys)?.id ?? '',
+      down: at(this.blocks.find((b) => this.healthOf(b) === 2)), degraded: at(this.blocks.find((b) => this.healthOf(b) === 1)),
+      idle: at(this.blocks.find((b) => b.idle && b.hv === -1)),
+    };
+    this.districtBox.forEach((d, i) => { out[`district${i}`] = [Math.round(cam.x((d.u0 + d.u1) / 2, (d.v0 + d.v1) / 2)), Math.round(cam.y((d.u0 + d.u1) / 2, (d.v0 + d.v1) / 2, 0)), d.team]; });
+    console.log(`fab-w5: city anchors ${JSON.stringify(out)}`);
+  }
+  private logged = '';
 
   /** Degraded: the building's faces flicker amber on the beat; down: a red glow breathing under
    *  the red building (W4's beacon stands on its roof). */
@@ -788,7 +852,7 @@ export class City implements Layer {
       const cu = b.u + b.d / 2, cv = b.v + b.d / 2, px = cam.x(cu, cv), py = cam.y(cu, cv, b.h + 0.2);
       const col = x.k === 2 ? C.red : x.k === 1 ? C.green : C.packet;
       g.begin_(); this.arc(g, px, py, b.d * 0.34, 0, 1); g.stroke(withAlpha(col, 1 - e * 0.7), 2.2);
-      g.begin_(); this.arc(g, px, py, b.d * (0.34 + 0.9 * e), 0, 1); g.stroke(withAlpha(col, 0.8 * (1 - e)), 1.4);
+      g.begin_(); this.arc(g, px, py, b.d * (0.34 + 1.6 * e), 0, 1); g.stroke(withAlpha(col, 0.85 * (1 - e)), 1.6);
     }
     return live;
   }

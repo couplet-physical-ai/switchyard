@@ -102,6 +102,21 @@ const d0 = dbox[0]!, app0 = f.census.districts[0]!.apps[5]!;
 const r = city.route(app0, 1), b0 = city.blockAt.get(app0)!;
 ok(r[0]![1] === P.TRACK_V[1] && r.some((p) => p[0] === LADDER_U) && r.some((p) => p[1] === d0.spurV) && r.at(-1)![0] === b0.u + b0.d / 2 && r.at(-1)![1] === b0.v + b0.d / 2, 'route: gha track → ladder → the district\'s spur → the building');
 
+// ── a deploy rides in: its crate leaves on `running`, its storey is built when the crate arrives ──
+{
+  const id = none, before = city.blockAt.get(id)!.storeys, t0 = 50_000;
+  f.onEvent({ k: 'deploy', app: id, sha: 'd1', state: 'running', via: 'roadrunner', at: now - 60_000 } as never, w, t0);
+  const crate = f.crates.list.find((c) => c.kind === 'deploy' && c.id.endsWith('@d1'));
+  ok(crate && crate.route.at(-1)![1] === city.blockAt.get(id)!.v + city.blockAt.get(id)!.d / 2, 'deploy running: a crate rides to the building');
+  f.onEvent({ k: 'deploy', app: id, sha: 'd1', state: 'success', via: 'roadrunner', at: now - 1000 } as never, w, t0 + 500);
+  census();
+  eq(city.blockAt.get(id)!.storeys, before, 'deploy success while the crate rides: no storey yet');
+  const arrive = f.crates.arrives(crate!, crate!.route.length - 1);
+  (city as unknown as { landDue(t: number): void }).landDue(arrive + 1);
+  tl.clock += 2000; f.city.census(w);
+  eq(city.blockAt.get(id)!.storeys, before + 1, 'the crate arrived: the building has its new storey');
+}
+
 // ── stress mode: ten times the apps still fit, in the same order ──
 f.census.factor = 10;
 city.invalidate();
