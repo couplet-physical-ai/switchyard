@@ -138,7 +138,7 @@ export class Drawer {
       const x = cam.x(u, v), y = cam.y(u, v, 1);
       g.begin_(); g.move(x, y - 4); g.line(x + 4, y); g.line(x, y + 4); g.line(x - 4, y); g.ctx.closePath(); g.fill(i === stops.length - 1 ? col : C.ink);
       const bad = s.startsWith('failed');
-      this.f.words.tag(g, s, x + 7, y - 6, bad ? C.redText : C.ink2, bad ? C.red : '#5A5A5E');
+      this.f.words.tag(g, s, x + 7, y - 6, bad ? C.redText : C.ink2, bad ? '' : '#5A5A5E');
     });
   }
 

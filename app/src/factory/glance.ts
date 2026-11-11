@@ -281,7 +281,6 @@ export class Glance {
       n++;
       g.fillRect(x, y + 1, ch.w, 20, CHIP);
       g.begin_(); g.rect(x + 0.5, y + 1.5, ch.w - 1, 19); g.stroke(CHIP_EDGE, 1);
-      g.fillRect(x + 1, y + 2, 2, 18, ch.accent);
       let cx = x + 8;
       if (ch.steps.length) { g.text(ch.steps[step - 1], cx, y + 15.5, ch.ncol, SMALL, true); cx += ch.numW; }
       cx = g.runs(ch.rest, cx, y + 15.5, SMALL);
@@ -414,7 +413,7 @@ export class Glance {
           if (h.id.startsWith('org:')) { kind = 'dock'; id = h.id.slice(4); label = h.lead; }
           else { const di = f.fx.districtBox.findIndex((b) => b.team.toLowerCase().replace(/\s+/g, '-') === h.id.slice(5)); kind = 'district'; id = String(di); label = f.fx.districtBox[di]?.team ?? h.lead; }
         }
-        this.callouts.push({ x: at[0], y: at[1], ax, ay, w, parts, kind, id, label, pin, src: `${h.kind}:${h.id}`, tri: h.tri ? tw : -1, edge: tone === 'red' ? '#4A2A2E' : tone === 'flaky' ? '#3A3032' : CHIP_EDGE });
+        this.callouts.push({ x: at[0], y: at[1], ax, ay, w, parts, kind, id, label, pin, src: `${h.kind}:${h.id}`, tri: h.tri ? tw : -1, edge: tone === 'red' || tone === 'flaky' ? '' : CHIP_EDGE });
       });
     }
     if (!this.callouts.length) return;
@@ -446,7 +445,7 @@ export class Glance {
     if (pins) g.fill(C.ink2);
     for (const o of this.callouts) {
       g.fillRect(o.x - 5, o.y - 13, o.w + 10, 18, tint(K_CARD, 0.92));
-      g.begin_(); g.rect(o.x - 4.5, o.y - 12.5, o.w + 9, 17); g.stroke(o.edge, 1);
+      if (o.edge) { g.begin_(); g.rect(o.x - 4.5, o.y - 12.5, o.w + 9, 17); g.stroke(o.edge, 1); }
       g.runs(o.parts, o.x, o.y, SMALL);
       if (o.tri >= 0) tri(g, o.x + o.tri + 7, o.y - 4, 1, C.red); // the group's red trend rising
       f.fx.hit(o.x - 5, o.y - 13, o.w + 10, 18, o.kind, o.id, o.label);

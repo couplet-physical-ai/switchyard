@@ -226,7 +226,7 @@ export class Labels implements Layer {
     const [xt, yy] = at;
     x = xt;
     g.fillRect(x, yy - 12, w, 16, withAlpha(C.canvas, 0.9));
-    g.begin_(); g.rect(x + 0.5, yy - 11.5, w - 1, 15); g.stroke(withAlpha(edge, 0.7), 1);
+    if (edge) { g.begin_(); g.rect(x + 0.5, yy - 11.5, w - 1, 15); g.stroke(withAlpha(edge, 0.7), 1); }
     g.text(s, x + 5, yy, ink, SMALL);
   }
 

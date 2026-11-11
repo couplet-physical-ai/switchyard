@@ -221,7 +221,7 @@ export class Crates implements Layer {
       const x = cam.x(cu, cv), y = cam.y(cu, cv);
       if (cv < RETURN_V - 4) continue;
       g.vline(x, y + 4, y + 16, withAlpha(C.red, 0.6));
-      this.f.words.tag(g, cr.label, x - 4, y + 28, C.redText, C.red);
+      this.f.words.tag(g, cr.label, x - 4, y + 28, C.redText, '');
       tags++;
     }
   }
