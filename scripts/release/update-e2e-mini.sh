@@ -5,9 +5,11 @@
 #
 #   scripts/release/update-e2e-mini.sh <from-version> <to-version> [--keep]
 #
-# <to-version> must be the release the feed (latest.json) names. The hook is the app's headless
-# trigger (launch argument, default --update-now; override with SY_UPDATE_ARG). Its log is read
-# from ~/Library/Logs/Switchyard/update.log. --keep leaves the app installed afterwards.
+# <to-version> must be the release the feed (latest.json) names: the stable latest feed, or
+# SY_UPDATE_FEED=<url> (passed to the app as SWITCHYARD_UPDATE_FEED, e.g. a prerelease's
+# …/releases/download/vX/latest.json). The hook is the app's headless trigger: launch argument
+# --update-now (check → download → verify → swap → relaunch, no UI; override with SY_UPDATE_ARG).
+# Its log is read from ~/Library/Logs/Switchyard/update.log. --keep leaves the app installed afterwards.
 # SY_FROM_TAP=1: <from> is already installed from the tap (brew install before <to> was cut);
 # otherwise the <from> release zip is installed directly.
 set -euo pipefail
@@ -18,7 +20,9 @@ REPO=couplet-physical-ai/switchyard
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST")
 BREW='(cd /tmp && sudo -n -Hu felipearce env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 /opt/homebrew/bin/brew'
 
-feed=$(curl -fsSL --retry 3 "https://github.com/$REPO/releases/latest/download/latest.json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')
+FEED=${SY_UPDATE_FEED:-https://github.com/$REPO/releases/latest/download/latest.json}
+OPEN_ENV=(); [[ -n "${SY_UPDATE_FEED:-}" ]] && OPEN_ENV=(--env "SWITCHYARD_UPDATE_FEED=$SY_UPDATE_FEED")
+feed=$(curl -fsSL --retry 3 "$FEED" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')
 [[ "$feed" == "$TO" ]] || { echo "latest.json names $feed, not $TO" >&2; exit 1; }
 
 timeout 1800 "${SSH[@]}" "bash -s" <<EOF
@@ -42,7 +46,7 @@ fi
 echo "installed: \$(v)"; [[ "\$(v)" == "$FROM" ]]
 mkdir -p ~/Library/Logs/Switchyard; : > ~/Library/Logs/Switchyard/update.log
 \$LSR -f "\$A"
-launchctl asuser \$(id -u) open "\$A" --args $ARG
+launchctl asuser \$(id -u) open ${OPEN_ENV[*]:-} "\$A" --args $ARG
 for i in \$(seq 1 120); do
   sleep 2
   [[ "\$(v)" == "$TO" ]] && pgrep -f 'Switchyard.app/Contents/MacOS/Switchyard' >/dev/null && break

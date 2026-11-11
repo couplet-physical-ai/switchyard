@@ -12,7 +12,7 @@ always names the newest (non-prerelease) build. Shape (Copper's appcast plus `pu
    "dmg": "https://github.com/.../releases/download/v0.1.1/Switchyard-0.1.1-arm64.dmg",
    "sha256": "<hex of the zip>", "notes": "<markdown change list>",
    "published": "2026-11-10T23:59:00Z", "minimumSystemVersion": "14.0",
-   "bundleId": "com.exowatt.switchyard", "commit": "<sha>"}
+   "bundleId": BUNDLE_ID, "commit": "<sha>"}
 
 `build` is the bundle's CFBundleVersion (M*1000000 + m*1000 + p), which the updater compares.
 The zip's sha256 is read from dist/SHA256SUMS (written by package-macos.sh).
@@ -20,10 +20,12 @@ The zip's sha256 is read from dist/SHA256SUMS (written by package-macos.sh).
 import datetime
 import json
 import pathlib
+import plistlib
 import subprocess
 import sys
 
 REPO = "couplet-physical-ai/switchyard"
+BUNDLE_ID = "com.exowatt.switchyard"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
@@ -44,13 +46,18 @@ def main() -> int:
         return 1
     core = v.split("-")[0].split("+")[0].split(".")
     build = int(core[0]) * 1_000_000 + int(core[1]) * 1_000 + int(core[2])
+    # The updater requires the bundle's CFBundleVersion == build, CFBundleShortVersionString ==
+    # version and CFBundleIdentifier == bundleId: read the shipped Info.plist (any platform).
     plist = ROOT / "dist/Switchyard.app/Contents/Info.plist"
-    if plist.exists() and sys.platform == "darwin":
-        got = subprocess.run(["/usr/libexec/PlistBuddy", "-c", "Print :CFBundleVersion", str(plist)],
-                             capture_output=True, text=True).stdout.strip()
-        if got != str(build):
-            print(f"Info.plist CFBundleVersion {got!r} != {build}", file=sys.stderr)
-            return 1
+    if not plist.exists():
+        print(f"{plist} missing: latest.json must be checked against the shipped bundle", file=sys.stderr)
+        return 1
+    info = plistlib.loads(plist.read_bytes())
+    want = {"CFBundleVersion": str(build), "CFBundleShortVersionString": v, "CFBundleIdentifier": BUNDLE_ID}
+    bad = {k: info.get(k) for k, w in want.items() if str(info.get(k)) != w}
+    if bad:
+        print(f"Info.plist disagrees with latest.json: {bad} (want {want})", file=sys.stderr)
+        return 1
     notes = subprocess.run([sys.executable, str(ROOT / "scripts/release/notes.py"), v, commit, "--changes"],
                            capture_output=True, text=True, cwd=ROOT).stdout.strip()
     sha_full = subprocess.run(["git", "rev-parse", commit], capture_output=True, text=True, cwd=ROOT).stdout.strip()
@@ -64,7 +71,7 @@ def main() -> int:
         "notes": notes,
         "published": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "minimumSystemVersion": "14.0",
-        "bundleId": "com.exowatt.switchyard",
+        "bundleId": BUNDLE_ID,
         "commit": sha_full or None,
     }
     out = ROOT / "dist/latest.json"
