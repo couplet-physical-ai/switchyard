@@ -35,6 +35,7 @@ import { DAY, VERDICTS, WINS, ago, type Verdict, type Win } from './anomaly.ts';
 import type { Coffee } from './coffee.ts';
 import { K_CARD, K_INK, K_RED, pulse, tint } from './fx.ts';
 import { FACTOR } from './stress.ts';
+import { heapsOf, tallest } from './clusters.ts'; // the heap the belt names, the same pick
 
 const SMALL = 12;
 const OK = '#7FC48F';
@@ -47,7 +48,7 @@ const STEPS = 12;
 /** The dial's radius (a 28-px gauge). */
 const DIAL_R = 14;
 /** The intro's beats (ms after the floor opened): the dial swings, the window replays, it settles. */
-export const T_DIAL = 300, T_SWEEP = 1500, T_SETTLE = 7000, T_DONE = 7600;
+export const T_DIAL = 300, T_COUNT = 600, T_SWEEP = 1500, T_SETTLE = 7000, T_DONE = 7600;
 
 /** A worded chip: its number (counting up with the needle), its words, an optional trend mark
  *  (▲ +1 / ▼ −1, drawn) and the words after it; its lens (`key`, '' none) and its hover line. */
@@ -203,7 +204,9 @@ export class Glance {
     f.fx.hit(x0 - 4, y - 4, x - x0, 30, 'verdict', v, this.why);
     if (c.openAt < 0) return;
     // the chips (count up with the needle), then the window chip
-    const step = Math.max(1, Math.ceil(e * STEPS));
+    // the chips count up over ≤ 600 ms of the intro only (overseer): live updates show the number at once
+    const ec = c.openAt < 0 ? 0 : clamp((it - T_DIAL) / T_COUNT, 0, 1);
+    const step = Math.max(1, Math.ceil(ec * STEPS));
     const sinceW = replay ? 0 : g.width(this.sinceW, SMALL) + 26;
     let room = right - x - sinceW - 8, n = 0;
     for (const ch of this.chips) {
@@ -286,7 +289,8 @@ export class Glance {
       k[0] = c.dgN; k[1] = cam.ver; k[2] = f.census.at; k[3] = c.now.factor; this.calloutPG = pgs;
       // the return belt's tallest heap names its own signature (fx-engine, plant.ts): the worst
       // cluster's callout gives way to it when that is its subject (one name per thing)
-      const tall = tallestCluster(pgs);
+      const heaps = heapsOf(f.lens.parked);
+      const tall = heaps ? (tallest(heaps)?.cl ?? '') : tallestCluster(pgs);
       // stress mode: the callouts' counts are the 10× fleet's, as the header's are
       const F = c.now.factor;
       this.callouts = [];
@@ -393,11 +397,12 @@ export class Glance {
   }
 }
 
-/** The cluster the return belt's tallest heap is (the open park group holding the most failures;
- *  ties: nearest the scanner, the first), '' none: fx-engine names that heap on the floor. */
-export function tallestCluster(pgs: readonly { cl: string; n: number; open: boolean }[]): string {
-  let best = '', n = 0;
-  for (const p of pgs) if (p.open && p.n > n) { n = p.n; best = p.cl; }
+/** The cluster the return belt names (clusters.ts `tallest`: the open park group reaching the most
+ *  repos; ties: the most failures, then nearest the scanner, the first), '' none: fx-engine names
+ *  that heap on the floor. */
+export function tallestCluster(pgs: readonly { cl: string; n: number; open: boolean; repos?: number }[]): string {
+  let best = '', n = 0, r = 0;
+  for (const p of pgs) { const pr = p.repos ?? 0; if (p.open && (pr > r || (pr === r && p.n > n))) { n = p.n; r = pr; best = p.cl; } }
   return best;
 }
 
