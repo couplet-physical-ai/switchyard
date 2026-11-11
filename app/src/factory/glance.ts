@@ -89,6 +89,10 @@ export class Glance {
   private chips: Chip[] = [];
   private word = '';
   private suffix = '';
+  /** p3 (#4): the verdict's pass rate's trend mark (drawn after `suffix`) and the words after it:
+   *  "pass 54%" ▼ " (usual 76%)" (0: none, the suffix is whole) */
+  private suffixTri: -1 | 0 | 1 = 0;
+  private suffixPost = '';
   private suffixCol: string = C.ink3;
   private wordCol: string = C.ink;
   /** The needle's place: now's percentile in the week (-1: none, the verdict's own place). */
@@ -128,7 +132,19 @@ export class Glance {
     this.word = held ? (f.tl.mode === 'paused' ? 'paused' : 'replay') : VERDICT_WORD[m.verdict];
     this.wordCol = held ? C.ink2 : COL[m.verdict];
     this.suffix = replay ? (held ? '' : ' · replay') : m.fact ? ` · ${m.fact}` : '';
+    this.suffixTri = 0; this.suffixPost = '';
     this.suffixCol = C.ink2;
+    // p3 (#4): the last hour's fail RATE is one item, the verdict's own numbers: when the pass rate
+    // decided the verdict it carries the trend mark ("pass 54% ▼ (usual 76%)") and the fails chip
+    // is not drawn (its lens is in the window menu); else the chip says the rate ("46% fail ▲ ·
+    // usual 24%"), never a count that falls only because the volume did
+    const rate = u.pass !== null ? 1 - u.pass : null, rateTyp = u.passTyp !== null ? 1 - u.passTyp : null;
+    const rateTri: -1 | 0 | 1 = rate === null || rateTyp === null ? 0 : u.passBad || rate >= rateTyp + 0.05 ? 1 : rate <= rateTyp - 0.05 ? -1 : 0;
+    const passFolded = !replay && m.factKey === 'pass' && u.pass !== null;
+    if (passFolded && rateTri) {
+      const i = this.suffix.indexOf(' (');
+      if (i > 0) { this.suffixPost = this.suffix.slice(i); this.suffix = this.suffix.slice(0, i); this.suffixTri = rateTri > 0 ? -1 : 1; }
+    }
     this.pct = held ? -1 : u.pct;
     const usualWhy: string[] = [];
     if (u.fails1h !== null && u.failsThr !== null) usualWhy.push(`${Math.round(u.fails1h)} fails in the last hour (p90 ${Math.round(u.failsThr)})`);
@@ -160,7 +176,12 @@ export class Glance {
       else chip('', '', -1, C.greenInk, [['every main line green', C.greenInk]], 'every main line green', OK);
       const nFix = fr.fixed.length * F;
       if (nFix) chip('fixed', 'fresh', nFix, C.greenInk, [[' recovered', C.greenInk]], `${nFix} main lines recovered · ${ww}`, OK);
-      if (nf > 0) {
+      if (rate !== null && !passFolded && (nf > 0 || rate > 0)) {
+        const pc = Math.round(rate * 100), pt = rateTyp !== null ? Math.round(rateTyp * 100) : null;
+        chip('failed', 'fresh', pc, C.ink, [['% fail', C.ink2]], `${pc}% of the last hour's runs failed${pt !== null ? ` · usual ${pt}% (7 d)` : ''} · ${nf} failed ${ww}`, C.red,
+          rateTri, rateTri > 0 ? C.red : '#8FA898', pt !== null ? [[` · usual ${pt}%`, C.ink3]] : []);
+      } else if (rate === null && nf > 0) {
+        // no pass rate on record (no fleet trend yet): the window's count
         const wu = u.winUsual !== null ? u.winUsual * F : null, wt = u.winThr !== null ? u.winThr * F : null;
         const tri: -1 | 0 | 1 = wu === null ? 0 : wt !== null && nf > wt ? 1 : nf < wu * 0.85 ? -1 : 0;
         chip('failed', 'fresh', nf, C.ink, [[' fails', C.ink2]], `${nf} runs failed · ${ww}${wu !== null ? ` · usual ${wu} for a window this long` : ''}`, C.red,
@@ -181,7 +202,7 @@ export class Glance {
     this.tailRows = [];
     if (!replay) {
       this.tailRows.push({ kind: 'info', id: 'now', label: `now · ${T.building} building · ${T.queued} queued`, hint: '', col: C.ink2, lensKind: '' });
-      const extra: [string, number, string][] = [['deploys', fr.deploys * F, `${fr.deploys * F} deploys`], ['merged', nm, `${nm} PRs merged`], ['clusters', fr.newClusters.length * F, `${fr.newClusters.length * F} new failure clusters`]];
+      const extra: [string, number, string][] = [...(passFolded && nf > 0 ? [['failed', nf, `${nf} runs failed`] as [string, number, string]] : []), ['deploys', fr.deploys * F, `${fr.deploys * F} deploys`], ['merged', nm, `${nm} PRs merged`], ['clusters', fr.newClusters.length * F, `${fr.newClusters.length * F} new failure clusters`]];
       for (const [id, n, label] of extra) if (n > 0) this.tailRows.push({ kind: 'lens', id, label, hint: '', col: C.ink2, lensKind: 'fresh' });
     }
     this.shown = -1;
@@ -224,7 +245,10 @@ export class Glance {
     let x = x0 + DIAL_R * 2 + 8;
     if (c.openAt >= 0) {
       x += g.text(this.word, x, y + 16.5, e > 0.5 ? col : C.ink3, 15, true);
-      if (this.suffix && e > 0.5) x += g.text(this.suffix, x, y + 16, this.suffixCol, 13);
+      if (this.suffix && e > 0.5) {
+        x += g.text(this.suffix, x, y + 16, this.suffixCol, 13);
+        if (this.suffixTri) { tri(g, x + 7, y + 11.5, this.suffixTri, this.suffixTri < 0 ? C.red : '#8FA898'); x += 14; x += g.text(this.suffixPost, x, y + 16, this.suffixCol, 13); }
+      }
       x += 14;
     } else x += g.text('looking…', x, y + 16.5, C.ink3, 15, true) + 14;
     f.fx.hit(x0 - 4, y - 4, x - x0, 30, 'verdict', v, this.why);
