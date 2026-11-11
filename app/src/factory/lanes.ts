@@ -233,11 +233,11 @@ export class LaneData {
       L.posts.sort((a, b) => a.st - b.st || (a.st === 0 ? b.since - a.since : b.since - a.since));
       L.cars.sort((a, b) => a.at - b.at);
       if (L.cars.length > 18) L.cars = L.cars.slice(-18);
-      // fx-lanes: the busiest first (§F "top 12 by activity"): open PRs, the day's main-line
-      // commits, a red main (it must show) or a running one
+      // fx-lanes: the busiest first (§F "top 12 by activity"): open PRs most, the day's main-line
+      // commits, a red main (it shows even when quiet) or a running one
       for (const r of L.repos) {
         const open = r.prs[0] + r.prs[1] + r.prs[2] + r.prs[3];
-        r.score = 2 * Math.min(open, 24) + 3 * Math.min(r.day, 12) + (r.post.st === 0 ? 14 : r.post.st === 1 ? 4 : 0) + (r.recent ? 2 : 0);
+        r.score = 3 * Math.min(open, 24) + 2 * Math.min(r.day, 12) + (r.post.st === 0 ? 12 : r.post.st === 1 ? 4 : 0) + (r.recent ? 2 : 0);
         if (r.items.length > ITEMS) { r.items.sort((a, b) => (b >> 2 & 7) - (a >> 2 & 7)); r.items.length = ITEMS; }
       }
       L.repos.sort((a, b) => b.score - a.score || (a.name < b.name ? -1 : 1));

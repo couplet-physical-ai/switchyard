@@ -74,6 +74,8 @@ export type LaneTint = {
   /** a PR cell's fresh layers (top, side, front): the hue, muted, light or dark as its palette L */ top: string; side: string; front: string;
   /** stale layers: the hue nearly gray, lighter (dust) */ dustTop: string; dustSide: string; dustFront: string;
   /** the rail cars' underframe sides */ ufSide: string; ufFront: string;
+  /** a single PR crate in a sub-row (group level): the hue lighter than the stacks' (one crate on
+   *  the dark floor must read), and its stale (dusty) variant, nearly gray */ cTop: string; cSide: string; cFront: string; cdTop: string; cdSide: string; cdFront: string;
 };
 /** The rail cars stand on a 2-px underframe in their lane's hue (world z at the fit: ≈ 2 px). */
 const UF_Z = 2.4;
@@ -93,6 +95,8 @@ function laneTint(hex: string, i: number, kind: string): LaneTint {
     top: tone(hex, cl + 0.05, neutral ? 1 : 0.62), side: tone(hex, cl - 0.07, neutral ? 1 : 0.5), front: tone(hex, cl - 0.04, neutral ? 1 : 0.55),
     dustTop: tone(hex, cl + 0.1, 0.3), dustSide: tone(hex, cl - 0.04, 0.25), dustFront: tone(hex, cl - 0.01, 0.25),
     ufSide: tone(hex, Math.max(0.3, L - 0.22), 0.8), ufFront: tone(hex, Math.max(0.36, L - 0.15), 0.85),
+    cTop: tone(hex, 0.66, neutral ? 1 : 0.8), cSide: tone(hex, 0.47, neutral ? 1 : 0.7), cFront: tone(hex, 0.54, neutral ? 1 : 0.75),
+    cdTop: tone(hex, 0.6, 0.22), cdSide: tone(hex, 0.43, 0.18), cdFront: tone(hex, 0.5, 0.2),
   };
 }
 /** Where a lane's belt jogs from its dock's band onto its open band (u). */
@@ -685,7 +689,7 @@ export class Floor implements Layer {
           for (let p = 0; p < 4; p++) {
             if (!rest[p]) continue;
             const len = Math.max(2, ((CELL_DU - 8) * rest[p]) / restMax), u0 = ROW_U[p] - CELL_DU / 2 + 4, k = restRed[p] / rest[p];
-            box(cam, g, u0, mid - dv * 0.22, len, dv * 0.44, 2.2, T.top, T.side, T.front, '', g.hair);
+            box(cam, g, u0, mid - dv * 0.22, len, dv * 0.44, 2.2, T.cdTop, T.cdSide, T.cdFront, '', g.hair);
             if (k > 0) { g.begin_(); quad(cam, g, u0 + len * (1 - k), mid - dv * 0.22, u0 + len, mid + dv * 0.22, 2.25); g.fill(F.redTop); }
           }
           return;
@@ -709,8 +713,8 @@ export class Floor implements Layer {
         for (let k = 0; k < 4; k++) {
           B[k * 4]!.flush(g, cam, F.redTop, F.redSide, F.redFront, edge ? '#E08088' : '', g.hair, 3);
           B[k * 4 + 1]!.flush(g, cam, F.crateTop, F.crateSide, F.crateFront, edge ? '#F0CC8A' : '', g.hair, 3);
-          B[k * 4 + 2]!.flush(g, cam, T.dustTop, T.dustSide, T.dustFront, '', g.hair, 3);
-          B[k * 4 + 3]!.flush(g, cam, T.top, T.side, T.front, edge ? withAlpha(T.ink, 0.5) : '', g.hair, 3);
+          B[k * 4 + 2]!.flush(g, cam, T.cdTop, T.cdSide, T.cdFront, '', g.hair, 3);
+          B[k * 4 + 3]!.flush(g, cam, T.cTop, T.cSide, T.cFront, edge ? withAlpha(T.ink, 0.5) : '', g.hair, 3);
         }
         if (cracks.length) {
           g.begin_();
