@@ -121,6 +121,8 @@ eq(['success', 'failure', 'error', 'canceled', 'skipped', 'running', 'pending', 
   eq([c10?.band, c10?.jobs.length, c10?.at, c10?.title, c10?.author], ['just', 2, NOW - 10 * MIN, 'nightly · sync', ''], 'cron: a firing is a row `…#cron@<t0>`, its jobs (within a minute) share it, its time is the firing (not the old commit), its title the cron names');
   eq(cv.events.filter((e) => e.kind === 'cron').map((e) => [e.id, e.band, e.state]).sort(), [[`o/a@c1#cron@${NOW - 10 * MIN}`, 'just', 'pass'], [`o/a@c1#cron@${NOW - 40 * MIN}`, 'earlier', 'fail']].sort(), 'cron: one row per firing across bands (a single earlier firing is not folded)');
   eq(v.events.filter((e) => e.kind === 'manual').map((e) => e.band).sort(), ['just', 'now'].sort(), 'manual: each trigger is a row');
+  const bw = world({ commits: [commit({ sha: 'k1', author: 'dev-a' })], pipelines: [pipe({ sha: 'k1', event: 'manual', author: 'ci-woodpecker-bot', created: NOW - MIN, finished: NOW })] });
+  eq(flowOf(bw, NOW).events.map((e) => [e.author, e.bot, e.title]), [['ci-woodpecker-bot', true, 'fix the thing']], 'manual: the one who ran it (a -bot is a bot), the commit title');
   const r1 = v.events.filter((e) => e.sha === 'r1');
   eq(r1.map((e) => [e.id, e.band]).sort(), [['o/a@r1#push', 'earlier'], [`o/a@r1#push@${NOW - 2 * MIN}`, 'now']].sort(), 'a re-run of a push much later is a new row (the first run keeps the plain id)');
 }
@@ -142,7 +144,7 @@ eq(['success', 'failure', 'error', 'canceled', 'skipped', 'running', 'pending', 
   ok(v.events.some((e) => e.id === 'o/a@w3#merge'), 'a waiting merge is a merge row');
   const w4 = v.events.find((e) => e.id === 'o/b@w4#push');
   eq([w4?.band, w4?.branch, w4?.author, w4?.title], ['now', 'feat', 'dev-b', 'streamed'], 'a recent push event with no pipeline yet: waiting');
-  eq(v.idle, false, 'waiting rows are not idle');
+  eq([v.idle, v.waiting, v.running, v.queued], [false, 3, 0, 0], 'waiting rows are not idle, and counted apart from jobs');
   eq(v.lastEventAt, NOW - 30_000, 'lastEventAt: the newest event');
 }
 
@@ -226,6 +228,10 @@ eq(['success', 'failure', 'error', 'canceled', 'skipped', 'running', 'pending', 
   eq(flowMachine(w, 'dagger-ci-153-1', NOW)?.machine.id, 'm:VM 153', 'flowMachine takes an agent label');
   eq(flowMachine(w, 'm:gha', NOW)?.running.map((j) => j.id), ['gha:1'], 'flowMachine(gha): the running GHA runs');
   eq(flowMachine(w, 'nope', NOW), null, 'flowMachine: unknown → null');
+  const w2 = world({ engines, pipelines: [run('wp:o/a:r0', 'dagger-ci-153-1', { workflows: [
+    { name: 'ci', state: 'success', engine: 'dagger-ci-153-2', steps: [] }, { name: 'deploy', state: 'running', engine: 'dagger-ci-153-1', steps: [] },
+  ] })] });
+  eq(flowJob(w2, 'wp:o/a:r0', NOW)?.workflows.map((x) => [x.machine?.agent, x.machine?.slot]), [['dagger-ci-153-2', undefined], ['dagger-ci-153-1', 1]], 'flowJob: each workflow on its own agent (the slot where the pipeline runs now)');
   eq([hostOfName('dagger-ci-154-2'), hostOfName('rr-mac-mini-1'), hostOfName('custom')], ['VM 154', 'Mac mini', 'custom'], 'host from an unknown agent name');
 }
 
