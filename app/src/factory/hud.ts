@@ -1,6 +1,7 @@
 // The factory floor's developer HUD (⌘⇧D, or `hud` in the status line): what the renderer is
-// doing, drawn on the live canvas. Its two buttons (stress 10×, pin quality) are ordinary floor
-// hits (kinds `stress` and `quality`) that app.ts's `facPointer` acts on.
+// doing, drawn on the live canvas. Its three buttons (stress 10×, pin quality, and the static
+// floor's dirty tiles on or off: fab-w7c, floorcache.ts) are ordinary floor hits (kinds `stress`,
+// `quality` and `tiles`) that app.ts's `facPointer` acts on.
 
 import type { Budget } from '../yard/budget.ts';
 import { QUALITY_NAMES } from '../yard/budget.ts';
@@ -12,11 +13,13 @@ export type FacHudInfo = {
   crates: number; stressCrates: number; sprites: number; trains: number; cars: number; bays: number;
   labels: number; hits: number; floorRate: number; floorMs: number; floorOps: number; slept: number;
   scale: number; W: number; H: number;
+  /** fab-w7c: the static floor repaints by dirty tiles (off: every repaint whole, painted directly) */
+  tiles: boolean;
 };
 type Rect = { x: number; y: number; w: number; h: number };
 
 export class FacHud {
-  draw(g: Gfx, x: number, y: number, b: Budget, i: FacHudInfo): { stress: Rect; quality: Rect } {
+  draw(g: Gfx, x: number, y: number, b: Budget, i: FacHudInfo): { stress: Rect; quality: Rect; tiles: Rect } {
     const s = b.stats();
     const px = 12, lh = 16;
     const lines: [string, string][][] = [
@@ -43,7 +46,11 @@ export class FacHud {
     const quality = { x: stress.x + sw + 8, y: by, w: qw, h: 16 };
     g.begin_(); g.rrect(quality.x, by, qw, 16, 4); g.stroke(C.chipEdge, 1);
     g.text(qs, quality.x + 7, by + 12, C.ink2, px);
+    const ts = i.tiles ? 'tiles on' : 'tiles off', tw = g.width('tiles off', px) + 14;
+    const tiles = { x: quality.x + qw + 8, y: by, w: tw, h: 16 };
+    g.begin_(); g.rrect(tiles.x, by, tw, 16, 4); g.stroke(i.tiles ? C.chipEdge : C.redEdge, 1);
+    g.text(ts, tiles.x + 7, by + 12, i.tiles ? C.ink2 : C.redText, px);
     g.text('⌘⇧D', x + w - 10, by + 12, C.ink3, px, false, 'right');
-    return { stress, quality };
+    return { stress, quality, tiles };
   }
 }

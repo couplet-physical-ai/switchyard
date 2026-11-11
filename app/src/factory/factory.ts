@@ -65,6 +65,9 @@ export class FacBudget extends Budget {
 
 /** At most one data repaint of the static floor a second (fab-w7b: "current within 2 s"). */
 export const FLOOR_COALESCE_MS = 1000;
+/** fab-w7b: a data repaint recorded over frames is dropped past this (the census holds still for
+ *  it: if the floor stops being drawn meanwhile, nothing may wait on it). */
+export const FLOOR_JOB_MS = 400;
 
 /** The layers whose live drawing goes to the top canvas (the last in `order`: words over all). */
 const TOP_LAYERS = new Set(['groups', 'labels']);
@@ -96,6 +99,7 @@ export class Factory {
   private toTopWas = false;
   /** The HUD's numbers, sampled four times a second (its box redraws then, not every frame). */
   private hudSnap: { at: number; b: Budget; info: FacHudInfo; key: string } | null = null;
+  private hudTilesAt = '';
   // ---- the layers (layers.ts): every stage of the floor, and the registry the loop runs ----
   private readonly L = buildLayers(this);
   readonly floor = this.L.floor;
@@ -314,6 +318,9 @@ export class Factory {
    *  no turn does both). */
   ensure(f: Frame, t: number): boolean {
     this.cam.fit(f.width, f.height, 84, 58);
+    // fab-w7b: while the static floor is being recorded across frames, what it reads holds still
+    const job = this.fcJob;
+    if (job && job.phase === 'rec' && t - job.t0 < FLOOR_JOB_MS && t >= job.t0) return false;
     const now = this.tl.playhead;
     const counted = this.census.update(this.world, now, t);
     if (counted) this.heavy = 1;
@@ -323,7 +330,9 @@ export class Factory {
 
   /** The static floor's key: the camera, the fleet's shape, the apps' health (the lights are
    *  painted here, not every frame), and whether the ladder wants the low-detail floor. */
-  get floorKey(): string { return `${this.cam.key}|${this.census.sig}|${this.census.healthSig}|${this.census.carSig}|${this.budget.quality >= 3 ? 'lo' : 'hi'}|${this.w2.sig}|${this.plant.sig}|${this.city.sig}`; } // fab-w2: |w2.sig · fab-w6: |plant.sig (the machine walls' 24 h) · fab-w5: |city.sig (heights, ghosts, rings)
+  get floorKey(): string { return this.fcWait ? `${this.floorShows}|w${Math.floor(this.tl.clock / 250)}` : this.floorShows; } // fab-w7b: a waiting repaint moves the key each tick (so the floor is drawn again then)
+  /** What the static floor shows (its repaints' key). */
+  get floorShows(): string { return `${this.cam.key}|${this.census.sig}|${this.census.healthSig}|${this.census.carSig}|${this.budget.quality >= 3 ? 'lo' : 'hi'}|${this.w2.sig}|${this.plant.sig}|${this.city.sig}${Factory.floorDirect ? '|direct' : ''}`; } // fab-w2: |w2.sig · fab-w6: |plant.sig (the machine walls' 24 h) · fab-w5: |city.sig (heights, ghosts, rings)
 
   // ---- the static floor's repaints (fab-w7b; floorcache.ts, PERF.md "The static floor by dirty
   // tiles"). While the camera moves (a pan, a zoom, a flight), the ladder changes the detail or the
@@ -338,27 +347,69 @@ export class Factory {
   private fcCam = '';
   /** When the last recorded repaint went out (module clock). */
   private fcAt = -1e12;
+  /** A data repaint waits for its slot: the floor's key moves each 250 ms tick until it goes out
+   *  (asking for every frame instead ran the census hooks twice a frame). */
+  private fcWait = false;
+  /** A data repaint being recorded across frames (paintSteps): what it will show, at which
+   *  camera, and whether it goes out whole. */
+  private fcJob: { steps: Generator<void, void, void>; want: string; camKey: string; phase: 'rec' | 'diff' | 'send'; t0: number } | null = null;
+  /** A data repaint's share a frame: segment numbers recorded (the fleet's floor is ~90,000; the
+   *  biggest layer pass, floor.ts's ground, is ~23,000 and goes in one), then ops sent. */
+  static floorBudget = 8_000;
+  static floorSendOps = 800;
+  /** Debug: no data repaints (what the rest of a frame costs), or recorded and not sent. */
+  static floorFreeze = false;
+  static floorRecordOnly = false;
   /** Debug: every data repaint is sent whole (the reference a partial one must match), or
    *  painted directly as before the cache. */
   static floorWhole = false;
+  /** Off switch (the HUD's `tiles` button, fab-w7c): every repaint painted directly, whole. */
   static floorDirect = false;
+  /** fab-w7c: flips the off switch; the floor repaints at once. */
+  toggleTiles(): void { Factory.floorDirect = !Factory.floorDirect; this.fcJob = null; this.fc.invalidate(); this.fcCam = ''; }
 
   drawFloor(ctx: Ctx2D, f: Frame, t: number): boolean {
     this.applyStress();
     const fresh = freshBitmap(f);
-    if (fresh) { this.floorFresh = true; this.fc.invalidate(); }
+    if (fresh) { this.floorFresh = true; this.fc.invalidate(); this.fcJob = null; } // fab-w7c: a new bitmap drops a repaint under way
     if (this.ensure(f, t)) return true;
     // Contract hands the layer its arguments again whenever the overview it reads from
     // answers (every 250 ms), equal or not: the floor repaints only when what it shows moved
     // (the canvas keeps its picture meanwhile).
-    const want = `${this.floorKey}|${this.selected ? 's' : ''}`;
+    const want = `${this.floorShows}|${this.selected ? 's' : ''}`;
     const lo = this.budget.quality >= 3;
     const camKey = `${this.cam.key}|${lo ? 'lo' : 'hi'}|${f.scale}`;
     const calmCause = f.causes.length ? f.causes.every((c) => c === 'args' || c === 'frame') : f.cause === 'args' || f.cause === 'frame';
     const st = this.stat;
+    // a data repaint under way: a frame's share of it (record, then diff, then send), each frame
+    const job = this.fcJob;
+    if (job && (job.camKey !== camKey || this.floor.animating || !calmCause || Factory.floorDirect || (job.phase === 'rec' && !(t - job.t0 < FLOOR_JOB_MS && t >= job.t0)))) {
+      // dropped: the camera, the bitmap or the accordion moved, or the recording went stale (the
+      // census holds still for it: if the floor stops being drawn, nothing may wait on it)
+      this.fcJob = null;
+      if (job.phase !== 'rec') this.fc.invalidate();
+    } else if (job) {
+      if (!this.heavy) this.heavy = 2;
+      if (job.phase === 'rec') { if (job.steps.next().done) job.phase = 'diff'; return true; }
+      if (job.phase === 'diff') {
+        if (Factory.floorRecordOnly || !this.fc.prepare(Factory.floorWhole)) { this.fcJob = null; this.floorSig = job.want; return false; }
+        job.phase = 'send';
+        return true;
+      }
+      if (this.fc.pending) {
+        const done = this.fc.step(ctx, Factory.floorSendOps);
+        st.floorOps = this.fc.stepOps; st.floorMs = this.budget.estimate(this.fc.stepOps, 0, 0, 0);
+        if (!done) return true;
+        this.fcJob = null; this.floorSig = job.want; st.floorDraws++;
+        return this.gpuClaim('floor');
+      }
+      // fab-w7c: the plan went away (the canvas was invalidated): repainted whole below
+      this.fcJob = null;
+    }
     if (Factory.floorDirect) {
       if (want === this.floorSig && calmCause) return false;
       this.paintFloor(ctx, f); this.floorSig = want; st.floorDraws++;
+      this.fc.invalidate(); this.fcCam = ''; // fab-w7c: switched back on, the cache starts whole
       return this.gpuClaim('floor') || this.floor.animating;
     }
     if (camKey !== this.fcCam || this.floor.animating) {
@@ -371,19 +422,38 @@ export class Factory {
     }
     const whole = !this.fc.valid || !calmCause;
     if (!whole) {
-      if (want === this.floorSig) return false;
+      if (want === this.floorSig || Factory.floorFreeze) { this.fcWait = false; return false; }
       // the fleet's data moved: at most one repaint a second
-      if (t - this.fcAt < FLOOR_COALESCE_MS && t >= this.fcAt) return true;
+      if (t - this.fcAt < FLOOR_COALESCE_MS && t >= this.fcAt) { this.fcWait = true; return false; }
     }
-    this.paintFloor(this.fc.begin(f.width, f.height, ctx), f);
-    const ops = this.fc.flush(ctx, whole || Factory.floorWhole);
-    this.floorSig = want; this.fcAt = t;
-    if (ops) { st.floorDraws++; st.floorOps = ops; st.floorMs = this.budget.estimate(ops, 0, 0, 0); }
-    return this.gpuClaim('floor');
+    this.fcWait = false;
+    if (whole) {
+      // a new bitmap, new fonts, the first still frame after a move: all of it, now
+      this.paintFloor(this.fc.begin(f.width, f.height, ctx), f);
+      const ops = this.fc.flush(ctx, true);
+      this.floorSig = want; this.fcAt = t;
+      if (ops) { st.floorDraws++; st.floorOps = ops; st.floorMs = this.budget.estimate(ops, 0, 0, 0); }
+      return this.gpuClaim('floor');
+    }
+    // record it a frame's share at a time (the census holds still meanwhile: ensure), diff, send
+    const steps = this.paintSteps(this.fc.begin(f.width, f.height, ctx), f, Factory.floorBudget);
+    const nj = { steps, want, camKey, phase: 'rec' as 'rec' | 'diff' | 'send', t0: t };
+    this.fcJob = nj; this.fcAt = t;
+    if (steps.next().done) nj.phase = 'diff';
+    if (!this.heavy) this.heavy = 2;
+    return true;
   }
 
   /** The static floor, painted into `ctx` (the canvas, or floorcache's recorder). */
   private paintFloor(ctx: Ctx2D, f: Frame): void {
+    const steps = this.paintSteps(ctx, f, Infinity);
+    while (!steps.next().done) { /* all in one go */ }
+  }
+
+  /** The floor's paint as steps (fab-w7b): with a finite `budget` (recorded segment numbers a
+   *  frame, floorcache's list), it pauses between the layers' passes, the depth-sorted items and
+   *  the afters once a frame's share is recorded, so a repaint's JS spreads over a few frames. */
+  private *paintSteps(ctx: Ctx2D, f: Frame, budget: number): Generator<void, void, void> {
     const g = this.gf, cam = this.cam;
     const lo = this.budget.quality >= 3;
     const idle = this.census.skeleton;
@@ -402,10 +472,12 @@ export class Factory {
       add: (u, v, fn, u1, v1, h) => { if (onScreen(cam, u, v, u1, v1, h)) items.push({ k: u * 0.19 + v * 0.66, f: fn }); },
       after: (fn) => { afters.push(fn); },
     };
-    for (const L of this.order) L.floor?.(fp);
+    const list = this.fc.list;
+    let mark = list.sn;
+    for (const L of this.order) { L.floor?.(fp); if (list.sn - mark > budget) { yield; mark = list.sn; } }
     items.sort((a, b) => a.k - b.k);
-    for (const it of items) it.f();
-    for (const fn of afters) fn();
+    for (const it of items) { it.f(); if (list.sn - mark > budget) { yield; mark = list.sn; } }
+    for (const fn of afters) { if (budget < Infinity && list.sn > mark) { yield; mark = list.sn; } fn(); }
     const st = this.stat;
     st.floorOps = g.ops;
     st.floorMs = this.budget.estimate(g.ops, g.arcs, g.texts, 0);
@@ -627,7 +699,7 @@ export class Factory {
     const x = f.width - (this.selected ? 372 : 0) - 344 - 12, y = 44;
     const lodName = this.cam.zoom >= 2.6 ? 'apps' : this.cam.zoom >= 1.6 ? 'org districts' : 'fleet';
     // sampled four times a second, at once when a button changed what it says
-    const key = `${b.quality}|${b.pinned}|${this.stress.on}|${lodName}`;
+    const key = `${b.quality}|${b.pinned}|${this.stress.on}|${lodName}|${Factory.floorDirect}`;
     let snap = this.hudSnap;
     if (!snap || t - snap.at >= 250 || t < snap.at || snap.key !== key) {
       const s = b.stats();
@@ -637,13 +709,17 @@ export class Factory {
         info: {
           stress: this.stress.on, lod: lodName, hist: st.lod.slice(), crates: st.crates, stressCrates: st.stressCrates, sprites: st.sprites, trains: st.trains,
           cars: st.cars, bays: st.bays, labels: st.labels, hits: st.hits, floorRate: st.floorRate, floorMs: st.floorMs, floorOps: st.floorOps, slept: st.slept,
-          scale: f.scale, W: f.width, H: f.height,
+          scale: f.scale, W: f.width, H: f.height, tiles: !Factory.floorDirect,
         },
       };
     }
     const r = this.fhud.draw(g, x, y, snap.b, snap.info);
     this.hit(r.stress.x, r.stress.y, r.stress.w, r.stress.h, 'stress', this.stress.on ? 'off' : 'on', 'Stress mode');
     this.hit(r.quality.x, r.quality.y, r.quality.w, r.quality.h, 'quality', '', 'Pin quality');
+    // fab-w7c: the floor cache's switch (drives find it in the log: `factory: hud tiles at x,y`)
+    this.hit(r.tiles.x, r.tiles.y, r.tiles.w, r.tiles.h, 'tiles', Factory.floorDirect ? 'on' : 'off', 'Static floor by dirty tiles');
+    const at = `${Math.round(r.tiles.x + r.tiles.w / 2)},${Math.round(r.tiles.y + r.tiles.h / 2)}`;
+    if (at !== this.hudTilesAt) { this.hudTilesAt = at; console.log(`factory: hud tiles at ${at}`); }
   }
 
   // ---- THE HOOK SURFACE (types.ts lists every member reached from outside) -------------------

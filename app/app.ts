@@ -437,6 +437,7 @@ export const sources: Sources = {
     // the HUD's buttons are floor hits too
     if (kind === 'up' && h?.kind === 'stress') setStress(!stressOn);
     else if (kind === 'up' && h?.kind === 'quality') factory.budget.pinned = factory.budget.pinned >= 4 ? -1 : factory.budget.pinned + 1;
+    else if (kind === 'up' && h?.kind === 'tiles') factory.toggleTiles(); // fab-w7c: the static floor's dirty tiles off/on
     // a newly picked crate: fetch its journey for the drawer (a source may fetch; a draw never does)
     const sel = factory.selected;
     if (sel && factory.journeyFor !== sel && up) {

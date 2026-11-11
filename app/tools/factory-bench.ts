@@ -49,7 +49,7 @@ const args = process.argv.slice(2);
 let inLive = false;
 const opt = (name: string, def: string) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : def; };
 const flag = (name: string) => args.includes(name);
-let server = args.find((a, i) => !a.startsWith('--') && !['--zoom', '--frames', '--size', '--quality', '--warm', '--callers'].includes(args[i - 1] ?? '')) ?? 'demo';
+let server = args.find((a, i) => !a.startsWith('--') && !['--zoom', '--frames', '--size', '--quality', '--warm', '--callers', '--floor-pixels'].includes(args[i - 1] ?? '')) ?? 'demo';
 const TOP = !flag('--no-top');
 //   --hermes prices the frame budget as the macOS data module does (the ladder decides as there)
 const FRAMES = Number(opt('--frames', '600'));
@@ -76,6 +76,21 @@ process.on('exit', () => mock?.kill());
 if (flag('--hermes')) (globalThis as { HermesInternal?: unknown }).HermesInternal = {};
 const mod = await import('../app.ts');
 const { Factory } = await import('../src/factory/factory.ts');
+// --floor-group N / --floor-send N / --floor-budget N: floorcache's band size, factory's send ops and record budget a frame
+{
+  const FC = await import('../src/factory/floorcache.ts');
+  const FF = (await import('../src/factory/factory.ts')).Factory as unknown as { floorSendOps: number; floorBudget: number };
+  if (flag('--floor-group')) FC.FloorCache.groupTiles = Number(opt('--floor-group', '48'));
+  if (flag('--floor-send')) FF.floorSendOps = Number(opt('--floor-send', '800'));
+  if (flag('--floor-budget')) FF.floorBudget = Number(opt('--floor-budget', '8000'));
+  // --floor-exact: every partial flush checks the diff's invariant exactly (floorcache verifyExact)
+  // --pix-split: the cache replays every subpath as its own path (a rasteriser then draws each one
+  // alike whatever its siblings are: see --floor-pixels)
+  if (flag('--pix-split')) FC.FloorCache.split = true;
+  if (flag('--floor-exact')) { FC.FloorCache.verifyExact = true; if (flag('--floor-exact-log')) FC.FloorCache.verify = true; }
+  // --floor-whole: every data repaint sent whole (the control for --floor-pixels)
+  if (flag('--floor-whole')) (FF as unknown as { floorWhole: boolean }).floorWhole = true;
+}
 const { sources, draw } = mod as unknown as { sources: Record<string, (a: unknown[], s?: unknown, st?: unknown) => unknown>; draw: (s: string, a: unknown[], c: unknown, f: unknown) => boolean };
 const store = { get: () => '', set() {} };
 const epoch0 = Date.UTC(2026, 10, 10, 20);
@@ -94,7 +109,30 @@ const seam = REAL ? (await import(`${process.env.EXACT2 ?? '/home/farce/src/exac
 const measureHost = { measure: (j: string) => { const r = JSON.parse(j); const w = 7.2 * String(r.text).length; return JSON.stringify([w, 0, w, 9, 3, 11, 3, 9, 3, 0, 0]); }, image: () => '' };
 const drawRaw = draw;
 const ids: Record<string, number> = { factoryFloor: 1, factoryLive: 2, factoryTop: 3 };
+// --floor-pixels [cpu|gpu|agent] (fab-w7c): every floor draw goes through Exact's recorder into a
+// Chromium canvas that keeps it (tools/floorpix.ts), and after each repaint floorcache finishes,
+// that canvas is compared with a fresh whole repaint of the list it claims to show ('F') and with
+// a direct paint of the floor made the moment the list's recording ended ('D')
+const PIXMODE = flag('--floor-pixels') ? (() => { const v = opt('--floor-pixels', 'cpu'); return v && !v.startsWith('--') ? v : 'cpu'; })() : '';
+let pixFac: { fc: { paintShown: (c: unknown) => boolean; paintRecording: (c: unknown) => void }; paintFloor: (c: unknown, f: unknown) => void } | null = null;
+const pixSeam = PIXMODE ? (await import(`${process.env.EXACT2 ?? '/home/farce/src/exact'}/canvas/recorder.js`)).canvasSeam((s: string, a: unknown[], c: unknown, f: unknown) => {
+  if (s === 'floorRef') { pixFac!.fc.paintShown(c); return false; }
+  if (s === 'floorDirect') { pixFac!.paintFloor(c, f); return false; }
+  if (s === 'floorRec') { pixFac!.fc.paintRecording(c); return false; }
+  return drawRaw(s, a, c, f);
+}) : null;
+const pix = PIXMODE ? await (await import('./floorpix.ts')).openPix(PIXMODE, W, H, 2, process.env.EXACT2 ?? '/home/farce/src/exact') : null;
+if (pix) await pix.fresh('P');
 const drawVia = (surface: string, a: unknown[], c: RecordingCtx, f: ReturnType<typeof frame>): boolean => {
+  if (pixSeam && surface === 'factoryFloor') {
+    const out = JSON.parse(pixSeam.draw({ canvas: 1, generation: 1, surface, args: a, frame: f }, measureHost)) as { lists: string[]; frame: boolean; error: string | null };
+    if (out.error) console.log(`floor draw error: ${out.error}`);
+    pix!.put('P', out.lists);
+    let bytes = 0;
+    for (const l of out.lists) bytes += l.length;
+    c.counts.bytes = Math.round(bytes * 0.75);
+    return out.frame;
+  }
   if (!seam) return drawRaw(surface, a, c, f);
   const out = JSON.parse(seam.draw({ canvas: ids[surface], generation: 1, surface, args: a, frame: f }, measureHost)) as { lists: string[]; frame: boolean };
   let bytes = 0;
@@ -128,13 +166,17 @@ let floorAwake = false;
 const floorSent: number[] = [];
 const floorSentMs: number[] = [];
 let floorOtherMs = 0, floorOtherN = 0, floorMaxOther = 0;
+const floorAllMs: number[] = [];
+let pixAfterFloor: () => void = () => {};
 const floorStep = (cause: string) => {
   floorCtx.reset();
   const a = performance.now();
   floorAwake = drawVia('factoryFloor', [key, route, ZOOM], floorCtx, frame(t, cause));
   const ms = performance.now() - a;
-  const n = REAL ? (floorCtx.counts.bytes ?? 0) : floorCtx.total();
-  if (n > (REAL ? 64 : 2)) { floorSent.push(n); floorSentMs.push(ms); floorDraws++; } else { floorOtherMs += ms; floorOtherN++; floorMaxOther = Math.max(floorMaxOther, ms); }
+  floorAllMs.push(ms);
+  const n = REAL || PIXMODE ? (floorCtx.counts.bytes ?? 0) : floorCtx.total();
+  pixAfterFloor();
+  if (n > (REAL || PIXMODE ? 64 : 2)) { floorSent.push(n); floorSentMs.push(ms); floorDraws++; } else { floorOtherMs += ms; floorOtherN++; floorMaxOther = Math.max(floorMaxOther, ms); }
 };
 const step = (measure: boolean): number => {
   t += 1000 / 60;
@@ -164,6 +206,173 @@ const step = (measure: boolean): number => {
 };
 for (let i = 0; i < 4; i++) drawVia('factoryFloor', ['', route, ZOOM], floorCtx, frame(t, 'mount'));
 const fac = Factory.last!;
+// --floor-pixels: the checks (see drawVia). Each repaint floorcache finishes (whole, partial, or
+// nothing to send) queues one; the loops run it before the next frame. Per data repaint k:
+//   stale  F(k) vs F(k-1) outside the tiles flush k repainted: what a full repaint changes must lie
+//          in the repainted tiles (0 pixels, or a pixel the canvas keeps is stale);
+//   kept   the canvas vs F(k) outside every tile repainted since the last whole one: 0 pixels;
+//   AA     the canvas vs F(k) inside them: the clip's antialiasing (a clipped repaint rasterises
+//          edges a few levels differently in Chromium; same geometry, same colours);
+//   rec    a whole replay of the recording vs a direct paint of the floor the moment the recording
+//          ended (floorcache's recorder vs the canvas: 0 pixels);
+//   creep  F(k) vs that recording: items kept by the diff that moved under 1/64 px carry the
+//          numbers the canvas shows (`carry`).
+type PixStat = { n: number; bad: number; maxN: number; maxD: number; sumN: number; hist: number[]; worstAt: string };
+const pixStat = (): PixStat => ({ n: 0, bad: 0, maxN: 0, maxD: 0, sumN: 0, hist: [0, 0, 0, 0], worstAt: '' });
+const PIXS: Record<string, PixStat> = { stale: pixStat(), kept: pixStat(), aa: pixStat(), rec: pixStat(), creep: pixStat(), whole: pixStat() };
+const PIXOUT = opt('--pix-out', '');
+let pixFlushes = -1, pixEmpty = 0, pixGen = 1, pixChecks = 0, pixKinds: Record<string, number> = { partial: 0, empty: 0, whole: 0 };
+type PixDue = { kind: string; ref: string[]; direct: string[] | null; recd: string[] | null; mask: number[] | null; tiles: number; at: number };
+let pixDue: PixDue | null = null;
+let pixDirect: { rec: number; lists: string[]; recd: string[] } | null = null;
+/** Tiles repainted since the last whole repaint (null: none). */
+let pixUnion: number[] | null = null;
+let pixHaveF = false;
+const await_FC = PIXMODE ? await import('../src/factory/floorcache.ts') : null;
+if (PIXMODE) {
+  pixFac = fac as unknown as typeof pixFac;
+  const FF = fac as unknown as { paintSteps: (c: unknown, f: unknown, b: number) => Generator<void, void, void>; fc: { list: { rec: number } } };
+  const ps0 = FF.paintSteps;
+  // a data repaint recorded over frames: the moment its recording ends, the floor painted directly,
+  // and the recording replayed whole (before the diff carries anything into it)
+  FF.paintSteps = function* (this: unknown, c: unknown, f: unknown, b: number) {
+    yield* ps0.call(this, c, f, b);
+    if (b < Infinity) {
+      const rec = FF.fc.list.rec;
+      const lists = (JSON.parse(pixSeam!.draw({ canvas: 3, generation: ++pixGen, surface: 'floorDirect', args: [], frame: f }, measureHost)) as { lists: string[] }).lists;
+      const recd = (JSON.parse(pixSeam!.draw({ canvas: 4, generation: ++pixGen, surface: 'floorRec', args: [], frame: f }, measureHost)) as { lists: string[] }).lists;
+      pixDirect = { rec, lists, recd };
+      if (flag('--pix-why-rec')) {
+        // the floor recorded again now, all at once: which items moved while it was recorded in steps
+        const FC = await_FC!;
+        const r2 = new FC.FRec();
+        r2.measurer = c as never;
+        r2.begin(W, H);
+        (fac as unknown as { paintFloor: (c: unknown, f: unknown) => void }).paintFloor(r2, f);
+        const A = (fac.fc as unknown as { list: InstanceType<typeof FC.FList> }).list, B = r2.L;
+        const out: string[] = [];
+        const n = Math.max(A.n, B.n);
+        for (let i = 0; i < n && out.length < 12; i++) {
+          if (i < A.n && i < B.n && A.iKey[i] === B.iKey[i] && A.iF[i] === B.iF[i]) continue;
+          const d = (L: typeof A, j: number) => { if (j >= L.n) return '-'; const st = L.states[L.iS[j]]; return `k${L.iK[j]} ${String(L.iK[j] === 2 || L.iK[j] === 4 ? st.stroke : st.fill)} box ${[0, 1, 2, 3].map((q) => L.iB[j * 4 + q].toFixed(2)).join(',')}${L.iT[j] ? ` "${L.iT[j]}"` : ''}`; };
+          out.push(`#${i} ${d(A, i)} → ${d(B, i)}`);
+        }
+        if (out.length) console.log(`    stepped vs at once (${A.n} / ${B.n} items): ${out.join(' | ')}`);
+      }
+    }
+  };
+  pixAfterFloor = () => {
+    const fc = fac.fc as unknown as { valid: boolean; pending: boolean; totals: { flushes: number; empty: number }; last: { whole: boolean; tiles: number }; shownList: { rec: number } | null; dirty: { d: Uint8Array } };
+    if (!fc.valid) { if (!fc.pending) pixHaveF = false; return; }
+    if (fc.pending || fc.totals.flushes === pixFlushes) return;
+    const kind = fc.totals.empty !== pixEmpty ? 'empty' : fc.last.whole ? 'whole' : 'partial';
+    pixFlushes = fc.totals.flushes; pixEmpty = fc.totals.empty;
+    const ref = (JSON.parse(pixSeam!.draw({ canvas: 2, generation: ++pixGen, surface: 'floorRef', args: [], frame: frame(t, 'args') }, measureHost)) as { lists: string[] }).lists;
+    const rec = fc.shownList!.rec, dd = pixDirect && pixDirect.rec === rec ? pixDirect : null;
+    pixDue = { kind, ref, direct: dd?.lists ?? null, recd: dd?.recd ?? null, mask: kind === 'partial' ? Array.from(fc.dirty.d) : kind === 'empty' ? [] : null, tiles: fc.last.tiles, at: t };
+  };
+}
+const pixNote = (S: PixStat, r: { n: number; max: number; hist: number[]; worst: number[]; box: number[] }, label: string) => {
+  S.n++; S.sumN += r.n;
+  if (r.n) S.bad++;
+  for (let k = 0; k < 4; k++) S.hist[k] += r.hist[k];
+  if (r.max > S.maxD) S.maxD = r.max;
+  if (r.n > S.maxN) { S.maxN = r.n; S.worstAt = `${label} box ${r.box.join(',')} worst ${r.worst.join(',')}`; return true; }
+  return false;
+};
+const pixCheck = async () => {
+  const d = pixDue!;
+  pixDue = null;
+  pixChecks++; pixKinds[d.kind]++;
+  const label = `t=${(d.at / 1000).toFixed(1)}s ${d.kind} tiles ${d.tiles}`;
+  const P = pix!;
+  if (pixHaveF) await P.keep('F', 'Fprev');
+  await P.fresh('F'); P.put('F', d.ref);
+  if (d.mask === null) {
+    // a whole repaint: the canvas is exactly F
+    const w = await P.cmp('P', 'F');
+    pixNote(PIXS.whole, w, label);
+    if (w.n) console.log(`  pixels: WHOLE ${label}: canvas ≠ F ${w.n} px max ${w.max}`);
+    pixUnion = null;
+  } else {
+    if (pixHaveF) {
+      const st = await P.cmp('F', 'Fprev', d.mask, true);
+      if (pixNote(PIXS.stale, st, label) && PIXOUT) await P.savePng(`${PIXOUT}/worst-stale.png`, 'F', 'Fprev');
+      if (st.n) console.log(`  pixels: STALE ${label}: ${st.n} px a full repaint changed outside the repainted tiles, max ${st.max}, box ${st.box.join(',')}`);
+      if (st.n && flag('--pix-why')) pixWhere(st.pts);
+    }
+    if (d.mask.length) { if (!pixUnion) pixUnion = d.mask.slice(); else for (let i = 0; i < d.mask.length; i++) pixUnion[i] |= d.mask[i]; }
+    const u = pixUnion ?? [];
+    const kept = await P.cmp('P', 'F', u, true);
+    if (pixNote(PIXS.kept, kept, label) && PIXOUT) await P.savePng(`${PIXOUT}/worst-kept.png`, 'P', 'F');
+    if (kept.n) console.log(`  pixels: KEPT ${label}: canvas ≠ F outside the repainted tiles ${kept.n} px, max ${kept.max}, box ${kept.box.join(',')}`);
+    if (u.length) {
+      const aa = await P.cmp('P', 'F', u, false);
+      if (pixNote(PIXS.aa, aa, label) && PIXOUT) await P.savePng(`${PIXOUT}/worst-aa.png`, 'P', 'F');
+    }
+    if (flag('--pix-why') && kept.n) pixWhy();
+  }
+  pixHaveF = true;
+  if (d.direct && d.recd) {
+    await P.fresh('D'); P.put('D', d.direct);
+    await P.fresh('Rc'); P.put('Rc', d.recd);
+    const rc = await P.cmp('Rc', 'D');
+    if (pixNote(PIXS.rec, rc, label) && PIXOUT) { await P.savePng(`${PIXOUT}/worst-rec.png`, 'Rc', 'D'); await P.savePng(`${PIXOUT}/worst-rec-D.png`, 'D'); }
+    if (rc.n) console.log(`  pixels: REC ${label}: recording ≠ direct paint ${rc.n} px max ${rc.max} hist ${rc.hist.join('/')} box ${rc.box.join(',')} worst ${rc.worst.join(',')}`);
+    const cr = await P.cmp('F', 'Rc');
+    pixNote(PIXS.creep, cr, label);
+  }
+};
+const PIX_CHANGES = Number(opt('--pix-changes', '0'));
+// --pix-why: the items under the pixels a full repaint changed outside the repainted tiles (both
+// lists; = the other list has an item with the same key)
+const pixWhere = (pts: number[]) => {
+  const fc = fac.fc as unknown as { lists: { n: number; iKey: Float64Array; iS: Int32Array; iK: Int32Array; iB: Float64Array; iT: string[]; states: { fill: unknown; stroke: unknown; lw: number }[] }[]; shownList: unknown };
+  const B = fc.shownList as (typeof fc.lists)[0], A = fc.lists[0] === B ? fc.lists[1] : fc.lists[0];
+  const keys = (L: typeof A) => { const m = new Set<number>(); for (let i = 0; i < L.n; i++) m.add(L.iKey[i]); return m; };
+  const kA = keys(A), kB = keys(B);
+  const seen = new Set<string>();
+  for (let k = 0; k < pts.length && seen.size < 10; k += 3) {
+    const x = pts[k] / 2, y = pts[k + 1] / 2;
+    for (const [nm, L, other] of [['old', A, kB], ['new', B, kA]] as const) {
+      for (let i = 0; i < L.n; i++) {
+        const o = i * 4;
+        if (x < L.iB[o] - 3 || x > L.iB[o + 2] + 3 || y < L.iB[o + 1] - 3 || y > L.iB[o + 3] + 3) continue;
+        if (other.has(L.iKey[i])) continue;
+        const st = L.states[L.iS[i]], id = `${nm} #${i}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        console.log(`    at ${x},${y} (${pts[k + 2]}): ${id} k${L.iK[i]} ${String(L.iK[i] === 2 || L.iK[i] === 4 ? st.stroke : st.fill)} lw ${st.lw} box ${[0, 1, 2, 3].map((q) => L.iB[o + q].toFixed(1)).join(',')}${L.iT[i] ? ` "${L.iT[i]}"` : ''}`);
+      }
+    }
+  }
+};
+// --pix-why: what differs, exactly, between the items the two lists share a key (1/64 px) for
+const pixWhy = () => {
+  const fc = fac.fc as unknown as { lists: { n: number; iKey: Float64Array; iS: Int32Array; iM: Int32Array; iP0: Int32Array; iP1: Int32Array; iA: Float64Array; iK: Int32Array; sg: Float64Array; mats: Float64Array; states: Record<string, unknown>[] }[]; shownList: unknown };
+  const B = fc.shownList as (typeof fc.lists)[0], A = fc.lists[0] === B ? fc.lists[1] : fc.lists[0];
+  const at = new Map<number, number>();
+  for (let i = A.n - 1; i >= 0; i--) at.set(A.iKey[i], i);
+  const tally = new Map<string, [number, number]>();
+  const note = (k: string, d: number) => { const v = tally.get(k) ?? [0, 0]; v[0]++; if (d > v[1]) v[1] = d; tally.set(k, v); };
+  for (let j = 0; j < B.n; j++) {
+    const i = at.get(B.iKey[j]);
+    if (i === undefined) continue;
+    const sa = A.states[A.iS[i]], sb = B.states[B.iS[j]];
+    for (const f of Object.keys(sb)) { const x = sa[f], y = sb[f]; if (typeof y === 'number' && x !== y) note(`state.${f}`, Math.abs((x as number) - y)); else if (typeof y === 'string' && x !== y) note(`state.${f} ${String(x)}→${y}`, 1); }
+    for (let k = 0; k < 6; k++) { const d = Math.abs(A.mats[A.iM[i] * 6 + k] - B.mats[B.iM[j] * 6 + k]); if (d) note(`item matrix[${k}]`, d); }
+    for (let k = 0; k < 4; k++) { const d = Math.abs(A.iA[i * 4 + k] - B.iA[j * 4 + k]); if (d) note(`args kind ${B.iK[j]}`, d); }
+    const n = A.iP1[i] - A.iP0[i];
+    if (n !== B.iP1[j] - B.iP0[j]) { note('segment count', 1); continue; }
+    for (let k = 0; k < n;) {
+      const a0 = A.iP0[i] + k, b0 = B.iP0[j] + k, op = B.sg[b0], m = [0, 2, 2, 4, 6, 6, 8, 4, 5, 0][op] ?? 0;
+      for (let q = 0; q < 6; q++) { const d = Math.abs(A.mats[A.sg[a0 + 1] * 6 + q] - B.mats[B.sg[b0 + 1] * 6 + q]); if (d) note(`segment matrix[${q}]`, d); }
+      for (let q = 2; q < m + 2; q++) { const d = Math.abs(A.sg[a0 + q] - B.sg[b0 + q]); if (d) note(`segment op ${op}`, d); }
+      k += 2 + m;
+    }
+  }
+  console.log(`    why (items with equal keys, A ${A.n} → B ${B.n}): ${[...tally].map(([k, [n, d]]) => `${k} ×${n} max ${d.toExponential(2)}`).join(' · ') || 'nothing differs'}`);
+};
 const CALLERS = new Map<string, number>();
 const LIVE_ONLY = flag('--live-only');
 // --callers [ops] [--depth N] [--live-only]: who calls the given ctx methods (default
@@ -272,6 +481,7 @@ if (flag('--floor-phases')) {
 // --trace: the ladder second by second through the warm-up (the coffee check's intro included)
 for (let i = 0; i < WARM * 60; i++) {
   step(false);
+  if (pixDue) await pixCheck();
   if (flag('--trace') && i % 60 === 59) { const b = fac.budget; console.log(`t=${((i + 1) / 60).toFixed(0)}s q${b.quality} est ${b.est.toFixed(2)}ms gain ${b.gain.toFixed(2)} ops ${b.ops} busy ${fac.coffee.busy(t)}`); }
 }
 fac.profReset();
@@ -282,7 +492,7 @@ const live: number[] = [];
 const ops: number[] = [];
 const tops: number[] = [];
 floorDraws = 0;
-floorSent.length = 0; floorSentMs.length = 0; floorOtherMs = 0; floorOtherN = 0; floorMaxOther = 0;
+floorSent.length = 0; floorSentMs.length = 0; floorAllMs.length = 0; floorOtherMs = 0; floorOtherN = 0; floorMaxOther = 0;
 liveBytes = 0; topBytes = 0;
 const fl0 = { ...fac.ret.totals };
 // --floor-debug: what the floor's partial repaints send, by paint (fab-w7b); --floor-time: the
@@ -291,11 +501,11 @@ const FDBG = flag('--floor-debug');
 const FT = { rec: [] as number[], diff: [] as number[], flush: [] as number[] };
 if (flag('--floor-time')) {
   const FC = await import('../src/factory/floorcache.ts');
-  const F = fac as unknown as { paintFloor: (c: unknown, f: unknown) => void; fc: { flush: (c: unknown, w?: boolean) => number; list: InstanceType<typeof FC.FList>; shownList: InstanceType<typeof FC.FList> | null } };
-  const p0 = F.paintFloor.bind(fac), f0 = F.fc.flush.bind(F.fc);
+  const F = fac as unknown as { paintFloor: (c: unknown, f: unknown) => void; fc: { prepare: (w?: boolean) => boolean; list: InstanceType<typeof FC.FList>; shownList: InstanceType<typeof FC.FList> | null } };
+  const p0 = F.paintFloor.bind(fac), f0 = F.fc.prepare.bind(F.fc);
   F.paintFloor = (c: unknown, f: unknown) => { const a = performance.now(); p0(c, f); if (c instanceof FC.FRec) FT.rec.push(performance.now() - a); };
   const TT = new FC.Tiles();
-  F.fc.flush = (c: unknown, w?: boolean) => {
+  F.fc.prepare = (w?: boolean) => {
     const A = F.fc.shownList, B = F.fc.list;
     if (A) {
       const a = performance.now(); TT.reset(B.W, B.H); FC.diff(A, B, TT); FT.diff.push(performance.now() - a);
@@ -319,19 +529,24 @@ if (flag('--floor-time')) {
         console.log(`  drift t=${(t / 1000).toFixed(1)}s: ${nDrift} equal-key items moved, worst ${worst.toExponential(2)}${st ? ` (${String(B.iK[wi] === 1 ? st.fill : st.stroke)})` : ''}`);
       }
     }
-    const a = performance.now(); const r = f0(c, w); FT.flush.push(performance.now() - a); return r;
+    const a = performance.now(); const r = f0(w); FT.flush.push(performance.now() - a); return r;
   };
 }
 const fdbg = new Map<string, [number, number]>();
 if (FDBG) {
   const FC = await import('../src/factory/floorcache.ts');
-  const fc = fac.fc as unknown as { flush: (c: unknown, w?: boolean) => number; list: InstanceType<typeof FC.FList> };
-  const f0 = fc.flush.bind(fc);
-  fc.flush = (c: unknown, w?: boolean) => {
+  const fc = fac.fc as unknown as { prepare: (w?: boolean) => boolean; step: (c: unknown, b: number) => boolean; list: InstanceType<typeof FC.FList> };
+  const f0 = fc.prepare.bind(fc), s0 = fc.step.bind(fc);
+  let A0: InstanceType<typeof FC.FList> | null = null;
+  fc.prepare = (w?: boolean) => {
     FC.FloorReplay.dbg = [];
-    const A0 = (fac.fc as unknown as { shownList: InstanceType<typeof FC.FList> | null }).shownList;
+    A0 = (fac.fc as unknown as { shownList: InstanceType<typeof FC.FList> | null }).shownList;
     FC.diffDbg.on = flag('--floor-debug-each'); FC.diffDbg.marks = [];
-    const r = f0(c, w);
+    return f0(w);
+  };
+  fc.step = (c: unknown, b: number) => {
+    const r = s0(c, b);
+    if (!r) return r;
     if (FC.diffDbg.on) {
       const per = new Map<string, number>();
       for (const [kd, i, qq] of FC.diffDbg.marks) {
@@ -362,8 +577,26 @@ if (FDBG) {
 }
 for (let i = 0; i < FRAMES; i++) {
   live.push(step(true));
+  if (pixDue) await pixCheck();
+  if (PIX_CHANGES && pixKinds.partial + pixKinds.empty >= PIX_CHANGES) { console.log(`floor pixels: ${PIX_CHANGES} data repaints checked at frame ${i}`); break; }
   ops.push(REAL ? (ctx.counts.bytes ?? 0) : ctx.total()); if (REAL) ctx.counts.bytes = 0;
   tops.push(REAL ? (topCtx.counts.bytes ?? 0) : topCtx.total()); if (REAL) topCtx.counts.bytes = 0;
+}
+if (PIXMODE) {
+  if (PIXOUT) await pix!.savePng(`${PIXOUT}/last-P.png`, 'P');
+  const fmt = (S: PixStat) => `${S.n} checked, ${S.bad} with any pixel differing, max ${S.maxN} px (mean ${(S.sumN / Math.max(1, S.n)).toFixed(1)}), max level ${S.maxD}, by level 1-2/3-8/9-32/33+: ${S.hist.join('/')}${S.worstAt ? `; worst ${S.worstAt}` : ''}`;
+  console.log(`floor pixels (${PIXMODE}, ${pix!.pw}x${pix!.ph}): ${pixChecks} repaints checked (${pixKinds.partial} partial, ${pixKinds.empty} with nothing to send, ${pixKinds.whole} whole)`);
+  console.log(`  stale (a full repaint changed a pixel outside the repainted tiles): ${fmt(PIXS.stale)}`);
+  console.log(`  kept (canvas vs full repaint, outside every tile repainted since the last whole): ${fmt(PIXS.kept)}`);
+  console.log(`  AA (canvas vs full repaint, inside the repainted tiles): ${fmt(PIXS.aa)}`);
+  console.log(`  whole (canvas vs full repaint after a whole one): ${fmt(PIXS.whole)}`);
+  console.log(`  rec (the recording replayed whole vs a direct paint at its end): ${fmt(PIXS.rec)}`);
+  console.log(`  creep (the full repaint vs the recording before the diff carried creep into it): ${fmt(PIXS.creep)}`);
+  const V = (await import('../src/factory/floorcache.ts')).FloorCache.verified;
+  if (V.n) console.log(`  exact (every piece on a kept tile painted bit for bit the same in both lists): ${V.n} flushes checked, ${V.bad} failed, ${V.pieces} pieces compared${V.first ? `; first: ${V.first}` : ''}`);
+  console.log(JSON.stringify({ floorPixels: { mode: PIXMODE, exact: V, checks: pixChecks, kinds: pixKinds, ...PIXS, nanBoxes: (await import('../src/factory/floorcache.ts')).Tiles.nan, floorCache: fac.fc.totals } }));
+  await pix!.close();
+  process.exit(0);
 }
 const fl = { flushes: fac.ret.totals.flushes - fl0.flushes, empty: fac.ret.totals.empty - fl0.empty, drawn: fac.ret.totals.drawn - fl0.drawn };
 // the floor redrawn as a camera move would (a forced key change)
@@ -376,6 +609,25 @@ for (let i = 0; i < 30; i++) {
   floor.push(performance.now() - a);
 }
 const q = (a: number[], p: number) => { const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
+// --floor-steps B: record the floor into floorcache in steps of B numbers (factory.ts paintSteps), time each step
+if (flag('--floor-steps')) {
+  const B = Number(opt('--floor-steps', '24000'));
+  const F = fac as unknown as { paintSteps: (c: unknown, f: unknown, b: number) => Generator<void, void, void>; fc: { begin: (W: number, H: number, m: unknown) => unknown; list: { sn: number; n: number } } };
+  for (let rep = 0; rep < 4; rep++) {
+    const c = F.fc.begin(W, H, floorCtx);
+    const g = F.paintSteps(c, frame(t, 'args'), B);
+    const out: string[] = [];
+    let done = false, sn = 0;
+    while (!done) {
+      const a = performance.now();
+      done = !!g.next().done;
+      out.push(`${(performance.now() - a).toFixed(1)}ms/${((F.fc.list.sn - sn) / 1000).toFixed(1)}k`);
+      sn = F.fc.list.sn;
+    }
+    console.log(`floor steps (budget ${B}): ${out.join(' ')} · total ${(sn / 1000).toFixed(1)}k numbers, ${F.fc.list.n} items`);
+  }
+  process.exit(0);
+}
 // --floor-rec-loop N: record the floor into floorcache N times and exit (for --cpu-prof)
 if (flag('--floor-rec-loop')) {
   const N = Number(opt('--floor-rec-loop', '20'));
@@ -412,7 +664,8 @@ console.log(JSON.stringify({
   floorMs: { median: +q(floor, 0.5).toFixed(3), max: +Math.max(...floor).toFixed(3) }, floorCalls: floorCtx.total(),
   floorRedrawsInWindow: floorDraws, [REAL ? 'floorSentBytes' : 'floorSentCalls']: { n: floorSent.length, median: floorSent.length ? q(floorSent, 0.5) : 0, max: floorSent.length ? Math.max(...floorSent) : 0, mean: floorSent.length ? Math.round(floorSent.reduce((a, b) => a + b, 0) / floorSent.length) : 0 },
   floorSentMs: { median: floorSentMs.length ? +q(floorSentMs, 0.5).toFixed(3) : 0, max: floorSentMs.length ? +Math.max(...floorSentMs).toFixed(3) : 0 }, floorQuietDraws: { n: floorOtherN, meanMs: +(floorOtherMs / Math.max(1, floorOtherN)).toFixed(3), maxMs: +floorMaxOther.toFixed(3) },
-  floorCache: { ...fac.fc.totals, last: fac.fc.last }, quality: o.quality, stats: o.facStats ?? '', ...(REAL ? { real: true, sentKBPerFrame: +((liveBytes + topBytes) * 0.75 / 1024 / FRAMES).toFixed(1) } : {}),
+  floorDrawMs: { n: floorAllMs.length, p50: floorAllMs.length ? +q(floorAllMs, 0.5).toFixed(3) : 0, p95: floorAllMs.length ? +q(floorAllMs, 0.95).toFixed(3) : 0, max: floorAllMs.length ? +Math.max(...floorAllMs).toFixed(3) : 0, top5: [...floorAllMs].sort((a, b) => b - a).slice(0, 5).map((v) => +v.toFixed(1)) },
+  floorCache: { ...fac.fc.totals, last: fac.fc.last, exact: (await import('../src/factory/floorcache.ts')).FloorCache.verified, nanBoxes: (await import('../src/factory/floorcache.ts')).Tiles.nan }, quality: o.quality, stats: o.facStats ?? '', ...(REAL ? { real: true, sentKBPerFrame: +((liveBytes + topBytes) * 0.75 / 1024 / FRAMES).toFixed(1) } : {}),
 }));
 console.log(`live calls (last frame): ${top}`);
 console.log(`live phases (ops/arcs/texts a drawn frame): ${fac.profLine()}`);
@@ -437,7 +690,7 @@ if (flag('--phases')) {
 console.log(`floor calls: ${ftop}`);
 if (flag('--floor-time')) {
   const m = (a: number[]) => (a.length ? `median ${q(a, 0.5).toFixed(2)} max ${Math.max(...a).toFixed(2)} (n ${a.length})` : '-');
-  console.log(`floor data repaint ms: record ${m(FT.rec)} · diff ${m(FT.diff)} · flush (diff+replay+recorder) ${m(FT.flush)}`);
+  console.log(`floor repaint ms: whole records ${m(FT.rec)} · diff ${m(FT.diff)} · prepare (diff + plan) ${m(FT.flush)}`);
 }
 if (FDBG) {
   console.log('floor partial repaints: segments sent by paint (sum over the window, times):');

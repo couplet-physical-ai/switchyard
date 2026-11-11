@@ -18,9 +18,10 @@
 //     kept (a longest increasing run; an item that moved in z is dirty); in the items that
 //     changed, the pieces equal to their counterpart's (the old item between the same kept
 //     neighbours) are kept. What is left marks dirty tiles (TILE CSS px) under its old and new
-//     boxes. Hashes match at 1/64 px; a kept item that crept under that step (a post growing with
-//     its time in state) takes the old numbers (`carry`), so the list stays exactly what the
-//     canvas shows and the creep is repainted once it adds up to 1/64 px.
+//     boxes. Hashes match at 1/64 px; whatever they pair is then compared number by number
+//     (`keepItem`, `sameHead`, `sameSegs`): a kept thing that moved at all under that step (a post
+//     growing with its time in state) marks its own piece, so a pixel the canvas keeps is drawn
+//     by exactly the same pieces, bit for bit, in both lists (fab-w7c; `verifyExact`).
 //   - `flush` clears the dirty tiles and, clipped to them, replays every item that crosses them,
 //     in order, with only the pieces that cross them. A fill's subpaths away from the clip add
 //     no coverage inside it (their winding is zero there) and a stroke's stay within its box, so
@@ -116,6 +117,8 @@ function stateHash(s: State): number {
 /** One recording: segments, matrices, states, clips, items and (made on demand) their pieces. */
 export class FList {
   W = 0; H = 0;
+  /** Which recording this is (FloorCache.begin counts them; the bench's pixel check pairs by it). */
+  rec = 0;
   /** segments: op, matrix, then NARGS[op] numbers */
   sg = new Float64Array(65536); sn = 0;
   mats = new Float64Array(6 * 64); matH = new Float64Array(64); nm = 0;
@@ -127,7 +130,7 @@ export class FList {
   iK = new Int32Array(2048); iS = new Int32Array(2048); iM = new Int32Array(2048); iC = new Int32Array(2048);
   iP0 = new Int32Array(2048); iP1 = new Int32Array(2048); iQ0 = new Int32Array(2048); iQ1 = new Int32Array(2048);
   iA = new Float64Array(8192); iT: string[] = []; iKey = new Float64Array(2048); iB = new Float64Array(8192);
-  iH = new Int32Array(2048); iPad = new Float64Array(2048); iDash = new Uint8Array(2048); iF = new Int32Array(2048); n = 0;
+  iH = new Int32Array(2048); iPad = new Float64Array(2048); iDash = new Uint8Array(2048); n = 0;
   /** pieces: key, device box, segment range */
   qKey = new Float64Array(8192); qB = new Float64Array(32768); qP0 = new Int32Array(8192); qP1 = new Int32Array(8192); nq = 0;
   reset(W: number, H: number): void { this.W = W; this.H = H; this.sn = 0; this.nm = 0; this.ns = 0; this.nc = 1; this.n = 0; this.nq = 0; }
@@ -138,7 +141,7 @@ export class FList {
     this.iK = growI(this.iK, need); this.iS = growI(this.iS, need); this.iM = growI(this.iM, need); this.iC = growI(this.iC, need);
     this.iP0 = growI(this.iP0, need); this.iP1 = growI(this.iP1, need); this.iQ0 = growI(this.iQ0, need); this.iQ1 = growI(this.iQ1, need);
     this.iA = growF(this.iA, need * 4); this.iKey = growF(this.iKey, need); this.iB = growF(this.iB, need * 4);
-    this.iH = growI(this.iH, need); this.iPad = growF(this.iPad, need); this.iF = growI(this.iF, need);
+    this.iH = growI(this.iH, need); this.iPad = growF(this.iPad, need);
     if (this.iDash.length < need) { const d = new Uint8Array(this.iK.length); d.set(this.iDash); this.iDash = d; }
   }
   roomPieces(k: number): void {
@@ -239,8 +242,6 @@ export class FRec {
   /** the path: its first segment, running hash, device box */
   private p0 = 0;
   private ph = 0;
-  /** the path's fine hash (1/65536 px): a kept item whose fine hash moved crept (carried over) */
-  private pf = 0;
   private bx0 = Infinity; private by0 = Infinity; private bx1 = -Infinity; private by1 = -Infinity;
   imageSmoothingEnabled = true;
 
@@ -312,7 +313,6 @@ export class FRec {
     this.mi = k;
     // a transform in the middle of a path: its later segments are in the new space
     this.ph = (this.ph * 31 + h) | 0;
-    this.pf = (this.pf * 31 + h) | 0;
   }
   setTransform(a: number | DOMMatrix2DInit = 1, b = 0, c = 0, d = 1, e = 0, f = 0): void {
     if (typeof a === 'object') { const o = a as { a?: number; b?: number; c?: number; d?: number; e?: number; f?: number }; this.setM([o.a ?? 1, o.b ?? 0, o.c ?? 0, o.d ?? 1, o.e ?? 0, o.f ?? 0]); return; }
@@ -332,7 +332,6 @@ export class FRec {
   beginPath(): void {
     this.p0 = this.L.sn;
     this.ph = this.L.matH[this.mi] | 0;
-    this.pf = 0;
     this.bx0 = Infinity; this.by0 = Infinity; this.bx1 = -Infinity; this.by1 = -Infinity;
   }
   /** A point of the path (and `r` around it) into its device box. */
@@ -346,7 +345,6 @@ export class FRec {
     if (k + 4 > L.sg.length) L.sg = growF(L.sg, k + 4);
     const s = L.sg; s[k] = S_MOVE; s[k + 1] = this.mi; s[k + 2] = x; s[k + 3] = y; L.sn = k + 4;
     this.ph = ((this.ph * 961 + ((x * 64) | 0) * 31 + ((y * 64) | 0)) | 0) + 1 | 0;
-    this.pf = (this.pf * 961 + ((x * 65536) | 0) * 31 + ((y * 65536) | 0)) | 0;
     if (this.lin) { this.pt(x, y, 0); return; }
     const X = x + this.me, Y = y + this.mf;
     if (X < this.bx0) this.bx0 = X; if (Y < this.by0) this.by0 = Y; if (X > this.bx1) this.bx1 = X; if (Y > this.by1) this.by1 = Y;
@@ -356,7 +354,6 @@ export class FRec {
     if (k + 4 > L.sg.length) L.sg = growF(L.sg, k + 4);
     const s = L.sg; s[k] = S_LINE; s[k + 1] = this.mi; s[k + 2] = x; s[k + 3] = y; L.sn = k + 4;
     this.ph = ((this.ph * 961 + ((x * 64) | 0) * 31 + ((y * 64) | 0)) | 0) + 2 | 0;
-    this.pf = (this.pf * 961 + ((x * 65536) | 0) * 31 + ((y * 65536) | 0)) | 0;
     if (this.lin) { this.pt(x, y, 0); return; }
     const X = x + this.me, Y = y + this.mf;
     if (X < this.bx0) this.bx0 = X; if (Y < this.by0) this.by0 = Y; if (X > this.bx1) this.bx1 = X; if (Y > this.by1) this.by1 = Y;
@@ -374,9 +371,9 @@ export class FRec {
     s[k] = op; s[k + 1] = this.mi; s[k + 2] = a; s[k + 3] = b; s[k + 4] = c; s[k + 5] = d;
     if (n > 4) { s[k + 6] = e; if (n > 5) { s[k + 7] = f; if (n > 6) { s[k + 8] = g; s[k + 9] = h; } } }
     L.sn = k + 2 + n;
-    let ph = (this.ph * 31 + op) | 0, pf = this.pf;
-    for (let j = 0; j < n; j++) { const v = s[k + 2 + j]; ph = (ph * 31 + ((v * 64) | 0)) | 0; pf = (pf * 31 + ((v * 65536) | 0)) | 0; }
-    this.ph = ph; this.pf = pf;
+    let ph = (this.ph * 31 + op) | 0;
+    for (let j = 0; j < n; j++) ph = (ph * 31 + ((s[k + 2 + j] * 64) | 0)) | 0;
+    this.ph = ph;
   }
   quadraticCurveTo(a: number, b: number, x: number, y: number): void { this.seg(S_QUAD, a, b, x, y); this.pt(a, b, 0); this.pt(x, y, 0); }
   bezierCurveTo(a: number, b: number, c: number, d: number, x: number, y: number): void { this.seg(S_CUBIC, a, b, c, d, x, y); this.pt(a, b, 0); this.pt(c, d, 0); this.pt(x, y, 0); }
@@ -409,7 +406,7 @@ export class FRec {
     return k;
   }
   /** An item: over the path p0..p1 (its hash `ph`) or a single box (bx0..by1), `pad` around. */
-  private item(kind: number, p0: number, p1: number, ph: number, pf: number, a: number, b: number, c: number, d: number, text: string, bx0: number, by0: number, bx1: number, by1: number, pad: number): void {
+  private item(kind: number, p0: number, p1: number, ph: number, a: number, b: number, c: number, d: number, text: string, bx0: number, by0: number, bx1: number, by1: number, pad: number): void {
     const L = this.L;
     L.roomItem();
     const k = L.n++, si = this.stateIdx(), clip = this.clipI;
@@ -424,7 +421,6 @@ export class FRec {
     h = (h * 31 + ((d * 64) | 0)) | 0;
     if (text) h = (h * 31 + hstr(text)) | 0;
     L.iH[k] = h; L.iPad[k] = pad;
-    L.iF[k] = ((((pf * 31 + ((a * 65536) | 0)) | 0) * 31 + ((b * 65536) | 0)) * 31 + ((c * 65536) | 0)) | 0;
     L.iDash[k] = kind === I_STROKE && this.st.dash.length > 0 ? 1 : 0;
     const comp = this.st.comp;
     const C = L.cB, cl = clip * 4;
@@ -444,12 +440,12 @@ export class FRec {
   fill(rule: string | object = 'nonzero'): void {
     const p1 = this.L.sn;
     if (p1 <= this.p0) return;
-    this.item(I_FILL, this.p0, p1, this.ph, this.pf, rule === 'evenodd' ? 1 : 0, 0, 0, 0, '', this.bx0, this.by0, this.bx1, this.by1, 1.5);
+    this.item(I_FILL, this.p0, p1, this.ph, rule === 'evenodd' ? 1 : 0, 0, 0, 0, '', this.bx0, this.by0, this.bx1, this.by1, 1.5);
   }
   stroke(): void {
     const p1 = this.L.sn;
     if (p1 <= this.p0) return;
-    this.item(I_STROKE, this.p0, p1, this.ph, this.pf, 0, 0, 0, 0, '', this.bx0, this.by0, this.bx1, this.by1, this.strokePad());
+    this.item(I_STROKE, this.p0, p1, this.ph, 0, 0, 0, 0, '', this.bx0, this.by0, this.bx1, this.by1, this.strokePad());
   }
   private rectItem(kind: number, x: number, y: number, w: number, h: number, pad: number): void {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -458,7 +454,7 @@ export class FRec {
       const X = this.ma * px + this.mc * py + this.me, Y = this.mb * px + this.md * py + this.mf;
       if (X < x0) x0 = X; if (Y < y0) y0 = Y; if (X > x1) x1 = X; if (Y > y1) y1 = Y;
     }
-    this.item(kind, 0, 0, 0, 0, x, y, w, h, '', x0, y0, x1, y1, pad);
+    this.item(kind, 0, 0, 0, x, y, w, h, '', x0, y0, x1, y1, pad);
   }
   fillRect(x: number, y: number, w: number, h: number): void { this.rectItem(I_FILLRECT, x, y, w, h, 1.5); }
   strokeRect(x: number, y: number, w: number, h: number): void { this.rectItem(I_STROKERECT, x, y, w, h, this.strokePad()); }
@@ -478,7 +474,7 @@ export class FRec {
       const X = this.ma * qx + this.mc * qy + this.me, Y = this.mb * qx + this.md * qy + this.mf;
       if (X < x0) x0 = X; if (Y < y0) y0 = Y; if (X > x1) x1 = X; if (Y > y1) y1 = Y;
     }
-    this.item(kind, 0, 0, 0, 0, x, y, maxW, 0, s, x0, y0, x1, y1, kind === I_STROKETEXT ? this.strokePad() + 3 : 3);
+    this.item(kind, 0, 0, 0, x, y, maxW, 0, s, x0, y0, x1, y1, kind === I_STROKETEXT ? this.strokePad() + 3 : 3);
   }
   fillText(s: string, x: number, y: number, maxW?: number): void { s = String(s); if (s) this.text(I_FILLTEXT, s, x, y, maxW ?? -1); }
   strokeText(s: string, x: number, y: number, maxW?: number): void { s = String(s); if (s) this.text(I_STROKETEXT, s, x, y, maxW ?? -1); }
@@ -497,10 +493,12 @@ export class Tiles {
     if (cols !== this.cols || rows !== this.rows) { this.d = new Uint8Array(cols * rows); this.sat = new Int32Array((cols + 1) * (rows + 1)); } else this.d.fill(0);
     this.W = W; this.H = H; this.cols = cols; this.rows = rows; this.count = 0;
   }
+  /** Debug: boxes that were not numbers (a bug upstream; counted, and handled the safe way). */
+  static nan = 0;
   /** Marks the tiles under a box (CSS px). */
   mark(x0: number, y0: number, x1: number, y1: number): void {
     // a box that is not a number is a bug upstream: repaint it all rather than keep stale pixels
-    if (x0 !== x0 || y0 !== y0 || x1 !== x1 || y1 !== y1) { this.all(); return; }
+    if (x0 !== x0 || y0 !== y0 || x1 !== x1 || y1 !== y1) { Tiles.nan++; this.all(); return; }
     if (!(x1 > 0 && y1 > 0 && x0 < this.W && y0 < this.H)) return;
     const c0 = Math.max(0, Math.floor(x0 / TILE)), c1 = Math.min(this.cols - 1, Math.floor(x1 / TILE));
     const r0 = Math.max(0, Math.floor(y0 / TILE)), r1 = Math.min(this.rows - 1, Math.floor(y1 / TILE));
@@ -518,6 +516,8 @@ export class Tiles {
   }
   /** Any dirty tile under the box. */
   any(x0: number, y0: number, x1: number, y1: number): boolean {
+    // (not a number: a bug upstream; sent, rather than skipped)
+    if (x0 !== x0 || y0 !== y0 || x1 !== x1 || y1 !== y1) { Tiles.nan++; return true; }
     if (!(x1 > 0 && y1 > 0 && x0 < this.W && y0 < this.H)) return false;
     const w = this.cols + 1;
     const c0 = Math.max(0, Math.floor(x0 / TILE)), c1 = Math.min(this.cols - 1, Math.floor(x1 / TILE)) + 1;
@@ -549,44 +549,103 @@ export class Tiles {
 }
 
 // ---- the diff ---------------------------------------------------------------------------------------
-/** Marks in `T` what differs between the list the canvas shows (`A`) and the new one (`B`).
- *  Items equal by hash and in the same relative order are kept; in the items that changed, the
- *  pieces equal to their counterpart's (the old item between the same kept neighbours) are kept;
- *  the rest marks its old or new box. */
-/** Segments b0.. of B take the numbers of segments a0.. of A (n floats, the same ops). */
-function carrySegs(A: FList, a0: number, B: FList, b0: number, n: number): boolean {
+/** Two paints, bit for bit (a gradient: its geometry and stops). */
+function samePaint(a: Paint, b: Paint): boolean {
+  if (a === b) return true;
+  if (typeof a === 'string' || typeof b === 'string') return false;
+  if (a.kind !== b.kind || a.a.length !== b.a.length || a.stops.length !== b.stops.length) return false;
+  for (let k = 0; k < a.a.length; k++) if (a.a[k] !== b.a[k]) return false;
+  for (let k = 0; k < a.stops.length; k++) if (a.stops[k] !== b.stops[k]) return false;
+  return true;
+}
+function sameState(a: State, b: State): boolean {
+  if (a === b) return true;
+  if (a.lw !== b.lw || a.alpha !== b.alpha || a.miter !== b.miter || a.dashOff !== b.dashOff || a.cap !== b.cap || a.join !== b.join
+    || a.font !== b.font || a.align !== b.align || a.base !== b.base || a.comp !== b.comp || a.ls !== b.ls || a.dash.length !== b.dash.length) return false;
+  for (let k = 0; k < a.dash.length; k++) if (a.dash[k] !== b.dash[k]) return false;
+  return samePaint(a.fill, b.fill) && samePaint(a.stroke, b.stroke);
+}
+function sameMat(A: FList, ma: number, B: FList, mb: number): boolean {
+  const X = A.mats, Y = B.mats, oa = ma * 6, ob = mb * 6;
+  return X[oa] === Y[ob] && X[oa + 1] === Y[ob + 1] && X[oa + 2] === Y[ob + 2] && X[oa + 3] === Y[ob + 3] && X[oa + 4] === Y[ob + 4] && X[oa + 5] === Y[ob + 5];
+}
+/** Segments a0..a1 of A and b0..b1 of B: the same ops, matrices and numbers, bit for bit. */
+function sameSegs(A: FList, a0: number, a1: number, B: FList, b0: number, b1: number): boolean {
+  const n = a1 - a0;
+  if (n !== b1 - b0) return false;
   const sa = A.sg, sb = B.sg;
+  let la = -1, lb = -1;
   for (let k = 0; k < n;) {
-    const op = sb[b0 + k];
-    if (sa[a0 + k] !== op) return false;
-    const m = NARGS[op];
-    for (let q = 2; q < m + 2; q++) sb[b0 + k + q] = sa[a0 + k + q];
-    k += 2 + m;
+    const op = sa[a0 + k];
+    if (op !== sb[b0 + k]) return false;
+    const ma = sa[a0 + k + 1], mb = sb[b0 + k + 1];
+    if ((ma !== la || mb !== lb) && !sameMat(A, ma, B, mb)) return false;
+    la = ma; lb = mb;
+    const e = k + 2 + NARGS[op];
+    for (let q = k + 2; q < e; q++) if (sa[a0 + q] !== sb[b0 + q]) return false;
+    k = e;
   }
   return true;
 }
-/** B's item j is kept as A's item i (equal at 1/64 px). If it crept under that step (its 1/65536
- *  px hash moved: a post's height growing with its time in state), it takes A's numbers, so the
- *  list stays exactly what the canvas shows and the creep adds up until it shows. False: the two
- *  do not line up (then both are repainted). */
-function carry(A: FList, i: number, B: FList, j: number): boolean {
-  if (A.iF[i] === B.iF[j]) return true;
-  const a0 = A.iP0[i], b0 = B.iP0[j], n = A.iP1[i] - a0;
-  if (n !== B.iP1[j] - b0 || !carrySegs(A, a0, B, b0, n)) return false;
-  for (let k = 0; k < 4; k++) { B.iA[j * 4 + k] = A.iA[i * 4 + k]; B.iB[j * 4 + k] = A.iB[i * 4 + k]; }
-  B.iF[j] = A.iF[i]; B.iQ0[j] = -1;
-  return true;
+function sameClip(A: FList, ca: number, B: FList, cb: number): boolean {
+  while (ca !== 0 && cb !== 0) {
+    if (A.cRule[ca] !== B.cRule[cb] || !sameSegs(A, A.cP0[ca], A.cP1[ca], B, B.cP0[cb], B.cP1[cb])) return false;
+    ca = A.cPar[ca]; cb = B.cPar[cb];
+  }
+  return ca === cb;
+}
+/** Item i of A and item j of B alike in everything but their path, bit for bit: kind, text,
+ *  arguments, state, matrix and clip. (Hashes match at 1/64 px; what the canvas keeps must be
+ *  exactly what a full repaint would draw, so a kept thing is compared number by number.) */
+function sameHead(A: FList, i: number, B: FList, j: number): boolean {
+  if (A.iK[i] !== B.iK[j] || A.iT[i] !== B.iT[j]) return false;
+  const o = i * 4, q = j * 4, X = A.iA, Y = B.iA;
+  if (X[o] !== Y[q] || X[o + 1] !== Y[q + 1] || X[o + 2] !== Y[q + 2] || X[o + 3] !== Y[q + 3]) return false;
+  return sameState(A.states[A.iS[i]], B.states[B.iS[j]]) && sameMat(A, A.iM[i], B, B.iM[j]) && sameClip(A, A.iC[i], B, B.iC[j]);
+}
+/** Marks item i's box (all of it). */
+function markItem(T: Tiles, L: FList, i: number): void {
+  const o = i * 4;
+  T.mark(L.iB[o], L.iB[o + 1], L.iB[o + 2], L.iB[o + 3]);
+}
+/** Marks piece q's box. (Read through the list: making pieces grows its arrays.) */
+function markPiece(T: Tiles, L: FList, q: number): void {
+  const o = q * 4;
+  T.mark(L.qB[o], L.qB[o + 1], L.qB[o + 2], L.qB[o + 3]);
+}
+/** Items i of A and j of B are equal by key (1/64 px) and kept in order: what moved under that
+ *  step is marked, piece by piece where they line up (a post growing with its time in state marks
+ *  its own crate, not its whole batch), else both boxes whole. */
+function keepItem(A: FList, i: number, B: FList, j: number, T: Tiles): void {
+  if (sameHead(A, i, B, j)) {
+    if (sameSegs(A, A.iP0[i], A.iP1[i], B, B.iP0[j], B.iP1[j])) return;
+    piecesOf(A, i); piecesOf(B, j);
+    const qa = A.iQ0[i], qb = B.iQ0[j], n = A.iQ1[i] - qa;
+    if (n === B.iQ1[j] - qb) {
+      for (let k = 0; k < n; k++) {
+        if (sameSegs(A, A.qP0[qa + k], A.qP1[qa + k], B, B.qP0[qb + k], B.qP1[qb + k])) continue;
+        if (diffDbg.on) diffDbg.marks.push(['crept', j, qb + k]);
+        markPiece(T, B, qb + k); markPiece(T, A, qa + k);
+      }
+      return;
+    }
+  }
+  if (diffDbg.on) diffDbg.marks.push(['unlike', j, -1]);
+  markItem(T, B, j); markItem(T, A, i);
 }
 
+/** Marks in `T` what differs between the list the canvas shows (`A`) and the new one (`B`).
+ *  Items equal by hash and in the same relative order are kept (what moved in them under the
+ *  hash's step marked: `keepItem`); in the items that changed, the pieces equal to their
+ *  counterpart's (the old item between the same kept neighbours) are kept; the rest marks its
+ *  old or new box. Afterwards a pixel the canvas keeps is drawn by the same pieces, bit for bit,
+ *  in the same order, in both lists (verifyExact). */
 export const diffDbg: { on: boolean; marks: [string, number, number][] } = { on: false, marks: [] };
 export function diff(A: FList, B: FList, T: Tiles): void {
-  const na = A.n, nb = B.n, AK = A.iKey, BK = B.iKey;
-  const AB = A.iB, BB = B.iB; // (the pieces' arrays grow as they are made: read them late)
-  const keepPair = (i: number, j: number) => {
-    if (carry(A, i, B, j)) return;
-    T.mark(BB[j * 4], BB[j * 4 + 1], BB[j * 4 + 2], BB[j * 4 + 3]);
-    T.mark(AB[i * 4], AB[i * 4 + 1], AB[i * 4 + 2], AB[i * 4 + 3]);
-  };
+  // (no typed array of a list is held across piecesOf, which grows the pieces' arrays: every
+  // read goes through the list)
+  const na = A.n, nb = B.n, AK = A.iKey, BK = B.iKey; // keys: made by the recorder, never grown here
+  const keepPair = (i: number, j: number) => keepItem(A, i, B, j, T);
   let p = 0;
   while (p < na && p < nb && AK[p] === BK[p]) { keepPair(p, p); p++; }
   if (p === na && p === nb) return;
@@ -622,10 +681,8 @@ export function diff(A: FList, B: FList, T: Tiles): void {
   for (let j = 0; j < mb; j++) {
     if (mo[j] < 0) continue;
     if (keep[j]) { keepPair(mo[j], j + b0); continue; }
-    const jb = (j + b0) * 4, ia = mo[j] * 4;
     if (diffDbg.on) diffDbg.marks.push(['moved', j + b0, -1]);
-    T.mark(BB[jb], BB[jb + 1], BB[jb + 2], BB[jb + 3]);
-    T.mark(AB[ia], AB[ia + 1], AB[ia + 2], AB[ia + 3]);
+    markItem(T, B, j + b0); markItem(T, A, mo[j]);
   }
   // 3. the changed items' pieces: each new item takes as counterpart one old changed item between
   //    the same kept neighbours (in order); its pieces equal to the counterpart's are kept
@@ -647,7 +704,7 @@ export function diff(A: FList, B: FList, T: Tiles): void {
     if (mo[j] >= 0) continue; // moved: marked whole above
     const jj = j + b0, hiOld = nextKept[j];
     piecesOf(B, jj);
-    let cp = -1;
+    let cp = -1, headOf = -1, headOk = false;
     for (let q = B.iQ0[jj]; q < B.iQ1[jj]; q++) {
       let c = qHead.get(B.qKey[q]) ?? -1, hit = -1;
       while (c >= 0) {
@@ -657,22 +714,21 @@ export function diff(A: FList, B: FList, T: Tiles): void {
       }
       if (hit >= 0) {
         usedQ[hit] = 1;
-        // the kept piece takes the shown numbers (see carry)
-        const na0 = A.qP0[hit], nn = A.qP1[hit] - na0;
-        if (nn > 0 && (nn !== B.qP1[q] - B.qP0[q] || !carrySegs(A, na0, B, B.qP0[q], nn))) {
-          const o = q * 4, BQ = B.qB, AQ = A.qB, oa = hit * 4;
-          T.mark(BQ[o], BQ[o + 1], BQ[o + 2], BQ[o + 3]); T.mark(AQ[oa], AQ[oa + 1], AQ[oa + 2], AQ[oa + 3]);
+        // kept only if it is the same, bit for bit (its item's state, matrix and clip too)
+        const it = qItem[hit];
+        if (headOf !== it) { headOf = it; headOk = sameHead(A, it, B, jj); }
+        if (!headOk || !sameSegs(A, A.qP0[hit], A.qP1[hit], B, B.qP0[q], B.qP1[q])) {
+          if (diffDbg.on) diffDbg.marks.push(['crept', jj, q]);
+          markPiece(T, B, q); markPiece(T, A, hit);
         }
-        B.iF[jj] ^= 0x5bd1e995;
         if (cp < 0) { cp = qItem[hit]; taken[cp - a0] = 1; floorOld = cp; }
-      } else { const o = q * 4, BQB = B.qB; if (diffDbg.on) diffDbg.marks.push(['new', jj, q]); T.mark(BQB[o], BQB[o + 1], BQB[o + 2], BQB[o + 3]); }
+      } else { if (diffDbg.on) diffDbg.marks.push(['new', jj, q]); markPiece(T, B, q); }
     }
   }
   // the old changed items' pieces nobody kept
-  const AQB = A.qB;
   for (let i = a0; i < a1; i++) {
     if (usedA[i - a0]) continue;
-    for (let q = A.iQ0[i]; q < A.iQ1[i]; q++) if (!usedQ[q]) { const o = q * 4; if (diffDbg.on) diffDbg.marks.push(['old', i, q]); T.mark(AQB[o], AQB[o + 1], AQB[o + 2], AQB[o + 3]); }
+    for (let q = A.iQ0[i]; q < A.iQ1[i]; q++) if (!usedQ[q]) { if (diffDbg.on) diffDbg.marks.push(['old', i, q]); markPiece(T, A, q); }
   }
 }
 
@@ -685,7 +741,9 @@ class Replay {
   private st: Partial<State> = {};
   private mat = -1;
   private clip = 0;
-  constructor(private ctx: Ctx2D, private L: FList, private flushN: number) {}
+  /** `split`: every subpath filled or stroked as a path of its own (debug: the bench's pixel check;
+   *  a rasteriser then draws each subpath alike whatever its siblings are). */
+  constructor(private ctx: Ctx2D, private L: FList, private flushN: number, private split = false) {}
   /** After a restore the context's state is the saved one: forget what was set. */
   private forget(): void { this.st = {}; this.mat = -1; }
   private paint(p: Paint): string | CanvasGradient {
@@ -777,6 +835,20 @@ class Replay {
     if (T && !T.any(B[o], B[o + 1], B[o + 2], B[o + 3])) return;
     const ctx = this.ctx, kind = L.iK[i], s = L.states[L.iS[i]];
     const A = L.iA, a = A[o], b = A[o + 1], c = A[o + 2], d = A[o + 3];
+    if ((kind === I_FILL || kind === I_STROKE) && this.split && L.iDash[i] !== 1) {
+      piecesOf(L, i);
+      const q0 = L.iQ0[i], q1 = L.iQ1[i];
+      let started = false;
+      for (let q = q0; q < q1; q++) {
+        if (T && q1 - q0 > 1 && !T.any(L.qB[q * 4], L.qB[q * 4 + 1], L.qB[q * 4 + 2], L.qB[q * 4 + 3])) continue;
+        if (!started) { started = true; this.useClip(L.iC[i]); this.state(s, kind); }
+        ctx.beginPath(); this.segs_(L.qP0[q], L.qP1[q]); this.setMat(L.iM[i]);
+        if (kind === I_FILL) ctx.fill(a === 1 ? 'evenodd' : 'nonzero'); else ctx.stroke();
+        this.ops += 2;
+      }
+      if (started) this.drawn++;
+      return;
+    }
     if (kind === I_FILL || kind === I_STROKE) {
       const segs0 = this.segs;
       if (!T) {
@@ -819,8 +891,17 @@ class Replay {
  *  the tiles that changed (whole when what it shows is unknown, or most of it changed). */
 export { Replay as FloorReplay };
 export class FloorCache {
+  /** Dirty tiles a flush band holds at least (a step sends whole bands; an item under several
+   *  bands is sent with each). */
+  static groupTiles = 48;
   /** Debug: every partial flush checks the diff's invariant (verifyDiff) and logs it. */
   static verify = false;
+  /** Debug (the bench's pixel check): every subpath painted as a path of its own (Replay). */
+  static split = false;
+  /** Debug: every partial flush checks the diff's invariant exactly (verifyExact; the bench). */
+  static verifyExact = false;
+  /** What the exact checks found: flushes checked, ones that failed, the first failure. */
+  static readonly verified = { n: 0, bad: 0, first: '', pieces: 0 };
   /** Debug: log every partial flush's rects. */
   static logRects = false;
   private rec = new FRec();
@@ -839,18 +920,59 @@ export class FloorCache {
   get shownList(): FList | null { return this.shown; }
   /** Records a repaint W×H: returns the context the layers draw into. */
   begin(W: number, H: number, measurer: Ctx2D): Ctx2D {
+    if (this.plan) { this.plan = null; this.shown = null; } // a flush half sent: the canvas shows neither list
     const free = this.lists[0] === this.shown ? this.lists[1] : this.lists[0];
     this.rec.L = free;
     this.rec.measurer = measurer;
     this.rec.begin(W, H);
+    free.rec = ++this.recN;
     return this.rec as unknown as Ctx2D;
   }
+  private recN = 0;
+  /** Paints list `L` whole into `ctx` (cleared first); returns ops sent. */
+  private whole(ctx: Ctx2D, L: FList, split = FloorCache.split): number {
+    const rp = new Replay(ctx, L, ++this.seq, split);
+    ctx.resetTransform();
+    ctx.clearRect(0, 0, L.W, L.H);
+    for (let i = 0; i < L.n; i++) rp.item(i, null);
+    rp.end();
+    this.last.drawn += rp.drawn; this.last.segs += rp.segs;
+    return rp.ops + 2;
+  }
+  /** Debug (the bench's pixel check): the last recording, painted whole into `ctx` (cleared). */
+  paintRecording(ctx: Ctx2D): void {
+    const d = this.last.drawn, s = this.last.segs;
+    this.whole(ctx, this.rec.L, false);
+    this.last.drawn = d; this.last.segs = s;
+  }
+  /** Debug (the bench): the last flush's dirty tiles. */
+  get dirty(): Tiles { return this.T; }
+  /** Debug (the bench's pixel check): what the canvas shows, as a fresh whole repaint of its list
+   *  into `ctx`. False: the canvas shows no list (painted directly, or a flush half sent). */
+  paintShown(ctx: Ctx2D): boolean {
+    const L = this.shown;
+    if (!L || this.plan) return false;
+    const d = this.last.drawn, s = this.last.segs;
+    this.whole(ctx, L);
+    this.last.drawn = d; this.last.segs = s;
+    return true;
+  }
   /** The canvas was painted directly: what it shows is not recorded. */
-  invalidate(): void { this.shown = null; }
+  invalidate(): void { this.shown = null; this.plan = null; }
   get valid(): boolean { return this.shown !== null; }
 
-  /** Sends `ctx` what differs between the canvas and the last recording; returns ops sent. */
+  /** Sends `ctx` what differs between the canvas and the last recording, all of it now; returns
+   *  ops sent. */
   flush(ctx: Ctx2D, forceWhole = false): number {
+    if (!this.prepare(forceWhole)) return 0;
+    this.step(ctx, Infinity);
+    return this.last.ops;
+  }
+
+  /** Diffs the last recording against what the canvas shows and plans the flush: the dirty tiles
+   *  in bands of rows (GROUP_TILES each), sent by `step`, a few a frame. False: nothing to send
+   *  (the canvas shows the recording already). */
+  prepare(forceWhole = false): boolean {
     const B = this.rec.L, A = this.shown, T = this.T, last = this.last;
     const W = B.W, H = B.H;
     this.flushN++;
@@ -858,42 +980,145 @@ export class FloorCache {
     last.items = B.n; last.pieces = B.nq; last.drawn = 0; last.ops = 0; last.segs = 0;
     T.reset(W, H);
     last.of = T.total;
+    this.plan = null;
     let whole = forceWhole || !A || A.W !== W || A.H !== H;
     if (!whole) {
       diff(A!, B, T);
       if (FloorCache.verify && T.count) console.log(`floorcache: verify ${this.flushN} tiles ${T.count}: ${verifyDiff(A!, B, T) || 'ok'}`);
-      if (T.count === 0) { this.shown = B; last.whole = false; last.tiles = 0; this.totals.empty++; return 0; }
+      if (FloorCache.verifyExact && T.count <= WHOLE_SHARE * T.total) {
+        const V = FloorCache.verified, r = verifyExact(A!, B, T);
+        V.n++; V.pieces += r.pieces;
+        if (r.bad) { V.bad++; if (!V.first) V.first = `flush ${this.flushN}: ${r.bad}`; if (FloorCache.verify) console.log(`floorcache: exact ${this.flushN}: ${r.bad}`); }
+      }
+      if (T.count === 0) { this.shown = B; last.whole = false; last.tiles = 0; this.totals.empty++; return false; }
       if (T.count > WHOLE_SHARE * T.total) whole = true;
     }
     last.whole = whole;
     last.tiles = whole ? T.total : T.count;
-    if (whole) this.totals.whole++;
-    const rp = new Replay(ctx, B, this.flushN);
-    ctx.resetTransform();
-    if (whole) {
-      ctx.clearRect(0, 0, W, H);
-      for (let i = 0; i < B.n; i++) rp.item(i, null);
-      rp.end();
-    } else {
-      this.totals.partial++;
-      T.build();
-      const R = T.rects();
-      if (FloorCache.logRects) console.log(`floorcache: flush ${this.flushN} rects ${JSON.stringify(R.map((v) => Math.round(v)))}`);
-      for (let k = 0; k < R.length; k += 4) ctx.clearRect(R[k], R[k + 1], R[k + 2] - R[k], R[k + 3] - R[k + 1]);
-      ctx.save();
-      ctx.beginPath();
-      for (let k = 0; k < R.length; k += 4) ctx.rect(R[k], R[k + 1], R[k + 2] - R[k], R[k + 3] - R[k + 1]);
-      ctx.clip();
-      for (let i = 0; i < B.n; i++) rp.item(i, T);
-      rp.end();
-      ctx.restore();
-      rp.ops += 4 + R.length / 2;
+    // the canvas shows neither list until the last step: a move meanwhile repaints it all
+    this.shown = null;
+    if (whole) { this.totals.whole++; this.plan = { B, whole, bands: [], next: 0, cand: [] }; return true; }
+    this.totals.partial++;
+    // the canvas's corner tiles go with every band (see step)
+    T.mark(0, 0, 1, 1); T.mark(W - 1, H - 1, W, H);
+    T.build();
+    // the items under any dirty tile (each band looks at these only), and the bands
+    const cand: number[] = [], BB = B.iB;
+    for (let i = 0; i < B.n; i++) { const o = i * 4; if (T.any(BB[o], BB[o + 1], BB[o + 2], BB[o + 3])) cand.push(i); }
+    const bands: number[] = [], d = T.d, cols = T.cols;
+    let r0 = 0, n = 0;
+    for (let r = 0; r < T.rows; r++) {
+      for (let c = 0, i = r * cols; c < cols; c++, i++) n += d[i];
+      if (n >= FloorCache.groupTiles || r === T.rows - 1) { if (n) bands.push(r0, r + 1); r0 = r + 1; n = 0; }
     }
-    this.shown = B;
-    last.drawn = rp.drawn; last.ops = rp.ops; last.segs = rp.segs;
-    this.totals.ops += rp.ops;
-    return rp.ops;
+    this.plan = { B, whole, bands, next: 0, cand };
+    return true;
   }
+
+  /** A flush is planned and not all sent. */
+  get pending(): boolean { return this.plan !== null; }
+
+  /** Sends the planned flush's next bands until `budget` ops went out this call (at least one);
+   *  true once it is all out (the canvas then shows the recording). */
+  step(ctx: Ctx2D, budget: number): boolean {
+    const P = this.plan, last = this.last;
+    if (!P) return true;
+    const B = P.B, W = B.W, H = B.H;
+    let ops = 0;
+    if (P.whole) {
+      ops += this.whole(ctx, B);
+    } else {
+      const G = this.G;
+      while (P.next < P.bands.length && ops < budget) {
+        const r0 = P.bands[P.next], r1 = P.bands[P.next + 1];
+        P.next += 2;
+        // the band's tiles, and the canvas's two corner tiles: a clip whose bounds are the canvas's
+        // leaves the rasteriser as it is unclipped (Skia clips a path's edges to the clip's bounds
+        // when the path is not inside them, which moves its antialiasing by up to 15 levels)
+        G.reset(W, H);
+        const T = this.T, cols = T.cols, end = G.d.length - 1;
+        for (let i = r0 * cols; i < r1 * cols; i++) if (T.d[i]) { G.d[i] = 1; G.count++; }
+        if (!G.d[0]) { G.d[0] = 1; G.count++; }
+        if (!G.d[end]) { G.d[end] = 1; G.count++; }
+        G.build();
+        const R = G.rects();
+        if (FloorCache.logRects) console.log(`floorcache: flush ${this.flushN} rects ${JSON.stringify(R.map((v) => Math.round(v)))}`);
+        const rp = new Replay(ctx, B, ++this.seq, FloorCache.split);
+        ctx.resetTransform();
+        for (let k = 0; k < R.length; k += 4) ctx.clearRect(R[k], R[k + 1], R[k + 2] - R[k], R[k + 3] - R[k + 1]);
+        ctx.save();
+        ctx.beginPath();
+        for (let k = 0; k < R.length; k += 4) ctx.rect(R[k], R[k + 1], R[k + 2] - R[k], R[k + 3] - R[k + 1]);
+        ctx.clip();
+        for (const i of P.cand) rp.item(i, G);
+        rp.end();
+        ctx.restore();
+        last.drawn += rp.drawn; last.segs += rp.segs;
+        ops += rp.ops + 5 + R.length / 2;
+      }
+    }
+    last.ops += ops;
+    this.totals.ops += ops;
+    this.stepOps = ops;
+    if (P.whole || P.next >= P.bands.length) { this.plan = null; this.shown = B; return true; }
+    return false;
+  }
+  /** Ops the last `step` sent. */
+  stepOps = 0;
+  private plan: { B: FList; whole: boolean; bands: number[]; next: number; cand: number[] } | null = null;
+  private G = new Tiles();
+  private seq = 0;
+}
+
+/** Debug (the bench): the diff's invariant, exactly. Every piece that touches a clean tile (its box,
+ *  pad included) is painted the same in both lists, in the same order: the same kind, text and
+ *  arguments, the same state (every field), the same matrices and clips, the same segments, every
+ *  number bit for bit. Then a pixel the flush keeps cannot show anything the new list does not
+ *  (only a rasteriser that draws a subpath differently beside other subpaths can move it). */
+export function verifyExact(A: FList, B: FList, T: Tiles): { pieces: number; bad: string } {
+  const paint = (p: Paint): string => (typeof p === 'string' ? p : `g${p.kind}:${p.a.join(',')}:${p.stops.join(',')}`);
+  const mat = (L: FList, m: number): string => { const o = m * 6; return `${L.mats[o]},${L.mats[o + 1]},${L.mats[o + 2]},${L.mats[o + 3]},${L.mats[o + 4]},${L.mats[o + 5]}`; };
+  const segs = (L: FList, p0: number, p1: number): string => {
+    let out = '';
+    for (let k = p0; k < p1;) { const op = L.sg[k], n = NARGS[op]; out += `${op}@${mat(L, L.sg[k + 1])}`; for (let j = 0; j < n; j++) out += `,${L.sg[k + 2 + j]}`; out += ';'; k += 2 + n; }
+    return out;
+  };
+  const clipOf = (L: FList, c: number): string => { let out = ''; for (let k = c; k !== 0; k = L.cPar[k]) out += `[${L.cRule[k]}:${segs(L, L.cP0[k], L.cP1[k])}]`; return out; };
+  const seq = (L: FList): { sig: string; i: number }[] => {
+    const out: { sig: string; i: number }[] = [];
+    for (let i = 0; i < L.n; i++) {
+      piecesOf(L, i);
+      let head = '';
+      for (let q = L.iQ0[i]; q < L.iQ1[i]; q++) {
+        const o = q * 4, x0 = L.qB[o], y0 = L.qB[o + 1], x1 = L.qB[o + 2], y1 = L.qB[o + 3];
+        if (!(x1 > 0 && y1 > 0 && x0 < T.W && y0 < T.H)) continue;
+        const c0 = Math.max(0, Math.floor(x0 / TILE)), c1 = Math.min(T.cols - 1, Math.floor(x1 / TILE));
+        const r0 = Math.max(0, Math.floor(y0 / TILE)), r1 = Math.min(T.rows - 1, Math.floor(y1 / TILE));
+        let clean = false;
+        for (let r = r0; r <= r1 && !clean; r++) for (let c = c0; c <= c1; c++) if (!T.d[r * T.cols + c]) { clean = true; break; }
+        if (!clean) continue;
+        if (!head) {
+          const s = L.states[L.iS[i]];
+          head = `${L.iK[i]}|${L.iT[i] ?? ''}|${L.iA[i * 4]},${L.iA[i * 4 + 1]},${L.iA[i * 4 + 2]},${L.iA[i * 4 + 3]}|${paint(s.fill)}|${paint(s.stroke)}|${s.lw}|${s.cap}|${s.join}|${s.miter}|${s.font}|${s.align}|${s.base}|${s.alpha}|${s.comp}|${s.ls}|${s.dash.join(',')}|${s.dashOff}|${mat(L, L.iM[i])}|${clipOf(L, L.iC[i])}|`;
+        }
+        out.push({ sig: head + segs(L, L.qP0[q], L.qP1[q]), i });
+      }
+    }
+    return out;
+  };
+  const a = seq(A), b = seq(B);
+  const n = Math.min(a.length, b.length);
+  for (let k = 0; k < n; k++) {
+    const x = a[k].sig, y = b[k].sig;
+    if (x === y) continue;
+    let c = 0;
+    while (c < x.length && x[c] === y[c]) c++;
+    const at = Math.max(0, x.lastIndexOf(';', c - 1) + 1);
+    const ia = a[k].i, ib = b[k].i;
+    return { pieces: n, bad: `[keys ${A.iKey[ia] === B.iKey[ib] ? 'equal' : 'differ'}, pieces ${A.iQ1[ia] - A.iQ0[ia]} / ${B.iQ1[ib] - B.iQ0[ib]}, segs ${A.iP1[ia] - A.iP0[ia]} / ${B.iP1[ib] - B.iP0[ib]}] piece ${k} of ${n}: old item ${a[k].i} · new item ${b[k].i} (${x.slice(0, x.indexOf('|', 40))}…) differ at char ${c}: old …${x.slice(at, c + 60)} · new …${y.slice(at, c + 60)}` };
+  }
+  if (a.length !== b.length) return { pieces: n, bad: `lengths ${a.length} vs ${b.length}` };
+  return { pieces: n, bad: '' };
 }
 
 /** Debug (the bench): the diff's invariant. Every piece that touches a clean tile must be painted
