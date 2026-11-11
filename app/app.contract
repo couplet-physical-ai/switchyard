@@ -88,6 +88,15 @@ component App
   derive replayOk = match replayed { case some(r) => r.ok, case none => false }
   derive hovering = match hov { case some(h) => h.kind != "", case none => false }
   derive facNow = match fac { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }
+  // fab-lens: the coffee check (src/factory/coffee.ts). The last visit per server, kept as the
+  // server is: marked after 2 min of looking at the floor, every minute after, and on leaving it.
+  state visits = "" persist
+  state looking = false
+  state visitN = 0
+  state visitTry = 0
+  mutation visit as shape Ack then afterVisit
+  derive visitNow = match visit { case some(v) => v.status, case none => "" }
+  resource coffee = coffeeOpen(server, visits, conn.seq, conn.ok, ov.tick) as shape Ack else empty(ok=false, status="")
   members "./views/mainlines.contract"
   members "./views/prs.contract"
   members "./views/fleet.contract"
@@ -117,6 +126,15 @@ component App
     after(30000, retry)
   task steady when feed.status == "live" and retries > 0
     after(20000, steadyAgain)
+  // fab-lens: the coffee check's last visit
+  task coffeeLook when conn.ok and here == "factory" and not looking key=server
+    after(20000, startLooking)
+  task coffeeFirst when looking and here == "factory" and visitTry == 0 key=server
+    after(100000, markVisit)
+  task coffeeAgain when looking and here == "factory" and visitTry > 0 key=`${visitTry}`
+    after(60000, markVisit)
+  task coffeeLeave when looking and here != "factory"
+    after(1, leaveFactory)
 
   action tick
     clockMs = performanceNow()
@@ -127,6 +145,18 @@ component App
     gen = gen + 1
   action steadyAgain
     retries = 0
+  action startLooking
+    looking = true
+  action markVisit
+    visitTry = visitTry + 1
+    send visit = coffeeMark(server, visits)
+  action leaveFactory
+    looking = false
+    markVisit()
+  action afterVisit
+    if visitNow != ""
+      visits = visitNow
+      visitN = visitN + 1
   action follow(url: string)
     nav = go(nav, url)
   action back
@@ -177,15 +207,20 @@ component App
   action facMove(e: PointerEvent)
     send fac = facPointer("move", e.offsetX, e.offsetY, e.buttons)
   action facUp(e: PointerEvent)
-    send fac = facPointer("up", e.offsetX, e.offsetY, e.buttons)
+    send fac = facPointer("up", e.offsetX, e.offsetY, e.buttons + (e.shiftKey ? 256 : 0))
+  // fab-lens: Esc / ⌫ walk back up the lens stack, ? shows the key
   action facKey(k: string)
-    send fac = facPointer(`key:${k}`, 0, 0, 0)
+    if k == "Escape" or k == "Backspace" or k == "?"
+      preventDefault()
+      send fac = facPointer(`key:${k}`, 0, 0, 0)
   action facWheeled(e: WheelEvent)
     facWheel = facWheel + e.deltaY
     preventDefault()
   action afterFac
     if facNow.kind == "replay" or facNow.kind == "replay24"
       startReplay()
+    else if facNow.kind == "replayAt"
+      send replayed = replayAt(clockMs, facNow.id)
     else if facNow.kind == "live"
       goLive()
 
@@ -263,7 +298,9 @@ component App
         column navigationKey=`${e.id}` position="absolute" inset=0 display="flex" flex-direction="column"
           TopBar(here=e.name, goTo=goTo, openPalette=openPalette)
           if e.name == "factory"
-            column flex=1 min-height=0 position="relative" testId="factory"
+            column flex=1 min-height=0 position="relative" testId="factory" key=facKey outline="none"
+              // fab-lens: the coffee check's glance in words (the canvas draws it)
+              text coffee.status position="absolute" left=0 top=0 width=1 height=1 overflow="hidden" opacity=0 testId="coffee"
               canvas surface=factoryFloor(ov.facKey, facNow.route, facWheel) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="factory-floor"
               canvas surface=factoryLive(reduced ? "reduced" : "full", facNow.route, facWheel, facPulse) position="absolute" left=0 top=0 width="100%" height="100%"
                 tabindex=0 role="img" aria-label=ov.summary pointerdown=facDown pointermove=facMove pointerup=facUp wheel=facWheeled key=facKey touch-action="none" testId="factory-live"

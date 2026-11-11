@@ -69,6 +69,8 @@ shape Overview
   facCity: number
   facCars: number
   facBays: number
+  facLens: number
+  facLensTop: string
 
 shape SearchHit
   kind: string

@@ -26,6 +26,9 @@ import { FacHud } from './hud.ts';
 import { Cam, LU, LV } from './iso.ts';
 import { R_BEAM, R_DOOR, R_RING, Ripples, arrival, beltSpeedPx, blink, breathe, flash } from './motion.ts';
 import { FACTOR, FactoryStress } from './stress.ts';
+import { Lenses } from './lens.ts'; // fab-lens
+import { Coffee } from './coffee.ts'; // fab-lens
+import type { FactoryFx } from './lens.ts'; // fab-lens
 
 // ---- palette (canvas-only shades of the app's ramp) ------------------------------------------
 const F = {
@@ -170,10 +173,11 @@ export class Factory {
   get world(): World { return this.tl.world; }
 
   /** What the floor holds (tests read these): city blocks, cars on the rails, busy bays. */
-  counts(): { facCity: number; facCars: number; facBays: number } {
+  counts(): { facCity: number; facCars: number; facBays: number; facLens: number; facLensTop: string } {
     let bays = 0;
     for (const b of this.bays) if (b.pid) bays++;
-    return { facCity: this.blocks.length, facCars: this.stat.cars, facBays: bays };
+    const top = this.lens.topLens;
+    return { facCity: this.blocks.length, facCars: this.stat.cars, facBays: bays, facLens: this.lens.stack.length, facLensTop: top ? `${top.kind}:${top.id}` : '' };
   }
 
   /** One line of what the renderer did (drives read it as `state ov.facStats`). */
@@ -294,6 +298,9 @@ export class Factory {
 
   private lastBay = new Map<string, Bay>();
   private flown = false;
+  /** fab-lens: every object is a lens (lens.ts); what changed since you last looked (coffee.ts). */
+  readonly lens = new Lenses(this);
+  readonly coffee = new Coffee(this);
 
   private spawn(id: string, kind: Crate['kind'], route: Pt[], t: number, dur: number, red: boolean, label: string, org: string): Crate {
     const cum = [0];
@@ -414,6 +421,7 @@ export class Factory {
 
   // ---- pointer, camera -------------------------------------------------------------------------
   pointer(kind: string, x: number, y: number, buttons: number, t: number): HitBox | null {
+    if (kind.startsWith('key:')) return this.lens.key(kind.slice(4), t); // fab-lens: Esc/⌫ walk back, ? the key
     this.px = x; this.py = y;
     if (kind === 'down') { this.drag = { x, y, moved: false }; return null; }
     if (kind === 'move') {
@@ -428,13 +436,16 @@ export class Factory {
       }
       const h = this.hitAt(x, y);
       this.hoverId = h ? h.id : '';
-      return h;
+      return this.lens.hover(h); // fab-lens: a hover never presses (the strip's buttons act on up)
     }
     if (kind === 'up') {
       const d = this.drag;
       this.drag = null;
       if (d?.moved) return null;
       const h = this.hitAt(x, y);
+      // fab-lens: a click pushes a lens (shift-click compares; the pointer's buttons carry shift as 256)
+      const lh = this.lens.click(h, (buttons & 256) !== 0, t);
+      if (lh !== undefined) return lh;
       if (!h) { this.select('', ''); return null; }
       if (h.kind === 'zoomin') this.cam.zoomAt(1.5, this.cam.W / 2, this.cam.H / 2);
       else if (h.kind === 'zoomout') this.cam.zoomAt(1 / 1.5, this.cam.W / 2, this.cam.H / 2);
@@ -741,8 +752,6 @@ export class Factory {
     if (!idle) this.drawCars(g, lo);
     // the city: one block per app, a row (one v) at a time, far to near, batched (DESIGN.md "LOD")
     this.drawCity(g, lo, idle);
-    // the key, in the floor's empty front-left corner (a fit, nothing selected)
-    if (!idle && !this.selected && this.cam.zoom < 1.2 && !lo) this.drawLegend(g, f);
     const st = this.stat;
     st.floorDraws++;
     st.floorOps = g.ops;
@@ -987,6 +996,7 @@ export class Factory {
     ctx.resetTransform();
     ctx.clearRect(0, 0, f.width, f.height);
     this.hits = [];
+    this.lens.under(g, t); // fab-lens: every floor object's hit, parked failures, fresh glows, smoke, beacons
     this.labels = [];
     const st = this.stat;
     const sec = Math.floor(t / 1000);
@@ -1196,6 +1206,7 @@ export class Factory {
     const selP = this.selPipeline();
     // 9. labels: stage titles in the band above the floor's back edge, with leader lines
     this.drawLabels(g, detail, now);
+    this.lens.draw(g, ctx, f, t); // fab-lens: the lens on top dims the rest and tells its story
     if (this.selected) this.drawJourney(g, ctx, f, selP, t);
     // failures riding home are named (failure is the main character), under the conveyor
     let tags = 0;
@@ -1214,6 +1225,7 @@ export class Factory {
     st.labels = this.labels.length;
     // 10. the drawer, the time strip, the camera controls
     if (this.selected) this.drawDrawer(g, f, selP, now);
+    if (this.lens.legacyKey && !this.selected && this.cam.zoom < 1.2) this.drawLegend(g, f); // fab-lens: the key is on demand (?)
     // hover: quick facts beside the pointer
     if (this.hoverId && !this.drag) {
       const h = this.hitAt(this.px, this.py);
@@ -1240,6 +1252,7 @@ export class Factory {
       this.loggedCar = `${car0.sha}|${this.cam.key}`;
       console.log(`factory: newest car ${car0.repo}@${car0.sha} at ${Math.round(cam.x(RAIL_U1 - 12, RAIL_V[0]))},${Math.round(cam.y(RAIL_U1 - 12, RAIL_V[0], 3))}`);
     }
+    this.lens.top(g, f, t); // fab-lens: breadcrumb, story/compare card, the coffee glance, the key
     this.lastT = t;
     st.hits = this.hits.length;
     // the frame's cost (the cost model, budget.ts) and the ladder; the HUD draws last and
@@ -1467,6 +1480,11 @@ export class Factory {
     const seg = cr.cum[i] - cr.cum[i - 1] || 1;
     const k = clamp((d - cr.cum[i - 1]) / seg, 0, 1);
     return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
+  }
+
+  /** One car (a lens draws a lit one over the floor's batched cars). */
+  private car(g: Gfx, u: number, v: number, red: boolean, settled: boolean): void {
+    this.box(g, u - 4, v - 4, 8, 8, 5, red ? F.redTop : settled ? '#6E6A62' : F.crateTop, red ? F.redSide : settled ? '#4A4844' : F.crateSide, red ? F.redFront : settled ? '#3E3C38' : F.crateFront, red ? '#E08088' : settled ? '#8A867E' : '#F0CC8A', this.gl.hair);
   }
 
   private ring(g: Gfx, u: number, v: number, r: number, z = 0): void {
@@ -1943,6 +1961,7 @@ export class Factory {
     const ph = mode === 'replay' ? 1 - (tl.liveNow() - now) / (24 * HOUR_MS) : 1;
     const px = sx + clamp(ph, 0, 1) * sw;
     g.vline(g.crisp(px), sy - 3, sy + sh + 3, C.packet, 1.5);
+    this.lens.strip(g, sx, sy, sw, sh, now); // fab-lens: a tick jumps the replay there
     g.text('24 h ago', sx, sy + sh + 15, C.ink3, 12);
     g.text(mode === 'live' ? 'now' : clockWords(now, this.offsetMin), sx + sw, sy + sh + 15, mode === 'live' ? C.ink3 : C.amberText, 12, false, 'right');
     // the fleet sentence: failure first
@@ -1971,6 +1990,8 @@ export class Factory {
   }
 
   private facts(h: HitBox): string[] {
+    const lf = this.lens.preview(h); // fab-lens: ≤ 3 short lines per kind
+    if (lf) return lf;
     const w = this.world, now = this.tl.playhead;
     if (h.kind === 'pipeline') {
       const p = w.pipelines.get(h.id);
@@ -2010,12 +2031,27 @@ export class Factory {
     const lod = this.cam.zoom >= 2.6 ? 'apps' : this.cam.zoom >= 1.6 ? 'org districts' : 'fleet';
     // the zoom and its level of detail (how to pan and zoom needs no permanent words)
     const words: [string, string][] = [[`${Math.round(this.cam.zoom * 100)}%  ${lod}`, C.ink2]];
+    if (this.lens.legacyKey) words.push(['  drag to pan · wheel to zoom · click a crate', C.ink3]); // fab-lens: the coffee glance takes the hint's place
     const wv = words.reduce((a, [s]) => a + g.width(s, SMALL), 0);
     g.fillRect(x + 80, y, wv + 12, 22, withAlpha(C.canvas, 0.86));
     g.runs(words, x + 86, y + 15, SMALL);
     void f;
   }
+
+  // ---- fab-lens hooks: the floor's plan and primitives for src/factory/lens.ts and coffee.ts ----
+  /** The internals the lens system draws and picks with, typed there by indexed access
+   *  (`Factory['box']`), so a rename here fails the build there instead of a draw. */
+  get fx(): FactoryFx { return this as unknown as FactoryFx; }
+  readonly plan = PLAN;
 }
+
+/** The floor plan's constants (world units), for the lens system. */
+const PLAN = {
+  DOCK_U0, DOCK_U1, COLLECT_U, AISLE_V, YARD_U0, YARD_U1, ROW_U, ROW_DU, AGE_V, STACK_DV, PALLET_V, GATE_U,
+  RAIL_U0, RAIL_U1, RAIL_V, INTAKE_U0, INTAKE_U1, LANE_V, DIST_U, ENG_U0, ENG_U1, ENG_V0, ENG_STEP, ENG_DV, ENG_H,
+  SCAN_U, TRACK_V, TRACK_U1, CITY_U0, CITY_U1, CITY_V0, CITY_V1, RETURN_V, VIAS,
+} as const;
+export type Plan = typeof PLAN;
 
 const HOUR_MS = 3_600_000;
 /** A crate's wake on its belt: a step lighter than the slats. */

@@ -68,7 +68,7 @@ test "the tabs go to the yard and back to the factory; a deep link leaves it"
   clock settle
   expect state here == "factory"
 
-test "a press on a busy bay opens its drawer, Escape closes it"
+test "a press on a busy bay opens its lens, Escape walks back"
   clock data
   tap "setup-connect"
   clock settle
@@ -80,15 +80,13 @@ test "a press on a busy bay opens its drawer, Escape closes it"
   tap "factory-live" drag 1 0 from 870 315 mouse
   clock data
   clock +300
-  expect state facNow.kind == "pipeline"
-  expect state facNow.id == "wp:Northwind-EMS/ember-vector:37"
-  expect state ov.facDrawer == true
+  expect state ov.facLens == 1
   type "factory-live" key "Escape"
   clock data
   clock +300
-  expect state ov.facDrawer == false
+  expect state ov.facLens == 0
 
-test "a press on a car on a main line opens its commit's drawer, its × closes it"
+test "a press on a car on a main line opens its lens, Backspace walks back"
   clock data
   tap "setup-connect"
   clock settle
@@ -100,14 +98,11 @@ test "a press on a car on a main line opens its commit's drawer, its × closes i
   tap "factory-live" drag 1 0 from 724 328 mouse
   clock data
   clock +300
-  expect state facNow.kind == "commit"
-  expect state facNow.id == "Northwind-Labs/frost-union@19cdc42070a48e431fc5e7fa2c1834ba4d6706a9"
-  expect state ov.facDrawer == true
-  // the drawer's own close button (its × at the top right)
-  tap "factory-live" drag 1 0 from 1421 57 mouse
+  expect state ov.facLens == 1
+  type "factory-live" key "Backspace"
   clock data
   clock +300
-  expect state ov.facDrawer == false
+  expect state ov.facLens == 0
 
 test "stress mode puts a 10x fleet on the floor and takes it off"
   clock data

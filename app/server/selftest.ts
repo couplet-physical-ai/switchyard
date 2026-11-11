@@ -1,9 +1,11 @@
 // Self-test for the Switchyard mock server. Run: timeout 120 bun server/selftest.ts
 // Starts mock.ts on random ports (frozen + fixed EPOCH for determinism, plus a live one) and
 // checks snapshot shape, determinism, history replay == snapshot, WS/SSE, search, journey,
-// PR detail, auth, and the burst frame.
+// PR detail, auth, the burst frame, and the v0.5 Factory Floor (/insights, /changes, the
+// snapshot's tables) for the simulation and the fixtures.
 
-import type { Frame, History, Journey, PrDetail, SearchResults, DemoSnapshot as Snapshot } from '../src/wire.ts';
+import type { Changes, Frame, History, Insights, Journey, PrDetail, SearchResults, DemoSnapshot as Snapshot } from '../src/wire.ts';
+import { CLUSTER_LINE } from './stories.ts';
 import { applyFrame } from './reduce.ts';
 
 const EPOCH = Date.UTC(2026, 10, 10, 20, 0); // a weekday afternoon (US Central)
@@ -49,7 +51,7 @@ const strip = (x: Snapshot): Snapshot => { const y = { ...x } as Partial<Snapsho
 function checkShape(snap: Snapshot): void {
   console.log('snapshot shape');
   const repos = Object.entries(snap.repos);
-  ok(snap.protocol === '0' && snap.at === EPOCH, `protocol "0", at == EPOCH (${snap.at})`);
+  ok(snap.protocol === '0.5' && snap.at === EPOCH, `protocol "0.5", at == EPOCH (${snap.at})`);
   ok(repos.length >= 380 && repos.length <= 440, `~410 repos (${repos.length}) across ${Object.keys(snap.orgs).length} orgs`);
   ok(repos.every(([k, r]) => k === r.id && r.id === `${r.org}/${r.name}` && r.main.recent.length <= 40), 'repo keys == id == org/name; main.recent <= 40');
   const red = repos.filter(([, r]) => r.main.state === 'failure');
@@ -80,6 +82,59 @@ function checkShape(snap: Snapshot): void {
   ok(open.length >= 110 && open.length <= 200 && snap.stats.prs_open === open.length, `open PRs ${open.length} == stats.prs_open`);
   ok(repos.every(([k, r]) => r.open_prs === open.filter((p) => p.repo === k).length), 'repo.open_prs matches open PRs');
   ok(snap.stats.commits_24h > 1000 && snap.stats.success_rate_24h > 0.8 && snap.stats.p50_build_ms > 30000, `stats ${JSON.stringify(snap.stats)}`);
+}
+
+const FIXTURES = `${import.meta.dir}/../../contract/fixtures`;
+const COLLS = ['orgs', 'repos', 'commits', 'pipelines', 'prs', 'deploys', 'apps', 'engines', 'queues', 'lanes', 'groups', 'clusters', 'flakes', 'trends'];
+/** The wire's arrays (fixtures mode) as the id-keyed maps the checks read. */
+function toMaps(s: Record<string, unknown>): Snapshot {
+  for (const k of COLLS) {
+    const v = s[k];
+    if (!Array.isArray(v)) continue;
+    const m: Record<string, unknown> = {};
+    for (const e of v) m[(e as { id: string }).id] = e;
+    s[k] = m;
+  }
+  return s as unknown as Snapshot;
+}
+
+/** The first entity where two snapshots differ ('' when none; `at`/`seq` aside). */
+function firstDiff(a: Record<string, unknown>, b: Record<string, unknown>): string {
+  for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
+    if (k === 'at' || k === 'seq' || JSON.stringify(a[k]) === JSON.stringify(b[k])) continue;
+    const x = a[k] as Record<string, unknown> | undefined, y = b[k] as Record<string, unknown> | undefined;
+    if (!x || !y || typeof x !== 'object') return `${k}: ${JSON.stringify(x)?.slice(0, 160)} vs ${JSON.stringify(y)?.slice(0, 160)}`;
+    for (const id of new Set([...Object.keys(x), ...Object.keys(y)])) {
+      if (JSON.stringify(x[id]) !== JSON.stringify(y[id])) return `${k}[${id}]: ${JSON.stringify(x[id])?.slice(0, 240)} vs ${JSON.stringify(y[id])?.slice(0, 240)}`;
+    }
+  }
+  return '';
+}
+
+/** The v0.5 Factory Floor: the snapshot's tables agree with /insights and with the fleet. */
+function checkFloor(snap: Snapshot, ins: Insights, recorded = false): void {
+  console.log(`factory floor (v0.5${recorded ? ', fixtures' : ''})`);
+  const repos = Object.values(snap.repos);
+  ok(repos.every((r) => r.group && snap.groups[r.group]), 'every repo has a group from the groups table');
+  ok(ins.groups.length === Object.keys(snap.groups).length && ins.groups.reduce((n, g) => n + g.repos, 0) === repos.length, `groups cover every repo once (${ins.groups.length}: ${ins.groups.slice(0, 5).map((g) => `${g.name} ${g.repos}`).join(', ')}…)`);
+  ok(ins.groups.every((g) => g.red === repos.filter((r) => r.group === g.id && (r.main.state === 'failure' || r.main.state === 'error')).length), 'Group.red == red mains in the group');
+  const failed: string[] = [];
+  for (const p of Object.values(snap.pipelines)) for (const w of p.workflows) for (const st of w.steps) if (st.state === 'failure' || st.state === 'error') failed.push(st.cluster ?? '');
+  ok(failed.length > 0 && failed.every((c) => c && snap.clusters[c]), `every failed step names its cluster (${failed.length} steps, ${Object.keys(snap.clusters).length} clusters)`);
+  const order = ins.clusters.every((c, i) => i === 0 || (ins.clusters[i - 1]!.open > 0 ? 1 : 0) > (c.open > 0 ? 1 : 0) || ((ins.clusters[i - 1]!.open > 0) === (c.open > 0) && ins.clusters[i - 1]!.count_1h >= c.count_1h));
+  ok(order && ins.clusters.every((c) => /^f:[0-9a-f]{12}$/.test(c.id) && c.repo_count >= c.repos.length && c.count >= c.count_1h && c.signature.startsWith(`${c.step} · ${c.class}`)), 'clusters: ids f:<12 hex>, signatures, open first then count_1h');
+  if (!recorded) {
+    const story = ins.clusters[0];
+    ok(story?.line === CLUSTER_LINE && story.step === 'test-web-#' && story.repo_count >= 4 && story.repo_count <= 6 && story.groups.length >= 2 && story.groups.length <= 3,
+      `the story cluster leads: "${story?.signature}" ${story?.count} failures, ${story?.repo_count} repos, ${story?.groups.length} groups, open ${story?.open}`);
+    ok(story && story.open < story.repo_count, 'one of its repos is fixed already (open < repos)');
+  }
+  ok(ins.flakes.length >= 1 && ins.flakes[0]!.flips_24h >= 2 && (recorded || Object.values(snap.pipelines).some((p) => p.flaky)), `flakes: ${ins.flakes.slice(0, 3).map((f) => `${f.id} ${f.flips_24h} flips`).join(', ')}`);
+  const metrics = ['intake_ms', 'run_ms', 'pass_rate', 'pipelines', 'deploys', 'pr_age_ms', 'red'] as const;
+  ok(ins.trends[0]?.id === 'fleet' && ins.trends.length === ins.groups.length + 1 && ins.trends.every((t) => metrics.every((m) => t[m].spark.length === 24 && [-1, 0, 1].includes(t[m].dir))), `trends: fleet + ${ins.trends.length - 1} groups, 7 metrics, 24-hour sparks`);
+  const down = ins.trends.filter((t) => t.id !== 'fleet' && t.pass_rate.dir === -1 && t.pass_rate.bad);
+  const up = ins.trends.filter((t) => t.id !== 'fleet' && t.pass_rate.dir === 1 && !t.pass_rate.bad);
+  ok(recorded || (down.length >= 1 && up.length >= 1), `pass rate trending down (bad): ${down.map((t) => `${t.id} ${t.pass_rate.h1}/${t.pass_rate.d7}`).join(', ')}; up: ${up.map((t) => `${t.id} ${t.pass_rate.h1}/${t.pass_rate.d7}`).join(', ')}`);
 }
 
 async function wsFrames(s: Server, query: string, ms: number): Promise<Frame[]> {
@@ -143,7 +198,7 @@ async function main(): Promise<void> {
     const pd = await get<PrDetail>(a, `/api/v1/pr/${openPr[1].repo}/${openPr[1].number}`);
     ok(pd.pr.number === openPr[1].number && pd.commits.length > 0 && pd.timeline.length > 0, `pr detail ${openPr[0]}: ${pd.commits.length} commits, ${pd.pipelines.length} pipelines, ${pd.timeline.length} timeline`);
     const metaR = await get<{ protocol: string; adapters: { state: string }[] }>(a, '/api/v1/meta');
-    ok(metaR.protocol === '0' && metaR.adapters.length === 4 && metaR.adapters.every((x) => x.state === 'ok'), 'meta: protocol 0, 4 adapters ok');
+    ok(metaR.protocol === '0.5' && metaR.adapters.length === 4 && metaR.adapters.every((x) => x.state === 'ok'), 'meta: protocol 0.5, 4 adapters ok');
     ok((await get<{ ok: boolean }>(a, '/api/healthz')).ok && (await get<{ ready: boolean }>(a, '/api/readyz')).ready, 'healthz / readyz');
     const pre = await fetch(`${a.base}/api/v1/snapshot`, { method: 'OPTIONS' });
     ok(pre.status === 204 && pre.headers.get('access-control-allow-origin') === '*', 'CORS preflight');
@@ -154,7 +209,49 @@ async function main(): Promise<void> {
     ok(rp.length > 0 && rp.length <= 30 && rp[rp.length - 1]!.t === 'delta' && (rp[rp.length - 1] as { seq: number }).seq === snap.seq, `replay since=seq-500 → ${rp.length} coalesced frames, ${rpOps} ops, ends at seq ${snap.seq}`);
     const rs = await wsFrames(a, '?since=999999999', 300);
     ok(rs.length === 1 && rs[0]!.t === 'reset', 'since from the future → {t:"reset"}');
+    checkFloor(snap, await get<Insights>(a, '/api/v1/insights'));
+    console.log('changes');
+    const ch = await get<Changes>(a, `/api/v1/changes?since=${EPOCH - 30 * 60_000}`);
+    ok(ch.complete && ch.since === EPOCH - 30 * 60_000 && ch.until === EPOCH, `since 30 min: complete, window ${ch.since}..${ch.until}`);
+    ok(ch.red.length >= 3 && ch.counts.red === ch.red.length && ch.red.every((r) => snap.repos[r.repo]?.main.state === 'failure' && r.at > ch.since), `new reds: ${ch.red.length} (${ch.red.slice(0, 4).map((r) => r.repo.split('/')[1]).join(', ')}…)`);
+    ok(ch.red.filter((r) => r.cluster && snap.clusters[r.cluster]?.line === CLUSTER_LINE).length >= 3, 'the story cluster is behind 3+ of the new reds');
+    ok(ch.recovered.length >= 1 && ch.recovered.every((r) => snap.repos[r.repo]?.main.state !== 'failure' && r.red_ms >= 0), `recoveries: ${ch.recovered.length}`);
+    ok(ch.counts.pipelines > 0 && ch.counts.failed > 0 && ch.groups.length > 0 && ch.groups[0]!.red >= ch.groups[ch.groups.length - 1]!.red, `counts ${JSON.stringify(ch.counts)}`);
+    const old = await get<Changes>(a, `/api/v1/changes?since=${EPOCH - 48 * 3600_000}`);
+    ok(!old.complete && old.since === EPOCH - 24 * 3600_000, 'since 48 h: complete false, clamped to 24 h');
+    ok((await fetch(`${a.base}/api/v1/changes`)).status === 400, '/changes without since → 400');
   } finally { a.kill(); b.kill(); }
+
+  console.log('fixtures (v0.4 recordings → v0.5)');
+  const fx = await start(['--fixtures', FIXTURES, '--rate', '60']);
+  try {
+    await Bun.sleep(6500); // 6.5 min of the recording at 60×: frames, a Floor tick
+    const fsnap = toMaps(await get<Record<string, unknown>>(fx, '/api/v1/snapshot'));
+    ok(fsnap.protocol === '0.5' && Object.keys(fsnap.groups).length > 5, `fixtures snapshot: protocol ${fsnap.protocol}, ${Object.keys(fsnap.groups).length} groups`);
+    const fins = await get<Insights>(fx, '/api/v1/insights');
+    checkFloor(fsnap, fins, true);
+    const sec = fins.clusters.find((c) => c.step === 'security-scan');
+    ok(sec && sec.repo_count === 5 && sec.class === 'security' && !!sec.line, `security-scan: ${sec?.count} failures, ${sec?.repo_count} repos, groups ${sec?.groups.join(', ')}`);
+    const fch = await get<Changes>(fx, `/api/v1/changes?since=${EPOCH - 8 * 3600_000}`);
+    ok(fch.complete && fch.red.length > 0 && fch.recovered.length > 0 && fch.deploys.length > 0, `fixtures changes (8 h): ${fch.red.length} red, ${fch.recovered.length} recovered, ${fch.counts.deploys} deploys`);
+    const now = toMaps(await get<Record<string, unknown>>(fx, '/api/v1/snapshot'));
+    const h = await get<History>(fx, `/api/v1/history?from=${EPOCH}&to=${now.at}`);
+    const hb = toMaps(h.base as unknown as Record<string, unknown>);
+    let n = 0;
+    for (const f of h.frames) {
+      if (f.t !== 'delta' || f.seq > now.seq) continue;
+      applyFrame(hb, f as Frame);
+      n += f.ops.filter((o) => o.op !== 'event' && o.op !== 'dot' && ['cluster', 'group', 'trend', 'flake'].includes(o.kind)).length;
+    }
+    const diff = firstDiff(now as unknown as Record<string, unknown>, hb as unknown as Record<string, unknown>);
+    ok(n > 0 && !diff, `fixtures history replay (base + ${h.frames.length} frames, ${n} Floor ops) == snapshot at seq ${now.seq}${diff ? `: differs at ${diff}` : ''}`);
+  } finally { fx.kill(); }
+  const f4 = await start(['--fixtures', FIXTURES, '--frozen', '--v04']);
+  try {
+    const s4 = await get<{ protocol: string; groups?: unknown; repos: { group?: string }[] }>(f4, '/api/v1/snapshot');
+    ok(s4.protocol === '0.4' && s4.groups === undefined && s4.repos.every((r) => r.group === undefined), '--v04: the recording as recorded (protocol 0.4, no Floor)');
+    ok((await fetch(`${f4.base}/api/v1/insights`)).status === 404 && (await fetch(`${f4.base}/api/v1/changes?since=0`)).status === 404, '--v04: /insights and /changes → 404 (as a v0.4 server)');
+  } finally { f4.kill(); }
 
   console.log('live');
   const live = await start(['--rate', '10']);

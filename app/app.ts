@@ -12,6 +12,7 @@ const WEB_SHA = import.meta.env.SWITCHYARD_WEB_SHA ?? '';
 setDefaultServer(DEFAULT_SERVER);
 import { DEMO_REPLAY, DemoUpstream } from './src/demo.ts';
 import { EngineHistory } from './src/enginehist.ts';
+import { bindInsights } from './src/insights.ts';
 import { drawFleetLoad } from './src/fleetload.ts';
 import { fleet, journeyView, prDetailView, search } from './src/project.ts';
 import { MainlinesModel, stateWords } from './src/table/mainlines.ts';
@@ -56,6 +57,8 @@ tl.listener = (e, w) => { yard.pool.onEvent(e, w, clock); factory.onEvent(e, w, 
 const mlTable = new MainlinesModel();
 /** The engines' cpu/mem/load, the last few minutes of it (the Fleet view's sparklines). */
 const engineHist = new EngineHistory();
+/** The Factory Floor's data seam (src/insights.ts): v0.5 tables, or approximations on v0.4. */
+bindInsights(tl, () => up, engineHist);
 const prTable = new PrsModel();
 
 /** `asking`: called from a source's answer, so it may fetch (a fetch started elsewhere, in
@@ -391,12 +394,6 @@ export const sources: Sources = {
     return h ? { kind: h.kind, id: h.id, label: h.label, route: '' } : { kind: '', id: '', label: '', route: '' };
   },
   facPointer: ([kind, x, y, buttons]) => {
-    // a key on the floor (it takes the focus): Escape lets the selection go
-    if (String(kind).startsWith('key:')) {
-      const key = String(kind).slice(4);
-      if (key === 'Escape' && factory.selected) factory.select('', '');
-      return { kind: key === 'Escape' ? 'escape' : '', id: '', label: '', route: `${factory.cam.key}|${factory.selected}` };
-    }
     const h = factory.pointer(String(kind), Number(x), Number(y), Number(buttons) || 0, clock);
     // the HUD's buttons are floor hits too
     if (kind === 'up' && h?.kind === 'stress') setStress(!stressOn);
@@ -410,6 +407,35 @@ export const sources: Sources = {
     }
     factory.offsetMin = yard.offsetMin;
     return { kind: h?.kind ?? '', id: h?.id ?? '', label: h?.label ?? '', route: `${factory.cam.key}|${factory.selected}` };
+  },
+  // fab-lens: the coffee check's last visit per server (src/factory/coffee.ts), kept by Contract
+  coffeeOpen: ([server, visits, _seq, ok]) => ({ ok: !!ok, status: safe('coffeeOpen', '', () => factory.coffee.open(String(server ?? ''), String(visits ?? ''), !!ok)) }),
+  coffeeMark: ([server, visits]) => {
+    const v = safe('coffeeMark', '', () => factory.coffee.mark(String(server ?? ''), String(visits ?? '')));
+    return { ok: v !== '', status: v };
+  },
+  // fab-lens: a time-strip tick replays from that moment at 60×
+  replayAt: async ([t, at]) => {
+    if (t > 0) advance(t);
+    if (!up) return { ok: false, status: 'not connected' };
+    const to = demo ? Math.floor((epochAtZero + clock) / 1000) * 1000 : tl.liveNow();
+    const from = Math.min(to - 60_000, Math.max(to - 24 * 3_600_000, Number(at) || to - 3_600_000));
+    try {
+      if (demo) {
+        demo = null;
+        demo = await DemoUpstream.start(from);
+        up = demo;
+        tl.load(await demo.snapshot(), clock);
+        tl.beginPlayback(from, to);
+        return { ok: true, status: 'replay' };
+      }
+      chunkMs = 60_000;
+      const base = up.snapshotAt ? await up.snapshotAt(from).catch(() => null) : null;
+      const h = base ? { from, to: from, base, frames: [] } : await up.history(from, from + 60_000, true, 12 << 20);
+      return { ok: tl.startReplay(h, to), status: 'replay' };
+    } catch (e) {
+      return { ok: false, status: String((e as Error).message ?? e) };
+    }
   },
   devToggle: ([what, on]) => {
     if (what === 'hud') yard.hud.on = on === 1;
@@ -461,7 +487,7 @@ const NO_HIT = { kind: '', id: '', label: '', route: '' };
 const EMPTY_OV: Result<'overview'> = {
   status: 'waiting', mode: 'live', speed: 1, sentence: 'waiting for the fleet', summary: 'The delivery yard, waiting for data.', layoutKey: '', repos: 0,
   building: 0, queued: 0, red: 0, appsUp: 0, appsTotal: 0, behind: '', seq: 0,
-  tick: 0, host: '', dial: '1 hour, sped up', dialPad: 38, dialFont: 11, dialH: 34, hud: false, stress: false, quality: 0, facKey: '', facDrawer: false, facQ: 0, facStress: false, facCalm: true, facStats: '', facCity: 0, facCars: 0, facBays: 0,
+  tick: 0, host: '', dial: '1 hour, sped up', dialPad: 38, dialFont: 11, dialH: 34, hud: false, stress: false, quality: 0, facKey: '', facDrawer: false, facQ: 0, facStress: false, facCalm: true, facStats: '', facCity: 0, facCars: 0, facBays: 0, facLens: 0, facLensTop: '',
 };
 const EMPTY_FLEET = {
   apps: [], engines: [], queues: [], stats: [], up: 0, total: 0, down: 0, degraded: 0, attention: [], behindN: 0, never: 0, hasLatency: false, watcher: '', watcherTripped: false,

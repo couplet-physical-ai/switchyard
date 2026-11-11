@@ -96,3 +96,51 @@ agent drives are not a frame-rate measure; `perf-web.mjs` runs outside it.
   sized for stress (12,288 packets, route and template arenas, spatial cells): about 4 MB of the
   64 MiB heap, and no allocation per frame. Stress mode adds a few kilobytes (repo states, app
   health, slot occupancy), never copies of entities.
+
+## Factory (the default view; DESIGN.md "Factory")
+
+Measured 2026-11-11 03:40–04:45Z on `sy/fab-base`. 1× is the live server on each host's
+`127.0.0.1:8090` (394 repos, 239 apps); 10× is stress mode (`src/factory/stress.ts`: census ×10,
+engines ×10 slots, a 2,390-block city, 3,000 synthesized crates on the floor's routes).
+
+**How.** Web: `tools/perf-web.mjs [--stress] [--hud] [--pan] [--scale 2]` (Playwright headless
+shell, SwiftShader, 8 s windows; `--hud` keeps the live layer drawing every frame, the worst
+case). macOS: `tools/perf-drive.mjs macos --storage sy-fab-<n> --reset-storage --size <W×H> …
+"perf frames live 6000"` (EXACT_AGENT=live, real taps, no clock op), calm first, then with the
+HUD on. Draw costs: `bun tools/factory-bench.ts [demo|fixtures] [--stress] [--hermes]` (a
+recording ctx; `--hermes` prices the ladder as the macOS data module does).
+
+**What the budget does on the floor.** The static floor (`factoryFloor`) repaints only when its
+key moves (camera, fleet shape, apps' health, cars, quality ≥ 3): Contract re-hands it its
+arguments every 250 ms, equal or not, and those are skipped. Geometry is batched (one path per
+face and colour class), off-screen items, rows and hits are culled, the city has four LODs by
+block size, crates merge into ×N trains from q3, labels thin per rung. Calm (nothing travelling)
+the live layer sleeps and a 125 ms Contract pulse wakes it for the belts and the 1 Hz beat (asking
+for frames and drawing nothing stalled the macOS display link: 47–49 FPS). Bun, fixtures, 1×:
+live draw 0.15 ms median, 1,100 canvas calls a loud frame (2,500 before), 80 of 600 frames drawn
+calm; floor 0.25–0.45 ms (Hermes estimate 18 ms full, 12 ms low detail).
+
+| Host | Tree | Window | Fleet | HUD | FPS | Work / JS per frame | Rung |
+|---|---|---|---|---|---|---|---|
+| web (devbox) | before (255f81c) | 1440×900 @1× | 1× | off | 59.8 | JS 7.0 · task 10.7 ms | — |
+| web | before | 1440×900 @2× | 1× | off | 56.0 | JS 6.9 · task 12.8 ms | — |
+| web | fab-base (pre-merge) | 1440×900 @1× | 1× | off | 59.9 | JS 2.6 · task 4.1 ms | q0 |
+| web | fab-base | 1440×900 @2× | 1× | off | 59.9 | JS 0.9 · task 2.2 ms | q0 |
+| web | fab-base | 1440×900 @1× | 10× | off | 59.9 | JS 5.2 · task 8.0 ms | q3 |
+| web | fab-base | 1440×900 @2× | 10× | off | 59.8 | JS 5.1 · task 10.4 ms | q3 |
+| web | fab-base | 1440×900 @1× | 1× / 10× | on | 59.9 / 59.8 | JS 6.2 / 6.5 ms | |
+| web | fab-base | 1440×900 @1×, panning | 1× / 10× | on | 59.9 / 59.8 | task 12.8 / 12.7 ms | |
+| macOS Metal | fab-base (pre-merge, p4) | 1440×900 | 1× | off / on | 60.0 / 59.2 | work median 7.0–9.0 ms | q0 calm |
+| macOS | fab-base (p4) | 1440×900 | 10× | off / on | 58.7–60.0 / 59.5 | 9.5–11.5 ms | q4 |
+| macOS | fab-base (p4) | 2880×1800 | 1× | on | 59.5 | 8.5–9.0 ms | |
+| macOS | fab-base (p4) | 2880×1800 | 10× | off / on | 55.3–59.7 / 59.8 | 9.5–11.0 ms | q4 |
+| macOS | merged with fab-lens (p6) | 1440×900 | 1× | off / on | 33.9–36.5 / 31.2 | 24–48 ms | q4 |
+| macOS | merged (p6) | 1440×900 | 10× | on | 31.0 | 24–48 ms | q4 |
+
+The merged tree (the lenses' per-frame layers under and over the live layer: ~1,400 more canvas
+calls a frame, Hermes estimate 8.5 ms at q4 at 1×, 10.8 ms at 10×) halves the Mac's frame rate:
+**the 60 fps target is not met on macOS after the merge**, and the ladder cannot buy it back (the
+lens layers do not step with it). A pre-merge run minutes earlier (p5) already read work 24–48 ms
+at 56 FPS on the same build that read 9–11 ms in p4, so part of it may be the machine; the merged
+build's own estimate says most of it is not. Next: put the lens layers on the ladder (and cache
+their static parts on the floor layer), then re-measure.
