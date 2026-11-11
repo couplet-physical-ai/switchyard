@@ -69,10 +69,10 @@ component App
   state picked = ""
   state facWheel = 0
   state facPulse = 0
-  resource tok = loadToken(tokGen) as shape Tok else empty(token="", has=false)
+  resource tok = loadToken(tokGen) as shape Tok else empty(ver="", has=false)
   resource link = parseLink(searchParam(top(nav), "u"), searchParam(top(nav), "server"), searchParam(top(nav), "token")) as shape Link else empty(server="", token="", ok=false)
-  resource conn = connect(server, tok.token, gen) with time.epochAtZero, time.utcOffset as shape Conn else empty(ok=false, status="connecting", error="", seq=0, label="", kind="", needsSetup=false, signIn="")
-  resource feed = liveFeed(server, tok.token, conn.seq, gen, conn.ok) as shape Ack else empty(ok=false, status="idle")
+  resource conn = connect(server, tok.ver, gen) with time.epochAtZero, time.utcOffset as shape Conn else empty(ok=false, status="connecting", error="", seq=0, label="", kind="", needsSetup=false, signIn="")
+  resource feed = liveFeed(server, tok.ver, conn.seq, gen, conn.ok) as shape Ack else empty(ok=false, status="idle")
   resource ov = overview(clockMs, conn.seq, conn.ok) as shape Overview else empty()
   resource found = search(q, clockMs) as shape Found else empty(hits=[])
   mutation ctl as shape Ack refreshes ov

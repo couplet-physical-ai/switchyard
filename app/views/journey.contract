@@ -3,7 +3,7 @@
 use Journey from "./shapes.contract"
 
 members App
-  resource jData = journey(server, tok.token, here == "commit" ? `${top(nav).params.owner}/${top(nav).params.name}` : "", here == "commit" ? top(nav).params.sha : "", here == "commit" ? clockMs : 0) as shape Journey else empty(ok=false, error="", repo="", sha="", short="", title="", author="", branch="", stage="", pushed="", total="", spans=[], pipelines=[], deploys=[], deployVia="", app="", health="", healthText="", url="", events=[], ciState="", deployState="", ticks=[])
+  resource jData = journey(server, tok.ver, here == "commit" ? `${top(nav).params.owner}/${top(nav).params.name}` : "", here == "commit" ? top(nav).params.sha : "", here == "commit" ? clockMs : 0) as shape Journey else empty(ok=false, error="", repo="", sha="", short="", title="", author="", branch="", stage="", pushed="", total="", spans=[], pipelines=[], deploys=[], deployVia="", app="", health="", healthText="", url="", events=[], ciState="", deployState="", ticks=[])
 
 fn barColor(s: string): string = s == "success" ? "sy.machine" : (s == "failure" or s == "error" ? "sy.red" : (s == "running" ? "sy.amber" : "sy.ink4"))
 fn stEdge(s: string): string = s == "failure" ? "sy.red-edge" : (s == "running" ? "sy.amber" : (s == "success" ? "sy.green-edge" : "sy.chip-edge"))

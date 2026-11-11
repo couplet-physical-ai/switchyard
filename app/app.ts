@@ -333,6 +333,14 @@ async function webVersion(): Promise<{ stale: boolean; served: string }> {
   }
 }
 
+/** A token's version for Contract: 8 base-36 characters of FNV-1a, enough to notice a change,
+ *  too few to recover anything. */
+function tokenVer(t: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(36).padStart(7, '0');
+}
+
 export const sources: Sources = {
   webVersion: () => webVersion(),
   parseLink: ([u, server, token]) => parseLink(u, server, token),
@@ -342,15 +350,20 @@ export const sources: Sources = {
   tokenFileReport: (_a, _store, _storage, native) => tokenFileReport(native),
   updateState: (_a, _store, _storage, native) => updateState(native),
   updateDo: ([op], _store, _storage, native) => updateDo(op, native),
+  // The token never leaves the data module: Contract sees whether one is saved and a version (a
+  // short hash that changes when the token does, so conn/feed re-ask). A resource's answer and
+  // its identifying arguments are kept on disk for the next launch (exact.kept), so a token there
+  // would sit in plain text beside the Keychain; the sources read it from the store themselves.
   loadToken: (_a, store: Store) => {
     const t = store.get(TOKEN) ?? '';
-    return { token: t, has: t !== '' };
+    return { ver: t ? tokenVer(t) : '', has: t !== '' };
   },
   saveToken: ([token, set], store: Store) => {
     if (set) store.set(TOKEN, token);
     return { ok: true, status: set ? 'saved' : 'kept' };
   },
-  connect: async ([server, token, _gen, epoch0, offset]) => {
+  connect: async ([server, _ver, _gen, epoch0, offset], store: Store) => {
+    const token = store.get(TOKEN) ?? '';
     yard.offsetMin = offset;
     const mine = ++connects;
     const c = await connect(server, token, epoch0);
@@ -359,7 +372,7 @@ export const sources: Sources = {
     if (token && mine === connects) connectedWith(token, server === 'demo' ? '' : resolveBase(server), c.ok, c.error || c.status);
     return c;
   },
-  liveFeed: ([server, token, seq, _gen, ok]) => liveFeed(server, token, seq, ok),
+  liveFeed: ([server, _ver, seq, _gen, ok], store: Store) => liveFeed(server, store.get(TOKEN) ?? '', seq, ok),
   overview: ([t]) => { if (t > 0) advance(t); return safe('overview', EMPTY_OV, overview); },
   timeControl: async ([what, speed]) => {
     if (what === 'pause') tl.pause();
@@ -468,7 +481,7 @@ export const sources: Sources = {
   viewOnTop: ([here]) => { topView = String(here ?? ''); return { ok: true, status: topView }; },
   tableKey: ([table, key]) => safe('tableKey', NO_HIT, () => tableKey(table, key)),
   fleet: () => safe('fleet', EMPTY_FLEET, () => ({ ...fleet(tl.world, tl.playhead), loadTick: engineHist.ver })),
-  journey: async ([_s, _tok, repo, sha, t]) => {
+  journey: async ([_s, _ver, repo, sha, t]) => {
     if (t > 0) advance(t);
     if (!repo || !sha) return journeyView(null, tl.playhead, ' ');
     try {
@@ -478,7 +491,7 @@ export const sources: Sources = {
       return journeyView(null, tl.playhead, String((e as Error)?.message ?? e));
     }
   },
-  prDetail: async ([_s, _tok, repo, number, t]) => {
+  prDetail: async ([_s, _ver, repo, number, t]) => {
     if (t > 0) advance(t);
     if (!repo) return prDetailView(null, tl.playhead, tl.world);
     try {
