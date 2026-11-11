@@ -1,0 +1,44 @@
+81  : ┆ [1m4s] |     Updating crates.io index
+81  : ┆ [1m5s] | error: cannot update the lock file /src/Cargo.lock because --locked was passed to prevent this
+81  : ┆ [1m5s] | help: to generate the lock file without accessing the network, remove the --locked flag and use --offline instead.
+81  : ┆ [1m6s] |      Locking 11 packages to highest Rust 1.99.1 compatible versions
+81  : ┆ [1m6s] |     Updating acme-botpass v0.6.1 (/src/shared/acme-linux/crates/acme-botpass) -> v0.6.2
+81  : ┆ [1m6s] |     Updating acme-calendar v0.6.1 (/src/shared/acme-linux/crates/acme-calendar) -> v0.6.2
+98  : ┆ Container.withExec DONE [0.0s]
+98  : ┆ [8.3s] | error: cannot update the lock file /src/Cargo.lock because --locked was passed to prevent this
+98  : ┆ [8.3s] | help: to generate the lock file without accessing the network, remove the --locked flag and use --offline instead.
+90  : ┆ Container.publish(address: "registry.example.com/cache/acme-api/deps:rust1-trixie-stable-e0b704e5fe9b6a79e3f79a8808178106", forcedCompression: Zstd): String!
+128 : ┆ ┆ remotes.docker.resolver.HTTPRequest
+129 : ┆ ┆ HTTP POST
+129 : ┆ ┆ HTTP POST ERROR [4.9s]
+129 : ┆ ┆ ! context canceled
+128 : ┆ ┆ remotes.docker.resolver.HTTPRequest ERROR [4.9s]
+128 : ┆ ┆ ! context canceled
+130 : ┆ ┆ remotes.docker.resolver.HTTPRequest
+131 : ┆ ┆ HTTP POST
+131 : ┆ ┆ HTTP POST ERROR [4.8s]
+131 : ┆ ┆ ! context canceled
+130 : ┆ ┆ remotes.docker.resolver.HTTPRequest ERROR [4.8s]
+130 : ┆ ┆ ! context canceled
+132 : ┆ ┆ remotes.docker.resolver.HTTPRequest
+133 : ┆ ┆ HTTP POST
+133 : ┆ ┆ HTTP POST ERROR [4.8s]
+133 : ┆ ┆ ! context canceled
+132 : ┆ ┆ remotes.docker.resolver.HTTPRequest ERROR [4.8s]
+132 : ┆ ┆ ! context canceled
+99  : ┆ ┆ pushing registry.example.com/cache/acme-api/deps:rust1-trixie-stable-e0b704e5fe9b6a79e3f79a8808178106 ERROR [10.8s]
+99  : ┆ ┆ ! unexpected status from POST request to https://registry.example.com/v2/cache/acme-api/deps/blobs/uploads/: 403 Forbidden
+denied: requested access to the resource is denied
+90  : ┆ Container.publish ERROR [2m22s]
+90  : ┆ ! unexpected status from POST request to https://registry.example.com/v2/cache/acme-api/deps/blobs/uploads/: 403 Forbidden
+denied: requested access to the resource is denied
+11  : Ci.rust ERROR [4m5s]
+11  : ! exit code: 101
+11  : [4m5s] | dep cache: publish registry.example.com/cache/acme-api/deps:rust1-trixie-stable-e0b704e5fe9b6a79e3f79a8808178106 failed (unexpected status from POST request to https://registry.example.com/v2/cache/acme-api/deps/blobs/uploads/: 403 Forbidden
+11  : [4m5s] | denied: requested access to the resource is denied); the next run builds again
+
+
+Error: exit code: 101 [traceparent:23e648e22c623472af81fe0513080f53-9857fe4008140d8d]
+Stderr:
+error: cannot update the lock file /src/Cargo.lock because --locked was passed to prevent this
+help: to generate the lock file without accessing the network, remove the --locked flag and use --offline instead.

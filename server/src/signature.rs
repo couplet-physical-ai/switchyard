@@ -778,10 +778,15 @@ const T_NETWORK: u8 = 35;
 const T_INFRA: u8 = 33;
 const T_TIMEOUT: u8 = 25;
 const T_EXCEPTION: u8 = 14;
+/// A generic error in the `Stdout:` / `Stderr:` block Dagger prints after a failed exec
+/// (`Error: exit code: N` then the command's own output): the failing command's words.
+const T_STDERR: u8 = 13;
 const T_GENERIC_HI: u8 = 12;
 const T_DETAIL: u8 = 11;
 const T_GENERIC: u8 = 10;
 const T_GENERIC_LO: u8 = 9;
+/// Cancellation / teardown ("context canceled", "signal: killed"): a last resort.
+const T_TEARDOWN: u8 = 5;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Hint {
@@ -1130,6 +1135,47 @@ fn is_wrapper(t: &str, lc: &str) -> bool {
     false
 }
 
+/// Cancellation and teardown lines: what a failing run prints while it stops (its other
+/// work canceled, processes killed, an exit status), never why it failed.
+fn is_teardown(lc: &str) -> bool {
+    let mut s = lc.trim();
+    for p in ["! ", "error: ", "error ", "fatal: ", "err: "] {
+        if let Some(r) = s.strip_prefix(p) {
+            s = r.trim_start();
+        }
+    }
+    let s = s.trim_end_matches(['.', '!', ' ']);
+    const ENDS: &[&str] = &[
+        "context canceled",
+        "context cancelled",
+        "operation was canceled",
+        "operation was cancelled",
+        "operation canceled",
+        "operation cancelled",
+    ];
+    if ENDS.iter().any(|e| s.ends_with(e)) {
+        return true;
+    }
+    const EXACT: &[&str] = &[
+        "signal: killed",
+        "signal: terminated",
+        "signal: interrupt",
+        "canceled",
+        "cancelled",
+        "terminated",
+    ];
+    if EXACT.contains(&s) {
+        return true;
+    }
+    // "exit status 1", "exit code: 101".
+    ["exit status ", "exit code: ", "exit code "]
+        .iter()
+        .any(|p| {
+            s.strip_prefix(p)
+                .is_some_and(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit()))
+        })
+}
+
 fn find_ci(lc: &str, pat: &str) -> Option<usize> {
     lc.find(pat)
 }
@@ -1159,6 +1205,9 @@ fn classify(t: &str, lc: &str, m: u32, ctx: &Ctx) -> Option<Hit> {
     }
     if is_noise(t, lc) || is_wrapper(t, lc) {
         return None;
+    }
+    if is_teardown(lc) {
+        return hit(T_TEARDOWN, FailClass::Exit);
     }
 
     // --- compiler errors ---
@@ -1894,6 +1943,9 @@ pub fn extract_at(
     let mut saw_clippy = false;
     let mut in_traceback = false;
     let mut tb_lines = 0usize;
+    // Dagger's summary of a failed exec: "Error: exit code: N" then "Stdout:" / "Stderr:".
+    let mut since_error: Option<usize> = None;
+    let mut in_output = false;
     let mut lc = String::new();
     for (idx, line) in lines.iter().enumerate() {
         let t = line.trim();
@@ -1903,6 +1955,17 @@ pub fn extract_at(
         lc.clear();
         lc.push_str(t);
         lc.make_ascii_lowercase();
+        if t.starts_with("Error: ") {
+            since_error = Some(0);
+            in_output = false;
+        } else if (t == "Stdout:" || t == "Stderr:")
+            && (in_output || since_error.is_some_and(|n| n <= 3))
+        {
+            in_output = true;
+            continue;
+        } else if let Some(n) = since_error.as_mut() {
+            *n += 1;
+        }
         if !saw_clippy
             && lc.contains("clippy")
             && !lc.starts_with("+ ")
@@ -1942,6 +2005,12 @@ pub fn extract_at(
         {
             oom_at.push(idx);
         }
+        let h = h.map(|mut h| {
+            if in_output && (T_GENERIC_LO..=T_GENERIC_HI).contains(&h.tier) {
+                h.tier = T_STDERR;
+            }
+            h
+        });
         if let Some(h) = h
             && best.is_none_or(|(_, b)| h.tier > b.tier)
         {
@@ -1994,6 +2063,67 @@ pub fn extract_at(
         },
         Some(display_index(&lines, idx, h)),
     )
+}
+
+/// The index of the first line of `log` whose signature text is `want`: a
+/// `Signature.line` / `Cluster.line` (normalized; the repo's own names may be masked as
+/// `…`, a long line capped with `…`). An exact match anywhere wins over a line that only
+/// contains it (a hint cut the line), and the first occurrence over later ones.
+pub fn find_line(log: &[String], want: &str) -> Option<usize> {
+    find_lines(log, want).first().copied()
+}
+
+/// Every line of `log` whose signature text is `want` (see [`find_line`]), in order: the
+/// exact matches, else the lines that contain it.
+pub fn find_lines(log: &[String], want: &str) -> Vec<usize> {
+    let frags: Vec<&str> = want.split('…').map(str::trim).collect();
+    let solid: usize = frags.iter().map(|f| f.len()).sum();
+    if solid < 6 {
+        return Vec::new();
+    }
+    let texts: Vec<Option<String>> = log
+        .iter()
+        .map(|raw| {
+            let c = clean_line(raw);
+            let t = c.trim();
+            (!t.is_empty()).then(|| normalize(&strip_decor(t, FailClass::Exit)))
+        })
+        .collect();
+    let exact = |n: &str| -> bool {
+        if frags.len() == 1 {
+            return n == frags[0];
+        }
+        let Some(mut rest) = n.strip_prefix(frags[0]) else {
+            return false;
+        };
+        for f in &frags[1..frags.len() - 1] {
+            match rest.find(f) {
+                Some(i) => rest = &rest[i + f.len()..],
+                None => return false,
+            }
+        }
+        rest.ends_with(frags[frags.len() - 1])
+    };
+    let loose = |n: &str| -> bool {
+        let mut rest = n;
+        for f in frags.iter().filter(|f| !f.is_empty()) {
+            match rest.find(f) {
+                Some(i) => rest = &rest[i + f.len()..],
+                None => return false,
+            }
+        }
+        true
+    };
+    let all = |f: &dyn Fn(&str) -> bool| -> Vec<usize> {
+        texts
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.as_deref().is_some_and(f))
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let hits = all(&exact);
+    if hits.is_empty() { all(&loose) } else { hits }
 }
 
 /// The line `display_text` reads (a `could not compile` before a SIGKILL: that line).
@@ -2666,6 +2796,83 @@ FAILED tests/test_api.py::test_delete_user - KeyError: 'id'
 
     /// Local harness: `SIG_CORPUS=/tmp/sig-corpus cargo test --lib signature::tests::corpus -- --ignored --nocapture`.
     /// The corpus (`index.json` + raw log bodies) never lives in the repo.
+    /// copper-windows #21 `check` (sanitized): cargo refused to update the lock file, and
+    /// the run's teardown printed "! context canceled" and a dep-cache 403 after it.
+    const LOCKED_CANCELED: &str =
+        include_str!("../tests/upstream/woodpecker/log_locked_canceled.txt");
+    const LOCKED: &str = "error: cannot update the lock file /src/Cargo.lock because --locked was passed to prevent this";
+
+    #[test]
+    fn teardown_lines_never_beat_the_cause() {
+        let log: Vec<String> = LOCKED_CANCELED.lines().map(str::to_string).collect();
+        let (sig, at) = extract_at("ci", "check", Some(101), &log);
+        assert_eq!(sig.line.as_deref(), Some(LOCKED));
+        let at = at.unwrap();
+        assert!(log[at].ends_with(LOCKED), "{}", log[at]);
+        // Every line showing it, the cargo output first.
+        let all = find_lines(&log, LOCKED);
+        assert_eq!(all.len(), 3);
+        assert_eq!(find_line(&log, LOCKED), Some(1));
+        assert!(all.contains(&at));
+        // Teardown alone is still a (last-resort) line.
+        let only: Vec<String> = log[10..20].to_vec();
+        let (s2, _) = extract_at("ci", "check", Some(101), &only);
+        assert_eq!(s2.line.as_deref(), Some("context canceled"));
+        for t in [
+            "! context canceled",
+            "error: context canceled",
+            "rpc error: code = Canceled desc = context canceled",
+            "The operation was canceled.",
+            "! signal: killed",
+            "signal: terminated",
+            "! exit status 1",
+        ] {
+            assert!(is_teardown(&t.to_ascii_lowercase()), "{t}");
+        }
+        for t in [
+            "error: cannot update the lock file",
+            "killed by the OOM killer",
+            "canceled 3 jobs",
+        ] {
+            assert!(!is_teardown(&t.to_ascii_lowercase()), "{t}");
+        }
+        // A real cause before teardown wins, without Dagger's summary too.
+        let plain: Vec<String> = [
+            "error: failed to fetch `acme`",
+            "! context canceled",
+            "signal: killed",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            extract("ci", "build", Some(1), &plain).line.as_deref(),
+            Some("error: failed to fetch `acme`")
+        );
+    }
+
+    #[test]
+    fn a_cluster_line_is_found_in_its_log() {
+        let log: Vec<String> = [
+            "12  : ┆ [3.1s] | error: unused import `foo` in crate `widget-api`",
+            "FAILED tests/test_x.py::test_a - AssertionError",
+            "error: unused import `foo` in crate `widget-api`",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        // The repo's own name masked, as clusters file it.
+        assert_eq!(
+            find_lines(&log, "error: unused import `foo` in crate `…`"),
+            vec![0, 2]
+        );
+        // Capped lines end in "…"; a hint may cut a line (contained, not equal).
+        assert_eq!(find_line(&log, "error: unused import `foo`…"), Some(0));
+        assert_eq!(find_line(&log, "tests/test_x.py::test_a"), Some(1));
+        assert_eq!(find_line(&log, "error: something else entirely"), None);
+        assert_eq!(find_line(&log, "…"), None);
+    }
+
     #[test]
     #[ignore]
     fn corpus() {

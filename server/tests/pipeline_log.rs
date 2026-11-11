@@ -24,6 +24,8 @@ const NOW: i64 = 1_794_300_000_000;
 
 static HITS: AtomicUsize = AtomicUsize::new(0);
 
+const LOCKED: &str = "error: cannot update the lock file /src/Cargo.lock because --locked was passed to prevent this";
+
 fn wp_entries(lines: &[String]) -> Value {
     let b64 = base64::engine::general_purpose::STANDARD;
     Value::Array(
@@ -81,6 +83,48 @@ async fn upstream() -> String {
             }),
         )
         .route(
+            "/api/repos/7/pipelines/{n}",
+            get(|Path(n): Path<u64>| async move {
+                // 43: the lock-file failure with a canceled teardown; 44: a lint failure
+                // whose cluster names a line the classifier ranks below another.
+                let (id, name) = if n == 43 {
+                    (200, "check")
+                } else {
+                    (300, "lint")
+                };
+                axum::Json(
+                    json!({"id": n, "number": n, "status": "failure", "workflows": [
+                    {"id": 1, "name": "ci", "state": "failure", "children": [
+                        {"id": id, "name": name, "state": "failure", "exit_code": 101}]}]}),
+                )
+            }),
+        )
+        .route(
+            "/api/repos/7/logs/43/200",
+            get(|| async {
+                let lines: Vec<String> =
+                    include_str!("upstream/woodpecker/log_locked_canceled.txt")
+                        .lines()
+                        .map(str::to_string)
+                        .collect();
+                axum::Json(wp_entries(&lines))
+            }),
+        )
+        .route(
+            "/api/repos/7/logs/44/300",
+            get(|| async {
+                let lines: Vec<String> = [
+                    "Checking acme-api v0.1.0",
+                    "error: unused import `foo` in crate `acme-api`",
+                    "FAILED tests/test_x.py::test_a - AssertionError",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+                axum::Json(wp_entries(&lines))
+            }),
+        )
+        .route(
             "/repos/acme/web/actions/runs/555/jobs",
             get(|| async {
                 HITS.fetch_add(1, Ordering::SeqCst);
@@ -122,10 +166,23 @@ async fn serve(up: &str) -> String {
         json!({"id": "wp:acme/api:42", "repo": "acme/api", "number": 42, "state": "failure",
                "workflows": [{"name": "ci", "state": "failure", "steps": [
                    {"name": "test", "state": "failure"}, {"name": "deploy", "state": "pending"}]}]}),
+        json!({"id": "wp:acme/api:43", "repo": "acme/api", "number": 43, "state": "failure",
+               "workflows": [{"name": "ci", "state": "failure", "steps": [
+                   {"name": "check", "state": "failure", "cluster": "f:lock"}]}]}),
+        json!({"id": "wp:acme/api:44", "repo": "acme/api", "number": 44, "state": "failure",
+               "workflows": [{"name": "ci", "state": "failure", "steps": [
+                   {"name": "lint", "state": "failure", "cluster": "f:imp"}]}]}),
         json!({"id": "gha:555", "repo": "acme/web", "number": 3, "state": "failure",
                "workflows": [{"name": "CI", "state": "failure", "steps": [{"name": "build", "state": "failure"}]}]}),
     ] {
         w.apply_op(&json!({"op": "upsert", "kind": "pipeline", "id": v["id"], "v": v}));
+    }
+    for (id, line) in [
+        ("f:lock", LOCKED),
+        ("f:imp", "error: unused import `foo` in crate `…`"),
+    ] {
+        let v = json!({"id": id, "step": "check", "class": "lint", "line": line});
+        w.apply_op(&json!({"op": "upsert", "kind": "cluster", "id": id, "v": v}));
     }
     let clock: Clock = Arc::new(|| NOW);
     let st = Arc::new(AppState {
@@ -282,6 +339,32 @@ async fn step_log_tails() {
     assert_eq!(
         g["decisive"], 2,
         "the compiler error, not the runner's exit line"
+    );
+
+    // The decisive line is the step's cause, never the teardown after it ("! context
+    // canceled"), and agrees with its cluster: the first line showing it (cargo's own
+    // output), or inside a tail the first one there.
+    let at = |p: u32, q: &str| format!("{base}/api/v1/pipeline/wp:acme%2Fapi:{p}/log?{q}");
+    let (st, l) = get_json(&at(43, "step=check&tail=500")).await;
+    assert_eq!(st, 200, "{l}");
+    let d = l["decisive"].as_u64().unwrap() as usize;
+    assert_eq!(d, 1);
+    assert!(l["lines"][d].as_str().unwrap().ends_with(LOCKED), "{l}");
+    let (_, l) = get_json(&at(43, "step=check&tail=5")).await;
+    let d = l["decisive"].as_u64().unwrap() as usize;
+    assert_eq!(l["lines"][d], LOCKED, "Dagger's summary, inside the tail");
+    let (_, l) = get_json(&at(43, "step=check&around=decisive")).await;
+    assert_eq!(l["decisive"], 1);
+    assert!(l["lines"][1].as_str().unwrap().ends_with(LOCKED));
+    for line in l["lines"].as_array().unwrap() {
+        assert!(!line.as_str().unwrap().contains("exowatt"), "{line}");
+    }
+    // The cluster names a line the classifier ranks below a test failure: it wins.
+    let (_, l) = get_json(&at(44, "step=lint&tail=50")).await;
+    assert_eq!(l["decisive"], 1, "{l}");
+    assert_eq!(
+        l["lines"][1],
+        "error: unused import `foo` in crate `acme-api`"
     );
 
     // Unknown pipeline / step / missing step: 404 / 404 / 400.
