@@ -13,12 +13,14 @@ export const NO_LOG: Log = { ok: false, step: '', rows: [], note: '', gap: false
 /** [selection "job:<id>", step, workflow, tick (changes every ~10 s while running, else 0), capable, failed (ask the window around the decisive line)] */
 export type LogArgs = [string, string, string, number, boolean, boolean];
 
-const TAIL = 500, COLS = 240, SHOW = 48, BEFORE = 6, AFTER = 10, LAST = 24;
+const TAIL = 500, COLS = 240, SHOW = 48, WINDOW = 120, BEFORE = 6, AFTER = 10, LAST = 24;
 const BYTES = 256 << 10;
 
 /** The rows to show: around the decisive line, then the tail's end (pure; tested). */
-export function pickRows(lines: readonly string[], decisive: number): { rows: LogRow[]; gap: boolean } {
+export function pickRows(lines: readonly string[], decisive: number, whole = false): { rows: LogRow[]; gap: boolean } {
   const n = lines.length;
+  // the server's window around the decisive line (≤ 81 lines) shows whole
+  if (whole && n <= WINDOW) return { rows: lines.map((l, i) => ({ id: `l${i}`, n: String(i + 1), text: String(l ?? '').slice(0, COLS), hot: i === decisive })), gap: false };
   const take = new Set<number>();
   if (decisive >= 0 && decisive < n) for (let i = Math.max(0, decisive - BEFORE); i <= Math.min(n - 1, decisive + AFTER); i++) take.add(i);
   for (let i = Math.max(0, n - LAST); i < n; i++) take.add(i);
@@ -59,8 +61,8 @@ export function logAnswer(d: { upstream: () => Upstream | null; world: () => Wor
       const all = Array.isArray(j.lines) ? j.lines : [];
       const lines = all.slice(-TAIL).map((l) => String(l));
       const dec = typeof j.decisive === 'number' ? j.decisive - Math.max(0, all.length - lines.length) : -1;
-      const { rows, gap } = pickRows(lines, dec);
-      let note = j.around === 'decisive' ? `the error and ${lines.length - 1} lines around it${j.after ? ` · ${j.after} more lines after` : ''}` : `last ${lines.length} ${lines.length === 1 ? 'line' : 'lines'}${j.truncated ? ' (truncated)' : ''}${gap ? ' · the error and the end' : ''}`;
+      const { rows, gap } = pickRows(lines, dec, j.around === 'decisive');
+      let note = j.around === 'decisive' ? `the error and the ${lines.length - 1} lines around it${j.after ? ` · ${j.after} more after` : ''}` : `last ${lines.length} ${lines.length === 1 ? 'line' : 'lines'}${j.truncated ? ' (truncated)' : ''}${gap ? ' · the error and the end' : ''}`;
       if (!lines.length) note = gha && j.state === 'running' ? 'GitHub publishes the log when the job ends' : j.state === 'running' ? 'no output yet' : 'no output';
       return { ok: true, step, rows, note, gap };
     }, (): Log => ({ ...NO_LOG, step, note: 'log unavailable' }))

@@ -191,6 +191,8 @@ eq(fit('short', 20), 'short', 'fit keeps what fits');
   ok(rows.some((r) => r.hot && r.text === 'line 101'), 'log: the decisive line is marked');
   ok(gap && rows.some((r) => r.text === '⋯'), 'log: a gap between the error and the end is shown');
   ok(rows.filter((r) => r.n !== '').length <= 48 && rows.at(-1)?.text === 'line 300', `log: ≤ 48 lines, ending at the tail (${rows.length} rows)`);
+  const win = pickRows(Array.from({ length: 81 }, (_, i) => `w${i}`), 40, true);
+  eq([win.rows.length, win.rows[40].hot, win.gap], [81, true, false], 'log: the server\'s window around the decisive line shows whole');
   const short = pickRows(['a', 'b'], -1);
   eq(short.rows.map((r) => r.text), ['a', 'b'], 'log: a short log shows whole');
 }
