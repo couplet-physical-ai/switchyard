@@ -76,9 +76,11 @@ enum SYRefusal: Error, Equatable, LocalizedError {
     case plist
     case wrongApp(String)
     case versionMismatch(got: String, want: String)
-    case notNewer(String, current: String)
+    case buildMismatch(got: String, want: Int)
+    case notNewer(build: Int, current: Int)
+    case needsMacOS(version: String, minimum: String)
+    case path(String)
     case unsigned(String)
-    case wrongTeam
     case quarantine
     case notInstalled
     case readOnly(String)
@@ -97,12 +99,14 @@ enum SYRefusal: Error, Equatable, LocalizedError {
         case .plist: return "the downloaded app has no readable Info.plist"
         case .wrongApp(let id): return "the download is \(id.isEmpty ? "not an app" : id), not Switchyard"
         case .versionMismatch(let got, let want): return "the download says \(got), the feed \(want)"
-        case .notNewer(let v, let current): return "\(v) is not newer than \(current)"
+        case .buildMismatch(let got, let want): return "the download is build \(got), the feed \(want)"
+        case .notNewer(let b, let current): return "build \(b) is not newer than this one (\(current))"
+        case .needsMacOS(let v, let min): return "Switchyard \(v) needs macOS \(min) or later"
+        case .path(let url): return "refused a download outside the Switchyard releases (\(url))"
         case .unsigned(let why): return "the signature does not hold (\(why))"
-        case .wrongTeam: return "signed by another team"
         case .quarantine: return "could not clear the quarantine flag"
         case .notInstalled: return "this copy is not in Applications, so it cannot update itself"
-        case .readOnly(let dir): return "\(dir) is not writable"
+        case .readOnly: return "Update needs admin rights; run `brew upgrade --greedy --cask switchyard`"
         case .otherVolume: return "no staging folder on the app's volume"
         case .leftover(let path): return "\(path) is in the way"
         case .move(let why): return "could not swap the app: \(why)"
@@ -115,6 +119,8 @@ enum SYRefusal: Error, Equatable, LocalizedError {
 /// A newer build, as a feed names it.
 struct SYRelease: Equatable {
     var version: String
+    /// CFBundleVersion: M*1000000 + m*1000 + p. What "newer" means.
+    var build: Int
     /// The ZIP.
     var url: URL
     /// Hex of the ZIP from latest.json; nil when the sum is a line of `sumsURL` (SHA256SUMS).
@@ -123,6 +129,8 @@ struct SYRelease: Equatable {
     var notes: String
     var published: String
     var minimumSystemVersion: String?
+    /// The pre-release channel: the release's own latest.json asset, read before anything else.
+    var latestJSON: URL? = nil
     /// "latest.json", "api" or "sums", for the log.
     var source: String
 
@@ -139,13 +147,20 @@ enum SYFeed {
     static let defaultRepo = "couplet-physical-ai/switchyard"
 
     static func zipName(_ version: String) -> String { "Switchyard-\(version)-arm64.zip" }
+    /// sy-ship's CFBundleVersion for a version: M*1000000 + m*1000 + p (0.1.1 → 1001).
+    static func build(of version: String) -> Int? {
+        guard let v = SYSemver.clean(version) else { return nil }
+        let core = v.split(separator: "+")[0].split(separator: "-")[0].split(separator: ".").map { Int($0) ?? 0 }
+        return (core.count > 0 ? core[0] : 0) * 1_000_000 + (core.count > 1 ? core[1] : 0) * 1_000 + (core.count > 2 ? core[2] : 0)
+    }
     /// The release asset sy-ship publishes on every stable release (scripts/release/latest-json.py).
     static func latestJSON(repo: String) -> URL { URL(string: "https://github.com/\(repo)/releases/latest/download/latest.json")! }
     static func releasesAPI(repo: String) -> URL { URL(string: "https://api.github.com/repos/\(repo)/releases?per_page=20")! }
     static func latestSums(repo: String) -> URL { URL(string: "https://github.com/\(repo)/releases/latest/download/SHA256SUMS")! }
 
-    /// `{"version","url","sha256","notes","published"}` (plus, ignored or checked when there:
-    /// `build`, `dmg`, `minimumSystemVersion`, `bundleId`, `commit`).
+    /// sy-ship's latest.json: `{version, build, url, dmg, sha256, notes, published,
+    /// minimumSystemVersion, bundleId, commit}`. Required: version, build, url, sha256, bundleId
+    /// (== this app's). Unknown fields are ignored.
     static func parseLatest(_ data: Data, bundleID: String) throws -> SYRelease {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw SYRefusal.feed("answered something that is not JSON")
@@ -156,13 +171,15 @@ enum SYFeed {
         guard let link = json["url"] as? String, let url = URL(string: link), url.host != nil else {
             throw SYRefusal.feed("names no zip")
         }
+        guard let build = (json["build"] as? Int) ?? Int(json["build"] as? String ?? ""), build > 0 else {
+            throw SYRefusal.feed("names no build")
+        }
         let sha = (json["sha256"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard isHex64(sha) else { throw SYRefusal.feed("has no sha256 for the zip") }
-        if let id = json["bundleId"] as? String, !id.isEmpty, id != bundleID {
-            throw SYRefusal.wrongApp(id)
-        }
+        let id = json["bundleId"] as? String ?? ""
+        guard id == bundleID else { throw SYRefusal.wrongApp(id) }
         return SYRelease(
-            version: version, url: url, sha256: sha, sumsURL: nil,
+            version: version, build: build, url: url, sha256: sha, sumsURL: nil,
             notes: trimNotes(json["notes"] as? String ?? ""), published: json["published"] as? String ?? "",
             minimumSystemVersion: json["minimumSystemVersion"] as? String, source: "latest.json")
     }
@@ -178,16 +195,16 @@ enum SYFeed {
             if r["draft"] as? Bool == true { continue }
             if r["prerelease"] as? Bool == true && !prerelease { continue }
             guard let tag = r["tag_name"] as? String, let version = SYSemver.clean(tag) else { continue }
-            var zip: URL?, sums: URL?
+            var zip: URL?, sums: URL?, feed: URL?
             for a in r["assets"] as? [[String: Any]] ?? [] {
                 guard let name = a["name"] as? String, let u = (a["browser_download_url"] as? String).flatMap(URL.init(string:)) else { continue }
-                if name == zipName(version) { zip = u } else if name == "SHA256SUMS" { sums = u }
+                if name == zipName(version) { zip = u } else if name == "SHA256SUMS" { sums = u } else if name == "latest.json" { feed = u }
             }
-            guard let zip, let sums else { continue }
+            guard let zip, sums != nil || feed != nil else { continue }
             if let b = best, SYSemver.compare(version, b.version) <= 0 { continue }
-            best = SYRelease(version: version, url: zip, sha256: nil, sumsURL: sums,
+            best = SYRelease(version: version, build: build(of: version) ?? 0, url: zip, sha256: nil, sumsURL: sums,
                              notes: trimNotes(r["body"] as? String ?? ""), published: r["published_at"] as? String ?? "",
-                             minimumSystemVersion: nil, source: "api")
+                             minimumSystemVersion: nil, latestJSON: feed, source: "api")
         }
         return best
     }
@@ -200,7 +217,7 @@ enum SYFeed {
             let version = String(name.dropFirst("Switchyard-".count).dropLast("-arm64.zip".count))
             guard SYSemver.clean(version) == version,
                   let zip = URL(string: "https://github.com/\(repo)/releases/download/v\(version)/\(name)") else { continue }
-            return SYRelease(version: version, url: zip, sha256: hex, sumsURL: nil, notes: "", published: "",
+            return SYRelease(version: version, build: build(of: version) ?? 0, url: zip, sha256: hex, sumsURL: nil, notes: "", published: "",
                              minimumSystemVersion: nil, source: "sums")
         }
         return nil
@@ -239,26 +256,35 @@ enum SYFeed {
 
 // MARK: - which hosts may answer
 
-/// The feed must be https; a zip, and every redirect on the way to it, must come from GitHub.
-/// The one exception is the env-only test feed (SWITCHYARD_UPDATE_FEED): its own origin may serve
-/// the feed and the zip, and it may be plain http only on 127.0.0.1.
+/// The trust anchor (releases are signed ad hoc, so there is no Team ID to pin): an https feed,
+/// a zip at https://github.com/<repo>/releases/…, and redirects only to GitHub's release CDN
+/// (objects.githubusercontent.com, release-assets.githubusercontent.com), checked on every hop.
+/// The one exception is the env-only test feed (SWITCHYARD_UPDATE_FEED) on a non-GitHub origin:
+/// that origin may serve the feed and the zip, and it may be plain http only on 127.0.0.1.
 struct SYHostPolicy {
-    static let assetHosts: Set<String> = ["github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"]
+    static let cdnHosts: Set<String> = ["objects.githubusercontent.com", "release-assets.githubusercontent.com"]
+    static let assetHosts: Set<String> = cdnHosts.union(["github.com"])
     static let apiHost = "api.github.com"
 
-    /// The test feed's base, when SWITCHYARD_UPDATE_FEED names an acceptable one.
+    let repo: String
+    /// A test feed's origin, when SWITCHYARD_UPDATE_FEED names one off GitHub.
     let testOrigin: URL?
 
-    init(testFeed: URL? = nil) { testOrigin = testFeed }
+    init(repo: String = SYFeed.defaultRepo, testFeed: URL? = nil) {
+        self.repo = repo
+        testOrigin = testFeed.flatMap { SYHostPolicy.assetHosts.contains($0.host?.lowercased() ?? "") || $0.host?.lowercased() == SYHostPolicy.apiHost ? nil : $0 }
+    }
 
-    /// SWITCHYARD_UPDATE_FEED as a base URL: https anywhere, http only on 127.0.0.1; else nil.
-    static func testFeedBase(_ raw: String?) -> URL? {
+    /// SWITCHYARD_UPDATE_FEED: a latest.json URL, or a base URL that serves one. https
+    /// anywhere, http only on 127.0.0.1; else nil.
+    static func testFeedURL(_ raw: String?) -> URL? {
         guard let raw, !raw.isEmpty, let url = URL(string: raw), let host = url.host?.lowercased(), url.user == nil else { return nil }
         switch url.scheme?.lowercased() {
-        case "https": return url
-        case "http": return host == "127.0.0.1" ? url : nil
+        case "https": break
+        case "http": guard host == "127.0.0.1" else { return nil }
         default: return nil
         }
+        return url.path.hasSuffix(".json") ? url : url.appendingPathComponent("latest.json")
     }
 
     private func isTestOrigin(_ url: URL) -> Bool {
@@ -266,28 +292,29 @@ struct SYHostPolicy {
         return url.scheme?.lowercased() == t.scheme?.lowercased() && url.host?.lowercased() == t.host?.lowercased() && url.port == t.port
     }
 
-    /// Why `url` may not serve the feed (latest.json, the releases API, SHA256SUMS), or nil.
-    func refuseFeed(_ url: URL) -> SYRefusal? {
+    /// On github.com, under this repo's releases.
+    private func inRepo(_ url: URL) -> Bool {
+        url.host?.lowercased() == "github.com" && url.port == nil && !url.path.contains("..")
+            && url.path.lowercased().hasPrefix("/\(repo.lowercased())/releases/")
+    }
+
+    private func refuse(_ url: URL, cdn: Bool, api: Bool) -> SYRefusal? {
         if isTestOrigin(url) { return nil }
         guard url.scheme?.lowercased() == "https" else { return .insecure(url.absoluteString) }
         let host = url.host?.lowercased() ?? ""
-        return SYHostPolicy.assetHosts.contains(host) || host == SYHostPolicy.apiHost ? nil : .host(host)
+        if inRepo(url) { return nil }
+        if cdn, SYHostPolicy.cdnHosts.contains(host) { return nil }
+        if api, host == SYHostPolicy.apiHost, url.path.lowercased().hasPrefix("/repos/\(repo.lowercased())/") { return nil }
+        return host == "github.com" || host == SYHostPolicy.apiHost ? .path(url.absoluteString) : .host(host.isEmpty ? url.absoluteString : host)
     }
 
-    /// Why `url` may not serve the zip, or be a hop of a redirect, or nil.
-    func refuseAsset(_ url: URL) -> SYRefusal? {
-        if isTestOrigin(url) { return nil }
-        guard url.scheme?.lowercased() == "https" else { return .insecure(url.absoluteString) }
-        let host = url.host?.lowercased() ?? ""
-        return SYHostPolicy.assetHosts.contains(host) ? nil : .host(host.isEmpty ? url.absoluteString : host)
-    }
-
-    /// A redirect hop: GitHub sends downloads to objects/release-assets.githubusercontent.com.
-    /// The API may move within api.github.com.
-    func refuseHop(_ url: URL, api: Bool) -> SYRefusal? {
-        if api, url.scheme?.lowercased() == "https", url.host?.lowercased() == SYHostPolicy.apiHost { return nil }
-        return refuseAsset(url)
-    }
+    /// The feed: latest.json on this repo's releases, or the releases API.
+    func refuseFeed(_ url: URL) -> SYRefusal? { refuse(url, cdn: false, api: true) }
+    /// A zip, SHA256SUMS or a release's latest.json: only https://github.com/<repo>/releases/….
+    func refuseAsset(_ url: URL) -> SYRefusal? { refuse(url, cdn: false, api: false) }
+    /// A redirect hop: GitHub's release CDN, or within this repo's releases (latest → v…); the
+    /// API request may also move within its repo on api.github.com.
+    func refuseHop(_ url: URL, api: Bool) -> SYRefusal? { refuse(url, cdn: true, api: api) }
 }
 
 // MARK: - checking a download
@@ -298,19 +325,20 @@ struct SYTools {
     static let live = SYTools { tool, args in try SYProcess.run(tool, args, deadline: 180) }
 }
 
-/// A bundle is not trusted because it arrived: it is trusted because its zip's SHA-256 is the
-/// feed's, it is this app, it is the version the feed named and newer than this one, its
-/// signature holds under the strict check, and it carries no quarantine flag.
+/// A bundle is not trusted because it arrived: its zip's SHA-256 is the feed's, it is this app,
+/// it is the version and build the feed named, its build is newer than this one's, and its
+/// signature holds under SecStaticCodeCheckValidity's strict checks (and `codesign --verify
+/// --deep --strict`). No Team ID: the releases are signed ad hoc.
 struct SYVerifier {
     let bundleID: String
-    let current: String
+    /// The running bundle's CFBundleVersion.
+    let currentBuild: Int
     var tools: SYTools = .live
-    /// The running copy's Team ID: nil for an ad-hoc signature (Switchyard's releases have no
-    /// Developer ID). When there is one, the new bundle must carry the same.
-    var team: String? = nil
 
-    /// Checks `zip` and unpacks it into `dir` (on the app's volume); returns the new bundle.
-    func verify(zip: URL, sha256 want: String, version: String, into dir: URL) throws -> URL {
+    struct Verified { let app: URL; let cdhash: String }
+
+    /// Checks `zip` and unpacks it into `dir` (on the app's volume).
+    func verify(zip: URL, sha256 want: String, version: String, build: Int, into dir: URL) throws -> Verified {
         let got = try SYDigest.sha256(of: zip)
         guard got == want.lowercased() else { throw SYRefusal.hash(got: got, want: want) }
         let out = dir.appendingPathComponent("unzipped", isDirectory: true)
@@ -327,16 +355,16 @@ struct SYVerifier {
         guard id == bundleID else { throw SYRefusal.wrongApp(id) }
         let ver = info["CFBundleShortVersionString"] as? String ?? ""
         guard ver == version else { throw SYRefusal.versionMismatch(got: ver, want: version) }
-        guard SYSemver.isNewer(ver, than: current) else { throw SYRefusal.notNewer(ver, current: current) }
+        let rawBuild = info["CFBundleVersion"] as? String ?? ""
+        guard let b = Int(rawBuild), b == build else { throw SYRefusal.buildMismatch(got: rawBuild, want: build) }
+        guard b > currentBuild else { throw SYRefusal.notNewer(build: b, current: currentBuild) }
+        let cdhash = try SYSign.check(app)
         do { _ = try tools.run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path]) }
         catch { throw SYRefusal.unsigned((error as? LocalizedError)?.errorDescription ?? "codesign") }
-        if let team, SYSign.team(of: app) != team { throw SYRefusal.wrongTeam }
-        // Nothing this process downloads should carry the flag (Copper declares no
-        // LSFileQuarantineEnabled); a test feed's zip or a copy made by hand may. Clear it, and
-        // check it is gone: the checking is done here, not by Gatekeeper at the next launch.
+        // URLSession downloads carry no quarantine flag; a zip copied by hand may. Harmless.
         _ = try? tools.run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", app.path])
         guard !SYDigest.quarantined(app) else { throw SYRefusal.quarantine }
-        return app
+        return Verified(app: app, cdhash: cdhash)
     }
 }
 
@@ -359,14 +387,21 @@ enum SYDigest {
 }
 
 enum SYSign {
-    /// The team that signed a bundle, as the system reads it: nil for an ad-hoc signature.
-    static func team(of bundle: URL) -> String? {
+    /// SecStaticCodeCheckValidity with strict validation, every architecture and nested code;
+    /// returns the cdhash (kSecCodeInfoUnique) for the log.
+    static func check(_ bundle: URL) throws -> String {
         var code: SecStaticCode?
-        guard SecStaticCodeCreateWithPath(bundle as CFURL, [], &code) == errSecSuccess, let code else { return nil }
+        guard SecStaticCodeCreateWithPath(bundle as CFURL, [], &code) == errSecSuccess, let code else {
+            throw SYRefusal.unsigned("no code at the bundle")
+        }
+        let strict = SecCSFlags(rawValue: kSecCSStrictValidate | kSecCSCheckAllArchitectures | kSecCSCheckNestedCode)
+        let status = SecStaticCodeCheckValidity(code, strict, nil)
+        guard status == errSecSuccess else { throw SYRefusal.unsigned("SecStaticCodeCheckValidity \(status)") }
         var info: CFDictionary?
         guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
-              let signing = info as? [String: Any] else { return nil }
-        return signing[kSecCodeInfoTeamIdentifier as String] as? String
+              let unique = (info as? [String: Any])?[kSecCodeInfoUnique as String] as? Data
+        else { throw SYRefusal.unsigned("no cdhash") }
+        return unique.map { String(format: "%02x", $0) }.joined()
     }
 }
 
@@ -382,15 +417,18 @@ protocol SYFileOps {
 }
 
 struct SYLocalFileOps: SYFileOps {
-    /// rename(2), not a move: across volumes it fails (EXDEV) where a move would copy.
+    /// rename(2), not a move: across volumes it fails (EXDEV) where a move would copy. EACCES and
+    /// EPERM (a folder or bundle owned by another account) are the admin-rights refusal.
     func rename(_ from: URL, _ to: URL) throws {
         guard Darwin.rename(from.path, to.path) == 0 else {
-            throw SYRefusal.move("\(from.lastPathComponent) → \(to.lastPathComponent): \(String(cString: strerror(errno)))")
+            let e = errno
+            if e == EACCES || e == EPERM { throw SYRefusal.readOnly(from.deletingLastPathComponent().path) }
+            throw SYRefusal.move("\(from.lastPathComponent) → \(to.lastPathComponent): \(String(cString: strerror(e)))")
         }
     }
     func remove(_ url: URL) throws { try FileManager.default.removeItem(at: url) }
     func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
-    func writable(_ dir: URL) -> Bool { FileManager.default.isWritableFile(atPath: dir.path) }
+    func writable(_ dir: URL) -> Bool { access(dir.path, W_OK) == 0 }
     func volume(_ url: URL) -> String? {
         guard let v = try? url.resourceValues(forKeys: [.volumeIdentifierKey]).volumeIdentifier else { return nil }
         return "\(v)"
@@ -411,12 +449,19 @@ struct SYSwap {
     /// Copper's checks before anything is fetched: the folder takes a rename, and the staging
     /// folder is on the app's volume (so the last move is a rename too).
     func preflight(staging: URL) throws {
+        try writable()
+        guard let a = ops.volume(target.deletingLastPathComponent()), let b = ops.volume(staging), a == b else { throw SYRefusal.otherVolume }
+    }
+
+    /// The folder takes a rename, and so does the bundle (renaming a directory rewrites its
+    /// `..`): a brew copy owned by another account fails here, before anything is touched.
+    func writable() throws {
         let parent = target.deletingLastPathComponent()
-        guard ops.writable(parent) else { throw SYRefusal.readOnly(parent.path) }
-        guard let a = ops.volume(parent), let b = ops.volume(staging), a == b else { throw SYRefusal.otherVolume }
+        guard ops.writable(parent), ops.writable(target) else { throw SYRefusal.readOnly(parent.path) }
     }
 
     func swap(_ fresh: URL) throws {
+        try writable()
         _ = sweep(staging: [])
         guard !ops.exists(aside) else { throw SYRefusal.leftover(aside.lastPathComponent) }
         guard ops.exists(fresh) else { throw SYRefusal.move("the staged app is gone") }
@@ -494,12 +539,12 @@ struct SYToolFailure: LocalizedError {
 /// `<dir>/Switchyard.app`: an Info.plist with `id` and `version`, a copy of /usr/bin/true as
 /// its executable, signed ad hoc, so `codesign --verify --deep --strict` holds.
 enum SYFixture {
-    static func bundle(in dir: URL, id: String, version: String, name: String = "Switchyard.app", sign: Bool = true) throws -> URL {
+    static func bundle(in dir: URL, id: String, version: String, build: Int? = nil, name: String = "Switchyard.app", sign: Bool = true) throws -> URL {
         let app = dir.appendingPathComponent(name, isDirectory: true)
         let macos = app.appendingPathComponent("Contents/MacOS", isDirectory: true)
         try FileManager.default.createDirectory(at: macos, withIntermediateDirectories: true)
         let info: [String: Any] = [
-            "CFBundleIdentifier": id, "CFBundleShortVersionString": version, "CFBundleVersion": "1",
+            "CFBundleIdentifier": id, "CFBundleShortVersionString": version, "CFBundleVersion": "\(build ?? SYFeed.build(of: version) ?? 1)",
             "CFBundleExecutable": "Switchyard", "CFBundleName": "Switchyard", "CFBundlePackageType": "APPL",
             "CFBundleInfoDictionaryVersion": "6.0",
         ]
@@ -512,14 +557,14 @@ enum SYFixture {
         return app
     }
 
-    /// The bundle, zipped the way a release is (`ditto -c -k --keepParent`).
-    static func zip(in dir: URL, id: String, version: String, sign: Bool = true) throws -> URL {
+    /// The bundle, zipped the way a release is (`ditto -c -k --sequesterRsrc --keepParent`).
+    static func zip(in dir: URL, id: String, version: String, build: Int? = nil, sign: Bool = true) throws -> URL {
         let src = dir.appendingPathComponent("src", isDirectory: true)
         try FileManager.default.createDirectory(at: src, withIntermediateDirectories: true)
-        let app = try bundle(in: src, id: id, version: version, sign: sign)
+        let app = try bundle(in: src, id: id, version: version, build: build, sign: sign)
         let zip = dir.appendingPathComponent(SYFeed.zipName(version))
         try? FileManager.default.removeItem(at: zip)
-        try SYProcess.run("/usr/bin/ditto", ["-c", "-k", "--keepParent", app.path, zip.path], deadline: 60)
+        try SYProcess.run("/usr/bin/ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", app.path, zip.path], deadline: 60)
         return zip
     }
 }

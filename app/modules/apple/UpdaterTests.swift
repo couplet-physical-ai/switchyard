@@ -73,26 +73,32 @@ enum SYUpdaterTests {
     static func latestJSON() {
         let sha = "4f2c" + String(repeating: "a", count: 60)
         let good = """
-        {"version":"0.1.1","url":"https://github.com/couplet-physical-ai/switchyard/releases/download/v0.1.1/Switchyard-0.1.1-arm64.zip","sha256":"\(sha)","notes":"- faster yard","published":"2026-11-10T23:59:00Z"}
+        {"version":"0.1.1","build":1001,"url":"https://github.com/couplet-physical-ai/switchyard/releases/download/v0.1.1/Switchyard-0.1.1-arm64.zip","dmg":"https://github.com/couplet-physical-ai/switchyard/releases/download/v0.1.1/Switchyard-0.1.1-arm64.dmg","sha256":"\(sha)","notes":"- faster yard","published":"2026-11-10T23:59:00Z","minimumSystemVersion":"14.0","bundleId":"com.exowatt.switchyard","commit":"971efe1cc4e361c0993568140f2193438b079f1c","future":{"x":1}}
         """
         do {
             let r = try SYFeed.parseLatest(Data(good.utf8), bundleID: id)
-            check(r.version == "0.1.1" && r.sha256 == sha && r.url.lastPathComponent == "Switchyard-0.1.1-arm64.zip"
-                  && r.notes == "- faster yard" && r.published == "2026-11-10T23:59:00Z" && r.source == "latest.json", "the schema parses")
+            check(r.version == "0.1.1" && r.build == 1001 && r.minimumSystemVersion == "14.0" && r.sha256 == sha && r.url.lastPathComponent == "Switchyard-0.1.1-arm64.zip"
+                  && r.notes == "- faster yard" && r.published == "2026-11-10T23:59:00Z" && r.source == "latest.json", "sy-ship's latest.json parses (unknown fields ignored)")
         } catch { check(false, "the schema parses", "\(error)") }
         let extra = """
-        {"version":"v0.1.2","build":1002,"url":"https://github.com/x/y/releases/download/v0.1.2/Switchyard-0.1.2-arm64.zip","dmg":"https://github.com/x/y/z.dmg","sha256":"\(sha.uppercased())","notes":"","published":"","minimumSystemVersion":"14.0","bundleId":"\(id)","commit":"abc"}
+        {"version":"v0.1.2","build":"1002","url":"https://github.com/x/y/releases/download/v0.1.2/Switchyard-0.1.2-arm64.zip","dmg":"https://github.com/x/y/z.dmg","sha256":"\(sha.uppercased())","notes":"","published":"","minimumSystemVersion":"14.0","bundleId":"\(id)","commit":"abc"}
         """
         let r2 = try? SYFeed.parseLatest(Data(extra.utf8), bundleID: id)
-        check(r2?.version == "0.1.2" && r2?.sha256 == sha && r2?.minimumSystemVersion == "14.0", "sy-ship's extra fields are accepted, the v and hex case normalised")
-        let noSha = #"{"version":"0.1.1","url":"https://github.com/a/b/c.zip","notes":""}"#
+        check(r2?.version == "0.1.2" && r2?.build == 1002 && r2?.sha256 == sha, "a v prefix, a string build and upper-case hex are normalised")
+        let noSha = #"{"build":1001,"bundleId":"com.exowatt.switchyard","version":"0.1.1","url":"https://github.com/a/b/c.zip","notes":""}"#
         check(refusal { _ = try SYFeed.parseLatest(Data(noSha.utf8), bundleID: id) } == .feed("has no sha256 for the zip"), "no sha256 → refused")
-        let shortSha = #"{"version":"0.1.1","url":"https://github.com/a/b/c.zip","sha256":"abc"}"#
+        let shortSha = #"{"build":1001,"bundleId":"com.exowatt.switchyard","version":"0.1.1","url":"https://github.com/a/b/c.zip","sha256":"abc"}"#
         check(refusal { _ = try SYFeed.parseLatest(Data(shortSha.utf8), bundleID: id) } == .feed("has no sha256 for the zip"), "a short sha256 → refused")
-        let noVersion = #"{"version":"latest","url":"https://github.com/a/b/c.zip","sha256":"\#(sha)"}"#
+        let noVersion = #"{"build":1001,"bundleId":"com.exowatt.switchyard","version":"latest","url":"https://github.com/a/b/c.zip","sha256":"\#(sha)"}"#
         check(refusal { _ = try SYFeed.parseLatest(Data(noVersion.utf8), bundleID: id) } == .feed("names no version"), "a non-version → refused")
-        let other = #"{"version":"0.1.1","url":"https://github.com/a/b/c.zip","sha256":"\#(sha)","bundleId":"com.example.other"}"#
+        let other = #"{"version":"0.1.1","build":1001,"url":"https://github.com/a/b/c.zip","sha256":"\#(sha)","bundleId":"com.example.other"}"#
         check(refusal { _ = try SYFeed.parseLatest(Data(other.utf8), bundleID: id) } == .wrongApp("com.example.other"), "another app's bundleId → refused")
+        let noBuild = #"{"version":"0.1.1","url":"https://github.com/a/b/c.zip","sha256":"\#(sha)","bundleId":"com.exowatt.switchyard"}"#
+        check(refusal { _ = try SYFeed.parseLatest(Data(noBuild.utf8), bundleID: id) } == .feed("names no build"), "no build → refused")
+        let noId = #"{"version":"0.1.1","build":1001,"url":"https://github.com/a/b/c.zip","sha256":"\#(sha)"}"#
+        check(refusal { _ = try SYFeed.parseLatest(Data(noId.utf8), bundleID: id) } == .wrongApp(""), "no bundleId → refused")
+        check(SYFeed.build(of: "0.1.0") == 1000 && SYFeed.build(of: "0.1.1") == 1001 && SYFeed.build(of: "v1.2.3") == 1_002_003 && SYFeed.build(of: "0.0.4") == 4,
+              "build = M*1000000 + m*1000 + p")
         check(refusal { _ = try SYFeed.parseLatest(Data("<html>".utf8), bundleID: id) } == .feed("answered something that is not JSON"), "HTML → refused")
     }
 
@@ -119,38 +125,56 @@ enum SYUpdaterTests {
         check((try? SYFeed.pickFromAPI(data, prerelease: false))??.version == "0.1.2", "the API path: the highest stable release with a zip and SHA256SUMS (drafts, pre-releases, no-SUMS skipped)")
         check((try? SYFeed.pickFromAPI(data, prerelease: true))??.version == "0.2.0-rc.1", "the pre-release channel takes the rc")
         check((try? SYFeed.pickFromAPI(data, prerelease: true))??.sumsURL?.lastPathComponent == "SHA256SUMS", "an API release's sum comes from its SHA256SUMS")
+        var withFeed = rel("v0.0.4", pre: true)
+        withFeed["assets"] = (withFeed["assets"] as! [[String: Any]]) + [["name": "latest.json", "browser_download_url": "https://github.com/o/r/releases/download/v0.0.4/latest.json"]]
+        let d2 = try! JSONSerialization.data(withJSONObject: [withFeed, rel("v0.0.3", pre: true)])
+        let p4 = (try? SYFeed.pickFromAPI(d2, prerelease: true)) ?? nil
+        check(p4?.version == "0.0.4" && p4?.build == 4 && p4?.latestJSON?.lastPathComponent == "latest.json", "the pre-release channel reads the newest pre-release's own latest.json")
     }
 
     // MARK: hosts
 
     static func hosts() {
-        let p = SYHostPolicy()
-        for u in ["https://github.com/couplet-physical-ai/switchyard/releases/download/v0.1.1/Switchyard-0.1.1-arm64.zip",
-                  "https://objects.githubusercontent.com/github-production-release-asset/x", "https://release-assets.githubusercontent.com/x"] {
-            check(p.refuseAsset(URL(string: u)!) == nil, "allowed: \(URL(string: u)!.host!)")
+        let p = SYHostPolicy(repo: "couplet-physical-ai/switchyard")
+        let zip = "https://github.com/couplet-physical-ai/switchyard/releases/download/v0.1.1/Switchyard-0.1.1-arm64.zip"
+        check(p.refuseAsset(URL(string: zip)!) == nil, "allowed zip: https://github.com/couplet-physical-ai/switchyard/releases/…")
+        check(p.refuseFeed(URL(string: "https://github.com/couplet-physical-ai/switchyard/releases/latest/download/latest.json")!) == nil
+              && p.refuseFeed(URL(string: "https://api.github.com/repos/couplet-physical-ai/switchyard/releases?per_page=20")!) == nil,
+              "allowed feeds: latest.json on the repo's releases, the repo's releases API")
+        for u in ["https://objects.githubusercontent.com/github-production-release-asset/x", "https://release-assets.githubusercontent.com/x",
+                  "https://github.com/couplet-physical-ai/switchyard/releases/download/v0.1.1/latest.json"] {
+            check(p.refuseHop(URL(string: u)!, api: false) == nil, "allowed redirect hop: \(u)")
         }
         let refused: [(String, SYRefusal)] = [
-            ("http://github.com/a.zip", .insecure("http://github.com/a.zip")),
+            ("http://github.com/couplet-physical-ai/switchyard/releases/download/v1/a.zip", .insecure("http://github.com/couplet-physical-ai/switchyard/releases/download/v1/a.zip")),
             ("https://example.com/Switchyard-0.1.1-arm64.zip", .host("example.com")),
-            ("https://github.com.example.com/a.zip", .host("github.com.example.com")),
-            ("https://objects.githubusercontent.com.example.com/a.zip", .host("objects.githubusercontent.com.example.com")),
-            ("https://api.github.com/repos/o/r/releases", .host("api.github.com")),
+            ("https://github.com.example.com/couplet-physical-ai/switchyard/releases/a.zip", .host("github.com.example.com")),
+            ("https://github.com/someone-else/switchyard/releases/download/v9/Switchyard-9.0.0-arm64.zip", .path("https://github.com/someone-else/switchyard/releases/download/v9/Switchyard-9.0.0-arm64.zip")),
+            ("https://github.com/couplet-physical-ai/switchyard/releases/../../x/a.zip", .path("https://github.com/couplet-physical-ai/switchyard/releases/../../x/a.zip")),
+            ("https://objects.githubusercontent.com/a.zip", .host("objects.githubusercontent.com")),
             ("http://127.0.0.1:8123/Switchyard-0.0.3-arm64.zip", .insecure("http://127.0.0.1:8123/Switchyard-0.0.3-arm64.zip")),
         ]
-        for (u, why) in refused { check(p.refuseAsset(URL(string: u)!) == why, "refused asset: \(u)", "\(String(describing: p.refuseAsset(URL(string: u)!)))") }
-        check(p.refuseFeed(URL(string: "http://github.com/o/r/releases/latest/download/latest.json")!) == .insecure("http://github.com/o/r/releases/latest/download/latest.json"), "a non-https feed → refused")
-        check(p.refuseFeed(URL(string: "https://api.github.com/repos/o/r/releases")!) == nil, "the API may serve the feed")
-        check(p.refuseHop(URL(string: "https://api.github.com/x")!, api: true) == nil && p.refuseHop(URL(string: "https://api.github.com/x")!, api: false) != nil,
-              "a redirect hop to api.github.com only on the API request")
+        for (u, why) in refused { check(p.refuseAsset(URL(string: u)!) == why, "refused zip: \(u)", "\(String(describing: p.refuseAsset(URL(string: u)!)))") }
+        check(p.refuseFeed(URL(string: "http://github.com/couplet-physical-ai/switchyard/releases/latest/download/latest.json")!) != nil, "a non-https feed → refused")
+        // Redirects off-host.
         check(p.refuseHop(URL(string: "https://example.com/x")!, api: true) == .host("example.com"), "a redirect hop off GitHub → refused")
-        // The env-only test feed.
-        check(SYHostPolicy.testFeedBase("http://127.0.0.1:8123") != nil, "test feed: http://127.0.0.1 is accepted")
-        check(SYHostPolicy.testFeedBase("http://localhost:8123") == nil && SYHostPolicy.testFeedBase("http://example.com") == nil
-              && SYHostPolicy.testFeedBase("file:///tmp/feed") == nil && SYHostPolicy.testFeedBase("") == nil, "test feed: other http, file: and empty → refused")
-        let t = SYHostPolicy(testFeed: SYHostPolicy.testFeedBase("http://127.0.0.1:8123"))
+        check(p.refuseHop(URL(string: "http://release-assets.githubusercontent.com/x")!, api: false) != nil, "a redirect hop to plain http → refused")
+        check(p.refuseHop(URL(string: "https://github.com/evil/repo/releases/download/v1/a.zip")!, api: false) != nil, "a redirect hop to another repo → refused")
+        check(p.refuseHop(URL(string: "https://api.github.com/repos/couplet-physical-ai/switchyard/releases")!, api: true) == nil
+              && p.refuseHop(URL(string: "https://api.github.com/repos/couplet-physical-ai/switchyard/releases")!, api: false) != nil,
+              "a hop to the repo's API only on the API request")
+        // The env-only test feed: a latest.json URL or a base.
+        check(SYHostPolicy.testFeedURL("http://127.0.0.1:8123")?.absoluteString == "http://127.0.0.1:8123/latest.json", "test feed: a base gets /latest.json")
+        check(SYHostPolicy.testFeedURL("https://github.com/couplet-physical-ai/switchyard/releases/download/v0.0.4/latest.json")?.lastPathComponent == "latest.json",
+              "test feed: a latest.json URL is taken as it is")
+        check(SYHostPolicy.testFeedURL("http://localhost:8123") == nil && SYHostPolicy.testFeedURL("http://example.com") == nil
+              && SYHostPolicy.testFeedURL("file:///tmp/feed") == nil && SYHostPolicy.testFeedURL("") == nil, "test feed: other http, file: and empty → refused")
+        let t = SYHostPolicy(repo: "couplet-physical-ai/switchyard", testFeed: SYHostPolicy.testFeedURL("http://127.0.0.1:8123"))
         check(t.refuseAsset(URL(string: "http://127.0.0.1:8123/Switchyard-0.0.3-arm64.zip")!) == nil, "test feed: its own origin may serve the zip")
         check(t.refuseAsset(URL(string: "http://127.0.0.1:9999/a.zip")!) != nil && t.refuseAsset(URL(string: "https://example.com/a.zip")!) != nil,
               "test feed: another port or host → still refused")
+        let g = SYHostPolicy(repo: "couplet-physical-ai/switchyard", testFeed: SYHostPolicy.testFeedURL("https://github.com/couplet-physical-ai/switchyard/releases/download/v0.0.4/latest.json"))
+        check(g.testOrigin == nil && g.refuseAsset(URL(string: "https://github.com/evil/x/releases/a.zip")!) != nil, "test feed on GitHub: the normal rules hold")
     }
 
     // MARK: the verify chain (real ditto, codesign, xattr)
@@ -160,11 +184,12 @@ enum SYUpdaterTests {
         do {
             let zip = try SYFixture.zip(in: dir.appendingPathComponent("good"), id: id, version: "0.0.3")
             let sha = try SYDigest.sha256(of: zip)
-            let v = SYVerifier(bundleID: id, current: "0.0.2")
-            let app = try v.verify(zip: zip, sha256: sha, version: "0.0.3", into: dir.appendingPathComponent("stage-good"))
-            check(version(of: app) == "0.0.3" && !SYDigest.quarantined(app), "a good zip passes every check")
+            let v = SYVerifier(bundleID: id, currentBuild: 2)
+            let ok = try v.verify(zip: zip, sha256: sha, version: "0.0.3", build: 3, into: dir.appendingPathComponent("stage-good"))
+            check(version(of: ok.app) == "0.0.3" && !SYDigest.quarantined(ok.app) && ok.cdhash.count == 40,
+                  "a good zip passes every check (sha, ditto, id, version, build 3 > 2, SecStaticCode strict, codesign); cdhash \(ok.cdhash)")
 
-            check(refusal { _ = try v.verify(zip: zip, sha256: String(repeating: "0", count: 64), version: "0.0.3", into: dir.appendingPathComponent("s1")) }
+            check(refusal { _ = try v.verify(zip: zip, sha256: String(repeating: "0", count: 64), version: "0.0.3", build: 3, into: dir.appendingPathComponent("s1")) }
                   == .hash(got: sha, want: String(repeating: "0", count: 64)), "SHA mismatch → refused")
 
             // A corrupt zip (its sha matches the feed: the bytes are just not a zip), with an
@@ -175,8 +200,8 @@ enum SYUpdaterTests {
             var junk = Data("PK\u{3}\u{4}".utf8); junk.append(Data((0..<4096).map { UInt8(truncatingIfNeeded: $0 &* 31) }))
             try junk.write(to: corrupt)
             let r = refusal {
-                let staged = try v.verify(zip: corrupt, sha256: try SYDigest.sha256(of: corrupt), version: "0.0.3", into: dir.appendingPathComponent("s2"))
-                try SYSwap(target: installed, bundleID: id).swap(staged)
+                let staged = try v.verify(zip: corrupt, sha256: try SYDigest.sha256(of: corrupt), version: "0.0.3", build: 3, into: dir.appendingPathComponent("s2"))
+                try SYSwap(target: installed, bundleID: id).swap(staged.app)
             }
             check(r == .archive("does not unpack"), "a corrupt zip → refused", "\(String(describing: r))")
             check(version(of: installed) == "0.0.2" && self.inode(installed) == inode
@@ -185,17 +210,19 @@ enum SYUpdaterTests {
                   "… and the installed app is untouched (same inode, version, valid signature, no aside)")
 
             let otherZip = try SYFixture.zip(in: dir.appendingPathComponent("other"), id: "com.example.impostor", version: "0.0.3")
-            check(refusal { _ = try v.verify(zip: otherZip, sha256: try SYDigest.sha256(of: otherZip), version: "0.0.3", into: dir.appendingPathComponent("s3")) }
+            check(refusal { _ = try v.verify(zip: otherZip, sha256: try SYDigest.sha256(of: otherZip), version: "0.0.3", build: 3, into: dir.appendingPathComponent("s3")) }
                   == .wrongApp("com.example.impostor"), "a wrong bundle id → refused")
 
             let sameZip = try SYFixture.zip(in: dir.appendingPathComponent("same"), id: id, version: "0.0.2")
-            check(refusal { _ = try v.verify(zip: sameZip, sha256: try SYDigest.sha256(of: sameZip), version: "0.0.2", into: dir.appendingPathComponent("s4")) }
-                  == .notNewer("0.0.2", current: "0.0.2"), "a version not newer → refused")
+            check(refusal { _ = try v.verify(zip: sameZip, sha256: try SYDigest.sha256(of: sameZip), version: "0.0.2", build: 2, into: dir.appendingPathComponent("s4")) }
+                  == .notNewer(build: 2, current: 2), "a build not newer (2 = 2) → refused")
             let olderZip = try SYFixture.zip(in: dir.appendingPathComponent("older"), id: id, version: "0.0.1")
-            check(refusal { _ = try v.verify(zip: olderZip, sha256: try SYDigest.sha256(of: olderZip), version: "0.0.1", into: dir.appendingPathComponent("s5")) }
-                  == .notNewer("0.0.1", current: "0.0.2"), "an older version → refused")
-            check(refusal { _ = try v.verify(zip: zip, sha256: sha, version: "0.0.4", into: dir.appendingPathComponent("s6")) }
+            check(refusal { _ = try v.verify(zip: olderZip, sha256: try SYDigest.sha256(of: olderZip), version: "0.0.1", build: 1, into: dir.appendingPathComponent("s5")) }
+                  == .notNewer(build: 1, current: 2), "an older build (1 < 2) → refused")
+            check(refusal { _ = try v.verify(zip: zip, sha256: sha, version: "0.0.4", build: 4, into: dir.appendingPathComponent("s6")) }
                   == .versionMismatch(got: "0.0.3", want: "0.0.4"), "a bundle version that is not the feed's → refused")
+            check(refusal { _ = try v.verify(zip: zip, sha256: sha, version: "0.0.3", build: 4, into: dir.appendingPathComponent("s6b")) }
+                  == .buildMismatch(got: "3", want: 4), "a bundle CFBundleVersion that is not the feed's build → refused")
 
             // Signed, then changed: the strict check fails.
             let tamperDir = dir.appendingPathComponent("tamper")
@@ -203,7 +230,7 @@ enum SYUpdaterTests {
             try Data([0x00, 0x01]).write(to: tampered.appendingPathComponent("Contents/MacOS/Switchyard"))
             let tz = tamperDir.appendingPathComponent("t.zip")
             try SYProcess.run("/usr/bin/ditto", ["-c", "-k", "--keepParent", tampered.path, tz.path], deadline: 60)
-            let tr = refusal { _ = try v.verify(zip: tz, sha256: try SYDigest.sha256(of: tz), version: "0.0.3", into: dir.appendingPathComponent("s7")) }
+            let tr = refusal { _ = try v.verify(zip: tz, sha256: try SYDigest.sha256(of: tz), version: "0.0.3", build: 3, into: dir.appendingPathComponent("s7")) }
             if case .unsigned? = tr { check(true, "a bundle changed after signing → refused (codesign --verify --deep --strict)") }
             else { check(false, "a bundle changed after signing → refused", "\(String(describing: tr))") }
 
@@ -213,16 +240,16 @@ enum SYUpdaterTests {
             try SYProcess.run("/usr/bin/xattr", ["-w", "com.apple.quarantine", "0081;00000000;Safari;", q.path], deadline: 30)
             let qz = qDir.appendingPathComponent("q.zip")
             try SYProcess.run("/usr/bin/ditto", ["-c", "-k", "--keepParent", q.path, qz.path], deadline: 60)
-            let qa = try v.verify(zip: qz, sha256: try SYDigest.sha256(of: qz), version: "0.0.3", into: dir.appendingPathComponent("s8"))
-            check(!SYDigest.quarantined(qa), "a quarantined bundle → the flag is cleared")
+            let qa = try v.verify(zip: qz, sha256: try SYDigest.sha256(of: qz), version: "0.0.3", build: 3, into: dir.appendingPathComponent("s8"))
+            check(!SYDigest.quarantined(qa.app), "a quarantined bundle → the flag is cleared")
 
             // The order of the chain: the sum first (nothing is unpacked from a zip that fails it).
             var ran: [String] = []
             var watched = v
             watched.tools = SYTools { tool, args in ran.append((tool as NSString).lastPathComponent); return try SYTools.live.run(tool, args) }
-            _ = refusal { _ = try watched.verify(zip: zip, sha256: String(repeating: "1", count: 64), version: "0.0.3", into: dir.appendingPathComponent("s9")) }
+            _ = refusal { _ = try watched.verify(zip: zip, sha256: String(repeating: "1", count: 64), version: "0.0.3", build: 3, into: dir.appendingPathComponent("s9")) }
             check(ran.isEmpty, "a SHA mismatch runs no tool")
-            _ = try watched.verify(zip: zip, sha256: sha, version: "0.0.3", into: dir.appendingPathComponent("s10"))
+            _ = try watched.verify(zip: zip, sha256: sha, version: "0.0.3", build: 3, into: dir.appendingPathComponent("s10"))
             check(ran == ["ditto", "codesign", "xattr"], "the chain: sha256, ditto, plist, codesign, xattr", ran.joined(separator: ","))
         } catch {
             check(false, "the verify chain ran", "\(error)")
@@ -318,6 +345,30 @@ enum SYUpdaterTests {
             let t = dir.appendingPathComponent("pre/Applications/Switchyard.app")
             check(refusal { try SYSwap(target: t, bundleID: id, ops: FakeVolumeOps(writableDirs: false, otherVolume: false)).preflight(staging: s) }
                   == .readOnly(t.deletingLastPathComponent().path), "preflight: a read-only folder → refused")
+            check(SYRefusal.readOnly("/Applications").errorDescription == "Update needs admin rights; run `brew upgrade --greedy --cask switchyard`",
+                  "… worded: Update needs admin rights; run `brew upgrade --greedy --cask switchyard`")
+            // EACCES for real: a folder this user cannot write (chmod 555), swap refused before
+            // any rename; then the same with the bundle itself read-only (a brew copy owned by
+            // another account).
+            let eApps = dir.appendingPathComponent("eacces/Applications")
+            let eTarget = try SYFixture.bundle(in: eApps, id: id, version: "0.0.2")
+            let eFresh = try SYFixture.bundle(in: dir.appendingPathComponent("eacces/staging"), id: id, version: "0.0.3")
+            let eOps = FailingOps(failRename: 99)
+            chmod(eApps.path, 0o555)
+            let e1 = refusal { try SYSwap(target: eTarget, bundleID: id, ops: eOps).swap(eFresh) }
+            chmod(eApps.path, 0o755)
+            check(e1 == .readOnly(eApps.path) && eOps.count.n == 0 && version(of: eTarget) == "0.0.2" && version(of: eFresh) == "0.0.3",
+                  "EACCES (read-only folder): refused before touching anything (0 renames)", "\(String(describing: e1)), \(eOps.count.n) renames")
+            chmod(eTarget.path, 0o555)
+            let e2 = refusal { try SYSwap(target: eTarget, bundleID: id, ops: eOps).swap(eFresh) }
+            chmod(eTarget.path, 0o755)
+            check(e2 == .readOnly(eApps.path) && eOps.count.n == 0 && version(of: eTarget) == "0.0.2",
+                  "EACCES (read-only bundle): refused before touching anything (0 renames)", "\(String(describing: e2))")
+            // And the rename itself answering EACCES maps to the same refusal, nothing moved.
+            chmod(eApps.path, 0o555)
+            let e3 = refusal { try SYLocalFileOps().rename(eTarget, eApps.appendingPathComponent("Switchyard.app.old")) }
+            chmod(eApps.path, 0o755)
+            check(e3 == .readOnly(eApps.path) && version(of: eTarget) == "0.0.2", "rename(2) EACCES → the admin-rights refusal", "\(String(describing: e3))")
             check(refusal { try SYSwap(target: t, bundleID: id, ops: FakeVolumeOps(writableDirs: true, otherVolume: true)).preflight(staging: s) }
                   == .otherVolume, "preflight: staging on another volume → refused")
         } catch {

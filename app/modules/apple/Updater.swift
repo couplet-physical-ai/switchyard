@@ -10,6 +10,9 @@
 // SWITCHYARD_UPDATE_AUTOINSTALL=1).
 
 import Foundation
+#if canImport(AppKit)
+import AppKit
+#endif
 
 final class Updater: ExactModule {
     required init(context: ExactModuleContext) {
@@ -56,15 +59,20 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
 
     // Facts of this process, fixed at launch.
     let current: String
+    /// CFBundleVersion: what "newer" is measured in.
+    let currentBuild: Int
     let bundleURL: URL
     let bundleID: String
     let repo: String
     let prerelease: Bool
-    /// SWITCHYARD_UPDATE_FEED (env only, never a setting): a base URL serving latest.json.
+    /// SWITCHYARD_UPDATE_FEED (env only, never a setting): a latest.json URL, or a base serving one.
     let testFeed: URL?
     let testFeedRefused: String?
     let policy: SYHostPolicy
     let autoInstallEnv: Bool
+    /// The headless hook: launch argument `--update-now` or env SWITCHYARD_UPDATE_NOW=1. At
+    /// launch, with no UI: check, download, verify, swap and relaunch, logging every step.
+    let updateNow: Bool
     private(set) var agent = false
     private(set) var installed = false
     private(set) var writable = false
@@ -101,6 +109,7 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
     private override init() {
         let info = Bundle.main.infoDictionary ?? [:]
         current = info["CFBundleShortVersionString"] as? String ?? "0.0.0"
+        currentBuild = Int(info["CFBundleVersion"] as? String ?? "") ?? 0
         bundleURL = Bundle.main.bundleURL.resolvingSymlinksInPath()
         bundleID = Bundle.main.bundleIdentifier ?? ""
         let config = ((info["ExactModuleConfig"] as? [String: Any])?["updater"] as? [String: Any]) ?? [:]
@@ -109,17 +118,20 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
         let env = ProcessInfo.processInfo.environment
         prerelease = env["SWITCHYARD_UPDATE_PRERELEASE"] == "1" || UserDefaults.standard.bool(forKey: "SwitchyardUpdatePrerelease")
         autoInstallEnv = env["SWITCHYARD_UPDATE_AUTOINSTALL"] == "1"
+        updateNow = CommandLine.arguments.contains("--update-now") || env["SWITCHYARD_UPDATE_NOW"] == "1"
         let raw = env["SWITCHYARD_UPDATE_FEED"] ?? ""
-        testFeed = SYHostPolicy.testFeedBase(raw)
+        testFeed = SYHostPolicy.testFeedURL(raw)
         testFeedRefused = !raw.isEmpty && testFeed == nil ? raw : nil
-        policy = SYHostPolicy(testFeed: testFeed)
+        policy = SYHostPolicy(repo: repo, testFeed: testFeed)
         super.init()
     }
 
-    /// Installed: under /Applications or ~/Applications, in a writable folder, not the agent.
-    /// Only such a copy checks by itself and can swap itself.
-    var canInstall: Bool { installed && writable && !agent }
-    var auto: Bool { canInstall }
+    /// Installed: under /Applications or ~/Applications, not the agent (or the headless hook,
+    /// wherever the copy is). Only such a copy swaps itself; a folder it cannot write is refused
+    /// before anything is fetched ("Update needs admin rights…").
+    var canInstall: Bool { (installed || updateNow) && !agent }
+    /// Checks by itself: installed in a writable folder.
+    var auto: Bool { installed && writable && !agent }
     /// May fetch and check a newer build: an installed copy, or the agent's stub feed (which
     /// stages into a scratch folder and never swaps).
     private var canStage: Bool { canInstall || stub }
@@ -136,13 +148,18 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
             installed = bundleURL.pathExtension == "app" && (parent.path == "/Applications" || parent.path == home + "/Applications")
             writable = FileManager.default.isWritableFile(atPath: parent.path)
             makeSession()
-            log("launch: \(bundleID) \(current) pid \(getpid()) at \(bundleURL.path); installed=\(installed) writable=\(writable) agent=\(agent) prerelease=\(prerelease) auto=\(auto)"
+            log("launch: \(bundleID) \(current) (build \(currentBuild)) pid \(getpid()) at \(bundleURL.path); installed=\(installed) writable=\(writable) agent=\(agent) prerelease=\(prerelease) auto=\(auto)\(updateNow ? " UPDATE-NOW" : "")"
                 + (testFeed.map { " TEST FEED \($0.absoluteString)" } ?? "") + (stub ? " STUB FEED (agent)" : "")
                 + (testFeedRefused.map { " REFUSED TEST FEED \($0) (https, or http only on 127.0.0.1)" } ?? ""))
             // Copper's timing: what an earlier run left goes at launch, before the first check.
             // (A swap's aside is the bundle the previous process ran from until it quit.)
             sweep()
-            if auto { startTimer() }
+            if updateNow && !agent {
+                log("update-now: checking at launch, no UI")
+                runCheck(manual: true) { _ in }
+            } else if auto {
+                startTimer()
+            }
             publish()
         }
     }
@@ -209,7 +226,7 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
         }
         set { s in s.state = "checking"; s.error = ""; s.quiet = false; s.flash = manual; s.progress = 0 }
         log("check (\(manual ? "manual" : "auto")): current \(current), channel \(prerelease ? "pre-release" : "stable")")
-        if stub { SYStubFeed.step = lock.withLock { checks } ; SYStubFeed.current = current; SYStubFeed.bundleID = bundleID }
+        if stub { SYStubFeed.step = lock.withLock { checks }; SYStubFeed.current = current; SYStubFeed.currentBuild = currentBuild; SYStubFeed.bundleID = bundleID }
         findRelease { [self] found in
             queue.async { [self] in
                 switch found {
@@ -227,12 +244,16 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
                         fail(describe(refusal), quiet: false, checked: true)
                         return reply(snapshot())
                     }
-                    guard SYSemver.isNewer(rel.version, than: current), rel.runsHere else {
-                        log("check (\(rel.source)): \(rel.version) is not newer than \(current)\(rel.runsHere ? "" : ", or needs macOS \(rel.minimumSystemVersion ?? "")")")
+                    guard rel.build > currentBuild else {
+                        log("check (\(rel.source)): \(rel.version) (build \(rel.build)) is not newer than \(current) (build \(currentBuild))")
                         finished(latest: rel.version, notes: rel.notes, published: rel.published)
                         return reply(snapshot())
                     }
-                    log("check (\(rel.source)): \(rel.version) is newer than \(current): \(rel.url.absoluteString)")
+                    guard rel.runsHere else {
+                        fail(describe(SYRefusal.needsMacOS(version: rel.version, minimum: rel.minimumSystemVersion ?? "")), quiet: false, checked: true)
+                        return reply(snapshot())
+                    }
+                    log("check (\(rel.source)): \(rel.version) (build \(rel.build)) is newer than \(current) (build \(currentBuild)): \(rel.url.absoluteString)")
                     set { s in s.latest = rel.version; s.notes = rel.notes; s.published = rel.published; s.checks += 1; s.lastChecked = Date().timeIntervalSince1970 * 1000 }
                     guard canStage else {
                         set { $0.state = "available" }
@@ -269,11 +290,11 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
     /// ever latest.json.
     private func findRelease(_ done: @escaping (Result<SYRelease?, Error>) -> Void) {
         if let raw = testFeedRefused { return done(.failure(SYRefusal.insecure(raw))) }
-        if let base = testFeed {
-            return fetchLatestJSON(base.appendingPathComponent("latest.json")) { done($0.map { $0 }) }
+        if let feed = testFeed {
+            return fetchLatestJSON(feed, kind: "feed") { done($0.map { $0 }) }
         }
         if prerelease && !stub { return fromAPI(done) }
-        fetchLatestJSON(SYFeed.latestJSON(repo: repo)) { [self] result in
+        fetchLatestJSON(SYFeed.latestJSON(repo: repo), kind: "feed") { [self] result in
             switch result {
             case .success(let rel): done(.success(rel))
             case .failure(let e):
@@ -284,8 +305,9 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
         }
     }
 
-    private func fetchLatestJSON(_ url: URL, _ done: @escaping (Result<SYRelease, Error>) -> Void) {
-        get(url, kind: "feed") { [self] result in
+    private func fetchLatestJSON(_ url: URL, kind: String, _ done: @escaping (Result<SYRelease, Error>) -> Void) {
+        log("feed: \(url.absoluteString)")
+        get(url, kind: kind) { [self] result in
             done(result.flatMap { data in Result { try SYFeed.parseLatest(data, bundleID: bundleID) } })
         }
     }
@@ -293,7 +315,13 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
     private func fromAPI(_ done: @escaping (Result<SYRelease?, Error>) -> Void) {
         get(SYFeed.releasesAPI(repo: repo), kind: "api", accept: "application/vnd.github+json") { [self] result in
             switch result {
-            case .success(let data): done(Result { try SYFeed.pickFromAPI(data, prerelease: prerelease) })
+            case .success(let data):
+                // The newest release on the channel; its own latest.json when it carries one.
+                guard let picked = try? SYFeed.pickFromAPI(data, prerelease: prerelease) else {
+                    return done(Result { try SYFeed.pickFromAPI(data, prerelease: prerelease) })
+                }
+                guard let feed = picked.latestJSON else { return done(.success(picked)) }
+                fetchLatestJSON(feed, kind: "asset") { done($0.map { $0 }) }
             case .failure(SYHTTPStatus.code(let status)) where status == 403 || status == 429:
                 log("check: the releases API answered \(status) (rate limit): releases/latest/download/SHA256SUMS instead")
                 get(SYFeed.latestSums(repo: repo), kind: "feed") { [self] r in
@@ -448,13 +476,15 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
     }
 
     private func stage(_ rel: SYRelease, zip: URL, sha256 want: String, in dir: URL) {
-        let verifier = SYVerifier(bundleID: bundleID, current: current, team: SYSign.team(of: bundleURL))
+        let verifier = SYVerifier(bundleID: bundleID, currentBuild: currentBuild)
         do {
-            let app = try verifier.verify(zip: zip, sha256: want, version: rel.version, into: dir)
+            let ok = try verifier.verify(zip: zip, sha256: want, version: rel.version, build: rel.build, into: dir)
+            let app = ok.app
             try? FileManager.default.removeItem(at: zip)
-            log("verify: sha256 \(want) matches; ditto -x -k unpacked; \(bundleID) \(rel.version) is newer than \(current); codesign --verify --deep --strict passed; no quarantine")
+            log("verify: sha256 \(want) == latest.json; ditto -x -k unpacked one Switchyard.app; bundle id \(bundleID) == this app's; version \(rel.version), build \(rel.build) > \(currentBuild); SecStaticCodeCheckValidity strict+all-arch+nested passed; codesign --verify --deep --strict passed; cdhash \(ok.cdhash); no quarantine")
             set { s in s.stagedApp = app; s.stagedVersion = rel.version; s.state = "ready"; s.progress = 1 }
             log("ready: \(rel.version) staged at \(app.path)")
+            if updateNow { installNow() }
         } catch {
             cleanStaging()
             fail(describe(error), quiet: false)
@@ -475,6 +505,12 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
             }
             set { $0.state = "installing" }
             let swap = SYSwap(target: bundleURL, bundleID: bundleID)
+            if let refusal = caught({ try swap.writable() }) {
+                // Before anything is touched.
+                set { $0.state = "ready" }
+                fail(describe(refusal), quiet: false)
+                return reply(["installed": false, "error": describe(refusal)])
+            }
             log("install: rename \(bundleURL.lastPathComponent) → \(swap.aside.lastPathComponent), then \(app.path) → \(bundleURL.path)")
             do {
                 try swap.swap(app)
@@ -487,6 +523,33 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
                 fail(describe(error), quiet: false)
                 reply(["installed": false, "error": describe(error)])
             }
+        }
+    }
+
+    private func caught(_ body: () throws -> Void) -> Error? {
+        do { try body(); return nil } catch { return error }
+    }
+
+    /// The headless hook: install, then quit and come back as the new build (Copper's
+    /// relaunch: a shell waits for this pid to be gone, then `open`s the bundle; the test feed and
+    /// channel ride along, the hook does not, so the new build does not loop).
+    private func installNow() {
+        install { [self] r in
+            guard r["installed"] as? Bool == true else { return log("update-now: not installed: \(r["error"] as? String ?? "?"); this copy keeps running") }
+            var args = ["-c", "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; shift; exec \"$@\"", "sh", String(getpid()), "/usr/bin/open"]
+            for key in ["SWITCHYARD_UPDATE_FEED", "SWITCHYARD_UPDATE_PRERELEASE"] {
+                if let v = ProcessInfo.processInfo.environment[key] { args += ["--env", "\(key)=\(v)"] }
+            }
+            args.append(bundleURL.path)
+            let waiter = Process()
+            waiter.executableURL = URL(fileURLWithPath: "/bin/sh")
+            waiter.arguments = args
+            waiter.standardInput = FileHandle.nullDevice
+            do { try waiter.run() } catch { return log("update-now: could not start the relaunch: \(error.localizedDescription)") }
+            log("update-now: quitting pid \(getpid()); /usr/bin/open \(bundleURL.path) once it has exited")
+            #if canImport(AppKit)
+            DispatchQueue.main.async { NSApplication.shared.terminate(nil) }
+            #endif
         }
     }
 
@@ -540,20 +603,21 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
         let text = "[updater] \(line)"
         print(text)
         fflush(stdout)
+        if updateNow { FileHandle.standardError.write(Data((text + "\n").utf8)) }
         SYUpdateLog.append(text)
     }
 }
 
 enum SYHTTPStatus: Error { case code(Int) }
 
-/// The updater's lines also go to ~/Library/Logs/Switchyard/updater.log: a relaunched app's
+/// The updater's lines also go to ~/Library/Logs/Switchyard/update.log: a relaunched app's
 /// stdout is /dev/null, and the swap is exactly what one wants to read back.
 enum SYUpdateLog {
     static let url: URL? = {
         guard let lib = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first else { return nil }
         let dir = lib.appendingPathComponent("Logs/Switchyard", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("updater.log")
+        return dir.appendingPathComponent("update.log")
     }()
     private static let lock = NSLock()
 
@@ -586,6 +650,7 @@ enum SYUpdateLog {
 final class SYStubFeed: URLProtocol {
     static var step = 0
     static var current = "0.0.0"
+    static var currentBuild = 0
     static var bundleID = ""
     private static let lock = NSLock()
     private static var made: (zip: Data, sha: String)?
@@ -613,11 +678,12 @@ final class SYStubFeed: URLProtocol {
             let base = "https://github.com/\(SYFeed.defaultRepo)/releases/download"
             let body: [String: Any]
             if SYStubFeed.step == 0 {
-                body = ["version": SYStubFeed.current, "url": "\(base)/v\(SYStubFeed.current)/\(SYFeed.zipName(SYStubFeed.current))",
+                body = ["version": SYStubFeed.current, "build": SYStubFeed.currentBuild, "bundleId": SYStubFeed.bundleID,
+                        "url": "\(base)/v\(SYStubFeed.current)/\(SYFeed.zipName(SYStubFeed.current))",
                         "sha256": String(repeating: "0", count: 64), "notes": "", "published": "2026-11-10T00:00:00Z"]
             } else {
                 let sha = SYStubFeed.step == 1 ? String(repeating: "f", count: 64) : (SYStubFeed.zip()?.sha ?? "")
-                body = ["version": "9.9.9", "url": "\(base)/v9.9.9/\(SYFeed.zipName("9.9.9"))", "sha256": sha,
+                body = ["version": "9.9.9", "build": SYFeed.build(of: "9.9.9") ?? 0, "bundleId": SYStubFeed.bundleID, "url": "\(base)/v9.9.9/\(SYFeed.zipName("9.9.9"))", "sha256": sha,
                         "notes": "- The stub feed's release notes.", "published": "2026-11-10T00:00:00Z"]
             }
             return answer(200, (try? JSONSerialization.data(withJSONObject: body)) ?? Data(), type: "application/json")
