@@ -43,7 +43,10 @@ export function* seedFleetSteps(s: Sim): Generator<void, void, void> {
   }
   const rank = new Map<number, number>();
   drafts.map((d, i) => [d.key, i] as const).sort((a, b) => a[0] - b[0]).forEach(([, i], k) => rank.set(i, k));
-  drafts.forEach((d, i) => {
+  yield; // the names and the ranking, then the repos in steps (same order, same draws)
+  for (let i = 0; i < drafts.length; i++) {
+    if (i % 100 === 99) yield;
+    const d = drafts[i]!;
     const k = rank.get(i)!;
     const tier: 0 | 1 | 2 = k < 25 ? 0 : k < 125 ? 1 : 2;
     const heat = round2(tier === 0 ? 0.6 + 0.4 * r() : tier === 1 ? 0.15 + 0.45 * r() : 0.01 + 0.14 * r());
@@ -69,7 +72,7 @@ export function* seedFleetSteps(s: Sim): Generator<void, void, void> {
     s.repoById.set(id, rx);
     st.repos[id] = repo;
     st.lanes[id] = { id, mode: lane, ...(note ? { note } : {}) };
-  });
+  }
   s.cum = new Float64Array(s.repos.length);
   let acc = 0;
   s.repos.forEach((rx, i) => { acc += rx.r.lane === 'none' ? rx.w * 0.3 : rx.w; s.cum[i] = acc; });
@@ -125,7 +128,7 @@ export function* seedFleetSteps(s: Sim): Generator<void, void, void> {
   const wsum = acc;
   let nSeeded = 0;
   for (const rx of s.repos) {
-    if (++nSeeded % 40 === 0) yield;
+    if (++nSeeded % 12 === 0) yield; // a slow Mac's turn: ~12 repos of history
     const lam = (0.0002 * 0.72 * 0.55 * rx.w) / wsum; // main pushes per ms, day-averaged
     const times: number[] = [];
     let t = T0 - 8 * MIN - r.exp(1 / lam) * 0.3;
@@ -204,6 +207,7 @@ export function* seedFleetSteps(s: Sim): Generator<void, void, void> {
   const ciRepos = s.repos.filter((rx) => rx.r.lane !== 'none');
   const pickRepo = (): RepoX => { for (;;) { const rx = s.repos[r.weighted(s.cum)]!; if (rx.r.lane !== 'none') return rx; } };
   for (let i = 0; i < 150; i++) {
+    if (i % 25 === 24) yield;
     const rx = i % 5 === 4 ? r.pick(ciRepos) : pickRepo();
     const author = s.pickAuthor(false);
     const x = r();
@@ -243,6 +247,7 @@ export function* seedFleetSteps(s: Sim): Generator<void, void, void> {
     else later(s, prX, soon(5, 120), () => prPush(s, prX));
   }
   for (let i = 0; i < 45; i++) {
+    if (i % 25 === 24) yield;
     const rx = pickRepo();
     const author = s.pickAuthor(false);
     const x = r();
@@ -262,8 +267,11 @@ export function* seedFleetSteps(s: Sim): Generator<void, void, void> {
   yield;
   // ── commits/pipelines/deploys of the last 24 h, oldest first, capped
   cands.sort((a, b) => a.c.at - b.c.at);
+  yield; // (thousands of candidates: the sort, then the filing in steps)
   const keepFrom = Math.max(0, cands.length - 2400);
-  cands.forEach((cd, i) => {
+  for (let i = 0; i < cands.length; i++) {
+    if (i % 600 === 599) yield;
+    const cd = cands[i]!;
     const inState = i >= keepFrom;
     if (inState) st.commits[cd.id] = cd.c; else s.archCommits.set(cd.id, cd.c);
     if (cd.p) {
@@ -271,7 +279,7 @@ export function* seedFleetSteps(s: Sim): Generator<void, void, void> {
       if (inState && cd.p.finished! >= T0 - 2 * HOUR) st.pipelines[id] = cd.p; else s.archPipes.set(id, cd.p);
     }
     if (cd.d) { if (inState) st.deploys[`${cd.d.app}:${cd.d.sha}`] = cd.d; else s.archDeploys.set(`${cd.d.app}:${cd.d.sha}`, cd.d); }
-  });
+  }
 
   s.nextWave = T0 + Math.round(r.range(0.5, 4) * 600) * TICK;
   s.nextTrip = T0 + Math.round(r.range(8, 45) * 600) * TICK;

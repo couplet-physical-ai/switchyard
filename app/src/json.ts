@@ -4,7 +4,11 @@
 // the top level: an object's members, and each large array into runs of whole elements of
 // about CHUNK bytes, parses each piece on its own and yields between pieces.
 
-const CHUNK = 192 * 1024;
+/** Bytes of whole elements per JSON.parse (native, fast). */
+const RUN = 48 * 1024;
+/** Bytes the JS scanner (slow on Hermes: an interpreted loop) reads in one turn before it yields.
+ *  A slow Mac (GitHub's 3-core M1 runner) ran a 2.2 MB scan in one ~300 ms turn; 48 KB is ~10 ms. */
+const STEP = 48 * 1024;
 
 type Yield = () => Promise<void>;
 
@@ -13,78 +17,133 @@ const defaultYield: Yield = async () => {
   if (s?.yield) await s.yield();
 };
 
-/** Parses `text` like JSON.parse, yielding between pieces. `skip`: top-level keys left out
- *  (never parsed: a history's `base` when the caller already has the state). */
+/** The work done since the last yield, in bytes read (scanned or parsed). */
+class Pace {
+  spent = 0;
+  constructor(readonly y: Yield) {}
+  async add(n: number): Promise<void> {
+    this.spent += n;
+    if (this.spent >= STEP) { this.spent = 0; await this.y(); }
+  }
+}
+
+/** Parses `text` like JSON.parse, yielding so that no turn reads much more than STEP bytes.
+ *  `skip`: top-level keys left out (scanned past, never parsed: a history's `base` when the
+ *  caller already has the state). Each byte is scanned about once: a container is read whole
+ *  only when it is small (≤ RUN), else member by member, element by element. */
 export async function parseLarge<T = unknown>(text: string, yieldTurn: Yield = defaultYield, skip?: Set<string>): Promise<T> {
-  if (text.length <= CHUNK && !skip) return JSON.parse(text) as T;
-  const i = skipWs(text, 0);
-  const [v] = await parseValue(text, i, endOfValue(text, i), yieldTurn, skip);
+  if (text.length <= RUN && !skip) return JSON.parse(text) as T;
+  const p = new Pace(yieldTurn);
+  const [v] = await parseValue(text, skipWs(text, 0), p, skip);
   return v as T;
 }
 
-/** The value in text[i, end): small ones in one JSON.parse, large objects and arrays piece by piece. */
-async function parseValue(text: string, i: number, end: number, yieldTurn: Yield, skip?: Set<string>): Promise<[unknown, number]> {
-  const c = text.charCodeAt(i);
-  if ((end - i <= CHUNK && !skip) || (c !== 0x7b && c !== 0x5b)) return [JSON.parse(text.slice(i, end)), end];
-  if (c === 0x5b) return parseArray(text, i, yieldTurn);
+async function parseValue(t: string, i: number, p: Pace, skip?: Set<string>): Promise<[unknown, number]> {
+  const c = t.charCodeAt(i);
+  if (c !== 0x7b && c !== 0x5b) {
+    const e = endOfValue(t, i);
+    await p.add(e - i);
+    return [JSON.parse(t.slice(i, e)), e];
+  }
+  if (!skip) {
+    const e = endBounded(t, i, RUN);
+    if (e >= 0) {
+      const v = JSON.parse(t.slice(i, e));
+      await p.add(2 * (e - i));
+      return [v, e];
+    }
+    await p.add(RUN);
+  }
+  return c === 0x5b ? parseArray(t, i, p) : parseObject(t, i, p, skip);
+}
+
+async function parseObject(t: string, i: number, p: Pace, skip?: Set<string>): Promise<[unknown, number]> {
   const out: Record<string, unknown> = {};
-  i++;
-  let budget = 0;
+  i = skipWs(t, i + 1);
+  if (t.charCodeAt(i) === 0x7d /* } */) return [out, i + 1];
   for (;;) {
-    i = skipWs(text, i);
-    if (text.charCodeAt(i) === 0x7d /* } */) return [out, i + 1];
-    const keyEnd = endOfString(text, i);
-    const key = JSON.parse(text.slice(i, keyEnd)) as string;
-    i = skipWs(text, keyEnd);
-    i = skipWs(text, i + 1); // the colon
-    const vEnd = endOfValue(text, i);
-    if (!skip?.has(key)) {
-      const [v] = await parseValue(text, i, vEnd, yieldTurn);
+    const ke = endOfString(t, i);
+    const key = JSON.parse(t.slice(i, ke)) as string;
+    i = skipWs(t, ke);
+    i = skipWs(t, i + 1); // the colon
+    if (skip?.has(key)) i = await skipValue(t, i, p);
+    else {
+      const [v, e] = await parseValue(t, i, p);
       out[key] = v;
+      i = e;
     }
-    budget += vEnd - i;
-    i = vEnd;
-    if (budget > CHUNK) { await yieldTurn(); budget = 0; }
-    i = skipWs(text, i);
-    if (text.charCodeAt(i) === 0x2c /* , */) i++;
+    i = skipWs(t, i);
+    const ch = t.charCodeAt(i);
+    if (ch === 0x2c /* , */) { i = skipWs(t, i + 1); continue; }
+    if (ch === 0x7d) return [out, i + 1];
+    throw new SyntaxError(`JSON: expected , or } at ${i}`);
   }
 }
 
-async function parseArray(text: string, start: number, yieldTurn: Yield): Promise<[unknown[], number]> {
+async function parseArray(t: string, i: number, p: Pace): Promise<[unknown[], number]> {
   const out: unknown[] = [];
-  let i = skipWs(text, start + 1);
-  if (text.charCodeAt(i) === 0x5d /* ] */) return [out, i + 1];
-  let runStart = i;
+  i = skipWs(t, i + 1);
+  if (t.charCodeAt(i) === 0x5d /* ] */) return [out, i + 1];
+  let runStart = -1, runEnd = -1;
+  const flush = async () => {
+    if (runStart < 0) return;
+    const n = runEnd - runStart;
+    for (const v of JSON.parse(`[${t.slice(runStart, runEnd)}]`) as unknown[]) out.push(v);
+    runStart = -1;
+    await p.add(n);
+  };
   for (;;) {
-    const end = endOfValue(text, i);
-    if (end - i > CHUNK) {
-      // one huge element (a history's base inside its frames): its own piecewise parse
-      if (i > runStart) {
-        for (const v of JSON.parse(`[${text.slice(runStart, skipBackComma(text, i))}]`) as unknown[]) out.push(v);
-      }
-      const [v] = await parseValue(text, i, end, yieldTurn);
+    const c = t.charCodeAt(i);
+    const e = c === 0x7b || c === 0x5b ? endBounded(t, i, RUN) : endOfValue(t, i);
+    if (e < 0) {
+      // one large element (a history's base inside its frames): its own piecewise parse
+      await flush();
+      await p.add(RUN);
+      const [v, ee] = await parseValue(t, i, p);
       out.push(v);
-      runStart = -1;
+      i = ee;
+    } else {
+      if (runStart < 0) runStart = i;
+      runEnd = e;
+      const n = e - i;
+      i = e;
+      if (runEnd - runStart >= RUN) await flush();
+      await p.add(n);
     }
-    let j = skipWs(text, end);
-    const last = text.charCodeAt(j) === 0x5d;
-    if (runStart >= 0 && (last || end - runStart >= CHUNK)) {
-      for (const v of JSON.parse(`[${text.slice(runStart, end)}]`) as unknown[]) out.push(v);
-      if (!last) await yieldTurn();
-      runStart = -1;
-    }
-    if (last) return [out, j + 1];
-    j = skipWs(text, j + 1); // past the comma
-    i = j;
-    if (runStart < 0) runStart = i;
+    i = skipWs(t, i);
+    const ch = t.charCodeAt(i);
+    if (ch === 0x2c /* , */) { i = skipWs(t, i + 1); continue; }
+    if (ch === 0x5d) { await flush(); return [out, i + 1]; }
+    throw new SyntaxError(`JSON: expected , or ] at ${i}`);
   }
 }
 
-/** The index of the comma before `i` (exclusive end of the run before an element at `i`). */
-function skipBackComma(t: string, i: number): number {
-  let k = i - 1;
-  while (k > 0 && t.charCodeAt(k) !== 0x2c) k--;
-  return k;
+/** Past a value without parsing it, yielding as it scans. */
+async function skipValue(t: string, i: number, p: Pace): Promise<number> {
+  const c = t.charCodeAt(i);
+  if (c !== 0x7b && c !== 0x5b) return endOfValue(t, i);
+  let depth = 0, from = i;
+  for (let j = i; j < t.length; j++) {
+    const d = t.charCodeAt(j);
+    if (d === 0x22) { j = endOfString(t, j) - 1; }
+    else if (d === 0x7b || d === 0x5b) depth++;
+    else if (d === 0x7d || d === 0x5d) { depth--; if (depth === 0) { await p.add(j + 1 - from); return j + 1; } }
+    if (j - from >= STEP) { await p.add(j - from); from = j; }
+  }
+  throw new SyntaxError('unterminated value');
+}
+
+/** The end of the container at `i` if it ends within `max` bytes, else -1 (read no further). */
+function endBounded(t: string, i: number, max: number): number {
+  let depth = 0;
+  const stop = Math.min(t.length, i + max);
+  for (let j = i; j < stop; j++) {
+    const d = t.charCodeAt(j);
+    if (d === 0x22) { j = endOfString(t, j) - 1; if (j >= stop) return -1; continue; }
+    if (d === 0x7b || d === 0x5b) depth++;
+    else if (d === 0x7d || d === 0x5d) { depth--; if (depth === 0) return j + 1; }
+  }
+  return -1;
 }
 
 function skipWs(t: string, i: number): number {
