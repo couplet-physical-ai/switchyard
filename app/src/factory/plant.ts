@@ -649,7 +649,12 @@ export class Plant implements Layer {
       // the empty bays (the hour had nothing), one fill per lane
       for (let i = 0; i < 24; i++) if (!heatLevel(row[i]!, y.max)) B.add(y.u0 + i * cw + inset, va, cw - 2 * inset, vb - va, 0, 0.2);
       B.flushQuads(g, cam, withAlpha(l.hex, YARD_BAY));
-      if (lo) return;
+      // the low-detail floor: the hours with arrivals in one tone (one fill per lane, not seven)
+      if (lo) {
+        for (let i = 0; i < 24; i++) if (heatLevel(row[i]!, y.max)) B.add(y.u0 + i * cw + inset, va, cw - 2 * inset, vb - va, 0, 0.2);
+        B.flushQuads(g, cam, withAlpha(l.hex, YARD_LVL[3]!));
+        return;
+      }
       for (let lvl = 1; lvl <= 7; lvl++) {
         for (let i = 0; i < 24; i++) if (heatLevel(row[i]!, y.max) === lvl) B.add(y.u0 + i * cw + inset, va, cw - 2 * inset, vb - va, 0, 0.2);
         B.flushQuads(g, cam, withAlpha(l.hex, YARD_LVL[lvl]!));
