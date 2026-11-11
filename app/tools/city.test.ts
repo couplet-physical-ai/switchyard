@@ -39,7 +39,7 @@ const withApps = lanes().filter((l) => l.id !== BOTS_LANE && (counts.lanes.get(l
 eq(city.districtLanes, withApps.map((l) => l.id), `districts follow the lane order (${withApps.map((l) => l.short).join(' → ')})`);
 eq(f.census.districts.map((d) => d.team), withApps.map((l) => l.short), 'the census districts carry the lanes\' names (the lens, coffee and labels read them)');
 eq(f.census.districts.reduce((n, d) => n + d.apps.length, 0), w.apps.size, `every app in exactly one district (${w.apps.size})`);
-const dbox = city.districtBox;
+let dbox = city.districtBox;
 ok(dbox.every((d, i) => i === 0 || d.v0 > dbox[i - 1]!.v1), 'districts back → front without overlap (v)');
 ok(dbox.every((d, i) => d.lane === city.districtLanes[i] && d.hex === floorGroups().hex(d.lane)), 'each plate tinted with its lane\'s hue');
 ok(dbox.every((d) => d.n === f.census.districts.find((x) => x.team === d.team)?.apps.length), 'each plate sized by its app count');
@@ -57,6 +57,18 @@ ok(city.blocks.every((b) => (b.kind ? b.d / 0.74 : b.d) / city.cityPitch <= 0.70
 // fx-city (#11): every fixture app is up, so the city is calm: compact, its districts start
 // ~CALM_SHIFT of the plot further from the ladder, the spurs take that ground; dense inside it
 const upAll = [...w.apps.values()].every((a) => a.health !== 'down' && a.health !== 'degraded');
+// w2-chrome (REVIEW-iter3 #10): calm also needs no deploy in the last hour: the fixtures deployed
+// in it, so the city keeps the whole plot; with those deploys an hour older it goes calm, once
+// that held CALM_MS
+{
+  const recent = [...w.deploys.values()].filter((d) => d.started >= now - 3_600_000 && d.started <= now);
+  ok(upAll && recent.length > 0 && !city.calm && city.cityU0 === DIST_U0, `all up but ${recent.length} deploys in the last hour → not calm: the whole plot`);
+  for (const d of recent) { d.started -= 3_660_000; if (d.finished) d.finished -= 3_660_000; }
+  w.kv.deploy++;
+  tl.clock += 61_000;
+  census();
+  dbox = city.districtBox;
+}
 ok(upAll && city.calm && city.cityU0 > DIST_U0 + 0.2 * (P.CITY_U1 - DIST_U0) && city.cityU0 < DIST_U0 + (CALM_SHIFT + 0.1) * (P.CITY_U1 - DIST_U0), `all up → calm: the districts start at u ${city.cityU0} (the ladder's district start ${DIST_U0})`);
 ok(dbox.every((d) => d.u0 === city.cityU0), 'calm: every district starts at the calm city\'s edge');
 const plotOf = (u0: number) => (P.CITY_U1 - u0) * (P.CITY_V1 - P.CITY_V0);
@@ -78,7 +90,8 @@ ok(area / plotOf(DIST_U0) < 0.8, `calm: the footprint shrank (${(100 * area / pl
   ok(!city.calm && city.cityU0 === DIST_U0 && city.districtBox.every((d) => d.u0 === DIST_U0), 'an app down → loud at once: the city takes the whole plot');
   ok(city.sig !== s0, 'city.sig changed with the layout');
   const names = city.fleetNames();
-  ok(names.length === 1 && names[0]!.lane === city.blockAt.get(id)!.lane, `fleet names: only the district in trouble (${names.map((d) => d.team).join(', ')}); the lane names name the rest`);
+  const today = (d: CityDistrict) => d.day.some((x) => x > 0);
+  ok(names.length >= 1 && names.length <= DISTRICT_NAMES_MAX && names[0]!.lane === city.blockAt.get(id)!.lane && names.slice(1).every(today), `fleet names: the district in trouble first, then only those that shipped today (${names.map((d) => d.team).join(', ')}); the lane names name the rest`);
   w.apps.set(id, { ...a0 }); w.kv.app++;
   census();
   ok(!city.calm, 'back up: still loud (no flapping re-pack)');
@@ -97,7 +110,7 @@ ok(area / plotOf(DIST_U0) < 0.8, `calm: the footprint shrank (${(100 * area / pl
   w.apps.set(id, { ...a0 }); w.kv.app++;
   const di = city.blockAt.get(id)!.district;
   ok(n.includes(city.districtBox[di]!), `the down app's district (${city.districtBox[di]!.team}, ${city.districtBox[di]!.n} apps) is among the names, before bigger ones`);
-  ok(n.length <= DISTRICT_NAMES_MAX && n.length === 1, `district names: only those in trouble, ≤ ${DISTRICT_NAMES_MAX} (14 districts, 1 in trouble → ${n.length})`);
+  ok(n.length <= DISTRICT_NAMES_MAX && n.slice(1).every((d) => d.day.some((x) => x > 0)), `district names: trouble, then those that shipped today, ≤ ${DISTRICT_NAMES_MAX} (14 districts, 1 in trouble → ${n.length})`);
   ok(n[0] === city.districtBox[di], `the district in trouble is named first (${n.map((d) => `${d.team} ${d.n}`).join(', ')})`);
   city.districtBox.length = 0; city.districtBox.push(...real);
 }
@@ -146,7 +159,7 @@ ok(b.loud && red && Math.abs(red[0] - (1 - 3 / 168)) < 1e-6 && Math.abs(red[1] -
 ok(b.ring?.[0]?.[2] === '#38383C' && Math.abs(b.ring[0][1] - 5 / 7) < 1e-6, 'ring: the 5 days before the history began are gray');
 
 // ── a deploy's route: via track → ladder → its district's spur → its building ──
-const d0 = dbox[0]!, app0 = f.census.districts[0]!.apps[5]!;
+const d0 = city.districtBox[0]!, app0 = f.census.districts[0]!.apps[5]!;
 const r = city.route(app0, 1), b0 = city.blockAt.get(app0)!;
 ok(r[0]![1] === P.TRACK_V[1] && r.some((p) => p[0] === LADDER_U) && r.some((p) => p[1] === d0.spurV) && r.at(-1)![0] === b0.u + b0.d / 2 && r.at(-1)![1] === b0.v + b0.d / 2, 'route: gha track → ladder → the district\'s spur → the building');
 
