@@ -56,7 +56,7 @@ pid=\$(pgrep -f '/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true
 echo "running: \${pid:-none}"; [[ -n "\$pid" ]]
 [[ -x /tmp/sy-windows ]] && sudo -n launchctl asuser \$(id -u) sudo -n -u \$(id -un) /tmp/sy-windows Switchyard | tail -1
 echo "--- brew info"; ($B info --cask switchyard 2>&1 | head -2)
-echo "--- app log"; tail -n 8 ~/Library/Logs/Switchyard/*.log 2>/dev/null | grep -v "download: [0-9]*%" | cut -c1-240 || true
+echo "--- app log (this launch)"; grep -h "pid \$pid " ~/Library/Logs/Switchyard/*.log 2>/dev/null | grep -v "download: [0-9]*%" | tail -n 12 | cut -c1-240 || true
 ls -la $DIR/shots/install-$V.png 2>/dev/null || true
 if [[ "$KEEP" != --keep ]]; then pkill -f 'Switchyard.app/Contents/MacOS/Switchyard' || true; fi
 echo E2E-PASS
