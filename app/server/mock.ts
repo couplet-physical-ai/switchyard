@@ -2,6 +2,9 @@
 // Switchyard mock server (API v0). All I/O and wall-clock live here; the simulation
 // (server/sim.ts) is pure. Usage:
 //   bun server/mock.ts [--port N] [--frozen] [--rate N] [--burst] [--fixtures DIR]
+// --fixtures DIR serves DIR/snapshot.json and loops DIR/hour.jsonl (contract/fixtures, read at
+// run time); with --frozen nothing moves, which is how the tests run it (app.json's
+// `commands.server`: `bun exact.mjs test` starts it at src/api.ts's FIXTURES address).
 // Env: PORT, SEED (default 7), EPOCH (ms; default now rounded down to the minute),
 //      SWITCHYARD_TOKEN (require bearer/?token= on /api/v1/*), HISTORY_HOURS (default 3).
 
@@ -67,7 +70,9 @@ async function fixtureSource(dir: string, start: number): Promise<Source> {
     console.error(`--fixtures ${dir}: need ${dir}/snapshot.json and ${dir}/hour.jsonl (the server thread's sanitized fixtures); not found.`);
     process.exit(1);
   }
-  const base = (await snapF.json()) as Snapshot;
+  // v0.2+ fixtures carry each collection as an array of entities with their own ids; the
+  // reducer and the views here work on id-keyed maps, and the snapshot goes out as arrays again.
+  const base = toMaps(await snapF.json()) as Snapshot;
   const frames = (await hourF.text()).split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l) as Frame)
     .filter((f): f is Extract<Frame, { t: 'delta' }> => f.t === 'delta');
   if (!frames.length) { console.error(`${dir}/hour.jsonl has no delta frames`); process.exit(1); }
@@ -103,7 +108,7 @@ async function fixtureSource(dir: string, start: number): Promise<Source> {
       return 1;
     },
     framesSince: (since) => log.since(since, seq),
-    snapshotJson: () => { state.seq = seq; state.at = now; return JSON.stringify(state); },
+    snapshotJson: () => { state.seq = seq; state.at = now; return JSON.stringify(toArrays(state)); },
     historyJson: (from, to) => historyJson(log.window(from, to, now)),
     journey: (repo, sha) => journeyOf({ state }, repo, sha),
     prDetail: (repo, n) => prDetailOf({ state }, repo, n),
@@ -111,6 +116,30 @@ async function fixtureSource(dir: string, start: number): Promise<Source> {
     orgs: () => Object.keys(state.orgs),
   };
   return src;
+}
+
+const COLLECTIONS = ['orgs', 'repos', 'commits', 'pipelines', 'prs', 'deploys', 'apps', 'engines', 'queues', 'lanes'] as const;
+
+/** A snapshot's array collections as id-keyed maps (a map stays a map). */
+function toMaps(s: Record<string, unknown>): Record<string, unknown> {
+  for (const k of COLLECTIONS) {
+    const v = s[k];
+    if (!Array.isArray(v)) { s[k] ??= {}; continue; }
+    const m: Record<string, unknown> = {};
+    for (const e of v) if (e && typeof e === 'object' && (e as { id?: unknown }).id != null) m[String((e as { id: unknown }).id)] = e;
+    s[k] = m;
+  }
+  return s;
+}
+
+/** The wire's shape (contract v0.2+): each collection an array sorted by id. */
+function toArrays(s: Snapshot): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...s };
+  for (const k of COLLECTIONS) {
+    const m = (s as unknown as Record<string, Record<string, unknown>>)[k] ?? {};
+    out[k] = Object.keys(m).sort().map((id) => m[id]);
+  }
+  return out;
 }
 
 // ───────────────────────────── source setup ─────────────────────────────

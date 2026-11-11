@@ -219,7 +219,7 @@ export class Motion {
     if (this.packets.size >= MAX_PACKETS + 40) return null;
     this.born++;
     const pk: Packet = {
-      id, pipeline, repo, org, bot, label: repo.split('/')[1] ?? repo, labelUntil: t + 1600, st, pts: null, lens: [], total: 0,
+      id, pipeline, repo, org, bot, label: String(repo ?? '').split('/')[1] ?? repo ?? '', labelUntil: t + 1600, st, pts: null, lens: [], total: 0,
       t0: t, dur: 0, x: 0, y: 0, tint: 'amber', born: t, die: 0, next: [], count: 1, app: '',
     };
     this.packets.set(id, pk);
@@ -256,6 +256,7 @@ export class Motion {
       }
       case 'queue': {
         const mch = L.intake[st.q];
+        if (!mch) return { x: L.m, y: L.live.y1 / 2 };
         const q = w.queues.get(st.q);
         const i = Math.max(0, q?.items?.indexOf(pk.pipeline) ?? 0);
         const cap = Math.max(1, Math.floor((mch.h - 20) / 13));
@@ -362,7 +363,7 @@ export function engineOf(w: World, p: Pipeline) {
     if (e) return e;
   }
   if (p.id) {
-    const e = all.find((x) => x.running.includes(p.id!));
+    const e = all.find((x) => x.running?.includes(p.id!));
     if (e) return e;
   }
   return p.lane === 'gha' ? all.find((x) => x.id === GHA) : undefined;
@@ -373,7 +374,7 @@ export function slotPoint(L: Layout, w: World, p: Pipeline): { x: number; y: num
   if (!eng) return null;
   const slots = L.slotByEngine.get(eng.id);
   if (!slots?.length) return null;
-  let i = eng.running.indexOf(p.id ?? "");
+  let i = eng.running?.indexOf(p.id ?? "") ?? 0;
   if (i < 0) i = 0;
   return slots[Math.min(i, slots.length - 1)];
 }

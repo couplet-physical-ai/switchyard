@@ -17,10 +17,10 @@ test "each tab opens its view and the yard comes back"
   clock data
   tap "tab-mainlines"
   clock settle
-  expect tree has "mainlines-list"
+  expect tree has "mainlines-table"
   tap "tab-prs"
   clock settle
-  expect tree has "prs-list"
+  expect tree has "prs-table"
   tap "tab-fleet"
   clock settle
   expect tree has "apps-table"
@@ -36,8 +36,9 @@ test "a deep link opens a repo's main line focused"
   type "root" "/mainlines?repo=Northwind-Labs%2Fcicd"
   clock settle
   clock +300
-  expect tree has "mainline-focus"
-  expect tree has "main-Northwind-Labs/cicd"
+  expect state mlFocus == "Northwind-Labs/cicd"
+  expect tree has "mainlines-focus"
+  expect state mlData.focusShown == true
 
 test "the main lines put red first and filter by state"
   clock data

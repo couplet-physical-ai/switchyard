@@ -17,6 +17,11 @@ export interface Upstream {
   meta(): Promise<Meta | null>;
 }
 
+/** The recorded real fleet (contract/fixtures), served by `bun exact.mjs server` (server/mock.ts
+ *  --fixtures --frozen). `bun exact.mjs test` starts it here for the tests; the server field
+ *  takes `fixtures` for it. */
+export const FIXTURES = 'http://127.0.0.1:8097';
+
 /** The server's base URL: the setting, else (on the web) the page's own origin. */
 /** The server a release build talks to when none is set and no page origin exists (native):
  *  app.ts sets it from the build's SWITCHYARD_DEFAULT_SERVER. Empty in dev and test builds. */
@@ -25,6 +30,7 @@ export function setDefaultServer(s: string): void { defaultServer = s.trim().rep
 
 export function resolveBase(server: string): string {
   const s = server.trim().replace(/\/+$/, '');
+  if (s === 'fixtures') return FIXTURES;
   if (s && s !== 'demo') return /^https?:\/\//.test(s) ? s : `https://${s}`;
   const origin = (globalThis as { origin?: unknown }).origin;
   if (typeof origin === 'string' && /^https?:\/\//.test(origin)) return origin;

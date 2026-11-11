@@ -28,9 +28,14 @@ export function makeRng(seed: number): Rng {
   r.chance = (p) => next() < p;
   r.exp = (mean) => -Math.log(1 - next()) * mean;
   r.hex = (n) => {
+    // Eight hex digits a draw, as `toString(16).padStart(8, '0')` writes them, from a byte table
+    // (the seed draws thousands of shas; this is most of its time on Hermes).
     let s = '';
-    while (s.length < n) s += ((next() * 4294967296) >>> 0).toString(16).padStart(8, '0');
-    return s.slice(0, n);
+    while (s.length < n) {
+      const u = (next() * 4294967296) >>> 0;
+      s += HEX2[u >>> 24]! + HEX2[(u >>> 16) & 255]! + HEX2[(u >>> 8) & 255]! + HEX2[u & 255]!;
+    }
+    return s.length === n ? s : s.slice(0, n);
   };
   r.weighted = (cum) => {
     const x = next() * cum[cum.length - 1]!;
@@ -125,3 +130,6 @@ export class Agenda {
     [this.f[a], this.f[b]] = [this.f[b]!, this.f[a]!];
   }
 }
+
+/** '00'…'ff'. */
+const HEX2: string[] = Array.from({ length: 256 }, (_, i) => (i < 16 ? '0' : '') + i.toString(16));

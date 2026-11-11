@@ -41,7 +41,10 @@ export type Pipeline = {
 export type Pr = {
   id?: string; repo: string; number: number; title: string; author: string; bot?: boolean; draft: boolean;
   created: number; updated: number; head_sha: string; head?: string; base: string; phase: PrPhase; ci?: CiState;
+  /** v0.4: only required checks and checks that have not passed (PrDetail has them all). */
   checks: { name: string; state: CiState; required?: boolean }[];
+  /** v0.4: how many other checks passed. */
+  checks_passed?: number;
   review: { ai?: 'pending' | 'commented' | 'approved' | 'skipped'; human?: string };
   merged_at?: number; merge_sha?: string; blocked_by?: string; stale_ms?: number; url: string;
 };
@@ -124,6 +127,8 @@ export type Journey = {
 };
 export type PrDetail = {
   pr: Pr; repo_state?: Repo | null; commits: Commit[]; pipelines: Pipeline[]; deploys?: Deploy[];
+  /** v0.4: every check (Pr.checks lists only required and not-passed ones). */
+  checks?: { name: string; state: CiState; required?: boolean }[];
   /** The demo's: phase changes. */
   timeline?: { at: number; phase: PrPhase; note?: string }[];
 };

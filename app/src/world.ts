@@ -159,7 +159,7 @@ export class World {
   }
 
   orgOf(repo: string): string {
-    return this.repos.get(repo)?.org ?? repo.split('/')[0] ?? '';
+    return this.repos.get(repo)?.org ?? String(repo ?? '').split('/')[0] ?? '';
   }
 
   /** Pushes per hour for an org over the last `windowMs` before `now`. */
@@ -189,7 +189,7 @@ function toMap<T>(o: T[] | Record<string, T> | undefined | null): Map<string, T>
   const m = new Map<string, T>();
   if (Array.isArray(o)) {
     for (const v of o) {
-      const id = (v as { id?: string }).id;
+      const id = (v as { id?: string } | null)?.id;
       if (id != null) m.set(String(id), v);
     }
   } else if (o) {

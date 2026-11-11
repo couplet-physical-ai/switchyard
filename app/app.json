@@ -27,6 +27,18 @@
       "macos": "0"
     }
   },
+  "commands": {
+    "server": [
+      "bun",
+      "server/mock.ts",
+      "--fixtures",
+      "../contract/fixtures",
+      "--frozen"
+    ]
+  },
+  "server": {
+    "database": false
+  },
   "protocol_handlers": [
     {
       "protocol": "switchyard",

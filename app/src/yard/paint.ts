@@ -116,7 +116,7 @@ export function dotColor(s: CiState): string {
 export function dotLine(ctx: Ctx2D, dots: Dot[], x0: number, x1: number, y: number, step: number, t: number, opts: { red?: boolean; culprit?: string | null; r?: number; cap?: boolean; label?: boolean } = {}): number {
   const r = opts.r ?? 4.5;
   const n = Math.max(1, Math.floor((x1 - x0) / step) + 1);
-  const list = dots.slice(-n);
+  const list = (Array.isArray(dots) ? dots : []).filter((d) => d && typeof d === 'object').slice(-n);
   const left = x1 - (list.length - 1) * step;
   // the rail
   ctx.beginPath();
