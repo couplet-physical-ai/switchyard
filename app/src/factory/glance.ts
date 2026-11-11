@@ -21,8 +21,8 @@
 //             last hour · last 24 h · last 7 d, then "now", then the chips that did not fit)
 //   strip     the replay's playhead sweeps the strip's since-visit bracket (strip.ts draws it), a
 //             ‹ when the window reaches past the strip's 24 h
-//   callouts  ≤ 3 once the replay settles, where it is broken: the worst cluster, the worst group,
-//             the jam. Each sits in the dark top band or the lower-left void with a leader to its
+//   callouts  ≤ 3 once the replay settles, where it is broken: the worst cluster (unless it is the
+//             return belt's tallest heap, which names itself), the worst group, the jam, the app down. Each sits in the dark top band or the lower-left void with a leader to its
 //             anchor, 24 px clear of stage titles, beacons and its own anchor; each a lens
 //
 // Strings are built when the digest, the window, the totals or the camera change, never per frame.
@@ -56,7 +56,7 @@ type Chip = { key: string; steps: string[]; ncol: string; numW: number; rest: To
 type Row = { kind: 'win' | 'info' | 'lens'; id: string; label: string; hint: string; col: string; lensKind: string };
 /** A hotspot callout: its words' box (x, baseline y, width), its anchor, its lens, and the edge it
  *  is pinned to when the anchor is off the floor ('' when the leader reaches the anchor). */
-type Callout = { x: number; y: number; ax: number; ay: number; w: number; parts: Tok[]; kind: string; id: string; label: string; pin: Pin };
+type Callout = { x: number; y: number; ax: number; ay: number; w: number; parts: Tok[]; kind: string; id: string; label: string; pin: Pin; src: string };
 type Pin = '' | 'l' | 'r' | 't' | 'b';
 /** The floor's visible area (screen px): under the top row, over the time strip, left of a drawer. */
 type Vis = { l: number; t: number; r: number; b: number };
@@ -81,8 +81,10 @@ export class Glance {
   private tailRows: Row[] = [];
   private shown = -1;
   private rowW = 0;
-  private callouts: Callout[] = [];
+  /** The settled callouts (tests read `src`: the hotspot's kind:id). */
+  callouts: Callout[] = [];
   private calloutKey = [-1, -1, -1, -1];
+  private calloutPG: unknown = null;
   private sevFrom = 0;
   private loggedX = -1;
   /** The header's totals as last drawn (tests read them: the status line's numbers). */
@@ -279,8 +281,12 @@ export class Glance {
 
   private calloutsDraw(g: Gfx, a: number): void {
     const c = this.c, f = c.f, cam = f.cam, k = this.calloutKey;
-    if (k[0] !== c.dgN || k[1] !== cam.ver || k[2] !== f.census.at || k[3] !== c.now.factor) {
-      k[0] = c.dgN; k[1] = cam.ver; k[2] = f.census.at; k[3] = c.now.factor;
+    const pgs = f.lens.parkGroups;
+    if (k[0] !== c.dgN || k[1] !== cam.ver || k[2] !== f.census.at || k[3] !== c.now.factor || pgs !== this.calloutPG) {
+      k[0] = c.dgN; k[1] = cam.ver; k[2] = f.census.at; k[3] = c.now.factor; this.calloutPG = pgs;
+      // the return belt's tallest heap names its own signature (fx-engine, plant.ts): the worst
+      // cluster's callout gives way to it when that is its subject (one name per thing)
+      const tall = tallestCluster(pgs);
       // stress mode: the callouts' counts are the 10× fleet's, as the header's are
       const F = c.now.factor;
       this.callouts = [];
@@ -296,7 +302,8 @@ export class Glance {
       const edge: [number, number, number, number] = [cam.x(-112, FV), cam.y(-112, FV, 0), cam.x(P.CITY_U1, FV), cam.y(P.CITY_U1, FV, 0)];
       c.dg.marks.hot.forEach((h, i) => {
         const ax = c.hotXY[i * 2], ay = c.hotXY[i * 2 + 1];
-        if (!(ax >= 0)) return;
+        if (!(ax >= 0) || this.callouts.length >= 3) return;
+        if (h.kind === 'cluster' && h.id === tall) return;
         const rest = F > 1 ? h.rest.replace(/\d+/, (n) => String(Number(n) * F)) : h.rest;
         const parts: Tok[] = [[h.lead, h.red ? C.redText : h.kind === 'jam' ? C.amberText : C.ink, true], [rest, C.ink2]];
         const w = g.width(h.lead, SMALL, true) + g.width(rest, SMALL);
@@ -312,11 +319,12 @@ export class Glance {
           const ex = insights().cluster(h.id)?.examples.find((pid) => f.world.pipelines.has(pid));
           if (ex) { kind = 'failure'; id = ex; label = h.lead; }
         } else if (h.kind === 'jam') { kind = 'intake'; id = 'intake'; label = 'intake'; }
+        else if (h.kind === 'down') { kind = 'app'; id = h.id; label = h.id; }
         else if (h.kind === 'group') {
           if (h.id.startsWith('org:')) { kind = 'dock'; id = h.id.slice(4); label = h.lead; }
           else { const di = f.fx.districtBox.findIndex((b) => b.team.toLowerCase().replace(/\s+/g, '-') === h.id.slice(5)); kind = 'district'; id = String(di); label = f.fx.districtBox[di]?.team ?? h.lead; }
         }
-        this.callouts.push({ x: at[0], y: at[1], ax, ay, w, parts, kind, id, label, pin });
+        this.callouts.push({ x: at[0], y: at[1], ax, ay, w, parts, kind, id, label, pin, src: `${h.kind}:${h.id}` });
       });
     }
     if (!this.callouts.length) return;
@@ -383,6 +391,14 @@ export class Glance {
       ry += H;
     });
   }
+}
+
+/** The cluster the return belt's tallest heap is (the open park group holding the most failures;
+ *  ties: nearest the scanner, the first), '' none: fx-engine names that heap on the floor. */
+export function tallestCluster(pgs: readonly { cl: string; n: number; open: boolean }[]): string {
+  let best = '', n = 0;
+  for (const p of pgs) if (p.open && p.n > n) { n = p.n; best = p.cl; }
+  return best;
 }
 
 function tokW(g: Gfx, parts: readonly Tok[]): number { let w = 0; for (const p of parts) if (p[0]) w += g.width(p[0], SMALL, !!p[2]); return w; }

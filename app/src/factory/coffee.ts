@@ -572,6 +572,7 @@ export class Coffee {
       let at: [number, number, number] | null = null;
       if (h.kind === 'cluster') at = [P.SCAN_U, 300, 70];
       else if (h.kind === 'jam') at = [(P.INTAKE_U0 + P.INTAKE_U1) / 2, 291, 10];
+      else if (h.kind === 'down') { const bl = f.blockAt.get(h.id); if (bl) at = [bl.u + bl.d / 2, bl.v + bl.d / 2, bl.h + 2]; }
       else { const s = this.groupSpot(h.id); if (s) at = [s[0], s[1], s[3]]; }
       this.hotXY.push(at ? cam.x(at[0], at[1]) : -1, at ? cam.y(at[0], at[1], at[2]) : -1);
     }

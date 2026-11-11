@@ -200,7 +200,7 @@ const redSince = (s: Snapshot, from: number) => list(s.repos).filter((r) => (r.m
   const fleet = list(snap.trends ?? []).find((x) => x.id === 'fleet');
   const stageBad = (['pass_rate', 'intake_ms', 'run_ms', 'pr_age_ms', 'red'] as const).filter((k) => metricBad(k, fleet?.[k], false)).length;
   eq(m.embers.filter((e) => e.kind === 'stage').length, stageBad, `fixture embers: one per stage whose 24 h trend is worse than its 7 d (${m.embers.map((e) => `${e.id}:${e.metrics.join('+')}`).join(', ')})`);
-  ok(m.hot.length >= 1 && m.hot.length <= 3, `fixture hotspots: ${m.hot.map((h) => `${h.lead}${h.rest}`).join(' | ')}`);
+  ok(m.hot.length >= 1 && m.hot.length <= 4, `fixture hotspots (candidates; the floor draws ≤ 3): ${m.hot.map((h) => `${h.lead}${h.rest}`).join(' | ')}`);
   ok(m.beacons.length <= 64 && m.verdict !== 'flowing', `fixture verdict: ${m.verdict} (${m.why})`);
 }
 
@@ -295,6 +295,28 @@ const redSince = (s: Snapshot, from: number) => list(s.repos).filter((r) => (r.m
   const live = check('live', f, tl, t, 1);
   ok(live.some((s) => s.includes('worse than usual') || s.includes('as usual')), `header (live): the verdict is relative (${live.find((s) => s.includes('usual')) ?? 'none'})`);
   ok(!live.some((s) => / building$/.test(s)), 'header (live): building and queued are in the menu, not the row (≤ 4 worded chips)');
+  // one name per thing: the return belt's tallest heap names its own signature (fx-engine), so the
+  // worst cluster's callout gives way when that heap is its subject; the other hotspots keep theirs
+  {
+    const { tallestCluster } = await import('../src/factory/glance.ts');
+    eq(tallestCluster([{ cl: 'a', n: 3, open: true }, { cl: 'b', n: 9, open: false }, { cl: 'c', n: 5, open: true }, { cl: 'd', n: 5, open: true }]), 'c', 'tallest heap: the open group holding the most (ties: nearest the scanner)');
+    const gl = f.coffee.glance0, hot = f.coffee.dg.marks.hot, tall = tallestCluster(f.lens.parkGroups);
+    const srcs = gl.callouts.map((o) => o.src);
+    ok(tall !== '' && gl.callouts.length >= 1 && gl.callouts.length <= 3, `callouts: ≤ 3 drawn (${srcs.join(' | ')}; the tallest heap ${tall})`);
+    ok(!srcs.includes(`cluster:${tall}`), `callouts: none names the tallest heap's cluster (${tall}), the heap names itself`);
+    const clh = hot.find((h) => h.kind === 'cluster');
+    if (clh && clh.id === tall) ok(hot.filter((h) => h.kind !== 'cluster').every((h) => srcs.includes(`${h.kind}:${h.id}`) || gl.callouts.length === 3), `callouts: the other hotspots keep theirs (${srcs.join(' | ')})`);
+    else ok(!clh || srcs.includes(`cluster:${clh.id}`), `callouts: a cluster that is not the tallest heap keeps its callout (${clh?.id ?? 'none'})`);
+    // the worst cluster made the tallest heap: its callout gives way, the group's stays
+    if (clh) {
+      const pgs = f.lens.parkGroups;
+      f.lens.parkGroups = [{ ...(pgs[0] ?? { u0: 0, u1: 0, step: '', cls: '', flaky: 0, repos: 1, newest: '' }), cl: clh.id, n: 999, open: true }, ...pgs.slice(1)];
+      for (let i = 0; i < 2; i++) { const tt = t + 16 * (i + 1); tl.tick(tt); f.drawLive(rec, frame(tt), tt, 0); }
+      const s2 = gl.callouts.map((o) => o.src);
+      ok(!s2.includes(`cluster:${clh.id}`) && hot.filter((h) => h.kind !== 'cluster').every((h) => s2.includes(`${h.kind}:${h.id}`)), `callouts: the worst cluster as the tallest heap → no cluster callout, the rest kept (${s2.join(' | ')})`);
+      f.lens.parkGroups = pgs;
+    }
+  }
   // stress mode: the 10× fleet (the census multiplies the same way the header does)
   f.setStress(true);
   t = run(t, 12);

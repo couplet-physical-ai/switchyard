@@ -26,7 +26,8 @@
 //               lines now against the 7-d same-hour p90 (agg/baseline.ts; the trend's typical ×
 //               1.25 while the ring holds too little): `worse` than usual, `usual`, or '' with no
 //               basis; and the window's failures against the typical for a window that long
-//   hotspots    ≤ 3 callouts: the worst cluster, the worst group, the jam
+//   hotspots    the callouts' candidates: the worst cluster, the worst group, the jam, the app down
+//               (the floor draws ≤ 3, glance.ts)
 //   totals      (fx-glance) red main lines, building, queued, apps down: ONE count, which the
 //               status line (app.ts overview) and the coffee header both show; stress mode's
 //               are the 10× fleet's own (every count × FACTOR, the city's hashed copies' health)
@@ -233,7 +234,7 @@ export type Crack = { kind: 'red' | 'down'; id: string; since: number };
 export type Stage = 'prs' | 'mains' | 'intake' | 'engines' | 'tests' | 'deploy';
 export type Ember = { kind: 'stage' | 'group'; id: string; metrics: string[]; k: number };
 export type Jam = { waiting: number; oldest: number; k: number };
-export type Hotspot = { kind: 'cluster' | 'group' | 'jam'; id: string; lead: string; rest: string; red: boolean };
+export type Hotspot = { kind: 'cluster' | 'group' | 'jam' | 'down'; id: string; lead: string; rest: string; red: boolean };
 /** Against the usual (fx-glance): `rel` worse / usual ('' no basis); the last hour's failures
  *  and the red main lines now with their thresholds (the 7-d same-hour p90); the window's failures
  *  typical for its length (null: no basis) and its threshold. */
@@ -386,11 +387,12 @@ export function marks(inp: MarkInput): Marks {
     if (s > 0 && s >= now - HOUR && s <= now) out.beacons.push({ kind: 'red', id: r.id, at: s, sev: 0.6 + 0.4 * (1 - (now - s) / HOUR) + (s > since ? 0.3 : 0) });
     else if (s > 0 && s < now - DAY) out.cracks.push({ kind: 'red', id: r.id, since: s });
   }
-  let down = 0;
+  let down = 0, downApp = '', downAt = -1;
   for (const a of w.apps.values()) {
     if (a.health !== 'down') continue;
     down++;
     const id = a.id ?? '', s = inp.downSince(id);
+    if (s > downAt) { downAt = s; downApp = id; }
     if (s > 0 && s >= now - HOUR) out.beacons.push({ kind: 'down', id, at: s, sev: 1.2 + 0.4 * (1 - (now - s) / HOUR) });
     else if (s > 0 && s < now - DAY) out.cracks.push({ kind: 'down', id, since: s });
   }
@@ -451,8 +453,14 @@ export function marks(inp: MarkInput): Marks {
   const g0 = worstGroup(inp);
   if (g0) out.hot.push(g0);
   if (out.jam) out.hot.push({ kind: 'jam', id: 'intake', lead: 'jam', rest: ` · ${out.jam.waiting} waiting`, red: false });
+  // fx-glance: the app down (the newest), a candidate the floor calls out when a place is free
+  // (the worst cluster's callout gives way when the return belt's tallest heap already names it)
+  if (downApp) out.hot.push({ kind: 'down', id: downApp, lead: appWord(downApp), rest: down > 1 ? ` · down · ${down - 1} more` : ' · down', red: true });
   return out;
 }
+
+/** An app's short name ("org/name" → "name"). */
+function appWord(id: string): string { const i = id.lastIndexOf('/'); return i >= 0 ? id.slice(i + 1) : id; }
 
 /** The group where most went wrong in the window: the server's ranking (failures and new reds
  *  there), else the world's groups by red main lines. Null when nothing is red or failing. */

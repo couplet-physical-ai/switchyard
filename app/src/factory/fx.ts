@@ -18,13 +18,15 @@
 import type { Gfx } from '../yard/gfx.ts';
 import { TAU } from '../yard/theme.ts';
 import { beat, breathe } from './motion.ts';
+import { EMBER } from './trendmarks.ts'; // fx-glance: the floor's one ember colour (fx-engine's)
 
 /** The master beat as a pulse, 1 on the beat (motion.ts `beat` is its phase). */
 export function pulse(t: number): number { return 0.5 + 0.5 * Math.cos(TAU * beat(t)); }
 
 export const K_RED = 0, K_WISP = 1, K_WISP_RED = 2, K_EMBER = 3, K_CRACK = 4, K_OK = 5, K_AMBER = 6, K_INK = 7, K_CARD = 8, K_BLACK = 9;
-// fx-glance: smoke is dark and red-tinged (gray is the ok family), ok is green-gray
-const BASE = ['#E06464', '#3E1D1B', '#8E4038', '#C47A48', '#D9D3CF', '#9DB8A4', '#E5B567', '#F2F2F0', '#111112', '#050506'];
+// fx-glance: smoke is dark and red-tinged (gray is the ok family), ok is green-gray; the ember
+// is the floor's ONE ember (trendmarks.ts EMBER, fx-engine: a low-L red-brown)
+const BASE = ['#E06464', '#3E1D1B', '#8E4038', EMBER, '#D9D3CF', '#9DB8A4', '#E5B567', '#F2F2F0', '#111112', '#050506'];
 const STEPS = 32;
 const LUT: string[][] = BASE.map((hex) => {
   const n = parseInt(hex.slice(1), 16);
@@ -190,7 +192,8 @@ export function embers(g: Gfx, e: Nums, t: number, fade = 1): void {
         const rx = a[i + 2] * sc;
         g.ctx.moveTo(a[i] + rx, a[i + 1]); g.ctx.ellipse(a[i], a[i + 1], rx, rx * 0.5, 0, 0, TAU); g.ops += 2;
       }
-      if (any) g.fill(tint(K_EMBER, (hot ? 0.06 : 0.04) * br * fade));
+      // three rings stacked: ≈ 0.35 at the centre, as fx-engine's ember (a low-L red-brown) reads
+      if (any) g.fill(tint(K_EMBER, (hot ? 0.14 : 0.09) * br * fade));
     }
   }
 }
