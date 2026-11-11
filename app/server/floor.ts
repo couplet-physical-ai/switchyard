@@ -518,7 +518,7 @@ export class Floor {
     const x: FlakeX = this.fx.get(id) ?? { f: { id, repo, workflow: wf, step, flips_24h: 0, failures_24h: 0, last_at: 0, shas: [] }, flips: [] };
     x.flips.push(...ats);
     x.flips.sort((a, b) => a - b);
-    x.f.shas = [...shas, ...x.f.shas].slice(0, 5);
+    x.f.shas = [...new Set([...shas, ...x.f.shas])].slice(0, 5);
     x.f.last_at = Math.max(x.f.last_at, ...ats);
     this.fx.set(id, x);
     const fl = this.stepFails.get(id) ?? [];
