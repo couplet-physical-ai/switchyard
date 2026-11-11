@@ -767,6 +767,21 @@ export class Floor implements Layer {
   /** Each lane's cars: its newest merged commits, newest at the right; one path per face and state
    *  (settled gray, running amber, red culprit), edges only zoomed in. fx-lanes: each car stands on
    *  a 2-px underframe in its lane's hue (REVIEW-iter2 #1: a red car says which team at once). */
+  /** The cars the rails hold, from the lanes' count (what drawCars paints at the fit, without its
+   *  screen culling): tests and drivers read it as `ov.facCars`. It is DATA, so it is right as soon
+   *  as the lanes are counted, however late a slow host paints the static floor (v0.1.2 release run
+   *  43010961144: the GHA runner's first floor paint came after the test read the painted count). */
+  carCount(): number {
+    const cnt = this.data.last;
+    let cars = 0;
+    for (const L of this.lanesNow) {
+      if (L.s.stripe || L.kind === 'bots' || this.subRowsOn(L)) continue;
+      const n = cnt.lanes.get(L.id)?.cars.length ?? 0;
+      for (let k = 0; k < n; k++) if (RAIL_U1 - 12 - (n - 1 - k) * 10 >= RAIL_U0 + 4) cars++;
+    }
+    return cars;
+  }
+
   private drawCars(g: Gfx, lo: boolean): void {
     const cam = this.f.cam, cnt = this.data.last;
     const carG = this.f.bA, carA = this.f.bB, carR = this.f.bC, uf = this.f.bD;

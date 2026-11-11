@@ -203,12 +203,13 @@ export class Factory {
 
   get world(): World { return this.tl.world; }
 
-  /** What the floor holds (tests read these): city blocks, cars on the rails, busy bays. */
+  /** What the floor holds (tests read these): city blocks, cars on the rails (the lanes' count, not
+   *  the painted frame: floor.carCount), busy bays. */
   counts(): { facCity: number; facCars: number; facBays: number; facLens: number; facLensTop: string } {
     let bays = 0;
     for (const b of this.bays) if (b.pid) bays++;
     const top = this.lens.topLens;
-    return { facCity: this.blocks.length, facCars: this.stat.cars, facBays: bays, facLens: this.lens.stack.length, facLensTop: top ? `${top.kind}:${top.id}` : '' };
+    return { facCity: this.blocks.length, facCars: this.floor.on ? this.floor.carCount() : this.stat.cars, facBays: bays, facLens: this.lens.stack.length, facLensTop: top ? `${top.kind}:${top.id}` : '' };
   }
 
   /** One line of what the renderer did (drives read it as `state ov.facStats`). */
