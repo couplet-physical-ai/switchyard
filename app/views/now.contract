@@ -349,20 +349,20 @@ component NowStatus
           :hover
             background-color="zr.raise"
           row gap=7 align-items="center"
-            text m.label font-size=11.5 color=(m.offline ? "zr.fail" : "zr.ink2") white-space="nowrap"
+            text m.label font-size=11.5 color=(m.offline ? "zr.ink3" : "zr.ink2") white-space="nowrap"
             if m.cells.length > 0
               // the Yard's slots: an empty ring each; a busy one holds its packet and an amber arc
               // that fills with the job's elapsed time against its usual (dashed when unknown)
               svg width=(m.cells.length * 16) height=16 viewBox=`0 0 ${m.cells.length * 16} 16` aria-hidden=true
                 for c, ci in m.cells key=c.id
-                  circle cx=(ci * 16 + 8) cy=8 r=4.5 fill="none" stroke="#3A3A3C" stroke-width=1
+                  circle cx=(ci * 16 + 8) cy=8 r=4.5 fill="none" stroke="#3A3A3C" stroke-width=1 stroke-dasharray=(m.offline ? "1.5 2" : "none")
                   if c.on
                     circle cx=(ci * 16 + 8) cy=8 r=2.2 fill="#8A7146"
                     if c.known
                       circle cx=(ci * 16 + 8) cy=8 r=6.5 fill="none" stroke="#E5B567" stroke-width=1.3 stroke-dasharray=`${c.pct * 40.84} 40.84` transform=`rotate(-90 ${ci * 16 + 8} 8)`
                     else
                       circle cx=(ci * 16 + 8) cy=8 r=6.5 fill="none" stroke="#E5B567" stroke-opacity=0.7 stroke-width=1.2 stroke-dasharray="2 2.5"
-            text m.text font-size=11.5 color="zr.ink2" font-variant-numeric="tabular-nums"
+            text m.text font-size=11.5 color=(m.offline ? "zr.ink3" : "zr.ink2") font-variant-numeric="tabular-nums" testId=`now-mach-${mi}-text`
 
 // A section heading: the word, a count, a note; a hairline above the first row.
 component NowHeading

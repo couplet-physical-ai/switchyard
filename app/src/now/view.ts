@@ -476,7 +476,7 @@ export function feedAnswer(d: NowDeps, [tick, repo, app, sha]: FeedArgs): NowFee
     if (m.id !== 'm:gha') { busy += b; slots += s; }
     const pp = pcts.get(m.id) ?? [];
     return {
-      id: m.id, label: (m.label === 'GitHub runner' ? 'github actions' : m.label).toLowerCase(), text: s ? `${b}/${s}` : `${b}`,
+      id: m.id, label: (m.label === 'GitHub runner' ? 'github actions' : m.label).toLowerCase(), text: m.online === false ? 'offline' : s ? `${b}/${s}` : `${b}`,
       cells: s ? Array.from({ length: Math.min(s, 16) }, (_, i) => ({ id: `${m.id}#${i}`, on: i < b, pct: i < b ? Math.max(0, pp[i] ?? -1) : 0, known: i < b && (pp[i] ?? -1) >= 0 })) : [],
       busy: b, slots: s, offline: m.online === false, url: engineUrl(w, m),
     };

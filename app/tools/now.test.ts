@@ -133,6 +133,8 @@ eq(fit('short', 20), 'short', 'fit keeps what fits');
     ],
   });
   const f = feed(w);
+  const vm154 = f.machines.find((m) => m.label === 'vm 154');
+  eq([vm154?.offline, vm154?.text], [true, 'offline'], 'an offline machine says "offline" in the engines line (and is a need below)');
   eq(f.needs.map((n) => [n.kind, n.what, n.word]), [
     ['app', 'app-a', 'down'], ['deploy', 'app-a', 'deploy failed'], ['stuck', 'a ci', 'stuck'], ['queue', 'Roadrunner queue', 'stuck'], ['machine', 'VM 154', 'offline'], ['main', 'b', 'red 2h'],
   ], 'needs, most urgent first: app down, failed deploy, stuck job, stuck queue, machine offline, failing main ("red 2h", the Yard\'s words)');
