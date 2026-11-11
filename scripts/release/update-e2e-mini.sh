@@ -97,6 +97,7 @@ LOG=~/Library/Logs/Switchyard/switchyard.log; mkdir -p ~/Library/Logs/Switchyard
 if [[ -n "$TOK_REMOTE" ]]; then
   # <from> writes the token to the Keychain (a fresh item: the one an earlier build made is gone)
   security delete-generic-password -s com.exowatt.switchyard -a switchyard.token >/dev/null 2>&1 || true
+  rm -f "\$HOME/Library/Application Support/com.exowatt.switchyard/token" "\$HOME/Library/Application Support/com.exowatt.switchyard/migrated"
   deny_
   L1=\$(wc -l < \$LOG)
   gui open --env SWITCHYARD_TOKEN_FILE=$TOK_REMOTE "\$A"
@@ -104,7 +105,10 @@ if [[ -n "$TOK_REMOTE" ]]; then
   tail -n +\$((L1+1)) \$LOG | grep "token-file:" | tail -1
   tail -n +\$((L1+1)) \$LOG | grep -q "token-file: connected" || { echo "FAIL: $FROM did not connect with the token file" >&2; exit 1; }
   sleep 2; quit_
-  security find-generic-password -s com.exowatt.switchyard -a switchyard.token >/dev/null 2>&1 && echo "keychain: token stored by $FROM" || { echo "FAIL: no Keychain item after $FROM connected" >&2; exit 1; }
+  # 0.1.2 and earlier store it in the Keychain; 0.1.3+ in Application Support/<id>/token (0600)
+  if [[ -s "\$HOME/Library/Application Support/com.exowatt.switchyard/token" ]]; then echo "token: stored by $FROM in its 0600 file"
+  elif security find-generic-password -s com.exowatt.switchyard -a switchyard.token >/dev/null 2>&1; then echo "token: stored by $FROM in the Keychain"
+  else echo "FAIL: $FROM stored no token (no file, no Keychain item)" >&2; exit 1; fi
 fi
 # SY_SEED_TOKEN=1: a kept answer holding a fake syd_ token, as 0.1.0 and earlier left real ones in
 # kv/exact.kept; the updated app must scrub it at its first launch (and log it under its pid).
