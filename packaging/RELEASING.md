@@ -72,3 +72,17 @@ the release with `gh`, and dispatches the tap bump.
 There is no Apple Developer ID, so the app is ad-hoc signed and not notarized. The cask's
 `postflight` removes `com.apple.quarantine`; a dmg download needs
 `xattr -dr com.apple.quarantine /Applications/Switchyard.app` once.
+
+## Prereleases and the update proof
+
+`0.0.x` and suffixed versions (`0.2.0-rc.1`) publish as **prereleases**: GitHub's
+`/releases/latest/…` skips them and `scripts/release.sh` leaves the tap alone. To prove the in-app
+updater without touching what users get, cut two prereleases and point the older one at the newer
+one's feed:
+
+```sh
+scripts/release.sh 0.0.5 && scripts/release.sh 0.0.6
+SY_UPDATE_FEED=https://github.com/couplet-physical-ai/switchyard/releases/download/v0.0.6/latest.json \
+  scripts/release/update-e2e-mini.sh 0.0.5 0.0.6
+```
+
