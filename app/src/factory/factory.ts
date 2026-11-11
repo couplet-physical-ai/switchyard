@@ -29,83 +29,18 @@ import { FACTOR, FactoryStress } from './stress.ts';
 import { Lenses } from './lens.ts'; // fab-lens
 import { Coffee } from './coffee.ts'; // fab-lens
 import type { FactoryFx } from './lens.ts'; // fab-lens
+import { PLAN, VIA_WORDS } from './layout.ts';
+import { F, HOUR_MS, MONO, SMALL, TITLE, box as boxP, clockWords, crate as crateP, dur, easeInOut, flushLights as flushLightsP, hash, onScreen as onScreenP, pipeWords as pipeWordsP, poly as polyP, quad as quadP, ring as ringP, runningStep } from './prims.ts';
+import type { Bay, Block, Crate, HitBox, Label, Pt } from './types.ts';
 
-// ---- palette (canvas-only shades of the app's ramp) ------------------------------------------
-const F = {
-  floor: '#0C0C0D',
-  floorEdge: '#1E1E20',
-  grid: '#141416',
-  gridMajor: '#19191B',
-  zone: '#232326',
-  top: '#222224',
-  topHi: '#29292C',
-  side: '#18181A',
-  front: '#141416',
-  edge: '#3A3A3E',
-  edgeHi: '#4E4E53',
-  belt: '#121214',
-  beltEdge: '#2B2B2F',
-  slat: '#2A2A2E',
-  slatHot: '#2E2C28',
-  rail: '#3A3A3E',
-  sleeper: '#1D1D20',
-  bay: '#0F0F10',
-  bayLit: '#2A2216',
-  crateTop: '#E5B567',
-  crateFront: '#B48C4E',
-  crateSide: '#8E6E3E',
-  dockTop: '#8A7146',
-  dockFront: '#6B5838',
-  dockSide: '#56472E',
-  redTop: '#E06464',
-  redFront: '#B04848',
-  redSide: '#8A3838',
-  light: '#5A6E5F',
-} as const;
+export type { Plan } from './types.ts';
+export { dur };
 
-const MONO = 12;
-const SMALL = 12;
-const TITLE = 15;
-
-// ---- the floor plan (world units) ------------------------------------------------------------
-const DOCK_U0 = 10, DOCK_U1 = 64;
-const COLLECT_U = 104;
-const AISLE_V = 385;
-const YARD_U0 = 122, YARD_U1 = 426;
-const ROW_U = [153, 227, 301, 375];
-const ROW_DU = 46;
-const AGE_V = [470, 398, 326, 254, 182, 110];
-const STACK_DV = 46;
-const PALLET_V = 560;
-const GATE_U = 442;
-const RAIL_U0 = 456, RAIL_U1 = 640;
-const RAIL_V = [130, 210, 290, 370, 450];
-const INTAKE_U0 = 662, INTAKE_U1 = 748;
-const LANE_V = [276, 306];
-const DIST_U = 762;
-const ENG_U0 = 776, ENG_U1 = 1052;
-const ENG_V0 = 34, ENG_STEP = 146, ENG_DV = 116, ENG_H = 30;
-const SCAN_U = 1104;
-const TRACK_V = [210, 330, 450];
-const TRACK_U1 = 1222;
-const CITY_U0 = 1232, CITY_U1 = 1494, CITY_V0 = 22, CITY_V1 = 610;
-const RETURN_V = 626;
-
-const VIAS = ['roadrunner', 'gha', 'gha_fallback'] as const;
-const VIA_WORDS: Record<string, string> = { roadrunner: 'roadrunner', gha: 'gha', gha_fallback: 'fallback' };
-
-type Pt = [number, number];
-type Crate = {
-  id: string; kind: 'commit' | 'pipeline' | 'pr' | 'deploy'; route: Pt[]; len: number; cum: number[];
-  t0: number; dur: number; red: boolean; label: string; org: string; hold: number;
-  /** The route as a small integer (the trains' key), -1 until asked. */
-  rid: number;
-};
-type HitBox = { x: number; y: number; w: number; h: number; kind: string; id: string; label: string };
-type Label = { x: number; y: number; w: number; h: number };
-type Bay = { u: number; v: number; du: number; dv: number; group: number; slot: number; pid: string };
-/** A city block; `hv` -1: a real app (health from the world), ≤ -2: stress copy -2-i, 4: idle. */
-type Block = { id: string; u: number; v: number; d: number; h: number; district: number; hv: number };
+const {
+  DOCK_U0, DOCK_U1, COLLECT_U, AISLE_V, YARD_U0, YARD_U1, ROW_U, ROW_DU, AGE_V, STACK_DV, PALLET_V, GATE_U,
+  RAIL_U0, RAIL_U1, RAIL_V, INTAKE_U0, INTAKE_U1, LANE_V, DIST_U, ENG_U0, ENG_U1, ENG_V0, ENG_STEP, ENG_DV, ENG_H,
+  SCAN_U, TRACK_V, TRACK_U1, CITY_U0, CITY_U1, CITY_V0, CITY_V1, RETURN_V, VIAS,
+} = PLAN;
 
 export class Factory {
   readonly cam = new Cam();
@@ -509,47 +444,17 @@ export class Factory {
   }
 
   // ---- geometry primitives ---------------------------------------------------------------------
-  private poly(g: Gfx, pts: number[]): void {
-    const cam = this.cam;
-    for (let i = 0; i < pts.length; i += 3) {
-      const x = cam.x(pts[i], pts[i + 1]), y = cam.y(pts[i], pts[i + 1], pts[i + 2]);
-      if (i === 0) g.move(x, y); else g.line(x, y);
-    }
-    g.ctx.closePath();
-  }
+  poly(g: Gfx, pts: number[]): void { polyP(this.cam, g, pts); }
 
-  private quad(g: Gfx, u0: number, v0: number, u1: number, v1: number, z = 0): void {
-    this.poly(g, [u0, v0, z, u1, v0, z, u1, v1, z, u0, v1, z]);
-  }
+  quad(g: Gfx, u0: number, v0: number, u1: number, v1: number, z = 0): void { quadP(this.cam, g, u0, v0, u1, v1, z); }
 
   /** An extruded block: the faces the camera sees (front +v, right +u, top), dark, tone-shaded. */
-  private box(g: Gfx, u0: number, v0: number, du: number, dv: number, h: number, top: string = F.top, side: string = F.side, front: string = F.front, edge: string = F.edge, lw?: number): void {
-    const u1 = u0 + du, v1 = v0 + dv;
-    g.begin_(); this.poly(g, [u0, v1, 0, u1, v1, 0, u1, v1, h, u0, v1, h]); g.fill(front);
-    g.begin_(); this.poly(g, [u1, v0, 0, u1, v1, 0, u1, v1, h, u1, v0, h]); g.fill(side);
-    g.begin_(); this.poly(g, [u0, v0, h, u1, v0, h, u1, v1, h, u0, v1, h]); g.fill(top);
-    // edges: the silhouette and the two visible vertical corners
-    const cam = this.cam, w = lw ?? g.hair * 1.5;
-    g.begin_();
-    g.move(cam.x(u0, v0), cam.y(u0, v0, h)); g.line(cam.x(u1, v0), cam.y(u1, v0, h)); g.line(cam.x(u1, v0), cam.y(u1, v0, 0));
-    g.line(cam.x(u1, v1), cam.y(u1, v1, 0)); g.line(cam.x(u0, v1), cam.y(u0, v1, 0)); g.line(cam.x(u0, v1), cam.y(u0, v1, h)); g.ctx.closePath();
-    g.move(cam.x(u0, v1), cam.y(u0, v1, h)); g.line(cam.x(u1, v1), cam.y(u1, v1, h)); g.line(cam.x(u1, v0), cam.y(u1, v0, h));
-    g.move(cam.x(u1, v1), cam.y(u1, v1, h)); g.line(cam.x(u1, v1), cam.y(u1, v1, 0));
-    g.stroke(edge, w);
+  box(g: Gfx, u0: number, v0: number, du: number, dv: number, h: number, top: string = F.top, side: string = F.side, front: string = F.front, edge: string = F.edge, lw?: number): void {
+    boxP(this.cam, g, u0, v0, du, dv, h, top, side, front, edge, lw);
   }
 
   /** A small crate (a cube) at floor point (u, v), side `d` world units. */
-  private crate(g: Gfx, u: number, v: number, d: number, red: boolean, dim: boolean, z = 2): void {
-    const h = d * 0.8, u0 = u - d / 2, v0 = v - d / 2;
-    const top = red ? F.redTop : dim ? F.dockTop : F.crateTop;
-    const front = red ? F.redFront : dim ? F.dockFront : F.crateFront;
-    const side = red ? F.redSide : dim ? F.dockSide : F.crateSide;
-    const cam = this.cam;
-    const p = (uu: number, vv: number, zz: number) => { g.line(cam.x(uu, vv), cam.y(uu, vv, zz)); };
-    g.begin_(); g.move(cam.x(u0, v0 + d), cam.y(u0, v0 + d, z)); p(u0 + d, v0 + d, z); p(u0 + d, v0 + d, z + h); p(u0, v0 + d, z + h); g.ctx.closePath(); g.fill(front);
-    g.begin_(); g.move(cam.x(u0 + d, v0), cam.y(u0 + d, v0, z)); p(u0 + d, v0 + d, z); p(u0 + d, v0 + d, z + h); p(u0 + d, v0, z + h); g.ctx.closePath(); g.fill(side);
-    g.begin_(); g.move(cam.x(u0, v0), cam.y(u0, v0, z + h)); p(u0 + d, v0, z + h); p(u0 + d, v0 + d, z + h); p(u0, v0 + d, z + h); g.ctx.closePath(); g.fill(top);
-  }
+  crate(g: Gfx, u: number, v: number, d: number, red: boolean, dim: boolean, z = 2): void { crateP(this.cam, g, u, v, d, red, dim, z); }
 
   /** A belt (a flow band) along an axis-aligned polyline; `lanes` ∝ throughput. */
   private beltPath(g: Gfx, pts: Pt[], hw: number): void {
@@ -608,14 +513,7 @@ export class Factory {
    *  painted here, not every frame), and whether the ladder wants the low-detail floor. */
   get floorKey(): string { return `${this.cam.key}|${this.census.sig}|${this.census.healthSig}|${this.census.carSig}|${this.budget.quality >= 3 ? 'lo' : 'hi'}`; }
 
-  /** Is the floor box (u0..u1, v0..v1, 0..h) on screen? (its projected corners' bounds, padded) */
-  private onScreen(u0: number, v0: number, u1: number, v1: number, h = 0, pad = 24): boolean {
-    const cam = this.cam;
-    const xa = cam.x(u0, v1), xb = cam.x(u1, v0);
-    if (Math.max(xa, xb) < -pad || Math.min(xa, xb) > cam.W + pad) return false;
-    const ya = cam.y(u0, v0, h), yb = cam.y(u1, v1, 0);
-    return !(Math.max(ya, yb) < -pad || Math.min(ya, yb) > cam.H + pad);
-  }
+  private onScreen(u0: number, v0: number, u1: number, v1: number, h = 0, pad = 24): boolean { return onScreenP(this.cam, u0, v0, u1, v1, h, pad); }
 
   drawFloor(ctx: Ctx2D, f: Frame, t: number): boolean {
     this.applyStress();
@@ -867,20 +765,7 @@ export class Factory {
     // the glow under trouble breathes on the live layer (motion.ts's beat)
   }
 
-  /** Health lights collected in `b` (points in its u, v, z): round, or squares (cheaper). */
-  private flushLights(g: Gfx, b: BoxBatch, col: string, r: number, round: boolean): void {
-    if (!b.n) return;
-    const cam = this.cam;
-    const buf = (b as unknown as { buf: Float32Array }).buf;
-    g.begin_();
-    for (let i = 0; i < b.n; i++) {
-      const o = i * 6, x = cam.x(buf[o], buf[o + 1]), y = cam.y(buf[o], buf[o + 1], buf[o + 5]);
-      if (round) g.circle(x, y, r);
-      else { g.ctx.rect(x - r / 2, y - r / 2, r, r); g.ops++; }
-    }
-    g.fill(col);
-    b.n = 0;
-  }
+  private flushLights(g: Gfx, b: BoxBatch, col: string, r: number, round: boolean): void { flushLightsP(this.cam, g, b, col, r, round); }
 
   private stack(g: Gfx, u0: number, v0: number, n: number, stuck: number, red: number, bucket: number, lo = false): void {
     // a pallet on the floor, crates stacked by count (1 crate layer per 2 PRs, a cap with a break)
@@ -1487,20 +1372,14 @@ export class Factory {
     this.box(g, u - 4, v - 4, 8, 8, 5, red ? F.redTop : settled ? '#6E6A62' : F.crateTop, red ? F.redSide : settled ? '#4A4844' : F.crateSide, red ? F.redFront : settled ? '#3E3C38' : F.crateFront, red ? '#E08088' : settled ? '#8A867E' : '#F0CC8A', this.gl.hair);
   }
 
-  private ring(g: Gfx, u: number, v: number, r: number, z = 0): void {
-    const x = this.cam.x(u, v), y = this.cam.y(u, v, z);
-    g.begin_(); g.ctx.ellipse(x, y, r * this.cam.s + 4, (r * this.cam.s + 4) * 0.6, 0, 0, TAU); g.stroke(C.ink, 1.5);
-  }
+  private ring(g: Gfx, u: number, v: number, r: number, z = 0): void { ringP(this.cam, g, u, v, r, z); }
 
   private hit(x: number, y: number, w: number, h: number, kind: string, id: string, label: string): void {
     if (x + w < 0 || y + h < 0 || x > this.cam.W || y > this.cam.H) return;
     this.hits.push({ x, y, w, h, kind, id, label });
   }
 
-  private pipeWords(p: Pipeline | undefined): string {
-    if (!p) return '';
-    return `${p.repo.split('/')[1]} #${p.number}`;
-  }
+  private pipeWords(p: Pipeline | undefined): string { return pipeWordsP(p); }
 
   // ---- labels ----------------------------------------------------------------------------------
   /** Reserve a label rect, nudged up in 15 px rows until it touches no other label. */
@@ -2045,41 +1924,7 @@ export class Factory {
   readonly plan = PLAN;
 }
 
-/** The floor plan's constants (world units), for the lens system. */
-const PLAN = {
-  DOCK_U0, DOCK_U1, COLLECT_U, AISLE_V, YARD_U0, YARD_U1, ROW_U, ROW_DU, AGE_V, STACK_DV, PALLET_V, GATE_U,
-  RAIL_U0, RAIL_U1, RAIL_V, INTAKE_U0, INTAKE_U1, LANE_V, DIST_U, ENG_U0, ENG_U1, ENG_V0, ENG_STEP, ENG_DV, ENG_H,
-  SCAN_U, TRACK_V, TRACK_U1, CITY_U0, CITY_U1, CITY_V0, CITY_V1, RETURN_V, VIAS,
-} as const;
-export type Plan = typeof PLAN;
-
-const HOUR_MS = 3_600_000;
 /** A crate's wake on its belt: a step lighter than the slats. */
 const cr0Wake = '#38383E';
-
-function runningStep(p: Pipeline): string {
-  for (const wf of p.workflows ?? []) for (const s of wf.steps ?? []) if (s.state === 'running') return s.name;
-  return '';
-}
-
-export function dur(ms: number): string {
-  if (!(ms > 0)) return '0s';
-  const s = Math.round(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ${s % 60}s`.replace(/ 0s$/, '');
-  const h = Math.floor(m / 60);
-  if (h < 48) return `${h}h ${m % 60}m`.replace(/ 0m$/, '');
-  return `${Math.floor(h / 24)}d`;
-}
-
-function clockWords(at: number, offsetMin: number): string {
-  const d = new Date(at + offsetMin * 60_000);
-  return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}:${String(d.getUTCSeconds()).padStart(2, '0')}`;
-}
-
-function easeInOut(u: number): number { return u <= 0 ? 0 : u >= 1 ? 1 : u < 0.5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2; }
-
-function hash(s: string): number { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
 
 void AGES; void short; void font;
