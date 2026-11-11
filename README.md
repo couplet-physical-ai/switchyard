@@ -15,11 +15,13 @@ brew tap couplet-physical-ai/tap && brew trust couplet-physical-ai/tap && brew i
 ```
 
 <p align="center">
-  <img src="packaging/screenshots/yard-macos.png" alt="The Yard on macOS: commits as packets travelling from sources through intake, Roadrunner engines and gates to main lines, deploys and app health" width="100%">
+  <img src="packaging/screenshots/factory-macos.png" alt="The Factory on macOS: the whole software factory as an isometric floor, from sources and the PR yard through the merge gate and main lines to the consumption engine, tests, deploys and app districts, with the commit that broke main called out" width="100%">
 </p>
 
-| Main lines | PRs |
+| A commit's journey (click anything on the floor) | Yard |
 |---|---|
+| <img src="packaging/screenshots/factory-journey.png" alt="The Factory with one pipeline lensed: its path from push through merge, intake and the engine bay, with its timeline and steps in the drawer" width="420"> | <img src="packaging/screenshots/yard-macos.png" alt="The Yard: commits as packets travelling from sources through intake, engines and gates to main lines, deploys and app health" width="420"> |
+| **Main lines** | **PRs** |
 | <img src="packaging/screenshots/mainlines.png" alt="Every repo's main branch as a line of commit dots, red first, culprits labelled" width="420"> | <img src="packaging/screenshots/prs.png" alt="Every open PR and the step it is waiting on" width="420"> |
 
 <sub>The macOS app on the built-in demo fleet. Screenshots: <code>packaging/screenshots/</code>.</sub>

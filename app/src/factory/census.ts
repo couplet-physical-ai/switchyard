@@ -256,27 +256,52 @@ export class Census {
     // engines: one machine per host, its agents' slots as bays
     const building = buildingIds(w);
     this.building = building.size;
+    // machines as the Yard groups them (yard/layout.ts engineGroups): a host's agents are one
+    // machine (its Dagger engine only its gauges); a Dagger engine with no agents on its host is
+    // a machine of its own; agents with no host share one; GitHub Actions runners (self-hosted or
+    // not) go to the hosted bay. The three biggest machines get the floor, VMs first.
+    const all = [...w.engines.values()];
     const hosts = new Map<string, Group>();
     const placed = new Set<string>();
-    for (const e of w.engines.values()) {
-      const host = e.host ?? e.label ?? e.id;
-      let g = hosts.get(host);
-      if (!g) { g = { id: host, name: host, platform: e.platform ?? '', slots: 0, running: [], engines: [], cpu: -1, mem: -1, load: -1, online: false, hosted: false }; hosts.set(host, g); }
-      if (e.cpu !== undefined) g.cpu = Math.max(g.cpu, e.cpu);
-      if (e.mem !== undefined) g.mem = Math.max(g.mem, e.mem);
-      if (e.load !== undefined) g.load = Math.max(g.load, e.load);
-      if (e.kind === 'dagger') continue; // the host's gauges; its slots are its agents'
+    const mk = (id: string, name: string, platform: string): Group => ({ id, name, platform, slots: 0, running: [], engines: [], cpu: -1, mem: -1, load: -1, online: false, hosted: false });
+    const take = (g: Group, e: (typeof all)[number]) => {
       g.engines.push(e.id);
       g.slots += e.slots;
       if (e.online !== false) g.online = true;
       if (!g.platform && e.platform) g.platform = e.platform;
       // one crate is one pipeline: a pipeline on two agents takes one bay (the counts agree)
       for (const id of e.running) if (building.has(id) && !placed.has(id)) { placed.add(id); g.running.push(id); }
+    };
+    const gauge = (g: Group, e: (typeof all)[number]) => {
+      if (e.cpu !== undefined) g.cpu = Math.max(g.cpu, e.cpu);
+      if (e.mem !== undefined) g.mem = Math.max(g.mem, e.mem);
+      if (e.load !== undefined) g.load = Math.max(g.load, e.load);
+    };
+    for (const e of all) if (e.kind === 'wp_agent' && e.host) {
+      let g = hosts.get(e.host);
+      if (!g) hosts.set(e.host, (g = mk(e.host, e.host, e.platform ?? '')));
+      gauge(g, e); take(g, e);
     }
-    const groups = [...hosts.values()].filter((g) => g.slots > 0).sort((a, b) => a.name.localeCompare(b.name, 'en', { numeric: true })).slice(0, 3);
-    const hosted: Group = { id: 'gha', name: 'GitHub Actions', platform: 'hosted runners', slots: 0, running: [], engines: [], cpu: -1, mem: -1, load: -1, online: true, hosted: true };
-    for (const id of building) { const p = w.pipelines.get(id); if (p?.lane === 'gha') hosted.running.push(id); }
-    hosted.slots = Math.max(6, hosted.running.length);
+    for (const e of all) if (e.kind === 'dagger') {
+      const h = e.host ?? e.label ?? e.id.replace(/^dagger:/, '');
+      const g = hosts.get(h);
+      if (g && g.engines.length && !g.engines.some((id) => w.engines.get(id)?.kind === 'dagger')) { gauge(g, e); continue; } // the host's gauges; its slots are its agents'
+      const own = mk(e.id, e.label ?? h, e.platform ?? 'dagger');
+      gauge(own, e); take(own, e);
+      hosts.set(`dagger ${e.id}`, own);
+    }
+    const loose = all.filter((e) => e.kind === 'wp_agent' && !e.host);
+    if (loose.length) { const g = mk('agents', 'agents', 'woodpecker'); for (const e of loose) { gauge(g, e); take(g, e); } hosts.set('agents', g); }
+    const rank = (g: Group) => (/^vm/i.test(g.name) ? 0 : /mac/i.test(g.name) ? 2 : 1);
+    const groups = [...hosts.values()].filter((g) => g.slots > 0)
+      .sort((a, b) => b.slots - a.slots || a.name.localeCompare(b.name, 'en', { numeric: true })).slice(0, 3)
+      .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, 'en', { numeric: true }));
+    const runners = all.filter((e) => e.kind === 'gha_runner');
+    const hosted: Group = { id: 'gha', name: 'GitHub Actions', platform: runners.length ? 'runners' : 'hosted runners', slots: 0, running: [], engines: [], cpu: -1, mem: -1, load: -1, online: true, hosted: true };
+    let runnerSlots = 0;
+    for (const e of runners) { hosted.engines.push(e.id); runnerSlots += e.slots; for (const id of e.running) if (building.has(id) && !placed.has(id)) { placed.add(id); hosted.running.push(id); } }
+    for (const id of building) { const p = w.pipelines.get(id); if (p?.lane === 'gha' && !placed.has(id)) { placed.add(id); hosted.running.push(id); } }
+    hosted.slots = Math.max(runnerSlots || 6, hosted.running.length);
     groups.push(hosted);
     this.groups = groups;
     // apps: districts by team (tiny teams share one); their health as the floor paints it
