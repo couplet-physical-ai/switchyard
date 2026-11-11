@@ -20,8 +20,9 @@ import type { World } from '../world.ts';
 import { engineHistoryAsync } from '../insights.ts';
 
 export const DAY_MS = 86_400_000;
-/** Wall buckets over 24 h: 10 minutes each (≈ 2 px at fleet zoom, ≈ 4 px at 272 %). */
-export const WALL_BUCKETS = 144;
+/** Wall buckets over 24 h: 15 minutes each (≈ 2 px at fleet zoom, ≈ 6 px at 272 %), the machine
+ *  lens's own resolution (lenses.ts `engineSeries`), so the wall and the lens chart agree. */
+export const WALL_BUCKETS = 96;
 /** How often a machine's history is asked again (module-clock ms; the seam caches 60 s too). */
 export const HIST_EVERY_MS = 60_000;
 
@@ -31,8 +32,6 @@ export type Tide = {
   key: string; ids: string[]; source: 'server' | 'client' | 'mixed' | 'none';
   from: number; to: number; n: number; bw: number;
   busy: Float32Array; peak: Float32Array; cpu: Float32Array; mem: Float32Array;
-  /** cpu and mem smoothed over ±1 bucket (30 min), for the ribbons (gaps kept) */
-  cpuS: Float32Array; memS: Float32Array;
   /** buckets with any busy/slots sample (0..1 of n) */
   covered: number;
   /** repos the machine served in the last hour, most runs first */
@@ -44,7 +43,7 @@ export type HistDoc = EngineHistoryDoc & { source?: 'server' | 'client' };
 
 export function emptyTide(key = '', n = WALL_BUCKETS, to = 0): Tide {
   const nan = () => new Float32Array(n).fill(NaN);
-  return { key, ids: [], source: 'none', from: to - DAY_MS, to, n, bw: DAY_MS / n, busy: nan(), peak: nan(), cpu: nan(), mem: nan(), cpuS: nan(), memS: nan(), covered: 0, repos: [] };
+  return { key, ids: [], source: 'none', from: to - DAY_MS, to, n, bw: DAY_MS / n, busy: nan(), peak: nan(), cpu: nan(), mem: nan(), covered: 0, repos: [] };
 }
 
 /** Folds one machine's histories (one per engine id; a host's agents are summed minute by
@@ -113,8 +112,6 @@ export function foldTide(key: string, docs: readonly (HistDoc | null | undefined
     if (nM[b]) t.mem[b] = Math.min(1, sM[b]! / nM[b]!);
   }
   t.covered = cov / n;
-  t.cpuS = smoothed(t.cpu, 1);
-  t.memS = smoothed(t.mem, 1);
   // repos served in the last hour, summed across the machine's engines
   const rs = new Map<string, number>();
   for (const d of ok) for (const r of d.repos ?? []) rs.set(r.repo, (rs.get(r.repo) ?? 0) + r.runs);
@@ -153,7 +150,7 @@ export function dataRuns(a: Float32Array): [number, number][] {
  *  → 1 (the value), one polyline per run of data (offline minutes and the time before the record
  *  are gaps, never drawn). Each point sits at its bucket's middle; a lone bucket is a short flat
  *  stroke across it, so it shows. */
-export function tidePoints(t: Tide, key: 'busy' | 'peak' | 'cpu' | 'mem' | 'cpuS' | 'memS'): [number, number][][] {
+export function tidePoints(t: Tide, key: 'busy' | 'peak' | 'cpu' | 'mem'): [number, number][][] {
   const a = t[key], n = t.n;
   const out: [number, number][][] = [];
   for (const [s, e] of dataRuns(a)) {
@@ -179,6 +176,7 @@ export class PlantHist {
   private tides = new Map<string, Tide>();
   private asked = new Map<string, number>();
   private busy = new Set<string>();
+  private gen = 0;
   /** The fetcher (the seam; tests swap it). */
   fetch: (id: string) => Promise<HistDoc | null> = engineHistoryAsync;
 
@@ -194,8 +192,9 @@ export class PlantHist {
       if (at !== undefined && clock - at < HIST_EVERY_MS && clock >= at) continue;
       this.asked.set(m.key, clock);
       this.busy.add(m.key);
-      const ids = m.ids.slice(0, 8);
+      const ids = m.ids.slice(0, 8), gen = this.gen;
       Promise.all(ids.map((id) => this.fetch(id).catch(() => null))).then((docs) => {
+        if (gen !== this.gen) return; // asked of a server since forgotten
         const t = foldTide(m.key, docs);
         const prev = this.tides.get(m.key);
         if (!prev || sigOf(prev) !== sigOf(t)) { this.tides.set(m.key, t); this.ver++; }
@@ -204,7 +203,7 @@ export class PlantHist {
   }
 
   /** Forget everything (a new server, a reset). */
-  clear(): void { this.tides.clear(); this.asked.clear(); this.ver++; }
+  clear(): void { this.tides.clear(); this.asked.clear(); this.busy.clear(); this.gen++; this.ver++; }
 }
 
 /** What the wall would paint, as a short key (a quantized copy of the series). */

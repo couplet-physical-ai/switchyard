@@ -34,7 +34,7 @@ import { BoxBatch } from './batch.ts';
 import { failingStep } from './census.ts';
 import type { Group } from './census.ts';
 import type { Factory } from './factory.ts';
-import { UX } from './iso.ts';
+import { UX, VX } from './iso.ts';
 import { floorGroups } from './groups.ts';
 import { PLAN } from './layout.ts';
 import { R_BEAM, R_DOOR, R_RING, breathe } from './motion.ts';
@@ -56,7 +56,9 @@ export const RISER_U = DOCK_U1 + 7;
 const GATE_U = DIST_U - 3;
 /** Machine paint: calm, so the lit bays and the queue carry the plant. */
 const M_TOP = '#212124', M_SIDE = '#19191B', M_FRONT = '#151517', M_EDGE = '#38383C', M_OFF = '#6B3A3F', IDLE_BAY = '#18181A';
-const WALL_FACE = '#18181B', WALL_TOP = '#2C2C30', WALL_EDGE = '#3A3A3F', PEAK_FILL = '#2C2C32', TIDE_FILL = '#5A5A62', TIDE_LINE = '#C4C4CA', CPU_LINE = '#D9D4CB', MEM_LINE = '#85858C', CAP = '#F2F2F0', GAP = '#3A3A3F';
+// the wall's chart speaks the machine lens's language (lens.ts vmStory): busy an amber tide, cpu an
+// ink line, mem a blue-gray one, a red tick under every stretch with every slot taken
+const WALL_FACE = '#18181B', WALL_TOP = '#2C2C30', WALL_EDGE = '#3A3A3F', GAP = '#3A3A3F', MEM_LINE = '#7E8FA6';
 const OK_BEAM = '#7E9784';
 const STEP_OK = '#5E7363';
 
@@ -91,6 +93,7 @@ export class Plant implements Layer {
   private layAt = -1;
   private layF = 0;
   private litCache = new Map<string, { floor: string; rim: string }>();
+  private epoch = -1;
   /** The job zoom's subject this frame ('' none), for tests and the HUD. */
   job = '';
 
@@ -103,6 +106,7 @@ export class Plant implements Layer {
    *  when due (once a minute each). */
   pump(clock: number): void {
     const c = this.f.census, w = this.f.world;
+    if (this.epoch !== this.f.tl.epoch) { this.epoch = this.f.tl.epoch; this.hist.clear(); } // a new server or a reset: forget the walls
     if (c.skeleton || !w.loaded) return;
     const ms: { key: string; ids: string[] }[] = [];
     for (const g of c.groups) if (!g.hosted) ms.push({ key: g.id, ids: historyIds(w, g.id, g.engines) });
@@ -337,28 +341,29 @@ export class Plant implements Layer {
       }
       g.fill(col);
     };
-    if (!lo) area(t.peak, PEAK_FILL);
-    area(t.busy, TIDE_FILL);
+    if (!lo) area(t.peak, withAlpha(C.packet, 0.14));
+    area(t.busy, withAlpha(C.packet, 0.42));
     g.begin_();
     for (const [s, e] of runs) {
       g.move(...P(s / n, t.busy[s]!));
       for (let i = s; i < e; i += stride) g.line(...P(X(i), t.busy[i]!));
       g.line(...P(e / n, t.busy[e - 1]!));
     }
-    g.stroke(TIDE_LINE, Math.max(1, g.hair * 1.4));
-    // saturated: every slot taken at some minute of the bucket, a bright cap on the wall's top
+    g.stroke(withAlpha(C.packet, 0.9), Math.max(1, g.hair * 1.3));
+    // saturated: every slot taken at some minute of the stretch, a red tick along the base
+    // (as the machine lens marks it): the machine was the bottleneck then
     g.begin_();
     let caps = 0;
     for (let i = 0; i < n; i++) {
       if (!(t.peak[i]! >= 0.999)) continue;
       let j = i;
       while (j + 1 < n && t.peak[j + 1]! >= 0.999) j++;
-      g.move(...P(i / n, 1)); g.line(...P((j + 1) / n, 1));
+      g.move(...P(i / n, -0.04)); g.line(...P((j + 1) / n, -0.04));
       caps++; i = j;
     }
-    if (caps) g.stroke(CAP, Math.max(1.5, g.hair * 3));
+    if (caps) g.stroke(C.red, Math.max(1.5, g.hair * 3));
     if (lo) return;
-    // the ribbons: mem (dashed), cpu (solid; red where ≥ 90 %)
+    // the ribbons: mem (blue-gray), cpu (ink; red where ≥ 90 %)
     const ribbon = (a: Float32Array, col: string, w: number, dash: boolean, hot: boolean) => {
       const rs = dataRuns(a);
       if (!rs.length) return;
@@ -382,8 +387,8 @@ export class Plant implements Layer {
       }
       if (any) g.stroke(C.red, w + 0.4);
     };
-    ribbon(t.memS, MEM_LINE, Math.max(1, g.hair * 1.2), true, false);
-    ribbon(t.cpuS, CPU_LINE, Math.max(1, g.hair * 1.4), false, true);
+    ribbon(t.mem, MEM_LINE, Math.max(1, g.hair * 1.2), false, false);
+    ribbon(t.cpu, withAlpha(C.ink, 0.85), Math.max(1, g.hair * 1.3), false, true);
   }
 
   // ---- the live layer: hits on the walls ----
@@ -551,7 +556,7 @@ export class Plant implements Layer {
     const L0 = 32, L1 = 596, vs = L0 + (L1 - L0) * ((fin - failed) / fin);
     g.begin_(); poly(cam, g, [SCAN_U, L0, 3, SCAN_U, vs, 3, SCAN_U, vs, 55, SCAN_U, L0, 55]); g.fill(withAlpha(OK_BEAM, 0.07));
     if (failed) { g.begin_(); poly(cam, g, [SCAN_U, vs, 3, SCAN_U, L1, 3, SCAN_U, L1, 55, SCAN_U, vs, 55]); g.fill(withAlpha(C.red, 0.13)); }
-    g.begin_(); quad(cam, g, SCAN_U - 2.6, L0, SCAN_U + 2.6, vs, 56.4); g.fill(withAlpha(OK_BEAM, 0.72));
+    g.begin_(); quad(cam, g, SCAN_U - 1.8, L0, SCAN_U + 1.8, vs, 56.4); g.fill(withAlpha(OK_BEAM, 0.5));
     if (failed) {
       g.begin_(); quad(cam, g, SCAN_U - 2.6, vs, SCAN_U + 2.6, L1, 56.4); g.fill(C.red);
       // the split: a bright line down the curtain where the beam divides
@@ -642,9 +647,6 @@ export class Plant implements Layer {
     if (!gr.hosted) this.wall(g, gr, v0, false);
     // the opened bay: the machine's top as one panel, edged and banded in the job's group hue
     const hex = this.f.w2.on ? floorGroups().hex(floorGroups().laneOfPipeline(p)) : '#8A7146';
-    const pu0 = ENG_U0 + 3, pu1 = ENG_U1 - 3, pv0 = v0 + 5, pv1 = v0 + ENG_DV - 3;
-    box(cam, g, pu0, pv0, pu1 - pu0, pv1 - pv0, ENG_H, '#141416', M_SIDE, M_FRONT, withAlpha(hex, 0.9), Math.max(1, g.hair * 2));
-    g.begin_(); quad(cam, g, pu0, pv0, pu1, pv0 + 2.4, ENG_H); g.fill(hex);
     // the time axis: the run's start → now (or its expected end, or its last step), a margin
     const t0 = p.started ?? p.created, exp = p.expected_ms ?? 0;
     const wfs = (p.workflows ?? []).filter((wf) => (wf.steps ?? []).length);
@@ -655,11 +657,6 @@ export class Plant implements Layer {
     if (pending) tEnd = Math.max(tEnd, now + (now - t0) * 0.06 * Math.min(pending, 5));
     tEnd += (tEnd - t0) * 0.03;
     const nom = (tEnd - t0) * 0.035;
-    // the workflow names' column (screen-aligned words, so its width is in px)
-    let nameW = 0;
-    for (const wf of wfs) nameW = Math.max(nameW, g.width(wf.name, SMALL, true));
-    const ua = pu0 + 8 + (nameW + 16) / (UX * cam.s), ub = pu1 - 8;
-    const U = (ms: number) => ua + ((ub - ua) * (ms - t0)) / (tEnd - t0);
     // rows: each workflow's steps packed into sub-rows by overlap (parallel steps stack)
     type Chip = { s: Step; wf: string; a: number; b: number; row: number; run: boolean };
     const lanes: { name: string; state: string; rows: number; chips: Chip[] }[] = [];
@@ -683,13 +680,27 @@ export class Plant implements Layer {
       lanes.push({ name: wf.name, state: wf.state, rows: n, chips });
       rows += n;
     }
-    const titleV = 12, gap = 3;
-    const va = pv0 + titleV, vb = pv1 - 9;
-    const rh = Math.min(12, Math.max(4, (vb - va - gap * Math.max(0, lanes.length - 1)) / Math.max(1, rows)));
+    // the panel: as deep as its conveyors need (a bay of the machine's depth at most)
+    const titleV = 12, gap = 3, foot = 9;
+    const pv0 = v0 + 5, gaps = gap * Math.max(0, lanes.length - 1);
+    const rh = Math.min(18, Math.max(4, (ENG_DV - 8 - titleV - foot - gaps) / Math.max(1, rows)));
+    const pv1 = Math.min(v0 + ENG_DV - 3, pv0 + titleV + rows * rh + gaps + foot);
+    // …spanning the machine's top where it is on screen (at 5× the machine is wider than it)
+    const uAt = (x: number, v: number) => ((x - cam.ox) / cam.s - VX * v) / UX;
+    const pu0 = Math.max(ENG_U0 + 3, Math.min(ENG_U1 - 60, uAt(24, pv1))), pu1 = Math.min(ENG_U1 - 3, Math.max(pu0 + 60, uAt(cam.W - 24, pv0)));
+    box(cam, g, pu0, pv0, pu1 - pu0, pv1 - pv0, ENG_H, '#141416', M_SIDE, M_FRONT, withAlpha(hex, 0.9), Math.max(1, g.hair * 2));
+    g.begin_(); quad(cam, g, pu0, pv0, pu1, pv0 + 2.4, ENG_H); g.fill(hex);
+    // the workflow names' column (screen-aligned words, so its width is in px)
+    let nameW = 0;
+    for (const wf of wfs) nameW = Math.max(nameW, g.width(wf.name, SMALL, true));
+    const ua = pu0 + 8 + (nameW + 16) / (UX * cam.s), ub = pu1 - 8;
+    const U = (ms: number) => ua + ((ub - ua) * (ms - t0)) / (tEnd - t0);
+    const va = pv0 + titleV, vb = pv1 - foot;
     // the title: the run, its elapsed time against its expected one
     const el = Math.max(0, now - t0), over = exp > 0 && el > exp * 1.5;
     {
       const x = cam.x(pu0 + 6, pv0 + 9), y = cam.y(pu0 + 6, pv0 + 9, ENG_H) + 4;
+      g.fillRect(x - 4, y - 13, Math.min(cam.x(pu1, pv0) - x, 520), 18, withAlpha('#141416', 0.9));
       g.runs([[p.repo.split('/')[1] ?? p.repo, C.ink, true], [` #${p.number}`, C.ink3], [p.branch ? `  ${p.branch}` : '', C.ink3], [`  ${dur(el)}`, over ? C.redText : C.amberText, true], [exp ? ` of ~${dur(exp)}` : '', C.ink3]], x, y, SMALL, Math.max(80, cam.x(pu1, pv0) - x - 8));
     }
     // the conveyors: one bed per workflow; a running one's slats move
