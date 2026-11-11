@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Wire protocol version (`contract/CONTRACT.md`). Minor bumps are additive.
-pub const PROTOCOL: &str = "0.4";
+pub const PROTOCOL: &str = "0.5";
 
 pub type Ms = i64;
 
@@ -25,10 +25,14 @@ pub enum Kind {
     Lane,
     Watcher,
     Stats,
+    Group,
+    Cluster,
+    Flake,
+    Trend,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 12] = [
+    pub const ALL: [Kind; 16] = [
         Kind::Org,
         Kind::Repo,
         Kind::Commit,
@@ -41,8 +45,12 @@ impl Kind {
         Kind::Lane,
         Kind::Watcher,
         Kind::Stats,
+        Kind::Group,
+        Kind::Cluster,
+        Kind::Flake,
+        Kind::Trend,
     ];
-    pub const COUNT: usize = 12;
+    pub const COUNT: usize = 16;
 
     pub fn index(self) -> usize {
         self as usize
@@ -62,6 +70,10 @@ impl Kind {
             Kind::Lane => "lane",
             Kind::Watcher => "watcher",
             Kind::Stats => "stats",
+            Kind::Group => "group",
+            Kind::Cluster => "cluster",
+            Kind::Flake => "flake",
+            Kind::Trend => "trend",
         }
     }
 
@@ -80,7 +92,19 @@ impl Kind {
             Kind::Lane => "lanes",
             Kind::Watcher => "watcher",
             Kind::Stats => "stats",
+            Kind::Group => "groups",
+            Kind::Cluster => "clusters",
+            Kind::Flake => "flakes",
+            Kind::Trend => "trends",
         }
+    }
+
+    /// Factory Floor kinds: computed together from the whole fleet, not per key.
+    pub fn is_insight(self) -> bool {
+        matches!(
+            self,
+            Kind::Group | Kind::Cluster | Kind::Flake | Kind::Trend
+        )
     }
 
     pub fn singleton(self) -> bool {
@@ -249,6 +273,9 @@ pub struct Repo {
     /// Median duration of the repo's successful push pipelines in the last 24 h.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub p50_build_ms: Option<Ms>,
+    /// The repo's group (team from the apps catalog, else its org).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub group: Option<String>,
     pub links: Links,
 }
 
@@ -362,6 +389,9 @@ pub struct Pipeline {
     /// True when this pipeline deploys (a deploy workflow / deploy-app run).
     #[serde(skip_serializing_if = "is_false", default)]
     pub deploy: bool,
+    /// Failed, but every failed step passed on the same sha within [`FLAKE_MS`].
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub flaky: bool,
     pub workflows: Vec<Workflow>,
     pub url: String,
 }
@@ -391,6 +421,9 @@ pub struct Step {
     pub exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cached: Option<bool>,
+    /// Failed steps: the failure cluster id.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cluster: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -648,6 +681,92 @@ pub struct Stats {
     pub prs_open: u32,
     pub running: u32,
     pub pending: u32,
+}
+
+/// A step failing and passing on the same sha within this long is a flake.
+pub const FLAKE_MS: Ms = 6 * 3_600_000;
+
+pub use crate::signature::FailClass;
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct Group {
+    pub id: String,
+    pub name: String,
+    pub kind: GroupKind,
+    pub repos: u32,
+    pub apps: u32,
+    pub red: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupKind {
+    Team,
+    Org,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct Cluster {
+    pub id: String,
+    pub signature: String,
+    pub step: String,
+    pub class: FailClass,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub line: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub exit_code: Option<i32>,
+    pub count: u32,
+    pub count_1h: u32,
+    pub repos: Vec<String>,
+    pub repo_count: u32,
+    pub groups: Vec<String>,
+    pub first_seen: Ms,
+    pub last_seen: Ms,
+    pub examples: Vec<String>,
+    pub open: u32,
+    #[serde(skip_serializing_if = "is_zero_u32", default)]
+    pub flaky: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct Flake {
+    pub id: String,
+    pub repo: String,
+    pub workflow: String,
+    pub step: String,
+    pub flips_24h: u32,
+    pub failures_24h: u32,
+    pub last_at: Ms,
+    pub shas: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct Metric {
+    /// Absent = no data in that window (a merge patch cannot carry `null` values).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub h1: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub h24: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub d7: Option<f64>,
+    pub dir: i8,
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub bad: bool,
+    pub spark: Vec<Option<f64>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct Trend {
+    pub id: String,
+    pub at: Ms,
+    pub intake_ms: Metric,
+    pub run_ms: Metric,
+    pub pass_rate: Metric,
+    pub pipelines: Metric,
+    pub deploys: Metric,
+    pub pr_age_ms: Metric,
+    pub red: Metric,
+    pub hours_7d: u32,
 }
 
 /// Transient visual events: the animation drivers. Never stored as entities.

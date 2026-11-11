@@ -63,6 +63,8 @@ pub fn router(st: Arc<AppState>) -> Router {
         .route("/pr/{owner}/{name}/{number}", get(pr))
         .route("/search", get(search))
         .route("/meta", get(meta))
+        .route("/insights", get(insights))
+        .route("/changes", get(changes))
         .route("/whoami", get(auth::whoami))
         .route("/tokens", get(auth::list_tokens))
         .route("/tokens/{id}", axum::routing::delete(auth::revoke_token))
@@ -718,6 +720,13 @@ async fn search(State(st): State<Arc<AppState>>, Query(q): Query<SearchQ>) -> Re
 /// Keep `mirror` equal to snapshot + frames (resyncs from the snapshot on lag/reset).
 pub async fn run_mirror(hub: Arc<Hub>, mirror: Arc<RwLock<WireState>>) {
     let mut rx = hub.tx.subscribe();
+    // The ledger replays the retained history first (what happened before this boot).
+    let booted = {
+        let h = hub.clone();
+        tokio::task::spawn_blocking(move || bootstrap_ledger(&h))
+            .await
+            .unwrap_or(0)
+    };
     let resync = |hub: &Hub, mirror: &RwLock<WireState>| {
         let s = hub.snapshot();
         if let Ok(v) = serde_json::from_slice::<Value>(&s.json) {
@@ -743,13 +752,71 @@ pub async fn run_mirror(hub: Arc<Hub>, mirror: Arc<RwLock<WireState>>) {
                     continue;
                 }
                 if let Ok(v) = serde_json::from_slice::<Value>(&f.json) {
-                    mirror.write().apply_frame(&v);
+                    let mut m = mirror.write();
+                    m.apply_frame(&v);
+                    if f.seq > booted {
+                        hub.ledger.observe(&v, &m);
+                    }
                 }
             }
             Err(broadcast::error::RecvError::Lagged(_)) => resync(&hub, &mirror),
             Err(broadcast::error::RecvError::Closed) => break,
         }
     }
+}
+
+/// Replay the last 24 h of history into the ledger. Returns the last seq replayed.
+fn bootstrap_ledger(hub: &Hub) -> u64 {
+    let now = hub.snapshot().at.max(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as Ms)
+            .unwrap_or(0),
+    );
+    hub.ledger.set_covered_from(now);
+    let Some(h) = hub.history.query(now - 24 * 3_600_000, now) else {
+        return 0;
+    };
+    let base: Value = serde_json::from_slice(&h.base).unwrap_or(Value::Null);
+    let mut w = WireState::from_snapshot(&base);
+    let mut last = h.base_seq;
+    for f in &h.frames {
+        let Ok(v) = serde_json::from_slice::<Value>(f) else {
+            continue;
+        };
+        w.apply_frame(&v);
+        if v.get("t").and_then(Value::as_str) == Some("delta") {
+            hub.ledger.observe(&v, &w);
+            last = last.max(v.get("seq").and_then(Value::as_u64).unwrap_or(0));
+        }
+    }
+    hub.ledger.set_covered_from(h.base_at);
+    last
+}
+
+#[derive(Deserialize)]
+struct ChangesQ {
+    since: Option<Ms>,
+    until: Option<Ms>,
+}
+
+async fn changes(State(st): State<Arc<AppState>>, Query(q): Query<ChangesQ>) -> Response {
+    let now = (st.clock)();
+    let Some(since) = q.since else {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": "bad_request", "message": "need since=<ms>"})),
+        )
+            .into_response();
+    };
+    let until = q.until.unwrap_or(now).min(now);
+    let v = st.hub.ledger.changes(since, until, &st.mirror.read());
+    (StatusCode::OK, axum::Json(v)).into_response()
+}
+
+async fn insights(State(st): State<Arc<AppState>>) -> Response {
+    let v = crate::ledger::insights(&st.mirror.read(), (st.clock)());
+    (StatusCode::OK, axum::Json(v)).into_response()
 }
 
 pub fn kind_list() -> Vec<&'static str> {

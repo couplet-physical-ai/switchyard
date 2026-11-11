@@ -262,6 +262,7 @@ async fn serve(cli: Cli) -> Result<()> {
             clock.clone(),
             ReducerCfg {
                 settle_on: Some(adapters.clone()),
+                rollups: Some(cli.data_dir.join("rollups.jsonl")),
                 ..ReducerCfg::default()
             },
         ));

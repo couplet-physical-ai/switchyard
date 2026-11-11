@@ -607,6 +607,54 @@ impl Sanitizer {
                     v["note"] = Value::from(self.scrub_text(&n));
                 }
             }
+            "cluster" => {
+                // A log line from a private repo may name private things: keep only
+                // step + class there (the id is a hash and stays, so Step.cluster joins).
+                let repos: Vec<String> = v
+                    .get("repos")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if repos.iter().any(|r| !self.is_public(r)) {
+                    if let Some(o) = v.as_object_mut() {
+                        o.remove("line");
+                    }
+                    let step = v
+                        .get("step")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let class = v
+                        .get("class")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    v["signature"] = Value::from(format!("{step} · {class}"));
+                }
+                v["repos"] = Value::from(repos.iter().map(|r| self.repo(r)).collect::<Vec<_>>());
+                if let Some(items) = v.get_mut("examples").and_then(Value::as_array_mut) {
+                    for it in items.iter_mut() {
+                        if let Some(s) = it.as_str().map(str::to_string) {
+                            *it = Value::from(self.pipeline_id(&s));
+                        }
+                    }
+                }
+            }
+            "flake" => {
+                if let Some(r) = repo_of(v) {
+                    let new = self.repo(&r);
+                    v["repo"] = Value::from(new.clone());
+                    if let Some(id) = v.get("id").and_then(Value::as_str).map(str::to_string)
+                        && let Some((_, rest)) = id.split_once('|')
+                    {
+                        v["id"] = Value::from(format!("{new}|{rest}"));
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -634,6 +682,10 @@ impl Sanitizer {
                 None => id.to_string(),
             },
             "pipeline" => self.pipeline_id(id),
+            "flake" => match id.split_once('|') {
+                Some((r, rest)) => format!("{}|{rest}", self.repo(r)),
+                None => id.to_string(),
+            },
             "app" => self
                 .app_map
                 .get(id)

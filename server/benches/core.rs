@@ -70,6 +70,7 @@ fn pipeline(n: usize, k: usize) -> Fact {
                         finished: (k > i).then_some(created + i as i64 * 10_000 + 9_000),
                         exit_code: (k > i).then_some(0),
                         cached: None,
+                        cluster: None,
                     }
                 })
                 .collect(),
@@ -94,6 +95,7 @@ fn pipeline(n: usize, k: usize) -> Fact {
         author: Some(format!("dev-{}", n % 40)),
         pr: None,
         deploy: n.is_multiple_of(4),
+        flaky: false,
         workflows,
         url: format!("https://ci.example/repos/{}/pipeline/{n}", n % REPOS),
     })

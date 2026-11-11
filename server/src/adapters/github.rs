@@ -252,6 +252,7 @@ pub fn contexts_to_facts(
                 finished: s(j, "/completedAt").and_then(parse_time),
                 exit_code: None,
                 cached: None,
+                cluster: None,
             })
             .collect();
         if deploy && event != PipelineEvent::PullRequest {
@@ -301,6 +302,7 @@ pub fn contexts_to_facts(
             author: None,
             pr,
             deploy,
+            flaky: false,
             workflows: vec![Workflow {
                 name: wf,
                 state,

@@ -96,6 +96,7 @@ fn pipeline() -> impl Strategy<Value = Fact> {
                     }),
                     pr: pr.then_some(number + 10),
                     deploy: deploy && !pr,
+                    flaky: false,
                     workflows: (0..steps)
                         .map(|i| Workflow {
                             name: if deploy && i == 1 {
@@ -114,6 +115,7 @@ fn pipeline() -> impl Strategy<Value = Fact> {
                                 finished,
                                 exit_code: None,
                                 cached: None,
+                                cluster: None,
                             }],
                         })
                         .collect(),
@@ -298,7 +300,12 @@ fn misc() -> impl Strategy<Value = Fact> {
                     repo: Some(r.to_string()),
                     url: format!("https://{a}.example"),
                     runtime: None,
-                    team: None,
+                    // Teams move repos between groups (and back to their org).
+                    team: match (*a, with_web) {
+                        ("api", true) => Some("Platform-Team".into()),
+                        ("api", false) => Some("unknown-team".into()),
+                        _ => Some("software".into()),
+                    },
                     live_sha: None,
                     deployed_at: None,
                 })
@@ -396,8 +403,32 @@ fn misc() -> impl Strategy<Value = Fact> {
     ]
 }
 
+/// A failure signature read from a failed step's log (may name a run that is not
+/// failed, or not known yet: order must not matter).
+fn step_error() -> impl Strategy<Value = Fact> {
+    (repo(), 1u64..4, 0u8..3, 0u8..3, 0i64..5).prop_map(|(repo, number, wf, line, obs)| {
+        Fact::StepError(StepErrorFact {
+            pipeline: ids::wp_pipeline(&repo, number),
+            workflow: if wf == 2 {
+                "deploy".into()
+            } else {
+                format!("wf{wf}")
+            },
+            step: "s".into(),
+            class: if line == 0 {
+                FailClass::Test
+            } else {
+                FailClass::Compile
+            },
+            line: (line > 0).then(|| format!("error: could not compile `crate-{line}`")),
+            exit_code: Some(1),
+            observed: NOW - 1_000_000 + obs * 1_000,
+        })
+    })
+}
+
 fn fact() -> impl Strategy<Value = Fact> {
-    prop_oneof![3 => pipeline(), 2 => commit(), 2 => pr(), 2 => status(), 2 => deploy(), 2 => misc()]
+    prop_oneof![3 => pipeline(), 2 => commit(), 2 => pr(), 2 => status(), 2 => deploy(), 2 => misc(), 1 => step_error()]
 }
 
 fn tables(s: &Store) -> BTreeMap<&'static str, BTreeMap<String, Arc<str>>> {
@@ -461,7 +492,7 @@ fn shuffle<T: Clone>(v: &[T], seed: u64) -> Vec<T> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 400, .. ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(400), .. ProptestConfig::default() })]
 
     #[test]
     fn any_order_same_state(facts in prop::collection::vec(fact(), 1..40), seed in any::<u64>(), every in 0usize..6) {
@@ -553,6 +584,7 @@ fn expected_durations() {
             author: None,
             pr: None,
             deploy: false,
+            flaky: false,
             workflows: vec![],
             url: String::new(),
         })

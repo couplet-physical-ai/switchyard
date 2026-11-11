@@ -216,6 +216,49 @@ pub struct ReducerCfg {
     pub settle_on: Option<Arc<Adapters>>,
     pub settle_quiet_ms: Ms,
     pub settle_max_ms: Ms,
+    /// Hourly trend rollups (`<data-dir>/rollups.jsonl`): loaded at boot, appended as
+    /// hours close, kept 8 days. None: in memory only.
+    pub rollups: Option<std::path::PathBuf>,
+}
+
+/// Load the persisted rollups (dropping those older than the keep window) and rewrite
+/// the file compacted. Returns them and the newest hour.
+pub fn load_rollups(path: &std::path::Path, now: Ms) -> (Vec<crate::facts::RollupFact>, Ms) {
+    let keep = now - crate::store::ROLLUP_KEEP_MS;
+    let mut out: BTreeMap<Ms, crate::facts::RollupFact> = BTreeMap::new();
+    if let Ok(s) = std::fs::read_to_string(path) {
+        for l in s.lines() {
+            if let Ok(r) = serde_json::from_str::<crate::facts::RollupFact>(l)
+                && r.hour >= keep
+            {
+                out.insert(r.hour, r);
+            }
+        }
+    }
+    let mut body = String::new();
+    for r in out.values() {
+        body.push_str(&serde_json::to_string(r).unwrap_or_default());
+        body.push('\n');
+    }
+    let tmp = path.with_extension("tmp");
+    if std::fs::write(&tmp, body).is_ok() {
+        std::fs::rename(&tmp, path).ok();
+    }
+    let last = out.keys().next_back().copied().unwrap_or(0);
+    (out.into_values().collect(), last)
+}
+
+fn append_rollups(path: &std::path::Path, rs: &[crate::facts::RollupFact]) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        for r in rs {
+            let _ = writeln!(f, "{}", serde_json::to_string(r).unwrap_or_default());
+        }
+    }
 }
 
 impl Default for ReducerCfg {
@@ -227,6 +270,7 @@ impl Default for ReducerCfg {
             settle_on: None,
             settle_quiet_ms: 5_000,
             settle_max_ms: 600_000,
+            rollups: None,
         }
     }
 }
@@ -249,6 +293,16 @@ pub async fn run_reducer(
     // A boot is a discontinuity for anyone replaying history across it.
     let at = clock();
     let boot_at = at;
+    let mut rollups_written: Ms = 0;
+    if let Some(p) = &cfg.rollups {
+        let (rs, last) = load_rollups(p, at);
+        tracing::info!(hours = rs.len(), "trend rollups loaded");
+        let mut s = store.write();
+        for r in rs {
+            s.apply(crate::facts::Fact::Rollup(r), false);
+        }
+        rollups_written = last;
+    }
     let mut ready_since: Option<Ms> = None;
     if cfg.settle_on.is_some() {
         hub.begin_settle();
@@ -291,6 +345,21 @@ pub async fn run_reducer(
             _ = slow.tick() => {
                 let now = clock();
                 store.write().tick(now);
+                // Closed hours become rollups: persisted, then kept as facts. Not while
+                // the boot is still filling the registers in.
+                if !hub.is_settling() {
+                    let rs = store.read().closed_rollups(rollups_written, now);
+                    if !rs.is_empty() {
+                        rollups_written = rs.iter().map(|r| r.hour).max().unwrap_or(rollups_written);
+                        if let Some(p) = &cfg.rollups {
+                            append_rollups(p, &rs);
+                        }
+                        let mut s = store.write();
+                        for r in rs {
+                            s.apply(crate::facts::Fact::Rollup(r), false);
+                        }
+                    }
+                }
             }
             _ = snap.tick() => {
                 if hub.is_settling() {

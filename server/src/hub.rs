@@ -177,6 +177,8 @@ pub struct Hub {
     pub resets_sent: AtomicU64,
     /// Booting: frames go to clients but not into history (see [`Hub::begin_settle`]).
     settling: std::sync::atomic::AtomicBool,
+    /// What happened in the last 24 h (`/api/v1/changes`), kept by `run_mirror`.
+    pub ledger: crate::ledger::Ledger,
 }
 
 impl Hub {
@@ -194,6 +196,7 @@ impl Hub {
             frames_sent: AtomicU64::new(0),
             resets_sent: AtomicU64::new(0),
             settling: std::sync::atomic::AtomicBool::new(false),
+            ledger: crate::ledger::Ledger::new(Ms::MAX),
         })
     }
 

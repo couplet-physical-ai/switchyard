@@ -287,6 +287,7 @@ impl Mapper {
                         exit_code: (s.finished > 0 || map_state(&s.state).is_done())
                             .then_some(s.exit_code),
                         cached: None,
+                        cluster: None,
                     })
                     .collect(),
             })
@@ -326,6 +327,7 @@ impl Mapper {
             author: (!p.author.is_empty()).then(|| p.author.clone()),
             pr,
             deploy: !deploy_wfs.is_empty() && event == PipelineEvent::Push,
+            flaky: false,
             workflows,
             url: format!(
                 "{}/repos/{repo_id}/pipeline/{}",
@@ -571,6 +573,122 @@ pub fn rfc3339(ms: Ms) -> String {
 
 // ---------------------------------------------------------------- task
 
+/// One failed step whose log should be read for its failure signature.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LogJob {
+    pub pipeline: String,
+    pub repo_id: u64,
+    pub number: u64,
+    pub step_id: u64,
+    pub workflow: String,
+    pub step: String,
+    pub exit_code: Option<i32>,
+    pub finished: Ms,
+}
+
+/// The failed steps of a finished pipeline (none while it runs, none without step ids).
+pub fn log_jobs(repo: &str, repo_id: u64, p: &WpPipeline) -> Vec<LogJob> {
+    if !map_state(&p.status).is_done() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for w in p.workflows.iter().flatten() {
+        for s in w.children.iter().flatten() {
+            if s.id == 0 || !matches!(map_state(&s.state), CiState::Failure | CiState::Error) {
+                continue;
+            }
+            out.push(LogJob {
+                pipeline: ids::wp_pipeline(repo, p.number),
+                repo_id,
+                number: p.number,
+                step_id: s.id,
+                workflow: w.name.clone(),
+                step: s.name.clone(),
+                exit_code: Some(s.exit_code),
+                finished: ms(s.finished).or(ms(p.finished)).unwrap_or(0),
+            });
+        }
+    }
+    out
+}
+
+/// Read failed steps' logs (live jobs first, then the boot backlog), at most one
+/// request per 400 ms, each log once; emit their signatures as facts.
+pub async fn read_logs(
+    client: WpClient,
+    mut live: mpsc::Receiver<LogJob>,
+    mut back: mpsc::Receiver<LogJob>,
+    tx: mpsc::Sender<Ingest>,
+    clock: Clock,
+) {
+    let mut done: std::collections::HashSet<(String, u64)> = std::collections::HashSet::new();
+    loop {
+        let job = tokio::select! {
+            biased;
+            Some(j) = live.recv() => j,
+            Some(j) = back.recv() => j,
+            else => return,
+        };
+        let now = clock();
+        if job.finished > 0 && job.finished < now - 24 * 3_600_000 {
+            continue;
+        }
+        if !done.insert((job.pipeline.clone(), job.step_id)) {
+            continue;
+        }
+        if done.len() > 50_000 {
+            done.clear();
+        }
+        let path = format!(
+            "/api/repos/{}/logs/{}/{}",
+            job.repo_id, job.number, job.step_id
+        );
+        client.adapters.request(NAME, 1);
+        let body = async {
+            let r = client
+                .http
+                .get(format!("{}{path}", client.base))
+                .bearer_auth(&client.token)
+                .timeout(Duration::from_secs(30))
+                .send()
+                .await?;
+            if !r.status().is_success() {
+                anyhow::bail!("HTTP {}", r.status());
+            }
+            Ok::<_, anyhow::Error>(r.bytes().await?)
+        }
+        .await;
+        let lines = match body {
+            Ok(b) => crate::signature::decode_wp_log(&b, 2000),
+            Err(e) => {
+                debug!(error = %e, pipeline = %job.pipeline, "step log unavailable");
+                Vec::new()
+            }
+        };
+        let sig = crate::signature::extract(&job.workflow, &job.step, job.exit_code, &lines);
+        let f = Fact::StepError(StepErrorFact {
+            pipeline: job.pipeline,
+            workflow: job.workflow,
+            step: job.step,
+            class: sig.class,
+            line: sig.line,
+            exit_code: sig.exit_code,
+            observed: now,
+        });
+        if tx
+            .send(Ingest {
+                facts: vec![f],
+                live: true,
+            })
+            .await
+            .is_err()
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    }
+}
+
 struct Shared {
     repos: BTreeMap<u64, String>,
     agents: BTreeMap<u64, String>,
@@ -581,6 +699,9 @@ struct Shared {
 pub struct WpAdapter {
     pub client: WpClient,
     pub tx: mpsc::Sender<Ingest>,
+    /// Failed steps to read logs for: live, and the boot backlog (set up by `run`).
+    pub logs_live: Option<mpsc::Sender<LogJob>>,
+    pub logs_back: Option<mpsc::Sender<LogJob>>,
     pub adapters: Arc<Adapters>,
     pub clock: Clock,
     pub backfill_ms: Ms,
@@ -594,7 +715,18 @@ impl WpAdapter {
         }
     }
 
-    pub async fn run(self) {
+    pub async fn run(mut self) {
+        let (lt, lr) = mpsc::channel::<LogJob>(1000);
+        let (bt, br) = mpsc::channel::<LogJob>(2000);
+        self.logs_live = Some(lt);
+        self.logs_back = Some(bt);
+        tokio::spawn(read_logs(
+            self.client.clone(),
+            lr,
+            br,
+            self.tx.clone(),
+            self.clock.clone(),
+        ));
         let sh = Arc::new(Mutex::new(Shared {
             repos: BTreeMap::new(),
             agents: BTreeMap::new(),
@@ -727,9 +859,21 @@ impl WpAdapter {
         for (rid, name, r) in lists {
             match r {
                 Ok(ps) => {
+                    // Failed runs (and passes of the same sha: reruns) need their steps
+                    // for failure clusters and flakes.
+                    let failed_shas: BTreeSet<String> = ps
+                        .iter()
+                        .filter(|p| {
+                            matches!(map_state(&p.status), CiState::Failure | CiState::Error)
+                        })
+                        .map(|p| p.commit.clone())
+                        .collect();
                     for p in ps {
                         let recent = p.created * 1000 >= now - 3 * 3_600_000;
-                        if recent || !map_state(&p.status).is_done() {
+                        if recent
+                            || !map_state(&p.status).is_done()
+                            || failed_shas.contains(&p.commit)
+                        {
                             details.push((rid, name.clone(), p.number));
                         }
                         sh.lock().known.insert((rid, p.number), p.status.clone());
@@ -757,11 +901,25 @@ impl WpAdapter {
         let mut facts = Vec::new();
         for (rid, name, r) in got {
             if let Ok(p) = r {
+                self.queue_logs(&name, rid, &p, false);
                 facts.extend(mapper.facts(&name, rid, &p));
             }
         }
         self.send(facts, false).await;
         Ok(())
+    }
+
+    fn queue_logs(&self, repo: &str, rid: u64, p: &WpPipeline, live: bool) {
+        let q = if live {
+            &self.logs_live
+        } else {
+            &self.logs_back
+        };
+        if let Some(q) = q {
+            for j in log_jobs(repo, rid, p) {
+                let _ = q.try_send(j);
+            }
+        }
     }
 
     /// Catch what a dropped stream lost: active pipelines + latest per repo.
@@ -795,6 +953,7 @@ impl WpAdapter {
             match self.client.pipeline(rid, n).await {
                 Ok(p) => {
                     sh.lock().known.insert((rid, n), p.status.clone());
+                    self.queue_logs(&name, rid, &p, true);
                     facts.extend(mapper.facts(&name, rid, &p));
                 }
                 Err(e) => debug!(error = %e, "reconcile detail failed"),
@@ -814,11 +973,13 @@ impl WpAdapter {
         let tx = self.tx.clone();
         let adapters = self.adapters.clone();
         let clock = self.clock.clone();
+        let logs = self.logs_live.clone();
         async move {
             let mut backoff = 1u64;
             loop {
                 let started = std::time::Instant::now();
-                let r = stream_once(&client, &sh, &tx, &adapters, &clock, &reconnected).await;
+                let r =
+                    stream_once(&client, &sh, &tx, &adapters, &clock, &reconnected, &logs).await;
                 if let Err(e) = r {
                     warn!(error = %e, "woodpecker stream dropped");
                     adapters.degraded(NAME, format!("stream: {e}"));
@@ -840,6 +1001,7 @@ async fn stream_once(
     adapters: &Arc<Adapters>,
     clock: &Clock,
     reconnected: &mpsc::Sender<()>,
+    logs: &Option<mpsc::Sender<LogJob>>,
 ) -> anyhow::Result<()> {
     adapters.request(NAME, 1);
     let resp = client
@@ -899,6 +1061,11 @@ async fn stream_once(
                         };
                         m.facts(&e.repo.full_name, e.repo.id, &e.pipeline)
                     };
+                    if let Some(q) = logs {
+                        for j in log_jobs(&e.repo.full_name, e.repo.id, &e.pipeline) {
+                            let _ = q.try_send(j);
+                        }
+                    }
                     let _ = tx.send(Ingest { facts, live: true }).await;
                     adapters.alive(
                         NAME,

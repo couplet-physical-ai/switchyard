@@ -297,15 +297,15 @@ type Trend = {                // id = "fleet" | a Group id; recomputed at most e
   hours_7d: number            // hours of history behind d7 (≤ 168; fills in after a fresh start)
 }
 type Metric = {
-  h1: number | null, h24: number | null, d7: number | null,   // last hour / 24 h / 7 d
+  h1?: number, h24?: number, d7?: number,   // last hour / 24 h / 7 d (absent = no data)
   dir: -1 | 0 | 1,            // h1 against d7 (h24 while d7 is null): beyond ±15 % (pass_rate: ±3 points)
   bad?: true,                 // that direction is worse (slower, fewer passes, older PRs, more red)
   spark: (number | null)[]    // 24 hourly values, oldest first, the current hour last
 }
 ```
 
-Durations are in ms rounded to the second; rates to 2 decimals; `null` = no data in that
-window. Rates (`pipelines`, `deploys`) are per hour in every window, so they compare
+Durations are in ms rounded to the second; rates to 2 decimals; a missing `h1`/`h24`/`d7`
+(or a `null` in `spark`) = no data in that window. Rates (`pipelines`, `deploys`) are per hour in every window, so they compare
 directly.
 
 ## Transient events (`op: "event"`) — the animation drivers
@@ -378,7 +378,7 @@ type Changes = {                         // GET /api/v1/changes?since=<ms>[&unti
             flakes: number, prs_merged: number, apps_down: number, apps_recovered: number },
   red: { repo: string, group?: string, at: number, culprit?: string /* sha */,
          cluster?: string }[],          // main went red after `since` and is still red, newest first
-  recovered: { repo: string, group?: string, at: number, red_ms: number }[],
+  recovered: { repo: string, group?: string, at: number, red_ms?: number }[],
   still_red: { repo: string, group?: string, since: number }[],   // red before `since`, still red
   clusters: { id: string, count: number /* failures after since */, new: boolean }[],  // ≤ 20
   deploys: { app: string, sha: string, state: string, at: number }[],                  // ≤ 50, newest first

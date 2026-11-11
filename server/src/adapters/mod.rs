@@ -110,6 +110,8 @@ pub fn spawn_all(
             let a = woodpecker::WpAdapter {
                 client,
                 tx: tx.clone(),
+                logs_live: None,
+                logs_back: None,
                 adapters: adapters.clone(),
                 clock: clock.clone(),
                 backfill_ms: cfg.backfill_hours * 3_600_000,

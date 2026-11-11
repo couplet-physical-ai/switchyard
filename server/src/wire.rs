@@ -168,6 +168,8 @@ pub const TIME_KEYS: &[&str] = &[
     "last_seen",
     "deployed_at",
     "from_at",
+    "first_seen",
+    "last_at",
 ];
 
 /// Shift every timestamp field in a JSON value by `delta` ms (recursively).

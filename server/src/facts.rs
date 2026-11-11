@@ -36,6 +36,10 @@ pub enum Fact {
     Queue(QueueFact),
     Lanes(LaneList),
     Watcher(WatcherFact),
+    /// The failure signature of one failed step, read from its log (once per failure).
+    StepError(StepErrorFact),
+    /// One closed hour of trend rollups (persisted in the data dir, loaded at boot).
+    Rollup(RollupFact),
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -218,6 +222,74 @@ pub struct LaneList {
 pub struct WatcherFact {
     pub observed: Ms,
     pub watcher: Watcher,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct StepErrorFact {
+    /// Pipeline id (`wp:<repo>:<n>`).
+    pub pipeline: String,
+    pub workflow: String,
+    pub step: String,
+    pub class: FailClass,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub line: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub exit_code: Option<i32>,
+    pub observed: Ms,
+}
+
+impl StepErrorFact {
+    pub fn key(&self) -> String {
+        step_key(&self.pipeline, &self.workflow, &self.step)
+    }
+}
+
+pub fn step_key(pipeline: &str, workflow: &str, step: &str) -> String {
+    format!("{pipeline}|{workflow}/{step}")
+}
+
+/// Log-bucket histogram of durations: bucket `b` holds values in
+/// [1000·1.1^b, 1000·1.1^(b+1)) ms (sub-second values go to bucket 0).
+pub type Hist = std::collections::BTreeMap<u16, u32>;
+
+/// One group's numbers for one hour (pipelines bucketed by their finish time).
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct Agg {
+    #[serde(default)]
+    pub finished: u32,
+    #[serde(default)]
+    pub success: u32,
+    /// failure + error (canceled / skipped excluded from the pass rate).
+    #[serde(default)]
+    pub failed: u32,
+    #[serde(default)]
+    pub deploys: u32,
+    #[serde(default, skip_serializing_if = "Hist::is_empty")]
+    pub intake: Hist,
+    #[serde(default, skip_serializing_if = "Hist::is_empty")]
+    pub run: Hist,
+    /// Gauges sampled during the hour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_age_ms: Option<Ms>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub red: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct ClusterSeen {
+    pub n: u32,
+    pub first: Ms,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct RollupFact {
+    /// Start of the hour (ms, a multiple of 3,600,000).
+    pub hour: Ms,
+    pub fleet: Agg,
+    #[serde(default)]
+    pub groups: std::collections::BTreeMap<String, Agg>,
+    #[serde(default)]
+    pub clusters: std::collections::BTreeMap<String, ClusterSeen>,
 }
 
 /// Deterministic content hash (FxHash of the JSON): the last tie-break of every

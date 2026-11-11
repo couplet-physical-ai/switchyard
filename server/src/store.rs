@@ -12,6 +12,9 @@ use serde::Serialize;
 use crate::facts::*;
 use crate::model::*;
 
+mod insights;
+pub use insights::{ROLLUP_KEEP_MS, group_name, team_slug};
+
 pub const H: Ms = 3_600_000;
 /// Base registers older than this are garbage-collected.
 pub const RETAIN_MS: Ms = 26 * H;
@@ -171,6 +174,17 @@ pub struct Store {
     queue: Option<QueueFact>,
     lanes: Option<LaneList>,
     watcher: Option<WatcherFact>,
+    step_errors: FxHashMap<String, StepErrorFact>,
+    rollups: BTreeMap<Ms, RollupFact>,
+    /// repo → normalized team slug (from the apps list).
+    repo_team: FxHashMap<String, String>,
+    /// Hourly gauge samples (hour → group id → (pr age, red repos)), taken by `tick`.
+    gauges: BTreeMap<Ms, BTreeMap<String, (Option<Ms>, u32)>>,
+    /// Groups / clusters / flakes need recomputing (a pipeline finished, a failure
+    /// signature arrived, apps changed, time passed).
+    insights_dirty: bool,
+    /// 5-minute bucket the trends were last computed for.
+    trends_at: Ms,
     idx: Indices,
     // ---- derived ----
     tables: Vec<BTreeMap<String, Arc<str>>>,
@@ -238,7 +252,10 @@ impl Store {
     }
 
     pub fn has_dirty(&self) -> bool {
-        !self.events.is_empty() || self.dirty.iter().any(|d| !d.is_empty())
+        !self.events.is_empty()
+            || self.insights_dirty
+            || self.trends_due(self.now)
+            || self.dirty.iter().any(|d| !d.is_empty())
     }
 
     pub fn counts(&self) -> BTreeMap<&'static str, usize> {
@@ -305,6 +322,8 @@ impl Store {
                         self.mark(Kind::Repo, &r);
                     }
                     self.app_list = Some(a);
+                    self.rebuild_repo_team();
+                    self.insights_dirty = true;
                     let ds: Vec<String> = self
                         .deploys
                         .values()
@@ -412,6 +431,28 @@ impl Store {
                 {
                     self.watcher = Some(w);
                     self.mark(Kind::Watcher, "outage");
+                }
+            }
+            Fact::StepError(e) => {
+                let k = e.key();
+                if self
+                    .step_errors
+                    .get(&k)
+                    .is_none_or(|c| (c.observed, content_hash(c)) < (e.observed, content_hash(&e)))
+                {
+                    let p = e.pipeline.clone();
+                    self.step_errors.insert(k, e);
+                    self.mark(Kind::Pipeline, &p);
+                    self.insights_dirty = true;
+                }
+            }
+            Fact::Rollup(r) => {
+                if self.rollups.get(&r.hour).is_none_or(|c| {
+                    (c.fleet.finished, content_hash(c)) < (r.fleet.finished, content_hash(&r))
+                }) {
+                    self.rollups.insert(r.hour, r);
+                    self.insights_dirty = true;
+                    self.trends_at = 0;
                 }
             }
         }
@@ -536,6 +577,15 @@ impl Store {
                     self.mark(Kind::Pr, &pr);
                 }
                 idx_del(&mut self.idx.sha_pipelines, &ok, &oid);
+                let sibs: Vec<String> = self
+                    .idx
+                    .sha_pipelines
+                    .get(&ok)
+                    .map(|s| s.iter().cloned().collect())
+                    .unwrap_or_default();
+                for s in sibs {
+                    self.mark(Kind::Pipeline, &s);
+                }
                 if !self.commits.contains_key(&ok) && !self.idx.sha_pipelines.contains_key(&ok) {
                     idx_del(&mut self.idx.repo_commits, &orepo, &ok);
                 }
@@ -584,6 +634,26 @@ impl Store {
         }
         if let Some(n) = p.pr {
             self.mark(Kind::Pr, &ids::pr(&p.repo, n));
+        }
+        // Failure clusters / flakes / trends read finished runs; flaky markers read the
+        // other runs on the same sha.
+        let done_changed = p.state.is_done()
+            || self
+                .pipelines
+                .get(&id)
+                .is_some_and(|o| o.state.is_done() || o.state != p.state);
+        if done_changed {
+            self.insights_dirty = true;
+        }
+        // A sibling's step outcome decides `flaky` on the runs of the same sha.
+        let sibs: Vec<String> = self
+            .idx
+            .sha_pipelines
+            .get(&key)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default();
+        for s in sibs {
+            self.mark(Kind::Pipeline, &s);
         }
         self.pipelines.insert(id, p);
     }
@@ -847,6 +917,8 @@ impl Store {
     pub fn tick(&mut self, now: Ms) {
         self.now = self.now.max(now);
         self.gc(now);
+        self.insights_dirty = true;
+        self.sample_gauges(self.now);
         // Visibility windows and heat depend on time: re-derive what can change.
         let repos: Vec<String> = self.repos_t.keys().cloned().collect();
         for r in repos {
@@ -922,12 +994,22 @@ impl Store {
             keys.push((Kind::Org, o));
         }
         for (k, id) in keys {
-            self.mark(k, &id);
+            if !k.is_insight() {
+                self.mark(k, &id);
+            }
         }
+        self.insights_dirty = true;
+        self.trends_at = 0;
     }
 
     fn gc(&mut self, now: Ms) {
         let cut = now - RETAIN_MS;
+        let pipes = &self.pipelines;
+        self.step_errors
+            .retain(|_, e| pipes.contains_key(&e.pipeline));
+        let rcut = now - insights::ROLLUP_KEEP_MS;
+        self.rollups.retain(|h, _| *h >= rcut);
+        self.gauges.retain(|h, _| *h >= now - 26 * H);
         let dead: Vec<String> = self
             .pipelines
             .iter()
@@ -940,6 +1022,15 @@ impl Store {
             if let Some(p) = self.pipelines.remove(&id) {
                 let sk = sha_key(&p.repo, &p.sha);
                 idx_del(&mut self.idx.sha_pipelines, &sk, &id);
+                let sibs: Vec<String> = self
+                    .idx
+                    .sha_pipelines
+                    .get(&sk)
+                    .map(|s| s.iter().cloned().collect())
+                    .unwrap_or_default();
+                for s in sibs {
+                    self.mark(Kind::Pipeline, &s);
+                }
                 idx_del(&mut self.idx.repo_pipelines, &p.repo, &id);
                 self.mark(Kind::Pipeline, &id);
                 self.mark(Kind::Commit, &sk);
@@ -1062,6 +1153,7 @@ impl Store {
                     break;
                 }
                 for id in keys {
+                    let mut touched = false;
                     let json = self.derive(k, &id, now, &mut derived_events);
                     let table = &mut self.tables[k.index()];
                     match json {
@@ -1071,6 +1163,7 @@ impl Store {
                                 let old = cur.clone();
                                 table.insert(id.clone(), j.clone());
                                 delta_ops(k, id, &old, j, &mut ops);
+                                touched = true;
                             }
                             None => {
                                 table.insert(id.clone(), j.clone());
@@ -1079,17 +1172,25 @@ impl Store {
                                     id,
                                     json: j,
                                 });
+                                touched = true;
                             }
                         },
                         None => {
                             if table.remove(&id).is_some() {
                                 ops.push(OpOut::Remove { kind: k, id });
+                                touched = true;
                             }
                         }
+                    }
+                    // Groups, clusters and trends read repos, PRs, deploys and pipelines.
+                    if touched && matches!(k, Kind::Repo | Kind::Pr | Kind::Deploy | Kind::Pipeline)
+                    {
+                        self.insights_dirty = true;
                     }
                 }
             }
         }
+        self.flush_insights(now, &mut ops);
         if !ops.is_empty() {
             self.version += 1;
         }
@@ -1283,6 +1384,10 @@ impl Store {
                 }
             }
             Kind::Stats => Some(to_json(&self.derive_stats(now))),
+            // Computed together by `insights` (see `flush`), never through `derive`.
+            Kind::Group | Kind::Cluster | Kind::Flake | Kind::Trend => {
+                self.tables[k.index()].get(id).cloned()
+            }
         }
     }
 
@@ -1514,6 +1619,7 @@ impl Store {
         let mut p = p.clone();
         p.queue_pos = None;
         p.expected_ms = None;
+        self.mark_failures(&mut p);
         if p.state.is_active() {
             let (event, deploy) = (p.event, p.deploy);
             let d = self.recent_durations(&p.repo, now, 20, |x| {
@@ -1960,6 +2066,7 @@ impl Store {
             p50_build_ms: median(
                 self.recent_durations(id, now, 50, |x| x.event == PipelineEvent::Push),
             ),
+            group: Some(self.group_of(id)),
             links: Links {
                 github: format!("https://github.com/{id}"),
                 woodpecker: wid.map(|w| format!("{}/repos/{w}", self.cfg.woodpecker_url)),
