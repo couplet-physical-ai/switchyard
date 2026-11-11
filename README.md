@@ -15,7 +15,7 @@ brew tap couplet-physical-ai/tap && brew trust couplet-physical-ai/tap && brew i
 ```
 
 <p align="center">
-  <img src="packaging/screenshots/factory-macos.png" alt="The Factory on macOS: the whole software factory as an isometric floor, from sources and the PR yard through the merge gate and main lines to the consumption engine, tests, deploys and app districts, with the commit that broke main called out" width="100%">
+  <img src="packaging/screenshots/factory-macos.png" alt="The Factory on macOS, live: team lanes from sources through the PR yard, merge gate and main lines to the consumption engine, tests, deploys and the app city; each stage's last 24 h on the back wall, failure heaps by signature, the repo that broke main called out" width="100%">
 </p>
 
 | A commit's journey (click anything on the floor) | Yard |
@@ -24,7 +24,7 @@ brew tap couplet-physical-ai/tap && brew trust couplet-physical-ai/tap && brew i
 | **Main lines** | **PRs** |
 | <img src="packaging/screenshots/mainlines.png" alt="Every repo's main branch as a line of commit dots, red first, culprits labelled" width="420"> | <img src="packaging/screenshots/prs.png" alt="Every open PR and the step it is waiting on" width="420"> |
 
-<sub>The macOS app on the built-in demo fleet. Screenshots: <code>packaging/screenshots/</code>.</sub>
+<sub>The macOS app (0.1.2): the hero on the live fleet, the rest on the built-in demo fleet. Screenshots: <code>packaging/screenshots/</code>.</sub>
 
 ## What's here
 

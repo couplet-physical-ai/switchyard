@@ -6,7 +6,7 @@ or the built-in demo fleet; nothing internal in frame (no private hostnames or I
 
 | File | What |
 |---|---|
-| `factory-macos.png` | hero: the Factory (default tab), on macOS |
+| `factory-macos.png` | hero: the Factory (default tab), on macOS, LIVE (the release's install e2e snapshot: `SY_TOKEN_FILE=… SY_SNAPSHOT=1 scripts/release/install-e2e-mini.sh <version>`) |
 | `factory-journey.png` | a lens: one pipeline's journey across the floor, drawer open |
 | `yard-macos.png` | the Yard, LIVE, on macOS |
 | `yard-web.png` | the Yard in a browser |
