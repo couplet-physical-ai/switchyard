@@ -53,9 +53,17 @@ export class FlowFloor {
       [` · ${S.apps.up} of ${S.apps.total} apps up`, C.ink3],
     ], x, y0, 11.5, W - right - x - 16);
     const headTop = top + 44;
-    this.cam.fit(W, H, L.u0, L.v0, L.u1, L.v1 + 40, 70, 20, headTop + 52, W - 40 - right, H - headTop - 64);
+    // the floor fills the window under the headline (labels ride above their stations: ~56 px
+    // over the tallest one; the bin's head ~30 px under the floor's front edge)
+    // the camera frames what is ON the floor (the stations and the bin), filling the window under
+    // the headline; the labels ride ~60 px over their stations, the bin's head ~30 px under it
+    const F = L.fit;
+    this.cam.fit(W, H, F.u0, F.v0, F.u1, F.v1, 66, 16, headTop + 64, W - 32 - right, H - headTop - 64 - 44);
     const phase = a.reduced ? 0 : (((f.time - this.t0) / 1600) % 1);
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, headTop + 4, W - right, H - headTop - 4); ctx.clip();
     this.hits = drawLine(g, this.cam, S, now, { phase, window: a.win, windowMs: windowMs(a.win), selected: a.sel, failed });
+    ctx.restore();
     drawHeads(g, this.cam, S, now, headTop);
     // for the tests (as the old floor did): where the bin's newest crate is, once per layout
     const fh = this.hits.find((h) => h.kind === 'failed');

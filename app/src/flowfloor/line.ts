@@ -15,16 +15,18 @@ export type Hit = { kind: string; id: string; x: number; y: number; w: number; h
 
 /** The stations along u (centres) and the floor box. */
 export const L = {
-  u0: -10, u1: 1620, v0: 40, v1: 470,
+  u0: -60, u1: 1680, v0: 0, v1: 560,
+  /** what the camera frames: the stations and the bin (the floor runs past it) */
+  fit: { u0: 0, u1: 1615, v0: 60, v1: 505 },
   belt: 200, beltW: 26,
   src: { u0: 15, u1: 95, rows: [115, 200, 285] },
   intake: { u0: 190, u1: 330, v0: 130, v1: 270 },
-  eng: { u0: 410, u1: 690, rows: [84, 200, 316], dv: 62, h: 16 },
+  eng: { u0: 400, u1: 700, rows: [80, 200, 320], dv: 80, h: 16 },
   gate: { u: 800, v0: 138, v1: 262, h: 58 },
   mains: { u0: 915, u1: 1140, v0: 104, v1: 296 },
   deploy: { u0: 1215, u1: 1295, v0: 150, v1: 250, h: 34 },
   apps: { u0: 1365, u1: 1610, v0: 104, v1: 296 },
-  bin: { u0: 720, u1: 1100, v0: 372, v1: 466 },
+  bin: { u0: 700, u1: 1180, v0: 392, v1: 500 },
 };
 
 export const STATIONS: { id: string; name: string; u: number }[] = [
@@ -121,14 +123,14 @@ export function drawLine(g: Gfx, cam: Cam, S: Stages, now: number, o: LineOpts):
   const I = L.intake;
   box(cam, g, I.u0, I.v0, I.u1 - I.u0, I.v1 - I.v0, 3);
   const q = S.intake.items;
-  const per = 5, pitch = 24;
+  const per = 5, pitch = 27;
   q.slice(0, 30).forEach((it, i) => {
     const col = Math.floor(i / per), row = i % per;
     const stuck = now - it.at > 3_600_000;
     const u = I.u1 - 18 - col * pitch, v = I.v0 + 22 + row * pitch;
-    crate(cam, g, u, v, 16, stuck ? 'fail' : 'wait', 3);
-    if (o.selected === it.id) selRing(cam, g, u, v, 16, 3);
-    hits.push({ kind: 'wait', id: it.id, x: cam.x(u, v) - 10, y: cam.y(u, v, 14) - 10, w: 20, h: 20, url: it.url, label: `${it.name} #${it.number}` });
+    crate(cam, g, u, v, 20, stuck ? 'fail' : 'wait', 3);
+    if (o.selected === it.id) selRing(cam, g, u, v, 20, 3);
+    hits.push({ kind: 'wait', id: it.id, x: cam.x(u, v) - 14, y: cam.y(u, v, 16) - 14, w: 28, h: 28, url: it.url, label: `${it.name} #${it.number}` });
   });
 
   // ---- 3 engines: one machine per host, its slots as bays
@@ -137,33 +139,32 @@ export function drawLine(g: Gfx, cam: Cam, S: Stages, now: number, o: LineOpts):
     const c = E.rows[mi], v0 = c - E.dv / 2, v1 = c + E.dv / 2;
     box(cam, g, E.u0, v0, E.u1 - E.u0, E.dv, E.h, 0, P.top, P.side, P.front, m.online ? P.edge : '#2A2A2D');
     const n = Math.max(1, m.bays.length);
-    const pitchU = (E.u1 - E.u0 - 24) / n, bw = Math.min(34, pitchU - 8);
+    const pitchU = (E.u1 - E.u0 - 84) / n, bw = Math.min(40, pitchU - 6);
     m.bays.forEach((b, i) => {
-      const uc = E.u0 + 12 + pitchU * (i + 0.5);
-      g.begin_(); quad(cam, g, uc - bw / 2, c - 19, uc + bw / 2, c + 19, E.h + 0.2); g.fill(P.well);
-      g.begin_(); quad(cam, g, uc - bw / 2, c - 19, uc + bw / 2, c + 19, E.h + 0.2); g.stroke(m.online ? '#2E2E32' : '#222225', 1);
+      const uc = E.u0 + 72 + pitchU * (i + 0.5);
+      g.begin_(); quad(cam, g, uc - bw / 2, c - 26, uc + bw / 2, c + 26, E.h + 0.2); g.fill(P.well);
+      g.begin_(); quad(cam, g, uc - bw / 2, c - 26, uc + bw / 2, c + 26, E.h + 0.2); g.stroke(m.online ? '#2E2E32' : '#222225', 1);
       if (b.item) {
-        crate(cam, g, uc, c, Math.min(22, bw - 6), 'run', E.h);
-        if (o.selected === b.item.id) selRing(cam, g, uc, c, Math.min(22, bw - 6), E.h);
+        crate(cam, g, uc, c, Math.min(30, bw - 6), 'run', E.h);
+        if (o.selected === b.item.id) selRing(cam, g, uc, c, Math.min(30, bw - 6), E.h);
         // its progress on the machine's front: a track and the elapsed share of the usual
         const pct = b.item.pct;
         const ua = uc - bw / 2, ub = uc + bw / 2;
-        g.begin_(); quad(cam, g, ua, c + 22, ub, c + 26, E.h + 0.3); g.fill('#1E1E21');
-        if (pct > 0) { g.begin_(); quad(cam, g, ua, c + 22, ua + (ub - ua) * pct, c + 26, E.h + 0.4); g.fill(pct > 0.97 ? C.amberText : C.packet); }
+        g.begin_(); quad(cam, g, ua, c + 30, ub, c + 35, E.h + 0.3); g.fill('#1E1E21');
+        if (pct > 0) { g.begin_(); quad(cam, g, ua, c + 30, ua + (ub - ua) * pct, c + 35, E.h + 0.4); g.fill(pct > 0.97 ? C.amberText : C.packet); }
         const bx = cam.x(uc, c), by = cam.y(uc, c, E.h + 14);
-        hits.push({ kind: 'run', id: b.item.id, x: bx - 14, y: by - 14, w: 28, h: 28, url: b.item.url, label: `${b.item.name} #${b.item.number}` });
+        hits.push({ kind: 'run', id: b.item.id, x: bx - 20, y: by - 20, w: 40, h: 40, url: b.item.url, label: `${b.item.name} #${b.item.number}` });
       }
     });
   });
-  // the machines' names, left of each, after all of them (a nearer machine never covers one)
+  // the machines' names on their front faces (never over a neighbour's label)
   S.engines.machines.slice(0, 3).forEach((m, mi) => {
-    const c = E.rows[mi];
-    const x = cam.x(E.u0, c) - 10, y = cam.y(E.u0, c, E.h * 0.5) + 4;
-    const tail = m.online ? ` ${m.busy}${m.slots ? `/${m.slots}` : ''}` : ' offline';
-    const w2 = g.width(tail, T.small);
-    const w1 = g.text(m.label, x - w2, y, m.online ? C.ink2 : C.ink3, T.small, true, 'right');
-    g.text(tail, x - w2, y, C.ink3, T.small);
-    if (m.url) hits.push({ kind: 'machine', id: m.id, x: x - w2 - w1 - 4, y: y - 12, w: w1 + w2 + 8, h: 16, url: m.url, label: m.label });
+    const c = E.rows[mi], v1 = c + E.dv / 2;
+    // its name plate: the machine's top, left of its bays (the name, then busy of slots)
+    const x = cam.x(E.u0 + 10, c), y = cam.y(E.u0 + 10, c, E.h);
+    const w1 = g.text(m.label === 'github actions' ? 'gha' : m.label, x, y - 2, m.online ? C.ink2 : C.ink3, T.small, true);
+    const w2 = g.text(m.online ? `${m.busy}${m.slots ? `/${m.slots}` : ''}` : 'offline', x, y + 11, C.ink3, T.small);
+    if (m.url) hits.push({ kind: 'machine', id: m.id, x: x - 4, y: y - 14, w: Math.max(w1, w2) + 8, h: 30, url: m.url, label: m.label });
   });
 
   // ---- 4 tests: the gate over the belt (two posts and a beam), its pass light
@@ -252,21 +253,21 @@ export function drawBin(g: Gfx, cam: Cam, now: number, o: LineOpts, Bn: { u0: nu
   box(cam, g, Bn.u0 - 4, Bn.v0 - 4, Bn.u1 - Bn.u0 + 8, 4, 8);
   box(cam, g, Bn.u0 - 4, Bn.v0, 4, Bn.v1 - Bn.v0, 8);
   const f = o.failed;
-  const perRow = Math.floor((Bn.u1 - Bn.u0 - 20) / 24);
-  f.slice(0, perRow * 4).forEach((it, i) => {
+  const perRow = Math.floor((Bn.u1 - Bn.u0 - 24) / 34);
+  f.slice(0, perRow * 3).forEach((it, i) => {
     const row = Math.floor(i / perRow), col = i % perRow;
-    const u = Bn.u0 + 16 + col * 24, v = Bn.v0 + 14 + row * 22;
+    const u = Bn.u0 + 22 + col * 34, v = Bn.v0 + 20 + row * 30;
     const sel = o.selected === it.id;
-    crate(cam, g, u, v, 15, 'fail', 0.3);
-    const x = cam.x(u, v), y = cam.y(u, v, 10);
-    if (sel) selRing(cam, g, u, v, 15, 0.3);
-    hits.push({ kind: 'failed', id: it.id, x: x - 11, y: y - 11, w: 22, h: 22, url: it.url, label: `${it.name} #${it.number}` });
+    crate(cam, g, u, v, 22, 'fail', 0.3);
+    const x = cam.x(u, v), y = cam.y(u, v, 12);
+    if (sel) selRing(cam, g, u, v, 22, 0.3);
+    hits.push({ kind: 'failed', id: it.id, x: x - 18, y: y - 16, w: 36, h: 32, url: it.url, label: `${it.name} #${it.number}` });
   });
   box(cam, g, Bn.u1, Bn.v0, 4, Bn.v1 - Bn.v0, 8);
   box(cam, g, Bn.u0 - 4, Bn.v1, Bn.u1 - Bn.u0 + 8, 4, 8);
-  if (f.length > perRow * 4) {
+  if (f.length > perRow * 3) {
     const x = cam.x(Bn.u1 - 40, Bn.v1), y = cam.y(Bn.u1 - 40, Bn.v1, 0) + 14;
-    g.text(`+${f.length - perRow * 4}`, x, y, C.redText, T.small);
+    g.text(`+${f.length - perRow * 3}`, x, y, C.redText, T.small);
   }
   // its head: "failed · last 30m · N", then the window chips (the Yard's chips)
   const x0 = cam.x(Bn.u0, Bn.v1 + 4) + 2, y0 = cam.y(Bn.u0, Bn.v1 + 4, 0) + 22;
@@ -291,29 +292,38 @@ export function drawBin(g: Gfx, cam: Cam, now: number, o: LineOpts, Bn: { u0: nu
   return hits;
 }
 
-/** The stage heads along the top: the name, then its numbers; a hairline down to its station. */
-export function drawHeads(g: Gfx, cam: Cam, S: Stages, now: number, top: number): void {
-  const busy = S.engines.running, slots = S.engines.slots;
-  const lines: Record<string, [string, string][]> = {
-    sources: [[`${S.sources.perHour}`, C.ink2], ['/h', C.ink3]],
-    intake: S.intake.waiting ? [[`${S.intake.waiting} waiting`, C.amberText], [` · ${ago(now - S.intake.oldestAt)}`, C.ink3]] : [['empty', C.ink3]],
-    engines: [[`${busy} busy`, busy ? C.amberText : C.ink3], [` of ${slots}`, C.ink3]],
-    tests: [[`${Math.round(S.tests.passRate * 100)}%`, S.tests.passRate >= 0.85 ? C.greenInk : C.amberText], [` · ${S.tests.total}/h`, C.ink3]],
-    mains: S.mains.red.length ? [[`${S.mains.red.length} red`, C.redText], [` · ${S.mains.green} green`, C.ink3]] : [['all green', C.greenInk]],
-    deploy: [[`${S.deploy.running.length} now`, S.deploy.running.length ? C.amberText : C.ink3], [` · ${S.deploy.today} today`, C.ink3]],
-    apps: S.apps.down.length ? [[`${S.apps.down.length} down`, C.redText], [` · ${S.apps.up} up`, C.ink3]] : [[`${S.apps.up} of ${S.apps.total} up`, C.greenInk]],
+/** Where each station's label sits: over its back edge (u, v, height). */
+const ANCHOR: Record<string, [number, number, number]> = {
+  sources: [55, 70, 14], intake: [260, 120, 4], engines: [550, 26, 16], tests: [805, 116, 66],
+  mains: [1028, 96, 4], deploy: [1255, 142, 46], apps: [1488, 96, 4],
+};
+
+/** The station labels (ZERO.md: every station labelled with its big number), each just above its
+ *  station: the name, then the big number and its unit; centred, kept apart from its neighbours. */
+export function drawHeads(g: Gfx, cam: Cam, S: Stages, now: number, _top: number): void {
+  const big: Record<string, [string, string, string]> = {
+    sources: [`${S.sources.perHour}`, '/h', C.ink],
+    intake: [`${S.intake.waiting}`, S.intake.waiting ? `waiting · ${ago(now - S.intake.oldestAt)}` : 'waiting', S.intake.waiting ? C.packet : C.ink3],
+    engines: [`${S.engines.running}`, `of ${S.engines.slots} busy`, S.engines.running ? C.packet : C.ink3],
+    tests: [`${Math.round(S.tests.passRate * 100)}%`, `pass · ${S.tests.failed} failed/h`, S.tests.passRate >= 0.85 ? C.greenInk : C.amberText],
+    mains: [`${S.mains.red.length}`, `red · ${S.mains.green} green`, S.mains.red.length ? C.redText : C.greenInk],
+    deploy: [`${S.deploy.running.length}`, `now · ${S.deploy.today} today`, S.deploy.running.length ? C.packet : C.ink3],
+    apps: [S.apps.down.length ? `${S.apps.down.length}` : `${S.apps.up}`, S.apps.down.length ? `down · ${S.apps.up} up` : `of ${S.apps.total} up`, S.apps.down.length ? C.redText : C.greenInk],
   };
-  const xs = STATIONS.map((s) => cam.x(s.u, L.v0 + 60));
-  for (const [si, s] of STATIONS.entries()) {
-    const x = xs[si];
-    const room = Math.min(si > 0 ? x - xs[si - 1] : 1e9, si < xs.length - 1 ? xs[si + 1] - x : 1e9) - 14;
-    const yAnchor = cam.y(s.u, L.v0 + 60, 70);
-    g.text(s.name, x, top + 14, C.ink, T.head, true, 'center');
-    let parts = lines[s.id] ?? [];
-    let w = 0; for (const [t] of parts) w += g.width(t, T.cap);
-    if (w > room && parts.length > 1) { parts = parts.slice(0, 1); w = g.width(parts[0][0], T.cap); }
-    let xx = x - w / 2;
-    for (const [t, c] of parts) xx += g.text(t, xx, top + 31, c, T.cap);
-    g.begin_(); g.move(Math.round(x) + 0.5, top + 40); g.line(Math.round(x) + 0.5, Math.max(top + 40, yAnchor)); g.stroke('#26262A', 1);
+  const pts = STATIONS.map((s) => { const [u, v, z] = ANCHOR[s.id]; return [cam.x(u, v), cam.y(u, v, z)]; });
+  for (const [i, s] of STATIONS.entries()) {
+    const [x, yb] = pts[i];
+    const room = Math.min(i > 0 ? x - pts[i - 1][0] : 1e9, i < pts.length - 1 ? pts[i + 1][0] - x : 1e9) - 12;
+    const [n, unit0, col] = big[s.id];
+    let unit = ` ${unit0}`;
+    const wn = g.width(n, 22, true);
+    if (wn + g.width(unit, 11.5) > room) unit = ` ${unit0.split(' · ')[0]}`;
+    const wu = g.width(unit, 11.5);
+    const y = yb - 12;
+    g.text(s.name, x, y - 26, C.ink, 13, true, 'center');
+    g.text(n, x - (wn + wu) / 2, y, col, 22, true);
+    g.text(unit, x - (wn + wu) / 2 + wn, y, C.ink3, 11.5);
+    // a short tick from the label to its station
+    g.begin_(); g.move(Math.round(x) + 0.5, y + 6); g.line(Math.round(x) + 0.5, yb - 2); g.stroke('#2A2A2E', 1);
   }
 }

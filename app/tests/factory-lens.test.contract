@@ -1,0 +1,129 @@
+// The factory's click grammar (src/factory/lens.ts; fab-lens). A test cannot press a canvas at a
+// point, so these drive the floor's keys and read what it answers: the key ("?") and the lens
+// stack's walk back (Esc). The coffee check's own: tests/factory-coffee.test.contract.
+
+test "? shows the key and Esc puts it away"
+  clock data
+  type "root" "/factory"
+  clock settle
+  tap "setup-demo"
+  clock data
+  clock +500
+  type "factory" key "?"
+  clock data
+  expect state facNow.kind == "legend"
+  type "factory" key "Escape"
+  clock data
+  expect state facNow.kind == "lens"
+  expect state facNow.id == "0"
+
+// fab-w3: the return conveyor parks failures by cluster, the biggest open one nearest the scanner,
+// so its first crate is always at the same spot on the fitted floor (u 1082, v 626 at 1440x900).
+test "a parked failure opens its cluster lens and Escape walks back"
+  clock data
+  type "root" "/factory"
+  clock settle
+  tap "setup-demo"
+  clock data
+  clock +1000
+  clock +1500 real
+  tap "factory-live" drag 1 0 from 904 677 mouse
+  clock data
+  clock +300
+  expect state facNow.kind == "failure"
+  expect state ov.facLens == 1
+  type "factory-live" key "Escape"
+  clock data
+  clock +300
+  expect state ov.facLens == 0
+  expect state facNow.kind == "lens"
+
+// On the web only: the macOS agent's synthesized click carries no Shift (a held `key "Shift"`
+// reaches the canvas as a key, not as the click's modifier).
+test "shift-click compares two groups in the dock, Escape puts it away" on web
+  clock data
+  type "root" "/factory"
+  clock settle
+  tap "setup-demo"
+  clock data
+  clock +1000
+  clock +1500 real
+  tap "factory-live" drag 1 0 from 312 197 mouse
+  clock data
+  clock +300
+  expect state ov.facLens == 1
+  type "factory-live" key "Shift" down
+  tap "factory-live" drag 1 0 from 283 251 mouse
+  type "factory-live" key "Shift" up
+  clock data
+  clock +300
+  expect state facNow.kind == "compare"
+  expect state ov.facLens == 1
+  type "factory-live" key "Escape"
+  clock data
+  clock +300
+  expect state facNow.kind == "lens"
+  expect state facNow.id == "1"
+  type "factory-live" key "Escape"
+  clock data
+  clock +300
+  expect state ov.facLens == 0
+
+// fx-lens: the integrated floor's lane parts are lenses of their own, each a different story: a
+// lane's PR cell (its PRs by age and blocker), the merge gate (what landed today, by lane), a
+// lane's main lines (red first) and a city district (its scorecard). Points on the fitted
+// fixtures floor at 1440x900 (the `factory-lanes:` and `factory-lens: anchors` logs).
+test "a lane's PR cell, the merge gate, a main line and a district each open their own lens" on web
+  clock data
+  type "root" "/factory"
+  clock settle
+  tap "setup-connect"
+  clock settle
+  type "server-field" "fixtures"
+  tap "settings-save"
+  clock data
+  clock +1000
+  clock +1500 real
+  tap "factory-live" drag 1 0 from 448 239 mouse
+  clock settle
+  clock +300
+  clock +500 real
+  expect state facNow.kind == "cell"
+  expect state facNow.id == "team:software|1"
+  expect state ov.facLens == 1
+  type "factory-live" key "Escape"
+  clock data
+  clock +300
+  expect state ov.facLens == 0
+  tap "factory-live" drag 1 0 from 617 245 mouse
+  clock settle
+  clock +300
+  clock +500 real
+  expect state facNow.kind == "gate"
+  type "factory-live" key "Escape"
+  clock data
+  clock +300
+  tap "factory-live" drag 1 0 from 653 290 mouse
+  clock settle
+  clock +300
+  clock +500 real
+  expect state facNow.kind == "rail"
+  type "factory-live" key "Backspace"
+  clock data
+  clock +300
+  expect state ov.facLens == 0
+  clock +1000
+  clock +500 real
+  // the software district's plate, between its buildings (w2-chrome: the fixtures deployed in the
+  // last hour, so the city is not calm and keeps the whole plot; its buildings stand tall to
+  // short, so the plate's open ground is near its anchor "fab-w5: city anchors … district0")
+  tap "factory-live" drag 1 0 from 1236 462 mouse
+  clock settle
+  clock +300
+  clock +500 real
+  expect state facNow.kind == "district"
+  expect state ov.facLens == 1
+  type "factory-live" key "Escape"
+  clock data
+  clock +300
+  expect state ov.facLens == 0

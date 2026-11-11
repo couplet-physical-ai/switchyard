@@ -7,8 +7,8 @@ import type { Gfx } from '../yard/gfx.ts';
 
 // a gentler angle than the old floor's (0.86/0.19, -0.36/0.66): the flow runs nearly level
 // across the window, so a long line of stations fills it
-export const UX = 0.9, UY = 0.12;
-export const VX = -0.42, VY = 0.58;
+export const UX = 0.86, UY = 0.22;
+export const VX = -0.40, VY = 0.72;
 
 export class Cam {
   s = 1; ox = 0; oy = 0; W = 1440; H = 900;

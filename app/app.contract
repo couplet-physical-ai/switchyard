@@ -103,6 +103,8 @@ component App
   // fx-day: a replay's answer says its speed (60 the hour, 720 the day; a resumed one its own)
   derive replaySpeed = match replayed { case some(r) => (match parseNumber(r.status) { case some(n) => n, case none => 60 }), case none => 60 }
   derive hovering = match hov { case some(h) => h.kind != "", case none => false }
+  // the Factory redo (ZERO.md "FACTORY REDO") lives at /factory?v=2 until it replaces the floor
+  derive facV2 = here == "factory" and searchParam(top(nav), "v") == "2"
   derive facNow = match fac { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }
   // fab-lens: the coffee check (src/factory/coffee.ts). The last visit per server, kept as the
   // server is: marked once 20 s of looking at the floor count as a visit (fab-w4, §E), every
@@ -136,6 +138,11 @@ component App
     after(1, tokSlowOff)
   task tokRetried when tokRetrying and not pending(tok)
     after(1, tokRetryDone)
+  // The factory floor's calm clock: while it is on top and calm, its live layer (asleep when
+  // nothing travels) is woken 8 times a second for the belts and the beat (src/factory/motion.ts);
+  // a loud floor draws every frame on its own, so the clock stops.
+  task facBeat when here == "factory" and not facV2 and ov.facCalm
+    every(125, facPulseTick)
   // A dropped stream reconnects after 2, 4, 8, 16, then every 30 s; a reset (a gap) refetches at once.
   task resync when feed.status == "reset" key=`${retries}`
     after(250, retry)
@@ -364,7 +371,7 @@ component App
                       text (conn.signIn != "" ? "Use a token…" : "Connect…")
                     button press=useDemo testId="now-setup-demo" class=Quiet
                       text "Watch the demo"
-          if e.name == "factory"
+          if e.name == "factory" and facV2
             // The Factory (views/flow.contract, src/flowfloor/): one fixed, fitted floor; a press
             // picks (a crate opens the inspector; a machine, a red main line or a down app its page)
             column flex=1 min-height=0 position="relative" testId="factory" key=flKey outline="none"
@@ -383,6 +390,48 @@ component App
                 button appearance="none" press=startDay testId="replay-day" aria-label="Replay the last 24 hours in two minutes" disabled=(ov.mode == "replay" or not conn.ok)
                   height=18 padding="0 6px" border-radius=3 border="1px dashed sy.chip-edge"
                   text "replay the day" font-size=11 color="#8C8C8E"
+              // Offline or not set up: a card over the floor (the idle floor, or the last fleet
+              // it showed, dimmed behind it), never a black void.
+              if not conn.ok and conn.status != "connecting" and not tokCard
+                column position="absolute" inset=0 background-color="sy.canvas" opacity=0.7 aria-hidden=true
+              if tokCard
+                TokenCard(status=tokState, detail=tok.detail, retry=tokRetry, enter=tokEnter)
+              if not conn.ok and conn.status != "connecting" and not tokCard
+                column position="absolute" inset=0 align-items="center" justify-content="center" testId="setup"
+                  column align-items="center" gap=14 padding="26px 32px" border-radius=12 border="1px solid sy.edge" background-color="sy.raised" max-width=620
+                    text (conn.needsSetup ? "Connect Switchyard to a server" : "The server is not answering") font-weight=700 font-size=16
+                    text (conn.error != "" ? conn.error : "Its address and a token, or watch the built-in demo fleet.") color="sy.ink3" font-size=13 max-width=560 text-align="center" testId="setup-error"
+                    row gap=10
+                      if conn.signIn != ""
+                        link href=conn.signIn class=Primary testId="setup-signin"
+                          text "Sign in on the web…"
+                      button press=openSettings class=(conn.signIn != "" ? Quiet : Primary) testId="setup-connect"
+                        text (conn.signIn != "" ? "Use a token…" : "Connect…")
+                      button press=useDemo testId="setup-demo" class=Quiet
+                        text "Watch the demo"
+          if e.name == "factory" and not facV2
+            column flex=1 min-height=0 position="relative" testId="factory" key=facKey outline="none"
+              // fab-lens: the coffee check's glance in words (the canvas draws it)
+              text coffee.status position="absolute" left=0 top=0 width=1 height=1 overflow="hidden" opacity=0 testId="coffee"
+              canvas surface=factoryFloor(ov.facKey, facNow.route, facWheel) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="factory-floor"
+              canvas surface=factoryLive(reduced ? "reduced" : "full", facNow.route, facWheel, facPulse) position="absolute" left=0 top=0 width="100%" height="100%"
+                tabindex=0 role="img" aria-label=ov.summary pointerdown=facDown pointermove=facMove pointerup=facUp wheel=facWheeled key=facKey touch-action="none" testId="factory-live" outline="none"
+                // w2-chrome (REVIEW-iter3 #8): no orange frame after a key press (Esc walks the lens
+                // stack); a keyboard focus is a 1-px inset in ink2 at the canvas's edges
+                :focus-visible
+                  box-shadow="inset 0 0 0 1px #A3A3A3"
+              canvas surface=factoryTop(reduced ? "reduced" : "full", facNow.route, facWheel, facPulse) position="absolute" left=0 top=0 width="100%" height="100%" pointer-events="none" aria-hidden=true testId="factory-top"
+              // The strip's "last hour at 60×" (the canvas draws its words) is this button too: its press
+              // for tests and keyboards, laid over the drawn words (a fully transparent button is
+              // still a target on every host, an opacity 0 one is not on macOS). fx-glance: the strip
+              // starts with it now ("live" is the status line's one control).
+              button appearance="none" press=startReplay testId="replay" aria-label="Replay the last hour, sped up" disabled=(ov.mode == "replay" or not conn.ok)
+                position="absolute" bottom=17 left=18 width=160 height=28 background-color="transparent" padding=0
+                text "last hour" color="#00000000" font-size=1
+              // fx-day: and beside it the day's, "24 h in 2 min" (the demo's: "2 h at 120×", its last 2 h)
+              button appearance="none" press=startDay testId="replay-day" aria-label="Replay the last 24 hours in two minutes" disabled=(ov.mode == "replay" or not conn.ok)
+                position="absolute" bottom=17 left=180 width=130 height=28 background-color="transparent" padding=0
+                text "24 h" color="#00000000" font-size=1
               // Offline or not set up: a card over the floor (the idle floor, or the last fleet
               // it showed, dimmed behind it), never a black void.
               if not conn.ok and conn.status != "connecting" and not tokCard
