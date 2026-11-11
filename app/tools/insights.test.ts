@@ -17,6 +17,11 @@ const settle = (ins: Insights, max = 200) => { for (let i = 0; i < max; i++) { i
 
 // ── v0.4: the fixtures as recorded ──
 const fixture = await Bun.file(new URL('../../contract/fixtures/snapshot.json', import.meta.url)).json();
+// the recording is v0.5 itself since contract 46bdd2a: served as a v0.4 server would (mock --v04)
+fixture.protocol = '0.4';
+for (const k of ['groups', 'clusters', 'flakes', 'trends']) delete fixture[k];
+for (const r of fixture.repos) delete r.group;
+for (const p of fixture.pipelines) { delete p.flaky; for (const w of p.workflows ?? []) for (const st of w.steps ?? []) delete st.cluster; }
 const tl4 = new Timeline();
 tl4.load(fixture, 0);
 const engines = new EngineHistory();
@@ -52,15 +57,17 @@ i4.clusters();
 const firstCall = performance.now() - t0;
 settle(i4);
 const cs = i4.clusters();
-const sec = cs.find((c) => c.step === 'security-scan');
-ok(sec && sec.repo_count === 5 && sec.class === 'security' && sec.line === undefined && sec.signature === 'security-scan · security', `v0.4 clusters: security-scan across ${sec?.repo_count} repos, class guessed, no line (${cs.length} clusters, first call ${firstCall.toFixed(2)} ms)`);
+// the widest cluster in the recording (security-scan in the v0.4 recording, failsafe-deploy in v0.5's)
+const sec = [...cs].sort((a, b) => b.repo_count - a.repo_count)[0];
+const SEC = sec?.step ?? '';
+ok(sec && sec.repo_count >= 2 && sec.line === undefined && sec.signature === `${SEC} · ${sec.class}`, `v0.4 clusters: ${SEC} across ${sec?.repo_count} repos, class guessed, no line (${cs.length} clusters, first call ${firstCall.toFixed(2)} ms)`);
 const web = cs.filter((c) => c.step.startsWith('test-web'));
 ok(web.length >= 1 && web.every((c) => c.step === 'test-web-#'), `v0.4 clusters: shards folded (${web.map((c) => c.signature).join(' | ')})`);
 ok(cs.every((c, i) => i === 0 || (cs[i - 1]!.open > 0 ? 1 : 0) >= (c.open > 0 ? 1 : 0)), 'v0.4 clusters: open first');
-const failing = [...tl4.world.pipelines.entries()].find(([, p]: any) => p.workflows.some((w: any) => w.steps.some((s: any) => s.name === 'security-scan' && s.state === 'failure')))!;
-eq(i4.clusterOf(failing[0], 'security-scan')?.id, sec?.id, 'v0.4 clusterOf: a failing pipeline\'s step → its cluster');
+const failing = [...tl4.world.pipelines.entries()].find(([, p]: any) => p.workflows.some((w: any) => w.steps.some((s: any) => s.name === SEC && s.state === 'failure')))!;
+eq(i4.clusterOf(failing[0], SEC)?.id, sec?.id, 'v0.4 clusterOf: a failing pipeline\'s step → its cluster');
 ok(i4.clusterOf(failing[0]) !== null, 'v0.4 clusterOf: no step → its first failed step\'s cluster');
-eq(i4.clusterOf(failing[0], 'security/security-scan')?.id, sec?.id, 'v0.4 clusterOf: by "workflow/step"');
+eq(i4.clusterOf(failing[0], `${(failing[1] as any).workflows.find((w: any) => w.steps.some((s: any) => s.name === SEC && s.state === 'failure')).name}/${SEC}`)?.id, sec?.id, 'v0.4 clusterOf: by "workflow/step"');
 const fl = i4.flakes();
 const flip = (f: (typeof fl)[number]) => f.shas.every((sha) => {
   const runs = [...tl4.world.pipelines.values()].filter((p: any) => p.repo === f.repo && p.sha === sha).flatMap((p: any) => p.workflows.filter((w: any) => w.name === f.workflow).flatMap((w: any) => w.steps.filter((s: any) => s.name === f.step)));

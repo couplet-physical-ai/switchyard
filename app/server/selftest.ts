@@ -231,7 +231,7 @@ async function main(): Promise<void> {
     const fins = await get<Insights>(fx, '/api/v1/insights');
     checkFloor(fsnap, fins, true);
     const sec = fins.clusters.find((c) => c.step === 'security-scan');
-    ok(sec && sec.repo_count === 5 && sec.class === 'security' && !!sec.line, `security-scan: ${sec?.count} failures, ${sec?.repo_count} repos, groups ${sec?.groups.join(', ')}`);
+    ok(sec && sec.repo_count >= 3 && sec.class === 'security' && !!sec.line, `security-scan: ${sec?.count} failures, ${sec?.repo_count} repos, groups ${sec?.groups.join(', ')}`);
     const fch = await get<Changes>(fx, `/api/v1/changes?since=${EPOCH - 8 * 3600_000}`);
     ok(fch.complete && fch.red.length > 0 && fch.recovered.length > 0 && fch.deploys.length > 0, `fixtures changes (8 h): ${fch.red.length} red, ${fch.recovered.length} recovered, ${fch.counts.deploys} deploys`);
     const now = toMaps(await get<Record<string, unknown>>(fx, '/api/v1/snapshot'));

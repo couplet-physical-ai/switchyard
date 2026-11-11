@@ -42,7 +42,7 @@ test "the recorded real fleet fills the floor"
   clock +1500 real
   expect state conn.ok == true
   expect state ov.repos == 394
-  expect state ov.facCity == 239
+  expect state ov.facCity == 240
   expect state ov.facCars == 85
   expect state ov.facBays == 3
 

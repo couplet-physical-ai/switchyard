@@ -101,7 +101,12 @@ async function fixtureSource(dir: string, start: number): Promise<Source> {
     seedRecorded(floor, start, makeRng(0xf1a7));
     state.protocol = PROTOCOL;
   } else {
+    // the recording may be v0.5 itself (contract 46bdd2a+): a v0.4 server knows none of it
     for (const k of ['groups', 'clusters', 'flakes', 'trends'] as const) delete (state as Partial<Snapshot>)[k];
+    state.protocol = '0.4';
+    for (const r of Object.values(state.repos)) strip05(r);
+    for (const p of Object.values(state.pipelines)) strip05(p);
+    for (const f of frames) (f as { ops: Op[] }).ops = (f.ops as Op[]).filter((op) => !('kind' in op) || !FLOOR_KINDS.has(op.kind as string)).map((op) => { if ('v' in op && op.v && typeof op.v === 'object') strip05(op.v); return op; });
   }
   marks.clear();
   /** The ops for what the Floor changed since the last call. */
@@ -177,6 +182,14 @@ async function fixtureSource(dir: string, start: number): Promise<Source> {
     orgs: () => Object.keys(state.orgs),
   };
   return src;
+}
+
+const FLOOR_KINDS = new Set(['group', 'cluster', 'flake', 'trend']);
+/** `--v04`: a v0.5 entity (or patch) without its v0.5 fields (Repo.group, Pipeline.flaky, Step.cluster). */
+function strip05(v: unknown): void {
+  const o = v as { group?: unknown; flaky?: unknown; workflows?: { steps?: { cluster?: unknown }[] }[] };
+  delete o.group; delete o.flaky;
+  if (Array.isArray(o.workflows)) for (const w of o.workflows) if (Array.isArray(w.steps)) for (const st of w.steps) delete st.cluster;
 }
 
 const COLLECTIONS = ['orgs', 'repos', 'commits', 'pipelines', 'prs', 'deploys', 'apps', 'engines', 'queues', 'lanes', 'groups', 'clusters', 'flakes', 'trends'] as const;
