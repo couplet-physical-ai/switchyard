@@ -738,6 +738,9 @@ pub async fn run_mirror(hub: Arc<Hub>, mirror: Arc<RwLock<WireState>>) {
         match rx.recv().await {
             Ok(f) => {
                 if f.kind == FrameKind::Reset {
+                    // Everything after a reset passes through here (the demo's pre-recorded
+                    // loop, a live boot): the ledger covers it.
+                    hub.ledger.set_covered_from(f.at);
                     // The snapshot for a reset is published right after it.
                     for _ in 0..200 {
                         if hub.snapshot().seq >= f.seq {

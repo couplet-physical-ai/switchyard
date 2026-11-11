@@ -7,7 +7,7 @@ build; numbers are from the machines named in each table.
 |---|---|---|
 | `GET /api/v1/snapshot` p99 < 5 ms from memory | **p99 3.8 ms** at 16 concurrent clients, 31,850 req/s (p50 0.29 ms); **p99 1.0 ms** at 8 clients | `oha` against the server (gzip, 481 KiB per response) |
 | Delta fan-out to 1,000 clients | **1,000 real WebSocket clients**: 0 failed, 0 resets, delivery lag p50 3 ms / p99 35 ms / max 59 ms at 6.3 frames/s/client (6,260 frames/s total) | `examples/wsload.rs` against `--demo --speed 10` |
-| ≥ 20k events/s ingest | **33,700 pipeline events/s** through the reducer (apply + derive + diff + choose upsert / patch / dot + encode, flushing every 64 events) on a fleet-sized store (47,400/s before v0.4's patch encoding) | `cargo bench --bench core` → `ingest/pipeline_events_flush64` |
+| ≥ 20k events/s ingest | **32,900 pipeline events/s** through the reducer (apply + derive + diff + choose upsert / patch / dot + encode, flushing every 64 events) on a fleet-sized store (47,400/s before v0.4's patch encoding; the v0.5 Factory Floor refreshes off this path, ≤ 1/s) | `cargo bench --bench core` → `ingest/pipeline_events_flush64` |
 | RSS < 256 MB steady | deployed, all five orgs: **61 MB** steady (peak 80 MB); demo + 1,000 WebSocket clients **190 MB** (212 MB peak) | `/api/v1/meta` → `process`, `/proc/<pid>/status` |
 | Zero per-client upstream calls | by construction: adapters are the only upstream callers; one SSE connection + polls, independent of clients (see `docs/SOURCES.md`); `/api/v1/meta` → `adapters[].requests` | |
 
@@ -18,7 +18,8 @@ release profile, other load present (load average ~2.5).
 
 | Bench | Time | Throughput |
 |---|---|---|
-| `ingest/pipeline_events_flush64` (380 events) | 11.3 ms | **33.7 K events/s** (v0.3, whole upserts only: 8.01 ms, 47.4 K/s) |
+| `ingest/pipeline_events_flush64` (380 events) | 11.5 ms | **32.9 K events/s** (v0.3, whole upserts only: 8.01 ms, 47.4 K/s) |
+| `insights/recompute_fleet` (groups + clusters + flakes + trends, ≤ 1/s) | 9.7 ms | — |
 | `snapshot/serve_cached` (what a request does: clone the pre-encoded `Arc`) | 23.8 ns | — |
 | `snapshot/build_from_store` (≤ 1/s rebuild from pre-serialized tables, ~3.1 MB) | 152 µs | 19.8 GiB/s |
 | `snapshot/gzip` (≤ 1/s, cached for every gzip request) | 17.0 ms | 181 MiB/s |
@@ -82,6 +83,23 @@ The v0.4 column is the recording that became `contract/fixtures` (before sanitiz
 `wc -c` of `snapshot.json` and `hour.jsonl` scaled to an hour). The client's own check,
 `bun app/tools/stream-check.ts <url> 90` (snapshot + 90 s of stream equals a fresh snapshot,
 entity by entity), verifies that the smaller ops still reproduce the server's state.
+
+## Factory Floor cost (contract v0.5)
+
+Groups, failure clusters, flakes and trends are derived from the same registers as every
+other entity, but they read the whole fleet, so the reducer refreshes them **at most once a
+second** (`ReducerCfg::insights_every_ms`) instead of on each 33 ms flush; trends move in
+5-minute buckets.
+
+| | Result | How |
+|---|---|---|
+| Ingest | **32.9 K pipeline events/s** (unchanged: the Factory Floor is off the hot path; recomputing it on every flush would cost 4.8 K/s) | `ingest/pipeline_events_flush64` |
+| One Factory Floor refresh | **9.7 ms** on the fleet-sized bench store (≤ 1 % of a core at 1/s) | `insights/recompute_fleet` |
+| Snapshot | **2.39 MB** raw, 0.49 MB gzip (sanitized fixture 2.14 MB): the new tables add 127 KB (5 %): 161 clusters 84 KB, 26 trends 34 KB, 28 flakes 7 KB, 25 groups 2 KB | recording `run7` (24.9 min, 764 frames) |
+| Stream | **1.45 MB/h** raw, 0.13 MB/h gzip; the new kinds are 49 KB/h (3.4 %), mostly trend patches once per 5 minutes | same |
+| `/history` for 1 h | **~3.8 MB** | base + frames |
+| `GET /api/v1/insights` | 71 KB raw | live fleet |
+| Upstream | Woodpecker step logs: one request per failed step, ever, ≤ 2.5/s (live failures first, then the boot backlog) | `/api/v1/meta` → `adapters[].requests` |
 
 ## Deployed server
 

@@ -417,6 +417,8 @@ cargo run --release -- --demo --listen 127.0.0.1:8080   # from server/, fixtures
   signature (step + class + the decisive log line) with `Step.cluster`; `Flake`s and
   `Pipeline.flaky`; `Trend`s per stage for the fleet and each group (1 h / 24 h / 7 d with
   24 h sparks, from hourly rollups kept 8 d); `GET /api/v1/insights`, `GET /api/v1/changes?since=`.
+  Measured on the live fleet: the new tables add 127 KB (5 %) to the snapshot (2.39 MB) and
+  49 KB/h (3.4 %) to the stream (1.45 MB/h).
 - **0.4**: smaller deltas and snapshot (measured on the live fleet: stream 7.0 → 1.9 MB/h,
   snapshot 3.1 → 2.5 MB, so 1 h of `/history` ≈ 4.4 MB). New ops `patch` (RFC 7386 merge patch) and `dot` (one main-line
   Dot); `Repo.main.recent` keeps 12 dots (was ≤ 40, 20 in practice); `Pr.checks` lists only

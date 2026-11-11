@@ -61,6 +61,10 @@ fn conforms(kind: &str, v: &Value) -> Result<String, String> {
         "lane" => id(serde_json::from_value::<Lane>(v.clone()).map(|x| x.id)),
         "watcher" => id(serde_json::from_value::<Watcher>(v.clone()).map(|x| x.id)),
         "stats" => id(serde_json::from_value::<Stats>(v.clone()).map(|x| x.id)),
+        "group" => id(serde_json::from_value::<Group>(v.clone()).map(|x| x.id)),
+        "cluster" => id(serde_json::from_value::<Cluster>(v.clone()).map(|x| x.id)),
+        "flake" => id(serde_json::from_value::<Flake>(v.clone()).map(|x| x.id)),
+        "trend" => id(serde_json::from_value::<Trend>(v.clone()).map(|x| x.id)),
         other => Err(format!("unknown kind {other}")),
     }
 }
