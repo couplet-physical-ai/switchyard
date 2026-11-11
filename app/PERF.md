@@ -240,3 +240,106 @@ mini 1× q0 56.5 / 57.2 / 57.7 / 59.5 fps (draw ~1.6 ms, 755 ops, 0 texts on the
 10× q4 58.5 / 59.0 / 59.2 fps (draw ~3.3 ms). The misses at 1× follow the static floor's repaints
 (`floor1/s ~44 ms` on Hermes; the window with `floor0/s` reads 59.5): a floor key that churns
 about once a second on a calm fleet. That is the next fix (see below).
+
+### Factory B, wave C (fab-w7b + fab-w7c): the static floor repaints by dirty tiles
+
+The static floor (slab, lanes, belts, docks, the PR yard, the front's boards and roads, the
+city's districts) was painted whole on every data change: ~700 KB of recorded calls a repaint,
+~48 ms on the mini's Hermes, about once a second on a live fleet. Those were the misses left at
+1× on the integrated tree (wave B, above).
+
+**How** (`src/factory/floorcache.ts`). The floor paints into a plain-JS recorder: state, path
+segments and device box per item, pieces made on demand. A data repaint is recorded over a few
+frames, with the census held still for at most `FLOOR_JOB_MS` = 400 ms. If frames come further
+apart, the rest is recorded at once. Then the diff runs: an item counts as kept only when it is
+the same bit for bit (head, state, paint, matrix, segments, clip), in the same z order. The
+changed pieces mark 16 px device tiles, which are sent in bands under a clip. Repaints are
+coalesced to one a second (`FLOOR_COALESCE_MS`). Camera moves, resizes and an interrupted flush
+still paint whole. The HUD's third switch cycles `tiles on → whole → off`:
+- **on**: dirty tiles.
+- **whole**: the same recordings, every repaint sent whole. This is the control.
+- **off**: painted directly, as before.
+
+**Correctness: the hard bar.** `bun tools/factory-bench.ts <src> --floor-pixels cpu --floor-exact`
+replays every data repaint in headless Chromium with Exact's own web replayer
+(`host/web/canvas2d-glue.js`, `tools/floorpix.ts`). It compares the retained canvas with a
+full repaint of the same recording.
+
+| Source | Data repaints | Pixels changed outside the repainted tiles | Retained ≠ full, outside every repainted tile | Inside the repainted tiles | Recorder vs direct paint | Exact check |
+|---|---|---|---|---|---|---|
+| demo | 320 (307 partial, 13 empty) | **0** | **0** | ≤ 11 levels (AA) | 0 px (321) | 0 of 1,902,989 pieces |
+| demo `--stress` | 320 (301 partial, 19 empty) | **0** | **0** | ≤ 11 levels (AA) | 0 px (321) | 0 of 2,377,481 |
+| fixtures, playing (`--fixtures-live 30`) | 17 (2 partial, 15 empty) | **0** | **0** | ≤ 10 levels (AA) | 0 px | 0 of 104,141 |
+
+These are `--pix-split` numbers: every subpath is rasterized on its own.
+
+- **Unsplit, inside the tiles.** Skia rasterizes a multi-subpath fill as one coverage mask, and
+  a clip changes that mask by up to 11 levels at 1–2 px. In the unsplit demo run, 199 of 320
+  repaints differ by ≤ 273 px at ≤ 11 levels next to tile edges, and the retained canvas differs
+  by ≤ 410 px at ≤ 5 levels. No full repaint changed an untouched pixel.
+- **Exact check.** `--floor-exact` checks that every piece on a kept tile is painted bit for bit
+  the same in both lists, in order.
+- **GPU path.** The agent (GPU) path gives the same results over 120 demo repaints.
+- **Stills.** In the browser (`bun exact.mjs agent web --size 1440x900`, demo, the same virtual
+  clock, 7 stills from 14.6 s to 37.1 s), tiles `on` vs `whole` differ by ≤ 13 levels, with
+  ≤ 23 px over 8 levels, in 5 of the 7 stills. In the last two the runs had drifted apart: one car
+  and a few crates are in a different state. Two `on` runs are identical, 0 px.
+
+**Bugs this found and fixed.**
+
+1. **Moved geometry stayed on the canvas.** fab-w7b's "creep carry" kept items that moved less
+   than 1/64 px, using a fine hash folded with XOR. Two such pieces cancel in an XOR. The carry
+   and its hash are gone; a kept piece is now the same bit for bit (`keepItem`, `sameHead`,
+   `sameSegs`).
+2. **Edge antialiasing changed with the clip.** Skia antialiases a canvas edge differently when
+   the clip's bounds equal the canvas's. The two corner tiles now ride in every band.
+3. **Embers painted ungated.** `emberPass` opened only on a census. A second paint after one
+   census (a pan, a recording) found it closed and painted the embers ungated at full strength.
+   Every floor paint now opens it.
+4. **Posts drawn at mixed times.** A recording made over frames read the posts' heights at a
+   different instant on each frame. The paint now has one instant (`floorNow`), and heights move
+   in 1/8 steps, so a growing post changes the floor about once a minute, not on every repaint.
+5. **The floor never repainted on a slow host.** A recording whose frames came ≥ 400 ms apart was
+   dropped and started again, every time. Under the agent's stepped clock the floor never
+   repainted. The rest is now recorded at once.
+
+fab-w7b's suspected NaN boxes, from typed arrays held across a reallocation, did not survive the
+rewrite: every read goes through the list's accessors. A debug counter (`Tiles.nan`) read 0 over
+demo, fixtures and stress.
+
+**Bytes a repaint** (`bun tools/factory-bench.ts <src> --frames 3600 --real`, Exact's recorder,
+2880×1684):
+
+| Source | Off (painted directly) | Dirty tiles (median / max) | Recorded KB a minute |
+|---|---|---|---|
+| demo | 702 KB | **40 KB** / 77 KB | 38,617 → 2,795 |
+| demo `--stress` | 876 KB | **40 KB** / 77 KB | 49,056 → 2,821 |
+| fixtures, playing | 704 KB | 0 (nothing on the floor changed) | 5,635 → 0 |
+
+The floor's paint ms in Bun: p50 14.3 → 0.39 (demo), 18.6 → 0.47 (stress).
+
+**The mini** (2026-11-11 10:30–11:10Z, 1440×900, Metal, `/tmp/sy-fab-w7c-run.sh`: connect by
+taps, the HUD on, 3 × `perf frames live 6000` at 1×, 10× on, 3 more). Before is main `4a7fe2d`.
+After is `69c45a9`, i.e. main `cbbbae4` plus this wave. Both were measured on a mini with nothing
+else of ours on it (load average 1.4–1.7; a mutagen agent and a VM, not ours). The first before
+run, with a background Switchyard at ~28 % CPU, read 8090 1× 55.9–56.7 and demo 1× 55.2–57.8.
+In the tables below, the first FPS is the window that includes the HUD tap; then the three
+6-second windows.
+
+| Tree | Fleet | FPS by window | Work median (late of ~360) | Rung | Static floor (HUD est.) |
+|---|---|---|---|---|---|
+| before | 8090 1× | 57.6 · 57.2 / 57.0 / 57.5 | 16.0–16.5 ms (116–146) | q0 | `floor1/s ~48 ms` |
+| **after** | 8090 1× | **59.7 · 59.7 / 60.0 / 60.0** | **12.0–13.0 ms (2–10)** | q0 | `~1.4 ms` (48 ms only for the first, whole paint) |
+| before | 8090 10× | 58.8 / 58.8 / 58.7 | 17.0–17.5 ms (196–204) | q4 | `~31 ms` |
+| **after** | 8090 10× | **60.0 / 60.0 / 60.0** | 13.5–14.0 ms (5–10) | q4 | `0.2–1.1 ms` |
+| before | demo 1× | 56.4 · 56.8 / 58.5 / 57.8 | 18.0–20.0 ms (217–240) | q1 | `~51 ms` |
+| **after** | demo 1× | 57.0 · 57.0 / 57.7 / 57.2 | 13.0–14.0 ms (74–78) | **q0** | `0.0–3.1 ms` |
+| before | demo 10× | 56.3 / 56.0 / 57.2 | 20.5–22.0 ms (304–315) | q4 | `~47 ms` |
+| after | demo 10× | 57.3 / 57.0 / 57.0 | 15.5–16.5 ms (167–170) | q4 | `0.3–1.6 ms` |
+
+- **8090 meets the target**: ≥ 59 fps in every window at q0, with 0–2 missed slots per 360.
+- **The demo does not.** It rises a rung (q1 → q0) and its work drops by 5–6 ms, but it stays at
+  57–57.7 fps with 14–18 missed slots per window. Those misses come in windows where the floor
+  did not repaint (`floor0/s`), so they are not the static floor's. The demo's own simulation
+  runs in the data module, and its live list is ~40 % bigger than 8090's (1,720 vs 1,200 ops).
+  That is the next place to look.

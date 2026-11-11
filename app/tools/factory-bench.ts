@@ -90,6 +90,8 @@ const { Factory } = await import('../src/factory/factory.ts');
   // alike whatever its siblings are: see --floor-pixels)
   if (flag('--pix-split')) FC.FloorCache.split = true;
   if (flag('--floor-exact')) { FC.FloorCache.verifyExact = true; if (flag('--floor-exact-log')) FC.FloorCache.verify = true; }
+  // --floor-direct: the cache off (every repaint painted directly, as before fab-w7b)
+  if (flag('--floor-direct')) (FF as unknown as { floorDirect: boolean }).floorDirect = true;
   // --floor-whole: every data repaint sent whole (the control for --floor-pixels)
   if (flag('--floor-whole')) (FF as unknown as { floorWhole: boolean }).floorWhole = true;
 }
