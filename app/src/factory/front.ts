@@ -597,7 +597,8 @@ export class Front implements Layer {
   private boardLines(d: BoardData): string[] {
     const sum = (a: Series | null | undefined) => (a ?? []).reduce<number>((x, y) => x + (y ?? 0), 0);
     const num = (x: number) => Math.round(x).toLocaleString('en-US');
-    const why = d.ghost ? `yesterday ${num(sum(d.ghost))} (dashed)` : d.flat !== null ? `typical ${num(d.flat)}/h (dashed)` : 'no yesterday on record yet';
+    const intake = d.b.id === 'intake';
+    const why = d.ghost ? (intake ? 'yesterday, same hours (dashed)' : `yesterday ${num(sum(d.ghost))} (dashed)`) : d.flat !== null ? `typical ${intake ? `${Math.round(d.flat * 10) / 10} s` : `${num(d.flat)}/h`} (dashed)` : 'no yesterday on record yet';
     const now = (s: Series) => num(s[23] ?? 0);
     switch (d.b.id) {
       case 'pushes': return ['sources · pushes an hour', `${num(sum(d.up))} in 24 h${d.up.some((x) => x === null) ? ' (recorded hours)' : ''} · this hour ${now(d.up)}`, why];
