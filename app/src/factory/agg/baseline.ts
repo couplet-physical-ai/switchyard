@@ -18,7 +18,7 @@
 export const RING_H = 168;
 const HOUR = 3_600_000;
 /** The persisted metrics: everything else is derived or the server's. */
-export const BASE_METRICS = ['pipelines', 'failures', 'red', 'pushes'] as const;
+export const BASE_METRICS = ['pipelines', 'failures', 'red', 'pushes', 'opened', 'landed', 'deploys'] as const; // fx-front: + the back wall's fleet PRs opened, commits landed, deploys (yesterday's ghost)
 export type BaseMetric = typeof BASE_METRICS[number] | 'pass_rate';
 
 const ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';

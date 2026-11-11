@@ -8,6 +8,7 @@ import { City } from './city.ts';
 import { Crates, Reactions } from './crates.ts';
 import type { Factory } from './factory.ts';
 import { Floor } from './floor.ts';
+import { Front } from './front.ts'; // fx-front
 import { Labels } from './labels.ts';
 import { Plant, Tracks } from './plant.ts';
 import type { Layer } from './types.ts';
@@ -18,6 +19,7 @@ export function buildLayers(f: Factory) {
   const floor = new Floor(f), plant = new Plant(f), city = new City(f), reactions = new Reactions(f), tracks = new Tracks(f), crates = new Crates(f), words = new Labels(f);
   const order: Layer[] = [
     floor, //     floor.ts: slab, grid, zones, belts, steel, docks, PR yard, gate, cars; haze, slats, lamps
+    new Front(f), // fx-front front.ts: the back wall's boards and now seam, the approach roads, the lane curbs
     plant, //     plant.ts: intake, machines, bays, gauges, scanner
     city, //      city.ts: districts, blocks, health lights, trouble breathing
     reactions, // crates.ts: rings, beams and doors where crates arrive

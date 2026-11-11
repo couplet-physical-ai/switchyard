@@ -30,8 +30,7 @@ import type { Factory } from './factory.ts';
 import { BOTS_LANE, OTHER_LANE, floorGroups, isBot } from './groups.ts';
 import { LU, LV } from './iso.ts';
 import { LaneData, type Cell, type LaneCount, type LaneInfo, type LaneRepo } from './lanes.ts';
-import { STAGES } from './grammar.ts';
-import { GROUP_Z_IN, GROUP_Z_OUT, LANE_U, LANE_V0, LANE_V1, LaneMap, PLAN, REPO_Z_IN, REPO_Z_OUT, ROAD_DU, SIDING_DV, SUB_ROWS, WALL_Z, laneSlots } from './layout.ts';
+import { GROUP_Z_IN, GROUP_Z_OUT, LANE_U, LANE_V0, LANE_V1, LaneMap, PLAN, REPO_Z_IN, REPO_Z_OUT, ROAD_DU, SIDING_DV, SUB_ROWS, laneSlots } from './layout.ts';
 import { R_DOOR, R_RING, beltSpeedPx, blink, flash } from './motion.ts';
 import { F, box, flushLights, poly, quad, ring } from './prims.ts';
 import type { FloorPass, HitBox, Layer, LiveFrame, Lens, Pt } from './types.ts';
@@ -44,17 +43,6 @@ const {
 const { CELL_DU, MERGE_U, INTAKE_V } = LANE_U;
 /** The lanes' u span (dock to rail end). */
 const LANE_UA = DOCK_U0 - 4, LANE_UB = RAIL_U1 + 6;
-/** The back wall's boards (u spans along v = 0; layout.ts WALL_Z high), one per stage group:
- *  each the fleet's last 24 h, an hour a bar (oldest at the left). */
-const BOARDS: { id: string; stage: string; u0: number; u1: number }[] = [
-  { id: 'pushes', stage: '01', u0: DOCK_U0, u1: YARD_U0 - 8 },
-  { id: 'opened', stage: '02', u0: YARD_U0, u1: PLAN.YARD_U1 },
-  { id: 'landed', stage: '04', u0: GATE_U - 6, u1: RAIL_U1 },
-  { id: 'runs', stage: '06', u0: INTAKE_U0, u1: ENG_U1 },
-  { id: 'fails', stage: '07', u0: ENG_U1 + 14, u1: SCAN_U + 4 },
-  { id: 'deploys', stage: '08', u0: SCAN_U + 14, u1: TRACK_U1 },
-  { id: 'apps', stage: '09', u0: CITY_U0, u1: CITY_U1 },
-];
 const HOUR = 3_600_000;
 
 /** A belt: its polyline, its last hour's throughput, its half width (default: from n) and where
@@ -305,9 +293,7 @@ export class Floor implements Layer {
     g.begin_(); poly(cam, g, [0, LV, 0, LU, LV, 0, LU, LV, -6, 0, LV, -6]); g.fill('#0A0A0B');
     g.begin_(); poly(cam, g, [LU, 0, 0, LU, LV, 0, LU, LV, -6, LU, 0, -6]); g.fill('#080809');
     g.begin_(); poly(cam, g, [0, 0, 0, LU, 0, 0, LU, LV, 0, 0, LV, 0]); g.stroke(F.floorEdge, g.hair * 1.5);
-    // the back wall's boards and the lanes' approach roads (off the slab: the fleet's day, and each
-    // group's)
-    if (on) { this.wall(g); this.roads(g, lanes); }
+    // (the back wall's boards, the approach roads and the lane curbs: front.ts, fx-front)
     // painted zones (dashed): the plant's and the city's (the lanes are their own zones)
     g.dash(true, 3, 4);
     const zones: [number, number, number, number][] = [[INTAKE_U0 - 8, 252, INTAKE_U1 + 6, 330], [ENG_U0 - 8, 22, ENG_U1 + 40, 600], [CITY_U0 - 8, CITY_V0 - 8, CITY_U1 + 4, CITY_V1 + 6]];
@@ -392,87 +378,6 @@ export class Floor implements Layer {
     add(GATE_U, LANE_V0, () => this.gate(g, lanes, cnt), GATE_U + 8, LANE_V1, 26);
     // the main lines' cars: they change at a merge or a run's end, which redraws this layer
     fp.after(() => this.drawCars(g, lo));
-  }
-
-  /** The back wall along v = 0: a board per stage, its last 24 h as bars (an hour each, the
-   *  oldest at the left; red = of them failed). Apps: a bar per district (height = its apps, red =
-   *  down). One path per colour. */
-  private wall(g: Gfx): void {
-    const cam = this.f.cam, W = this.data.last.wall, c = this.f.census, w = this.f.world;
-    const z0 = 5, z1 = WALL_Z - 6;
-    const gray: number[] = [], red: number[] = [], ok: number[] = [];
-    for (const b of BOARDS) {
-      // the board: a dark plate on the wall's face, its top edge lit
-      g.begin_(); poly(cam, g, [b.u0, 0, 0, b.u1, 0, 0, b.u1, 0, WALL_Z, b.u0, 0, WALL_Z]); g.fill('#121214');
-      g.begin_(); g.move(cam.x(b.u0, 0), cam.y(b.u0, 0, WALL_Z)); g.line(cam.x(b.u1, 0), cam.y(b.u1, 0, WALL_Z)); g.stroke('#3A3A3E', Math.max(1, g.hair * 1.4));
-      if (b.id === 'apps') {
-        const ds = c.districts, tot = ds.reduce((a, d) => a + d.apps.length, 0) || 1, mx = Math.max(1, ...ds.map((d) => d.apps.length));
-        let u = b.u0 + 4;
-        const span = b.u1 - b.u0 - 8;
-        for (const d of ds) {
-          const du = (span * d.apps.length) / tot, um = u + du / 2;
-          const h = (z1 - z0) * Math.sqrt(d.apps.length / mx);
-          let down = 0;
-          for (const id of d.apps) if (w.apps.get(id)?.health === 'down') down++;
-          const hr = h * (down / Math.max(1, d.apps.length));
-          ok.push(um, z0, z0 + h - hr, Math.max(1, du - 3));
-          if (hr > 0) red.push(um, z0 + h - hr, z0 + h, Math.max(1, du - 3));
-          u += du;
-        }
-        continue;
-      }
-      const [all, bad] = b.id === 'pushes' ? [W.pushes, null] : b.id === 'opened' ? [W.opened, W.openedRed] : b.id === 'landed' ? [W.landed, W.landedRed] : b.id === 'runs' ? [W.runs, null] : b.id === 'fails' ? [W.runsRed, W.runsRed] : [W.deploys, W.deploysRed];
-      let mx = 1;
-      for (let k = 0; k < 24; k++) mx = Math.max(mx, all[k]!);
-      const pitch = (b.u1 - b.u0 - 6) / 24, bw = Math.max(1, pitch * 0.62);
-      for (let k = 0; k < 24; k++) {
-        const n = all[k]!;
-        if (!n) continue;
-        const u = b.u0 + 3 + (k + 0.5) * pitch;
-        const h = (z1 - z0) * Math.sqrt(n / mx), r = bad ? h * (bad[k]! / n) : 0;
-        if (h - r > 0.2) gray.push(u, z0, z0 + h - r, bw);
-        if (r > 0) red.push(u, z0 + h - r, z0 + h, bw);
-      }
-    }
-    const bars = (a: number[], col: string) => {
-      if (!a.length) return;
-      // bars of one width per board would be one path each; widths differ little: per bar
-      for (let i = 0; i < a.length; i += 4) {
-        const u = a[i]!, za = a[i + 1]!, zb = a[i + 2]!, bw = a[i + 3]!;
-        g.begin_(); poly(cam, g, [u - bw / 2, 0, za, u + bw / 2, 0, za, u + bw / 2, 0, zb, u - bw / 2, 0, zb]); g.fill(col);
-      }
-    };
-    bars(gray, '#4E4E53'); bars(ok, withAlpha(C.up, 0.55)); bars(red, F.redTop);
-  }
-
-  /** The lanes' approach roads, off the slab to the left of the docks: each group's last 24 h
-   *  along its road (oldest far out, this hour at the dock), a bar an hour as tall as its pushes,
-   *  topped in its hue, red for its main-line runs that failed. */
-  private roads(g: Gfx, lanes: LaneGeo[]): void {
-    const cam = this.f.cam, cnt = this.data.last;
-    const u0 = -ROAD_DU, u1 = LANE_UA - 1;
-    let mx = 1;
-    for (const L of lanes) { const i = cnt.lanes.get(L.id); if (i) for (let k = 0; k < 24; k++) mx = Math.max(mx, i.push24[k]!); }
-    const pitch = (u1 - u0 - 6) / 24;
-    for (const L of lanes) {
-      // the road: a plate in the lane's hue, on its base band (the accordion leaves it be)
-      const b0 = L.b0, b1 = L.b1;
-      g.begin_(); quad(cam, g, u0, b0 + 0.8, u1, b1 - 0.8, 0); g.fill(withAlpha(L.hex, 0.07));
-      if (L.kind === 'bots') continue;
-      g.begin_(); g.move(cam.x(u0, b0 + 0.8), cam.y(u0, b0 + 0.8)); g.line(cam.x(u1, b0 + 0.8), cam.y(u1, b0 + 0.8)); g.stroke(withAlpha(L.hex, 0.3), Math.max(1, g.hair * 1.2));
-      const info = cnt.lanes.get(L.id);
-      if (!info) continue;
-      const v = (b0 + b1) / 2, dv = Math.min(10, (b1 - b0) * 0.36), bu = Math.max(1.2, pitch * 0.6);
-      const zMax = Math.min(26, (b1 - b0) * 0.8);
-      for (let k = 0; k < 24; k++) {
-        const n = info.push24[k]!, bad = info.fail24[k]!;
-        if (!n && !bad) continue;
-        const u = u0 + 3 + (k + 0.5) * pitch;
-        const h = n ? 1.5 + zMax * Math.sqrt(n / mx) : 0, r = bad ? Math.min(zMax, 2 + 2.5 * bad) : 0;
-        if (h) box(cam, g, u - bu / 2, v - dv / 2, bu, dv, h, withAlpha(L.hex, 0.95), '#2A2A2E', '#333337', '');
-        if (r) box(cam, g, u - bu / 2, v - dv / 2, bu, dv / 3, h + r, F.redTop, F.redSide, F.redFront, '');
-      }
-    }
   }
 
   /** The ribbon of group stripes from the rails' ends into the intake. */
@@ -823,25 +728,7 @@ export class Floor implements Layer {
         push(rect(u0, L.s.cell0, u0 + CELL_DU, L.s.cell1, stackH(C.n)), k, id, label, [`${name} · ${PH[r]}`, `${C.n} open PRs${C.red ? ` · ${C.red} failing CI` : ''}${C.conflict ? ` · ${C.conflict} conflicted` : ''}`, `${C.stale} stale${C.oldest ? ` · oldest ${ago(C.oldest)}` : ''}`]);
       }
     }
-    // the back wall's boards (the stage's numbers on hover, its day as the chart) and the roads
-    const sum = (a: Int16Array) => a.reduce((x, y) => x + y, 0);
-    for (const b of BOARDS) {
-      const st = STAGES.find((x) => x.n === b.stage);
-      if (!st) continue;
-      const lines = f.words.stageHover(b.stage);
-      for (let ua = b.u0; ua < b.u1; ua += 40) {
-        const ub = Math.min(b.u1, ua + 40);
-        const x0 = cam.x(ua, 0), x1 = cam.x(ub, 0), y0 = Math.min(cam.y(ua, 0, WALL_Z), cam.y(ub, 0, WALL_Z)), y1 = Math.max(cam.y(ua, 0, 0), cam.y(ub, 0, 0));
-        push([x0, y0, x1 - x0, y1 - y0], 'stage', f.words.stageFly(b.stage), st.title, lines);
-      }
-    }
-    for (const L of this.lanesNow) {
-      const info = cnt.lanes.get(L.id);
-      const [k, id, label] = lensOf(L);
-      if (!info || !k) continue;
-      const name = G.lane(L.id)?.short ?? L.id;
-      band(-ROAD_DU, L.b0, LANE_UA, L.b1, 12, k, id, label, [`${name} · the last 24 h`, `${sum(info.push24)} pushes · ${sum(info.fail24)} failed on main`, 'click: the group across the floor']);
-    }
+    // (the back wall's boards and the roads: front.ts hits, fx-front)
     // for drivers (the evidence shots), once per layout at the fit: each lane's dock, cells and road
     const lk = `${cam.key}|${this.lanes.ver}|${this.data.ver}`;
     if (cam.zoom === 1 && !this.focusId && lk !== this.loggedLanes) {

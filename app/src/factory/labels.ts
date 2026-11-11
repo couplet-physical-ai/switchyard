@@ -23,6 +23,7 @@ import { AGE_WORDS, PHASES } from './census.ts';
 import type { Factory } from './factory.ts';
 import { STAGES } from './grammar.ts';
 import { floorGroups } from './groups.ts';
+import { BOARDS, TITLE_Z, frontOf } from './front.ts'; // fx-front: the title row over the back wall's boards
 import { ago, stackH } from './floor.ts';
 import { insights } from '../insights.ts';
 import { LANE_U, LANE_V0, PLAN, VIA_WORDS, WALL_Z } from './layout.ts';
@@ -30,7 +31,7 @@ import { MONO, SMALL, TITLE, dur, runningStep } from './prims.ts';
 import type { Bay, Block, HitBox, Label, Layer, LiveFrame } from './types.ts';
 
 const {
-  DOCK_U0, ROW_U, GATE_U, RAIL_U0, RAIL_U1, INTAKE_U0, YARD_U0,
+  DOCK_U0, ROW_U, GATE_U, RAIL_U0, RAIL_U1, INTAKE_U0, INTAKE_U1, YARD_U0,
   ENG_U0, ENG_U1, ENG_V0, ENG_STEP, ENG_DV, ENG_H, SCAN_U, TRACK_V, CITY_U0, CITY_V0, VIAS,
 } = PLAN;
 
@@ -51,6 +52,21 @@ const WALL_AT: Record<string, [number, number, number]> = {
   '01': [DOCK_U0 + 4, 0, WALL_Z], '02': [YARD_U0 + 6, 0, WALL_Z], '04': [RAIL_U0 - 8, 0, WALL_Z], '06': [ENG_U0 - 100, 0, WALL_Z],
   '07': [ENG_U1 + 18, 0, WALL_Z], '08': [SCAN_U + 18, 0, WALL_Z], '09': [CITY_U0 + 6, 0, WALL_Z],
 };
+// fx-front: the boards stand taller now (front.ts BOARDS): a zoomed-in title sits on its board's top
+for (const b of BOARDS) { const at = WALL_AT[b.stage]; if (at) at[2] = b.z1; }
+if (WALL_AT['08']) WALL_AT['08'][2] = BOARDS.find((b) => b.stage === '07')?.z1 ?? WALL_Z;
+/** fx-front: the fleet zoom's ONE title row (review iter-2 #7): each title over its stage, on one
+ *  baseline, a leader down to its board (or, with none, to the stage). `parts`: [words, stage]. */
+const TITLE_ROW: { n: string; parts: [string, string][]; at?: [number, number, number] }[] = [
+  { n: '01', parts: [['sources', '01']] },
+  { n: '02', parts: [['pr yard', '02']] },
+  { n: '03', parts: [['merge gate', '03']], at: [GATE_U + 3, LANE_V0, 24] },
+  { n: '04', parts: [['main lines', '04']] },
+  { n: '05', parts: [['intake', '05']], at: [INTAKE_U1, 252, 8] },
+  { n: '06', parts: [['consumption engine', '06']], at: [ENG_U0 + 10, ENG_V0, ENG_H] },
+  { n: '07', parts: [['tests', '07'], ['· deploy', '08']] },
+  { n: '09', parts: [['apps', '09']] },
+];
 /** The fleet trend metric a stage's hover sparkline reads. */
 const STAGE_SPARK: Record<string, 'pushes' | 'prs_open' | 'red' | 'intake_ms' | 'pipelines' | 'failures' | 'deploys' | ''> = {
   '01': '', '02': 'prs_open', '03': '', '04': 'red', '05': 'intake_ms', '06': 'pipelines', '07': 'failures', '08': 'deploys', '09': '',
@@ -76,7 +92,7 @@ export class Labels implements Layer {
 
   /** The hover card's lines for a hit the floor's words or lanes made this frame (hover.ts and
    *  drawer.ts ask first); null: not theirs. */
-  hoverFor(h: HitBox): string[] | null { return this.hov.get(h) ?? this.f.floor.hoverFor(h); }
+  hoverFor(h: HitBox): string[] | null { return this.hov.get(h) ?? this.f.floor.hoverFor(h) ?? frontOf(this.f)?.hoverFor(h) ?? null; } // fx-front: + the boards', roads' and curbs' hits
 
   /** A stage's numbers, the ones its title's stat line used to print (≤ 3 lines): by the stage's
    *  number ('02'), its title ('pr yard') or its hit id. */
@@ -110,6 +126,7 @@ export class Labels implements Layer {
       case '07': {
         const pass = fl.finished ? Math.round(((fl.finished - fl.failed) / fl.finished) * 100) : Math.round((w.stats.success_rate_24h || 0) * 100);
         const sm = f.coffee.smokeWords();
+        if (this.f.floor.on && !sm) return ['tests · deploy', `${pass}% pass · ${fl.failed} failed/h of ${fl.finished}`, `${c.deploying.length} deploying · ${fl.deploys} deploys/h`]; // fx-front: one board, one title
         return ['tests', `${pass}% pass · ${fl.failed} failed/h`, sm ? `smoke: ${sm}` : `${fl.finished} finished/h`];
       }
       case '08': return ['deploy', `${c.deploying.length} deploying · ${fl.deploys}/h`, VIAS.map((v) => `${VIA_WORDS[v]} ${fl.byVia[v] ?? 0}`).join(' · ')];
@@ -127,7 +144,9 @@ export class Labels implements Layer {
 
   /** A stage's 24 h sparkline (the fleet trend's), for the hover card's chart; null: none. */
   stageSpark(id: string): (number | null)[] | null {
-    const n = STAGES.find((s) => s.n === id || s.title === id)?.n ?? '';
+    const own = this.f.floor.on ? frontOf(this.f)?.spark(id) : null; // fx-front: the board's day (its title or stage)
+    if (own) return own;
+    const n = STAGES.find((s) => s.n === id || s.title === id)?.n ?? (id === 'tests · deploy' ? '07' : '');
     // fab-w1: the back wall's own board (the day, an hour a value), else the fleet trend's
     const W = this.f.floor.on ? this.f.floor.data.last.wall : null;
     const ser = !W ? null : n === '01' ? W.pushes : n === '02' ? W.opened : n === '03' || n === '04' ? W.landed : n === '05' || n === '06' ? W.runs : n === '07' ? W.runsRed : n === '08' ? W.deploys : null;
@@ -204,7 +223,8 @@ export class Labels implements Layer {
     const jobsPer = !detail ? 0 : q === 0 ? 3 : q === 1 ? 2 : 0;
     // the stage titles: one run each at fleet zoom (their numbers on hover, `stageHover`), with
     // their stat lines once zoomed in; anchored at each stage's back edge, lifted into the band
-    for (const st of STAGES) {
+    if (!detail && fl.on) this.titleRow(g);
+    else for (const st of STAGES) {
       const A = STAGE_AT[st.n]!;
       const [u, v, z] = (fl.on ? WALL_AT[st.n] : null) ?? A.at;
       const ax = cam.x(u, v), ay = cam.y(u, v, z);
@@ -250,6 +270,69 @@ export class Labels implements Layer {
     if (!detail) return;
     this.machines(g, now, jobsPer);
     this.places(g, q);
+  }
+
+  /** fx-front: the fleet zoom's stage titles, ONE row (review iter-2 #7): each at its stage's x,
+   *  pushed apart on one baseline (the least total shift: pool-adjacent-violators over the order),
+   *  a leader from under it straight down to its board's top (or the stage), with a short level
+   *  jog when the title had to move off its board. Nothing collides: one row, ordered, gapped. */
+  private titleRow(g: Gfx): void {
+    const f = this.f, cam = f.cam;
+    const yT = Math.round(Math.max(80, cam.y(0, 0, TITLE_Z)));
+    const NOTCH = 12, GAP = 16;
+    type T = { n: string; parts: [string, string][]; w: number; ws: number[]; p: number; x: number; ax0: number; ax1: number; ay: (x: number) => number };
+    const ts: T[] = [];
+    for (const r of TITLE_ROW) {
+      const ws = r.parts.map(([s]) => g.width(s, TITLE, true) + NOTCH);
+      const w = ws.reduce((a, b) => a + b, 0) + (ws.length - 1) * 4;
+      const b = BOARDS.find((x) => x.stage === r.n);
+      if (b) {
+        const ua = b.u0 + 2, ub = b.u1 - 6;
+        const ax0 = cam.x(ua, 0), ax1 = cam.x(ub, 0);
+        ts.push({ n: r.n, parts: r.parts, w, ws, p: ax0 - 2, x: 0, ax0, ax1, ay: (x) => cam.y(ua + ((x - ax0) / Math.max(1e-6, ax1 - ax0)) * (ub - ua), 0, b.z1) });
+      } else if (r.at) {
+        const [u, v, z] = r.at, ax = cam.x(u, v), ay = cam.y(u, v, z);
+        ts.push({ n: r.n, parts: r.parts, w, ws, p: ax - Math.min(24, w / 4), x: 0, ax0: ax, ax1: ax, ay: () => ay });
+      }
+    }
+    // pool adjacent violators on p − offset: the least-squares placement that keeps the order
+    const off: number[] = [];
+    let acc = 0;
+    for (const t of ts) { off.push(acc); acc += t.w + GAP; }
+    const blocks: { s: number; n: number; i0: number }[] = [];
+    ts.forEach((t, i) => {
+      blocks.push({ s: t.p - off[i]!, n: 1, i0: i });
+      while (blocks.length > 1 && blocks[blocks.length - 2]!.s / blocks[blocks.length - 2]!.n > blocks[blocks.length - 1]!.s / blocks[blocks.length - 1]!.n) {
+        const b = blocks.pop()!, a = blocks[blocks.length - 1]!;
+        a.s += b.s; a.n += b.n;
+      }
+    });
+    blocks.forEach((b) => { for (let i = b.i0; i < b.i0 + b.n; i++) ts[i]!.x = b.s / b.n + off[i]!; });
+    // inside the canvas
+    const lo = 6 - Math.min(0, ...ts.map((t) => t.x - 6)), hi = Math.max(0, ...ts.map((t) => t.x + t.w - (cam.W - 40)));
+    for (const t of ts) t.x += lo > 6 ? lo - 6 : -hi;
+    for (const t of ts) {
+      const x = Math.round(t.x), yl = yT + 5;
+      // the leader: straight down from under the title where it stands over its anchor, else
+      // from the anchor's nearest end, with a level jog to the title
+      const lx = Math.min(Math.max(x + 6, t.ax0), t.ax1), ay = t.ay(lx);
+      if (ay > yl + 2) {
+        g.vline(g.crisp(lx), yl, ay - 1, '#3E3E43');
+        if (lx < x || lx > x + t.w) { const xa = Math.min(lx, x + 6), xb = Math.max(lx, x + t.w - 6); g.begin_(); g.move(xa, yl + 0.5); g.line(xb, yl + 0.5); g.stroke('#3E3E43', g.hair); }
+        g.begin_(); g.circle(lx, ay, 1.6); g.fill('#6A6A6E');
+      }
+      g.fillRect(x - 4, yT - TITLE, t.w + 8, TITLE + 6, withAlpha(C.canvas, 0.8));
+      let cx = x;
+      t.parts.forEach(([s, n], j) => {
+        g.text(s, cx, yT, C.ink, TITLE, true);
+        const sw = t.ws[j]! - NOTCH;
+        f.w2.notch(g, n, cx + sw + 4, yT); // fab-w2: the stage's trend notch
+        cx += t.ws[j]! + 4;
+      });
+      const A = STAGE_AT[t.n]!;
+      this.list.push({ x: x - 2, y: yT, w: t.w + 4, h: TITLE + 3 });
+      this.stageHit(g, x - 3, yT - 14, t.w + 6, 20, t.n, A.fly, t.parts.map(([s]) => s).join(' '));
+    }
   }
 
   private stageHit(g: Gfx, x: number, y: number, w: number, h: number, n: string, fly: string, title: string): void {
