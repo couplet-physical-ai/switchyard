@@ -8,7 +8,8 @@
 # 2. tags it v<version> and pushes the tag -> .github/workflows/release.yml builds the arm64
 #    .app on GitHub's macOS runner, ad-hoc signs it and publishes zip + dmg + SHA256SUMS;
 # 3. waits for that run, then runs the tap's bump-switchyard workflow so
-#    `brew upgrade --cask switchyard` sees it at once (it also runs every 20 min).
+#    a fresh `brew install` gets it at once (it also runs every 20 min); installed apps see it
+#    through latest.json and their Update button.
 # Needs: gh (authenticated, push to this repo), git. Fallback when GitHub's macOS runners are
 # unavailable: scripts/release/release-mac-mini.sh (builds on the Mac mini).
 set -euo pipefail
@@ -49,4 +50,4 @@ sleep 15
 brun=$(gh run list -R "$TAP" -w bump-switchyard.yml --limit 1 --json databaseId --jq '.[0].databaseId')
 timeout 600 gh run watch "$brun" -R "$TAP" --exit-status --interval 10 >/dev/null || { echo "tap bump run $brun failed" >&2; exit 1; }
 echo "tap: $(gh api "repos/$TAP/commits/main" --jq '.sha[0:7] + " " + .commit.message')"
-echo "done: brew update && brew upgrade --cask switchyard"
+echo "done: installed apps offer Update (latest.json); brew upgrade --cask --greedy switchyard also works"

@@ -192,6 +192,21 @@ export class Timeline {
     return true;
   }
 
+  /** A replay chunk too big to load even at its shortest: jump the world to the fleet as it
+   *  was at `s.at` and go on from there (what happened inside the gap is skipped, not wrong). */
+  rebaseReplay(s: Snapshot): void {
+    if (this.mode !== 'replay') return;
+    const w = new World();
+    w.load(s);
+    this.world = w;
+    this.replay = [];
+    this.replayIdx = 0;
+    this.replayLoadedTo = Math.max(this.replayLoadedTo, s.at);
+    this.playhead = Math.max(this.playhead, s.at);
+    this.stale = true;
+    this.epoch++;
+  }
+
   /** The next chunk of a streaming replay: its frames after what is loaded. */
   appendReplay(h: History): void {
     if (this.mode !== 'replay') return;

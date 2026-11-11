@@ -50,7 +50,9 @@ const prTable = new PrsModel();
 const liveLayer = new LiveLayer();
 tl.listener = (e, w) => motion.onEvent(e, w);
 
-function advance(t: number): void {
+/** `asking`: called from a source's answer, so it may fetch (a fetch started elsewhere, in
+ *  `draw` or a promise's continuation, is never run). */
+function advance(t: number, asking = true): void {
   if (t > clock) clock = t;
   tl.tick(clock);
   if (demo) {
@@ -63,8 +65,14 @@ function advance(t: number): void {
       }
     }
     if (tl.replayDone()) tl.resumeLive();
+  } else if (!asking) {
+    // draw: no requests from here; the next answer asks
   } else if (tl.replayDone()) {
     void reloadLive();
+  } else if (rebaseAt && up?.snapshotAt && !chunking) {
+    const at = rebaseAt, u = up;
+    rebaseAt = 0;
+    chunking = u.snapshotAt!(at).then((s) => { if (s) tl.rebaseReplay(s); }, () => { rebaseAt = at; }).finally(() => { chunking = null; });
   } else {
     const next = tl.replayWants(REPLAY_LOOKAHEAD);
     if (next) void fetchChunk(next);
@@ -75,17 +83,37 @@ function advance(t: number): void {
   }
 }
 
-/** A replay streams in chunks of this much server time, fetched this far ahead of the
- *  playhead: an hour of real frames is ~10 MB, too much to hold beside the world at once. */
-const REPLAY_CHUNK = 6 * 60_000;
-const REPLAY_LOOKAHEAD = 3 * 60_000;
+/** A replay streams in chunks of server time, fetched this far ahead of the playhead, each
+ *  reply bounded by REPLAY_CEILING: an hour of real history can be ~30 MB (a server's boot
+ *  burst), far more than the native data module's 64 MiB heap holds beside the world. A chunk
+ *  over the ceiling is refused before any of it is read, and the window halves; quiet
+ *  stretches grow it back. A window that will not fit even at REPLAY_MIN jumps over the gap
+ *  with `/snapshot?at=`. */
+const REPLAY_MAX = 6 * 60_000;
+const REPLAY_MIN = 5_000;
+const REPLAY_LOOKAHEAD = 60_000;
+const REPLAY_CEILING = 1536 << 10;
+let chunkMs = 60_000;
 let chunking: Promise<void> | null = null;
+/** A window that will not fit even at REPLAY_MIN: jump the replay to the fleet at this time. */
+let rebaseAt = 0;
+const refused = (e: unknown) => /refus|ceiling|exceeds/i.test(`${(e as { kind?: string }).kind ?? ''} ${(e as Error).message ?? e}`);
 function fetchChunk(from: number): Promise<void> {
   if (!up || demo || chunking) return chunking ?? Promise.resolve();
-  const to = Math.min(from + REPLAY_CHUNK, tl.replayTo);
-  chunking = up.history(from, to, false).then(
-    (h) => { tl.appendReplay(h); },
-    () => { /* asked again on the next frame */ },
+  const to = Math.min(from + chunkMs, tl.replayTo);
+  chunking = up.history(from, to, false, REPLAY_CEILING).then(
+    (h) => {
+      tl.appendReplay(h);
+      const bytes = h.bytes ?? 0;
+      if (bytes < REPLAY_CEILING / 4) chunkMs = Math.min(REPLAY_MAX, Math.round(chunkMs * 1.5));
+      else if (bytes > REPLAY_CEILING / 2) chunkMs = Math.max(REPLAY_MIN, Math.floor(chunkMs / 2));
+    },
+    (e) => {
+      if (!refused(e)) return; // the network: asked again by the next answer
+      if (chunkMs > REPLAY_MIN) { chunkMs = Math.max(REPLAY_MIN, Math.floor(chunkMs / 2)); return; }
+      console.log(`replay: ${Math.round((to - from) / 1000)} s from ${from} is over ${REPLAY_CEILING >> 10} KB; jumping it`);
+      rebaseAt = to;
+    },
   ).finally(() => { chunking = null; });
   return chunking;
 }
@@ -311,7 +339,10 @@ export const sources: Sources = {
       }
       const to = tl.liveNow();
       const from = to - 3_600_000;
-      const h = await up.history(from, from + REPLAY_CHUNK);
+      chunkMs = 60_000;
+      // The fleet at `from` (v0.3), then frames only: never a base inside a big window.
+      const base = up.snapshotAt ? await up.snapshotAt(from).catch(() => null) : null;
+      const h = base ? { from, to: from, base, frames: [] } : await up.history(from, from + 60_000, true, 12 << 20);
       return { ok: tl.startReplay(h, to), status: 'replay' };
     } catch (e) {
       return { ok: false, status: String((e as Error).message ?? e) };
@@ -484,7 +515,7 @@ export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
 
 function drawSurface(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame): boolean {
   if (surface === 'yardStatic') {
-    advance(frame.time);
+    advance(frame.time, false);
     const lay = ensureLayout(frame.width, frame.height);
     drawStatic(ctx, lay);
     return false;
@@ -492,7 +523,7 @@ function drawSurface(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
   if (surface === 'yardLive') {
     const dt = Math.max(0, Math.min(100, frame.time - lastLive));
     lastLive = frame.time;
-    advance(frame.time);
+    advance(frame.time, false);
     const lay = ensureLayout(frame.width, frame.height);
     motion.reduced = args[0] === 'reduced';
     motion.update(clock, tl.world, dt);

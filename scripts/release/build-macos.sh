@@ -24,7 +24,10 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$VERSION" ]] || { echo "--version is required" >&2; exit 2; }
 BUNDLE_ID=${SWITCHYARD_BUNDLE_ID:-com.exowatt.switchyard}
-BUILD=${SWITCHYARD_BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}
+# CFBundleVersion: derived from the version alone (M*1000000 + m*1000 + p), so it rises with
+# every release and is identical on GitHub Actions and the mini. The in-app updater refuses a
+# bundle whose CFBundleVersion is not greater than the running one's.
+BUILD=${SWITCHYARD_BUILD_NUMBER:-$(echo "$VERSION" | awk -F'[.+-]' '{ printf "%d", $1*1000000 + $2*1000 + $3 }')}
 OUT=$ROOT/dist
 rm -rf "$OUT/Switchyard.app" && mkdir -p "$OUT"
 export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
@@ -70,9 +73,14 @@ app)
   if [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist" 2>/dev/null)" != "$VERSION" ]]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$plist"
   fi
+  if [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist" 2>/dev/null)" != "$BUILD" ]]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" "$plist"
+  fi
+  id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")
+  [[ "$id" == "$BUNDLE_ID" ]] || { echo "bundle id is $id, expected $BUNDLE_ID (the updater and the cask key on it)" >&2; exit 1; }
   ;;
 *) echo "unknown mode $MODE" >&2; exit 2 ;;
 esac
 
 lipo -archs "$OUT/Switchyard.app/Contents/MacOS/"* 2>/dev/null | head -3 || true
-echo "built $OUT/Switchyard.app ($MODE, $VERSION) in $(( $(date +%s) - start ))s"
+echo "built $OUT/Switchyard.app ($MODE, $VERSION build $BUILD) in $(( $(date +%s) - start ))s"

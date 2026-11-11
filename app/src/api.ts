@@ -8,7 +8,9 @@ export interface Upstream {
   readonly kind: 'http' | 'demo';
   readonly label: string;
   snapshot(): Promise<Snapshot>;
-  history(from: number, to: number, withBase?: boolean): Promise<History>;
+  history(from: number, to: number, withBase?: boolean, ceiling?: number): Promise<History>;
+  /** The fleet as it was at `at` (contract v0.3 `/snapshot?at=`); null where the server has none. */
+  snapshotAt?(at: number): Promise<Snapshot | null>;
   journey(repo: string, sha: string): Promise<Journey | null>;
   pr(repo: string, number: number): Promise<PrDetail | null>;
   search(q: string): Promise<SearchResults>;
@@ -84,17 +86,24 @@ export class HttpUpstream implements Upstream {
   }
   /** `withBase` false: the caller already has the state at `from` (a later chunk of a
    *  replay), so the base is not parsed (and, where the server allows, not sent). */
-  async history(from: number, to: number, withBase = true): Promise<History> {
+  async snapshotAt(at: number): Promise<Snapshot | null> {
+    const s = await this.get<Snapshot | null>(`/api/v1/snapshot?at=${Math.floor(at)}`, 30000, 12 << 20);
+    return s && typeof s === 'object' && 'repos' in s ? s : null;
+  }
+
+  /** A window of history. `ceiling` bounds the reply (a bigger one fails as `Refused` before any
+   *  of it is in memory: the caller asks for a shorter window). */
+  async history(from: number, to: number, withBase = true, ceiling = 20 << 20): Promise<History> {
     const path = `/api/v1/history?from=${Math.floor(from)}&to=${Math.floor(to)}${withBase ? '' : '&base=0'}`;
-    if (withBase) return this.get<History>(path, 60000, 20 << 20);
+    if (withBase) return this.get<History>(path, 60000, ceiling);
     // The server writes {"from","to","base","frames"} in that order, and a snapshot has no
     // "frames" key: jump past the base (never scanned) to the frames array.
-    const text = await this.text(path, 60000, 20 << 20);
+    const text = await this.text(path, 60000, ceiling);
     const head = /"from":(-?\d+),"to":(-?\d+)/.exec(text.slice(0, 200));
     const k = text.indexOf('"frames":[');
     if (k < 0) return parseLarge<History>(text, undefined, NO_BASE);
     const frames = await parseLarge<History['frames']>(text.slice(k + 9, text.lastIndexOf(']') + 1));
-    return { from: head ? Number(head[1]) : from, to: head ? Number(head[2]) : to, frames };
+    return { from: head ? Number(head[1]) : from, to: head ? Number(head[2]) : to, frames, bytes: text.length };
   }
   journey(repo: string, sha: string): Promise<Journey | null> {
     return this.get<Journey | null>(`/api/v1/commit/${repo}/${sha}`, 15000, 4 << 20);

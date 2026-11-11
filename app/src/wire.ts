@@ -110,7 +110,7 @@ export type Frame =
 
 /** A `t:"snapshot"` entry in history replaces the state (a server restart). */
 export type HistoryFrame = Frame | { t: 'snapshot'; seq: number; at: number; v: Snapshot };
-export type History = { from: number; to: number; base?: Snapshot; frames: HistoryFrame[] };
+export type History = { from: number; to: number; base?: Snapshot; frames: HistoryFrame[]; /** the reply's size (a chunked replay sizes its next window by it) */ bytes?: number };
 
 /** One Dagger call from cicd's traces (contract v0.3): oldest first. The demo's older form
  *  (`end`, `parent`, `state`, `cached`) is still read. */

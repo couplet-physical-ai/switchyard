@@ -23,7 +23,9 @@ What each part does:
    `/Applications/Switchyard.app` and removes the download quarantine flag (the app is
    ad-hoc signed; there is no Apple Developer ID), so it opens without a Gatekeeper prompt.
 
-Update: `brew update && brew upgrade --cask switchyard`. Remove: `brew uninstall --cask switchyard`
+Update: the app updates itself (**Update** in the app, fed by the release's `latest.json`); the
+cask is marked `auto_updates`, so plain `brew upgrade` leaves it alone and
+`brew upgrade --cask --greedy switchyard` forces it. Remove: `brew uninstall --cask switchyard`
 (add `--zap` to also remove its settings and caches).
 
 ## First run: connect the app
@@ -32,14 +34,19 @@ The app needs a **device token** (your own, revocable). Mint it in the browser, 
 with your Exowatt Google account:
 
 1. Open <https://switchyard.apps.example.com/connect> and click **Create device token**.
-2. Click **Open in Switchyard**: the app opens on *Connect to this server?*; click **Connect**.
-3. If the app does not come forward (an older build without the `switchyard://` link), click
-   **Copy token** instead, then in Switchyard click **Connect…** (or the status at the top
-   right), leave **Server** as `https://switchyard.apps.example.com`, paste the token into
-   **Token**, and click **Connect**. The token is kept in the macOS Keychain.
+2. Click **Open in Switchyard**. macOS opens the app (a `switchyard://connect` link) on
+   *Connect to this server?*.
+3. Click **Connect**. The token goes into the macOS Keychain only now, after you confirm.
 
-The top-right status then reads `live · switchyard.apps.example.com`. No server handy?
-**Watch the demo** runs a built-in simulated fleet.
+The top-right status then reads `live · switchyard.apps.example.com`.
+
+**Fallback** (the link does nothing, e.g. the browser blocks it): on the same page click
+**Copy token**; in Switchyard click **Connect…** (or the status at the top right), leave
+**Server** as `https://switchyard.apps.example.com`, paste the token into **Token**, and click
+**Connect**.
+
+No server handy? **Watch the demo** runs a built-in simulated fleet. To revoke a device token: in the
+browser (signed in), `GET /api/v1/tokens` lists yours and `DELETE /api/v1/tokens/{id}` revokes one.
 
 ## Without Homebrew
 
