@@ -235,6 +235,7 @@ export class Glance {
     // for drivers (tools/glance-shots.mjs): where the chip is, once per place
     if (cx !== this.loggedX) { this.loggedX = cx; console.log(`coffee: since chip at ${Math.round(cx + sinceW / 2)},${y + 11} rows ${y + 26 + 4 + 11} step 22`); }
     this.strip(g, it);
+    c.look(g, t); // wow 4: the light walking the worst path
     if (!f.lens.topLens && f.tl.mode !== 'replay' && it >= T_SETTLE) this.calloutsDraw(g, clamp((it - T_SETTLE) / (T_DONE - T_SETTLE), 0, 1));
     if (c.menu) this.menuDraw(g, Math.min(cx, right - this.rowW), y + 26);
   }

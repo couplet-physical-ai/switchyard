@@ -66,10 +66,11 @@ export class Strip {
       this.act[k]++;
       if (p.state === 'failure' || p.state === 'error') this.fail[k]++;
     }
-    // before the world's first run: the fleet trend's hourly spark, a sixth of an hour per bin
+    // before the world's first run: the fleet trend's hourly spark, a sixth of an hour per bin,
+    // once the server holds a day (a v0.4 server's approximation holds 2 h, zeros before them)
     const tr = insights().trend('fleet');
     const F = c.factor > 1 ? c.factor : 1;
-    if (tr) {
+    if (tr && tr.hours_7d >= 24) {
       const pa = tr.pipelines.spark, pf = failuresOf(tr).spark, n = pa.length;
       for (let k = 0; k < BINS; k++) {
         if (start + (k + 1) * BIN_MS > oldest) break;

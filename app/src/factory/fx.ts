@@ -22,9 +22,9 @@ import { beat, breathe } from './motion.ts';
 /** The master beat as a pulse, 1 on the beat (motion.ts `beat` is its phase). */
 export function pulse(t: number): number { return 0.5 + 0.5 * Math.cos(TAU * beat(t)); }
 
-export const K_RED = 0, K_WISP = 1, K_WISP_RED = 2, K_EMBER = 3, K_CRACK = 4, K_OK = 5, K_AMBER = 6, K_INK = 7, K_CARD = 8;
+export const K_RED = 0, K_WISP = 1, K_WISP_RED = 2, K_EMBER = 3, K_CRACK = 4, K_OK = 5, K_AMBER = 6, K_INK = 7, K_CARD = 8, K_BLACK = 9;
 // fx-glance: smoke is dark and red-tinged (gray is the ok family), ok is green-gray
-const BASE = ['#E06464', '#3E1D1B', '#8E4038', '#C47A48', '#D9D3CF', '#9DB8A4', '#E5B567', '#F2F2F0', '#111112'];
+const BASE = ['#E06464', '#3E1D1B', '#8E4038', '#C47A48', '#D9D3CF', '#9DB8A4', '#E5B567', '#F2F2F0', '#111112', '#050506'];
 const STEPS = 32;
 const LUT: string[][] = BASE.map((hex) => {
   const n = parseInt(hex.slice(1), 16);

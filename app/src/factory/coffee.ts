@@ -40,7 +40,7 @@ import {
   type Fingerprint, type Fresh, type Marks, type QueueState, type Totals, type VisitRec, type Win,
 } from './anomaly.ts';
 import { FACTOR } from './stress.ts';
-import { K_AMBER, K_INK, K_OK, K_RED, Nums, beacons, chevrons, crackAt, cracks, dodge, embers, pulse, rings, smoke, tint } from './fx.ts';
+import { K_AMBER, K_BLACK, K_INK, K_OK, K_RED, Nums, beacons, chevrons, crackAt, cracks, dodge, embers, rings, smoke, tint } from './fx.ts';
 import { Glance, T_DONE, T_SETTLE, T_SWEEP } from './glance.ts';
 import { beatPhase, changesSince } from './seams.ts';
 
@@ -56,6 +56,8 @@ const FRESH_MS = 120_000;
 const FLASH_MS = 1400;
 /** Green-gray: ok, recovered (one flash, never a pulse). */
 const OK = '#9DB8A4';
+/** The rim on what is new (a main line newly red). */
+const RIM = '#F2F2F0';
 
 export class Coffee {
   /** The server whose last visit is latched: the baseline holds for the whole session. */
@@ -462,6 +464,7 @@ export class Coffee {
     const sz = clamp(f.cam.s * 1.3, 0.7, 3);
     // reduced motion: the marks hold still (no rising smoke, no breathing), rims only
     const tm = f.reduced ? 0 : t;
+    this.lookVeil(g, t); // wow 4: off the worst path the floor dims
     gate(this.mEmber, 5, T, this.sEmber); embers(g, this.sEmber, tm);
     cracks(g, this.mCrack);
     gate(this.mSmoke, 8, T, this.sSmoke); smoke(g, this.sSmoke, tm, 1, f.labels);
@@ -574,6 +577,90 @@ export class Coffee {
     }
     this.layoutEvents(repoSpot);
     this.layoutGlows(repoSpot);
+    this.layoutLook();
+  }
+
+  // ---- wow 4 (fx-glance): the floor looks at the problem --------------------------------------
+  // When the fleet reads worse than usual, everything off the worst path dims ~15 % (a veil over
+  // the static floor with holes for the worst group's lane, the intake, the scanner and the
+  // worst cluster's heap) and a slow light walks that path, dock → failure, every 6 beats.
+  /** The worst path on screen: x, y pairs, and each point's distance along it. */
+  private lookXY: number[] = [];
+  private lookLen: number[] = [];
+  /** The veil's holes on screen: quads (8 numbers each), wound against the veil. */
+  private lookHoles: number[] = [];
+  private lookFrom = -1;
+
+  private layoutLook(): void {
+    const f = this.f, cam = f.cam, P = f.plan, m = this.dg.marks;
+    this.lookXY = []; this.lookLen = []; this.lookHoles = [];
+    if (m.usual.rel !== 'worse' || m.verdict === 'flowing') return;
+    const grp = m.hot.find((h) => h.kind === 'group'), cl = m.hot.find((h) => h.kind === 'cluster');
+    if (!grp && !cl) return;
+    const fl = f.floor, gi = grp ? fl.laneIndex(grp.id) : -1, geo = gi >= 0 ? fl.lanesNow[gi] : undefined;
+    const pg = cl ? f.lens.parkGroups.find((x) => x.cl === cl.id) : undefined;
+    const pts: [number, number][] = [];
+    if (geo && grp) pts.push([P.DOCK_U0 + 14, fl.dockV(grp.id)], [P.RAIL_U1 + 4, fl.railV(grp.id)]);
+    pts.push([P.INTAKE_U0 + 10, P.LANE_V[0]], [P.DIST_U, 300], [P.SCAN_U - 8, 300], [P.SCAN_U - 8, P.RETURN_V]);
+    if (pg) pts.push([(pg.u0 + pg.u1) / 2, P.RETURN_V]);
+    let len = 0;
+    pts.forEach(([u, v], i) => {
+      const x = cam.x(u, v), y = cam.y(u, v, 2);
+      if (i) len += Math.hypot(x - this.lookXY[this.lookXY.length - 2], y - this.lookXY[this.lookXY.length - 1]);
+      this.lookXY.push(x, y); this.lookLen.push(len);
+    });
+    const hole = (u0: number, v0: number, u1: number, v1: number) => {
+      const q = [cam.x(u0, v0), cam.y(u0, v0, 0), cam.x(u1, v0), cam.y(u1, v0, 0), cam.x(u1, v1), cam.y(u1, v1, 0), cam.x(u0, v1), cam.y(u0, v1, 0)];
+      // the veil runs clockwise on screen: each hole the other way round
+      let a = 0;
+      for (let i = 0; i < 8; i += 2) { const j = (i + 2) % 8; a += q[i] * q[j + 1] - q[j] * q[i + 1]; }
+      if (a > 0) this.lookHoles.push(q[0], q[1], q[6], q[7], q[4], q[5], q[2], q[3]);
+      else this.lookHoles.push(...q);
+    };
+    if (geo) hole(-112, geo.v0, P.RAIL_U1 + 12, geo.v1);
+    hole(P.RAIL_U1 + 12, P.LANE_V[0] - 16, P.ENG_U0, P.LANE_V[1] + 16);
+    hole(P.SCAN_U - 22, 140, P.SCAN_U + 22, P.RETURN_V - 16);
+    if (pg) hole(pg.u0 - 10, P.RETURN_V - 15, pg.u1 + 10, P.RETURN_V + 15);
+  }
+
+  /** Whether the floor looks at the problem now: worse than usual, settled, at the fleet zoom,
+   *  live, nothing picked, motion allowed. */
+  private looking(t: number): boolean {
+    const f = this.f;
+    return this.lookXY.length >= 4 && !f.reduced && f.tl.mode === 'live' && !f.lens.topLens && !f.selected && f.cam.zoom < 1.6 && this.introT(t) >= T_DONE;
+  }
+
+  /** The veil (under the live layers, over the static floor): ~15 %, fading in over a second. */
+  private lookVeil(g: Gfx, t: number): void {
+    if (!this.looking(t)) { this.lookFrom = -1; return; }
+    if (this.lookFrom < 0) this.lookFrom = t;
+    const a = 0.15 * clamp((t - this.lookFrom) / 1000, 0, 1), cam = this.f.cam;
+    if (a <= 0.005) return;
+    const L = 0, T = 68, R = cam.W, B = cam.H - 58, h = this.lookHoles;
+    g.begin_();
+    g.ctx.moveTo(L, T); g.ctx.lineTo(R, T); g.ctx.lineTo(R, B); g.ctx.lineTo(L, B); g.ctx.closePath();
+    for (let i = 0; i < h.length; i += 8) { g.ctx.moveTo(h[i], h[i + 1]); g.ctx.lineTo(h[i + 2], h[i + 3]); g.ctx.lineTo(h[i + 4], h[i + 5]); g.ctx.lineTo(h[i + 6], h[i + 7]); g.ctx.closePath(); }
+    g.ops += 5 + h.length / 2;
+    g.fill(tint(K_BLACK, a));
+  }
+
+  /** The light walking the worst path (on top), every 6 beats, eased; the path faintly drawn. */
+  look(g: Gfx, t: number): void {
+    if (!this.looking(t) || this.lookFrom < 0) return;
+    const xy = this.lookXY, ln = this.lookLen, total = ln[ln.length - 1];
+    if (!(total > 0)) return;
+    const fade = clamp((t - this.lookFrom) / 1000, 0, 1);
+    g.begin_();
+    g.move(xy[0], xy[1]);
+    for (let i = 2; i < xy.length; i += 2) g.line(xy[i], xy[i + 1]);
+    g.stroke(tint(K_INK, 0.1 * fade), 1.2);
+    const p = (t / (6 * 1000)) % 1, e = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2, d = e * total;
+    let k = 1;
+    while (k < ln.length - 1 && ln[k] < d) k++;
+    const s = (d - ln[k - 1]) / Math.max(1e-6, ln[k] - ln[k - 1]);
+    const x = xy[(k - 1) * 2] + (xy[k * 2] - xy[(k - 1) * 2]) * s, y = xy[(k - 1) * 2 + 1] + (xy[k * 2 + 1] - xy[(k - 1) * 2 + 1]) * s;
+    const env = Math.sin(Math.PI * p) * fade;
+    for (const [r, al] of LOOK_GLOW) { g.begin_(); g.circle(x, y, r); g.fill(tint(K_INK, al * env)); }
   }
 
   /** A group's place on the floor: an org's dock, a team's district ([u, v, r, z]). */
@@ -654,7 +741,8 @@ export class Coffee {
     const at: number[] = (this.glowAt = []);
     const add = (key: string, u: number, v: number, z: number, r: number, col: string, when: string) => { items.push([key, cam.x(u, v), cam.y(u, v, z), r, col]); at.push(fr.at.get(when) ?? this.dg.since); };
     const { carAt } = this.carSpots();
-    for (const id of fr.newRed) { const s = repoSpot(id); if (s) add(`red:${id}`, s[0], s[1], 5, 6, C.red, `red:${id}`); }
+    // a main line newly red: a WHITE rim (§E; its beacon is the red), still, until it fades
+    for (const id of fr.newRed) { const s = repoSpot(id); if (s) add(`red:${id}`, s[0], s[1], 5, 6, RIM, `red:${id}`); }
     // fresh failures: one ring per CLUSTER on the conveyor (fab-w3's parked groups), sized to its
     // run, so tight-packed crates do not melt into one red blob; it starts with the newest
     const parkedK = new Map(f.lens.parked.map((x) => [x.id, x.k]));
@@ -685,11 +773,11 @@ export class Coffee {
     // their colours (one path per colour and opacity step) and which give one flash (not red)
     this.glowCols = [...new Set(items.map((it) => it[4]))];
     this.glowColOf = items.map((it) => this.glowCols.indexOf(it[4]));
-    this.glowFlash = items.map((it) => it[4] !== C.red);
+    this.glowFlash = items.map((it) => it[4] !== C.red && it[4] !== RIM);
     this.glowN++;
   }
 
-  /** Fresh things pulse where they are, on the shared beat, fading over ~2 min once seen; in the
+  /** Fresh things rimmed where they are (fx-glance: still, the green ones one flash first), fading over ~2 min once seen; in the
    *  replay only those whose moment has passed. */
   private freshGlows(g: Gfx, t: number, T: number): void {
     const items = this.glowItems;
@@ -702,10 +790,9 @@ export class Coffee {
       for (let i = 0; i < items.length; i++) seen[i] = this.seen.get(items[i][0]) ?? -1;
       if (this.seen.size > 4000) this.seen.clear();
     }
-    // fx-glance: ONE eased waveform (the beat's cosine) for everything that pulses, and only red
-    // pulses; the rest (fixed, recovered, deployed, merged) gives ONE flash when first drawn
-    // (eased up and down over FLASH_MS), then a still rim fading over its two minutes
-    const b = this.f.reduced ? 0.5 : pulse(t);
+    // fx-glance: the rims hold still (the beacons, ≤ 3, are what pulses, on the one eased beat);
+    // new reds and failures a steady rim, the rest (fixed, recovered, deployed, merged) ONE flash
+    // when first drawn (eased up and down over FLASH_MS), then a still rim; all fade over 2 min
     const nc = this.glowCols.length;
     const buckets = this.glowBuckets;
     for (let i = 0; i < nc * 4; i++) { if (buckets[i]) buckets[i].length = 0; else buckets[i] = []; }
@@ -718,7 +805,7 @@ export class Coffee {
       if (fade <= 0) continue;
       const it = items[i], r = it[3];
       let a: number, rf: number, rr: number;
-      if (!this.glowFlash[i]) { a = fade * (0.45 + 0.55 * b); rf = r * (1.3 + 0.4 * b); rr = r + 3 + 4 * b; }
+      if (!this.glowFlash[i]) { a = fade * 0.75; rf = r * 1.4; rr = r + 4; }
       else if (age < FLASH_MS && !this.f.reduced) { const e = age / FLASH_MS, env = Math.sin(Math.PI * e); a = fade * env; rf = r * (1.2 + 0.6 * e); rr = r + 3 + 9 * e; }
       else { a = 0.3 * fade; rf = 0; rr = r + 3; }
       if (a < 0.02) continue;
@@ -750,6 +837,9 @@ export class Coffee {
   }
 }
 
+/** The walking light's glow: radius, opacity (outer to inner). */
+const LOOK_GLOW: [number, number][] = [[22, 0.05], [13, 0.09], [6, 0.2], [2.5, 0.6]];
+
 /** The stages' floor spots for embers: [u, v, r]. */
 const STAGE_SPOT: Record<string, [number, number, number]> = {
   prs: [270, 300, 150], mains: [548, 290, 110], intake: [705, 291, 70], engines: [915, 300, 190], tests: [1104, 320, 70], deploy: [1165, 330, 80],
@@ -770,7 +860,7 @@ function pushN(n: Nums, ...xs: number[]): void { for (const x of xs) n.a[n.n++] 
 
 function hashN(s: string): number { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h >>> 0; }
 
-const ALPHA_KIND: Record<string, number> = { [C.red]: K_RED, [OK]: K_OK, [C.packet]: K_AMBER };
+const ALPHA_KIND: Record<string, number> = { [C.red]: K_RED, [OK]: K_OK, [C.packet]: K_AMBER, [RIM]: K_INK };
 /** A glow colour at an opacity, from fx.ts's table when it has the colour. */
 function alphaOf(col: string, a: number): string {
   const k = ALPHA_KIND[col];
