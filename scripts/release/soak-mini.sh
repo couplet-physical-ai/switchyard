@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# Live soak of the installed release on the Mac mini: /Applications' Switchyard connected to the live
+# server for <minutes> (default 20), its RSS sampled every minute, then:
+#   - the process must still be alive (0.1.3 died of a Hermes OOM after ~18 min live),
+#   - RSS must plateau: the last <SY_SOAK_TAIL> minutes (default 5) may grow at most
+#     SY_SOAK_TAIL_PCT % (default 8), and the end may be at most SY_SOAK_HALF_PCT % (default 25)
+#     above the RSS at the halfway minute.
+#   - the JS heap must plateau the same way when the app logs `heap:` lines (0.1.5+): RSS alone
+#     does not show the leak (0.1.4 here: RSS flat at 173 MB, then a Hermes OOM at minute 4 — the
+#     JS heap hits its own cap). SY_SOAK_NEED_HEAP=1 fails a run with no heap lines.
+# Numbers in a heap line: the first `<n>MB`/`<n>mb`/`used=<n>` is read as the used heap in MB.
+#
+#   SY_TOKEN_FILE=<local 600 file> scripts/release/soak-mini.sh <version> [minutes]
+#
+# The token goes over as a 600 file (never argv or a URL) and is deleted afterwards. The app is
+# quit at the end (only /Applications' copy; dev builds share the bundle id). CSV: /tmp/sy-soak-<v>.csv
+set -euo pipefail
+V=${1:?version}; MIN=${2:-20}
+HOST=${SY_MINI:-mini-user@192.0.2.1}
+SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 "$HOST")
+DIR=/Users/${HOST%@*}/.switchyard-e2e
+TAIL=${SY_SOAK_TAIL:-5}; TAIL_PCT=${SY_SOAK_TAIL_PCT:-8}; HALF_PCT=${SY_SOAK_HALF_PCT:-25}
+[[ -n "${SY_TOKEN_FILE:-}" ]] || { echo "SY_TOKEN_FILE is required (a live soak)" >&2; exit 1; }
+[[ "$(stat -c %a "$SY_TOKEN_FILE")" == 600 ]] || { echo "$SY_TOKEN_FILE must be mode 600" >&2; exit 1; }
+TOK_REMOTE=$DIR/secret/token
+tar -C "$(dirname "$SY_TOKEN_FILE")" -cf - "$(basename "$SY_TOKEN_FILE")" \
+  | timeout 60 "${SSH[@]}" "umask 077 && mkdir -p '$DIR/secret' && tar -C '$DIR/secret' -xOf - > '$TOK_REMOTE' && chmod 600 '$TOK_REMOTE'"
+cleanup() { timeout 60 "${SSH[@]}" "rm -P '$TOK_REMOTE' 2>/dev/null || rm -f '$TOK_REMOTE'; rmdir '$DIR/secret' 2>/dev/null || true" || true; }
+trap cleanup EXIT
+
+CSV=/tmp/sy-soak-$V.csv
+out=$(timeout $(( MIN * 60 + 600 )) "${SSH[@]}" 'f=$(mktemp); cat > "$f"; bash "$f" </dev/null 2>&1; rc=$?; rm -f "$f"; exit $rc' <<EOF
+set -euo pipefail
+A=/Applications/Switchyard.app
+P='^/Applications/Switchyard.app/Contents/MacOS/Switchyard'
+gui() { sudo -n launchctl asuser \$(id -u) sudo -n -u \$(id -un) "\$@"; }
+quit_() {
+  pkill -f "\$P" || return 0
+  for i in \$(seq 1 15); do sleep 1; pgrep -f "\$P" >/dev/null || return 0; done
+  pkill -KILL -f "\$P" || true; sleep 1
+}
+v=\$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "\$A/Contents/Info.plist")
+[[ "\$v" == "$V" ]] || { echo "FAIL: /Applications has \$v, not $V" >&2; exit 1; }
+quit_
+LOG=~/Library/Logs/Switchyard/switchyard.log; mkdir -p ~/Library/Logs/Switchyard; touch \$LOG
+gui open --env SWITCHYARD_TOKEN_FILE=$TOK_REMOTE "\$A"
+pid=""; for i in \$(seq 1 40); do pid=\$(pgrep -f "\$P" | head -1 || true); [[ -n "\$pid" ]] && break; sleep 0.25; done
+[[ -n "\$pid" ]] || { echo "FAIL: $V did not start" >&2; exit 1; }
+for i in \$(seq 1 40); do grep -q "pid \$pid token-file: connected" \$LOG && break; sleep 1; done
+grep -q "pid \$pid token-file: connected" \$LOG || { quit_; echo "FAIL: $V (pid \$pid) did not connect live" >&2; exit 1; }
+echo "soak: $V pid \$pid connected live; $MIN min, RSS every minute"
+echo "CSV,minute,rss_mb,heap"
+for m in \$(seq 0 $MIN); do
+  [[ \$m -gt 0 ]] && sleep 60
+  if ! kill -0 \$pid 2>/dev/null; then
+    echo "FAIL: $V (pid \$pid) died at minute \$m" >&2
+    ls -t ~/Library/Logs/DiagnosticReports/Switchyard* 2>/dev/null | head -1 | sed 's/^/crash report: /'
+    grep "pid \$pid " \$LOG | tail -3
+    exit 1
+  fi
+  rss=\$(ps -o rss= -p \$pid | tr -d ' '); heap=\$(grep "pid \$pid heap:" \$LOG | tail -1 | sed 's/.* heap: *//' | cut -c1-80 || true)
+  echo "CSV,\$m,\$((rss / 1024)),\${heap:-}"
+done
+quit_
+echo SOAK-DONE
+EOF
+) || { echo "$out"; echo "soak: FAILED" >&2; exit 1; }
+echo "$out" | grep -v '^CSV,'
+echo "$out" | grep '^CSV,' | cut -d, -f2- > "$CSV"
+cat "$CSV"
+grep -qx SOAK-DONE <<<"$out" || { echo "soak: did not reach the end" >&2; exit 1; }
+python3 - "$CSV" "$MIN" "$TAIL" "$TAIL_PCT" "$HALF_PCT" "${SY_SOAK_NEED_HEAP:-0}" <<'PY'
+import csv, re, sys
+path, n, tail, tail_pct, half_pct, need_heap = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5]), sys.argv[6] == "1"
+rows = [r for r in csv.DictReader(open(path))]
+
+def plateau(name, xs):
+    t = min(tail, len(xs) - 1)
+    end, half, t0 = xs[-1], xs[len(xs) // 2], xs[-1 - t]
+    tg = 100.0 * (end - t0) / t0; hg = 100.0 * (end - half) / half
+    ok = tg <= tail_pct and hg <= half_pct
+    print(f"{name}: start {xs[0]:g}, min {min(xs):g}, max {max(xs):g}, half {half:g}, end {end:g}; last {t} min {tg:+.1f}% "
+          f"(≤ {tail_pct}%), end vs half {hg:+.1f}% (≤ {half_pct}%) → {'plateau' if ok else 'GROWING'}")
+    return ok
+
+ok = plateau("RSS MB", [float(r["rss_mb"]) for r in rows])
+def mb(h):
+    m = re.search(r"used=([0-9.]+)", h) or re.search(r"([0-9.]+)\s*[mM][bB]", h)
+    return float(m.group(1)) if m else None
+heap = [mb(r["heap"]) for r in rows if r["heap"]]
+heap = [h for h in heap if h is not None]
+if len(heap) >= 3: ok = plateau("JS heap MB", heap) and ok
+elif need_heap: print("FAIL: no heap: lines from the app (SY_SOAK_NEED_HEAP=1)"); ok = False
+else: print("JS heap: no heap: lines logged (RSS only; RSS did not show 0.1.4's leak)")
+print(f"soak: alive {n} min, " + ("memory plateaus" if ok else "memory does NOT plateau"))
+sys.exit(0 if ok else 1)
+PY
+echo "soak: $V OK"
