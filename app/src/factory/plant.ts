@@ -14,8 +14,9 @@
 //             the cpu ribbon (red ≥ 90 %) and the mem ribbon (dashed); offline minutes and the
 //             time before the record are GAPS. The label is just the machine's name.
 //   gauges    cpu and mem towers at the machine's end: the wall's ribbons, now.
-//   GHA       hosted runners have no slots we know of: a ghost machine (dashed, unfilled) with a
-//             bay for each RUNNING job only, never an empty one, and no wall.
+//   GHA       a ghost machine (dashed: not ours). With no runners reported we know of no slots: a
+//             bay for each RUNNING job only, never an empty one, and no wall; runners the fleet
+//             reports (census folds them in) bring their real slots and their wall.
 //   scanner   a SPLIT BEAM: its crossbar lit in two parts, pass (green-gray, back) and fail (red,
 //             front, over the return conveyor), each ∝ its share of the last hour's finishes.
 //   return    failures ride the front edge to the RISER beside the docks and up a SPUR into their
@@ -37,7 +38,7 @@ import type { Factory } from './factory.ts';
 import { UX, VX } from './iso.ts';
 import { floorGroups } from './groups.ts';
 import { PLAN } from './layout.ts';
-import { R_BEAM, R_DOOR, R_RING, breathe } from './motion.ts';
+import { R_BEAM, R_DOOR, R_RING, beltSpeedPx, breathe } from './motion.ts';
 import { DAY_MS, PlantHist, dataRuns, historyIds, type Tide } from './planthist.ts';
 import { F, SMALL, box, dur, pipeWords, poly, quad, ring } from './prims.ts';
 import type { Bay, FloorPass, Layer, LiveFrame, Pt } from './types.ts';
@@ -109,7 +110,7 @@ export class Plant implements Layer {
     if (this.epoch !== this.f.tl.epoch) { this.epoch = this.f.tl.epoch; this.hist.clear(); } // a new server or a reset: forget the walls
     if (c.skeleton || !w.loaded) return;
     const ms: { key: string; ids: string[] }[] = [];
-    for (const g of c.groups) if (!g.hosted) ms.push({ key: g.id, ids: historyIds(w, g.id, g.engines) });
+    for (const g of c.groups) if (g.engines.length) ms.push({ key: g.id, ids: historyIds(w, g.id, g.engines) });
     this.hist.pump(ms, clock);
   }
 
@@ -187,9 +188,10 @@ export class Plant implements Layer {
     return b;
   }
 
-  /** Bays: each self-hosted machine's slots, the k-th running pipeline of a host in bay k. A
-   *  hosted machine (GitHub Actions) has no slots we know of: a bay for each running job only,
-   *  packed from the left (honest capacity: never an empty hosted bay). */
+  /** Bays: each self-hosted machine's slots, the k-th running pipeline of a host in bay k. GitHub
+   *  Actions: its runners' slots when the fleet reports runners (census folds them in); with none
+   *  we know of no slots, so a bay for each running job only, packed from the left (honest
+   *  capacity: never an invented empty hosted bay). */
   private layoutBays(w: World): void {
     void w;
     const c = this.f.census;
@@ -199,8 +201,9 @@ export class Plant implements Layer {
     const span = ENG_U1 - ENG_U0 - 28;
     c.groups.forEach((g, gi) => {
       const v0 = ENG_V0 + gi * ENG_STEP;
-      const n = g.hosted ? g.running.length : Math.max(1, g.slots);
-      const du = g.hosted ? Math.min(span / 6, span / Math.max(1, n)) : span / n;
+      const ghost = g.hosted && !g.engines.length;
+      const n = ghost ? g.running.length : Math.max(1, g.slots, g.running.length);
+      const du = ghost ? Math.min(span / 6, span / Math.max(1, n)) : span / n;
       for (let k = 0; k < n; k++) {
         out.push({ u: ENG_U0 + 14 + k * du + 3, v: v0 + 16, du: du - 6, dv: ENG_DV - 40, group: gi, slot: k, pid: g.running[k] ?? '' });
       }
@@ -226,7 +229,7 @@ export class Plant implements Layer {
     // the consumption engine: one machine per host, its wall on its back
     this.f.census.groups.forEach((gr, gi) => {
       const v0 = ENG_V0 + gi * ENG_STEP;
-      add(ENG_U0, v0, () => this.engineBlock(g, gr, v0, gi, lo), ENG_U1 + 4, v0 + ENG_DV + 4, ENG_H + (gr.hosted ? 0 : WALL_H));
+      add(ENG_U0, v0, () => this.engineBlock(g, gr, v0, gi, lo), ENG_U1 + 4, v0 + ENG_DV + 4, ENG_H + (gr.engines.length ? WALL_H : 0));
       if (gr.hosted) return;
       // cpu / mem gauges: two towers at the machine's right end
       add(ENG_U1 + 10, v0 + 40, () => {
@@ -257,7 +260,8 @@ export class Plant implements Layer {
     g.fill(F.belt);
     g.begin_();
     quad(cam, g, RISER_U - hw, top - hw, RISER_U + hw, RETURN_V + 4, 0.3);
-    g.stroke(F.beltEdge, g.hair * 1.2);
+    for (const l of lanes) { const sv = this.spurAt(l); quad(cam, g, DOCK_U1, sv - 1.8, RISER_U - hw, sv + 1.8, 0.3); }
+    g.stroke(F.beltEdge, g.hair * 1.5);
     if (lo) return;
     // each spur's stripe in its group's hue: follow the colour home
     for (const l of lanes) {
@@ -283,6 +287,13 @@ export class Plant implements Layer {
       g.move(cam.x(ENG_U1, v0 + ENG_DV), cam.y(ENG_U1, v0 + ENG_DV, 0)); g.line(cam.x(ENG_U1, v0 + ENG_DV), cam.y(ENG_U1, v0 + ENG_DV, ENG_H));
       g.stroke('#38383C', g.hair * 1.5);
       g.dash(false);
+      // runners the fleet reports: their slots are real, idle ones recede as anywhere; and a wall
+      if (gr.engines.length) {
+        const rec = this.f.bA;
+        for (const b of this.bays) if (b.group === gi) rec.add(b.u, b.v, b.du, b.dv, 0, ENG_H);
+        rec.flushQuads(g, cam, '#131315');
+        this.wall(g, gr, v0, lo);
+      }
       return;
     }
     // the plinth, then the machine: calm faces, a red edge when the host is offline
@@ -397,7 +408,7 @@ export class Plant implements Layer {
     const cam = this.f.cam, c = this.f.census;
     if (c.skeleton) return;
     c.groups.forEach((gr, gi) => {
-      if (gr.hosted) return;
+      if (!gr.engines.length) return;
       const vf = ENG_V0 + gi * ENG_STEP + WALL_V;
       // the wall as 8 boxes along it (a sheared panel: one box would cover the machine behind)
       for (let k = 0; k < 8; k++) {
@@ -476,7 +487,7 @@ export class Plant implements Layer {
     // gauges: the engines' cpu and mem towers (a sample every few seconds; a few boxes)
     this.drawGauges(g);
     this.drawBeam(g);
-    this.drawReturns(g, q);
+    this.drawReturns(g, q, t);
   }
 
   /** The intake: a ribbon per lane under its queued crates (one per waiting run, the oldest at
@@ -564,10 +575,19 @@ export class Plant implements Layer {
     }
   }
 
-  /** The spurs that carried failures home this hour glow red, brighter with more. */
-  private drawReturns(g: Gfx, q: number): void {
+  /** The riser's slats drift up toward the docks while failures came home this hour (as the
+   *  floor's belts do, floor.ts); the spurs that carried them glow red, brighter with more. */
+  private drawReturns(g: Gfx, q: number, t: number): void {
     if (q >= 4) return;
     const c = this.f.census, w = this.f.world, cam = this.f.cam;
+    const lanes = this.lanes();
+    if (c.flow.failed > 0 && q < 2 && lanes.length) {
+      const top = Math.min(...lanes.map((l) => this.spurAt(l)));
+      const off = this.f.reduced ? 0 : ((t / 1000) * beltSpeedPx(c.flow.failed) / cam.fitS) % 12;
+      g.begin_();
+      for (let v = RETURN_V - off; v > top; v -= 12) { g.move(cam.x(RISER_U - 2.2, v), cam.y(RISER_U - 2.2, v, 0.6)); g.line(cam.x(RISER_U + 2.2, v), cam.y(RISER_U + 2.2, v, 0.6)); }
+      g.stroke(F.slat, Math.max(1, cam.s * 1.4));
+    }
     if (this.spurKey !== c.at) {
       this.spurKey = c.at;
       this.spurN.clear();
@@ -579,7 +599,7 @@ export class Plant implements Layer {
       }
     }
     if (!this.spurN.size) return;
-    for (const l of this.lanes()) {
+    for (const l of lanes) {
       const n = this.spurN.get(l.id);
       if (!n) continue;
       const sv = this.spurAt(l);
@@ -593,7 +613,7 @@ export class Plant implements Layer {
   label(g: Gfx, gr: Group, gi: number): boolean {
     const cam = this.f.cam, v0 = ENG_V0 + gi * ENG_STEP;
     const name = gr.hosted ? 'GitHub Actions' : gr.name;
-    const z = gr.hosted ? ENG_H : ENG_H + WALL_H;
+    const z = gr.engines.length ? ENG_H + WALL_H : ENG_H;
     const x = cam.x(ENG_U0 + 2, v0 + WALL_V), y = cam.y(ENG_U0 + 2, v0 + WALL_V, z) - 5;
     const wv = g.width(name, SMALL, true);
     const at = this.f.placeAt(Math.round(x), Math.round(y), wv, 13, 2, true);
@@ -644,7 +664,7 @@ export class Plant implements Layer {
     const v0 = ENG_V0 + gi * ENG_STEP, gr = c.groups[gi]!;
     // everything else dims to ~15 %; the machine's wall comes back crisp
     g.fillRect(0, 0, cam.W, cam.H, withAlpha(C.canvas, 0.85));
-    if (!gr.hosted) this.wall(g, gr, v0, false);
+    if (gr.engines.length) this.wall(g, gr, v0, false);
     // the opened bay: the machine's top as one panel, edged and banded in the job's group hue
     const hex = this.f.w2.on ? floorGroups().hex(floorGroups().laneOfPipeline(p)) : '#8A7146';
     // the time axis: the run's start → now (or its expected end, or its last step), a margin
