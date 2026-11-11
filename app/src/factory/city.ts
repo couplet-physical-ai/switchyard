@@ -347,7 +347,8 @@ export class City implements Layer {
     this.cityKey = key;
     this.hKey = '';
     // the biggest pitch at which every district fits the plot (stress mode's 2,400 apps too)
-    let pitch = 26;
+    // (a small fleet grows its lots until the plot is full: no dead space at the fleet zoom)
+    let pitch = 44;
     for (; pitch > 4; pitch -= pitch > 10 ? 0.5 : 0.25) if (this.pack(pitch, true)) break;
     this.pack(pitch, false);
     this.cityPitch = pitch;
@@ -566,7 +567,7 @@ export class City implements Layer {
         const x0 = cam.x(b.u, b.v + b.d), x1 = cam.x(b.u + b.d, b.v);
         if (x1 < -10 || x0 > cam.W + 10) { hist[3]++; continue; }
         n++;
-        if (lod < 3) { (b.hv === 4 || b.idle || idle ? dim : this.healthOf(b) === 2 ? red : act).add(b.u, b.v, b.d, b.d, b.h); continue; }
+        if (lod < 3) { (b.hv === 4 || idle ? dim : this.healthOf(b) === 2 ? red : b.idle ? dim : act).add(b.u, b.v, b.d, b.d, b.h); continue; }
         if (runU1 >= 0 && b.district === runD && b.u - runU1 <= this.cityPitch) { runU1 = b.u + b.d; runH += b.h; runK++; continue; }
         if (runU1 >= 0) dim.add(runU0, v, runU1 - runU0, lot, runH / runK);
         runU0 = b.u; runU1 = b.u + b.d; runH = b.h; runK = 1; runD = b.district;
@@ -672,7 +673,7 @@ export class City implements Layer {
       }
       if (!any) return;
       if (pass === 0) g.fill(withAlpha('#E8E8E2', lit ? 0.12 : lod === 0 ? 0.07 : 0.05));
-      else g.stroke(withAlpha('#D6D6D0', lit ? 0.9 : lod === 0 ? 0.62 : 0.5), lit ? 1.4 : lod === 0 ? g.hair * 1.4 : 1);
+      else g.stroke(withAlpha('#D6D6D0', lit ? 0.9 : lod === 0 ? 0.5 : 0.36), lit ? 1.4 : lod === 0 ? g.hair * 1.4 : 1);
     }
   }
 
