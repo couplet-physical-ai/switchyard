@@ -50,6 +50,8 @@ pub struct StepRef {
     pub workflow: String,
     pub step: String,
     pub state: CiState,
+    /// Failed steps filed under a failure cluster: its `line` (the decisive line agrees).
+    pub cluster_line: Option<String>,
 }
 
 /// (pipeline, workflow, step, tail, around)
@@ -149,12 +151,28 @@ impl Logs {
             return Err(LogError::NotFound("no logs for this pipeline".into()));
         };
         let state = state.unwrap_or(s.state);
-        let decisive = matches!(state, CiState::Failure | CiState::Error)
-            .then(|| crate::signature::extract_at(&s.workflow, &s.step, exit, &raw).1)
-            .flatten();
-        let mut v = match decisive.filter(|_| around) {
+        // Every line showing the step's decisive cause, first first: the line its cluster
+        // was filed under, else the classifier's (the first occurrence is the command's
+        // own output; later ones are summaries).
+        let decisive: Vec<usize> = if matches!(state, CiState::Failure | CiState::Error) {
+            let (sig, at) = crate::signature::extract_at(&s.workflow, &s.step, exit, &raw);
+            let found = s
+                .cluster_line
+                .as_deref()
+                .or(sig.line.as_deref())
+                .map(|want| crate::signature::find_lines(&raw, want))
+                .unwrap_or_default();
+            if found.is_empty() {
+                at.into_iter().collect()
+            } else {
+                found
+            }
+        } else {
+            Vec::new()
+        };
+        let mut v = match decisive.first().copied().filter(|_| around) {
             Some(d) => around_of(raw, d),
-            None => tail_of(raw, tail, decisive),
+            None => tail_of(raw, tail, &decisive),
         };
         v["id"] = s.pipeline.clone().into();
         v["step"] = s.step.clone().into();
@@ -355,16 +373,18 @@ impl Logs {
     }
 }
 
-/// The last `tail` lines (and the decisive line's index when inside them).
-fn tail_of(mut raw: Vec<String>, tail: usize, decisive: Option<usize>) -> Value {
+/// The last `tail` lines, and the index of the first decisive line inside them.
+fn tail_of(mut raw: Vec<String>, tail: usize, decisive: &[usize]) -> Value {
     // Keep the tail (+1: a line before it says the log goes on).
     let drop = raw.len().saturating_sub(tail + 1);
     raw.drain(..drop);
     let mut v = shape(raw, tail);
+    let first = v["first"].as_u64().unwrap_or(0) as usize;
+    let kept = v["lines"].as_array().map_or(0, Vec::len);
     if let Some(d) = decisive
-        .and_then(|d| d.checked_sub(drop))
-        .and_then(|d| d.checked_sub(v["first"].as_u64().unwrap_or(0) as usize))
-        && d < v["lines"].as_array().map_or(0, Vec::len)
+        .iter()
+        .filter_map(|d| d.checked_sub(drop)?.checked_sub(first))
+        .find(|&d| d < kept)
     {
         v["decisive"] = d.into();
     }

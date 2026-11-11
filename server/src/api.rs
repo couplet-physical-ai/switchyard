@@ -924,6 +924,13 @@ async fn pipeline_log(
                     .iter()
                     .find(|s| s.get("name").and_then(Value::as_str) == Some(step.as_str()))
                     .map(|s| crate::logs::StepRef {
+                        cluster_line: s
+                            .get("cluster")
+                            .and_then(Value::as_str)
+                            .and_then(|c| m.get(Kind::Cluster, c))
+                            .and_then(|c| c.get("line"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
                         pipeline: id.clone(),
                         repo: repo.clone(),
                         workflow: wname.to_string(),

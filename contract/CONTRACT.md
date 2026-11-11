@@ -478,11 +478,13 @@ type PipelineLog = {                     // GET /api/v1/pipeline/{id}/log?step=&
                                          // `lines` = the ±40 lines around it (else the tail)
   after?: number,                        // with `around`: log lines after the window
   decisive?: number,                     // failed steps: the index in `lines` of the decisive
-                                         // error line, raw (redacted like the rest): the line
+                                         // error line, raw (redacted like the rest): a line
                                          // the step's Cluster.line is the normalized form of
-                                         // (read from the same last 5,000 log lines); absent
-                                         // when it is not inside the returned tail or the log
-                                         // gave no clear cause
+                                         // (else the classifier's pick; read from the same last
+                                         // 5,000 log lines), at its first occurrence in the
+                                         // returned lines; never a teardown line ("context
+                                         // canceled", "signal: killed"); absent when none is
+                                         // inside the returned tail or the log gave no clear cause
   fetched: number                        // when it was read upstream (ms)
 }
 // Woodpecker (`wp:`): the step's own log. GitHub Actions (`gha:`): a Step is a job; its
