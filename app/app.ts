@@ -2,7 +2,7 @@
 // motion system and the yard's canvas layers. Contract asks small questions (sources below);
 // the canvases read the world directly every frame (`draw`).
 
-import type { Answer, Ctx2D, Frame, Result, Sources, Store } from './app.contract.d.ts';
+import type { Answer, Ctx2D, Frame, NativeModule, Result, Sources, Store } from './app.contract.d.ts';
 import { HttpUpstream, resolveBase, setDefaultServer, wsUrl, type Upstream } from './src/api.ts';
 
 // A release build bakes the team's server in (app/scripts/build-macos-release.sh sets it);
@@ -20,7 +20,7 @@ import { MainlinesModel, stateWords } from './src/table/mainlines.ts';
 import { PrsModel } from './src/table/prs.ts';
 import { Timeline } from './src/timeline.ts';
 import { bindBaselineStore } from './src/factory/agg/baseline.ts';
-import { connectedWith, saveTokenFile, scrubKept, takeTokenFile, tokenFileReport } from './src/hooks.ts';
+import { connectedWith, saveTokenFile, takeTokenFile, tokenFileReport } from './src/hooks.ts';
 import { updateDo, updateState } from './src/update.ts';
 import type { Frame as WireFrame } from './src/wire.ts';
 import { Yard } from './src/yard/draw.ts';
@@ -29,15 +29,88 @@ import { isRed } from './src/yard/layout.ts';
 import { dotLine, fmtDur } from './src/yard/paint.ts';
 import { buildingIds, queueTruth } from './src/yard/select.ts';
 
+// fx-kc: no `secret.keep`. Exact reads every kept secret synchronously before boot, and a
+// Keychain item an older ad-hoc build made held 0.1.2's launch windowless behind its prompt. The
+// app's own module keeps the token instead, read once, async ("the token" below).
 export const grants = [
   'net.fetch https:',
   'net.fetch http:',
   'net.websocket wss:',
   'net.websocket ws:',
-  'secret.keep switchyard.token',
 ].join('\n');
 
-const TOKEN = 'switchyard.token';
+// ---- the token (fx-kc; README "Security") ---------------------------------------------------
+// The device token lives in the platform module: macOS a 0600 file (modules/apple/Keychain.swift,
+// moved once from the Keychain item older builds kept), the web `localStorage` under the key
+// Exact used (modules/web/index.js). It is read ONCE, through `native.later`, so a Keychain
+// prompt never holds the boot: the window is up and the floor drawn while it waits. It stays in
+// this module's memory: Contract sees `tok` {ver, has, status, detail} only, and no answer,
+// argument or log line carries it (README "Tokens never sit in kept answers").
+type TokStatus = 'loading' | 'ready' | 'none' | 'denied' | 'error';
+type Native = NativeModule | null | undefined;
+let token = '';
+let tokStatus: TokStatus = 'loading';
+let tokDetail = '';
+/** The read in flight or done; null before the first ask. */
+let tokLoad: Promise<void> | null = null;
+let tokLoads = 0;
+/** Saves this launch: a read that started before one is let go (the saved token wins). */
+let tokSaves = 0;
+let tokAsked = { gen: -1, hook: '' };
+
+/** One `tokenGet`. Started inside an answer (the module is asked before its first await). */
+function readToken(native: Native, simulate = ''): Promise<void> {
+  const mine = ++tokLoads;
+  const saves = tokSaves;
+  tokStatus = 'loading';
+  tokDetail = '';
+  let asked: Promise<Record<string, unknown>>;
+  try {
+    asked = native?.available ? native.later(simulate ? { op: 'tokenGet', simulate } : { op: 'tokenGet' }) : Promise.resolve({ status: 'none' });
+  } catch (e) {
+    asked = Promise.resolve({ status: 'error', detail: String((e as Error)?.message ?? e) });
+  }
+  tokLoad = asked.then(
+    (r): Record<string, unknown> => r ?? {},
+    (e): Record<string, unknown> => ({ status: 'error', detail: String((e as Error)?.message ?? e) }),
+  ).then((r) => {
+    if (mine !== tokLoads) return; // a newer read is the one that counts
+    if (saves !== tokSaves) { tokStatus = token ? 'ready' : 'none'; return; } // saved meanwhile
+    const st = String(r.status ?? '');
+    if (st === 'ready' && typeof r.token === 'string' && r.token) { token = r.token; tokStatus = 'ready'; return; }
+    token = '';
+    tokStatus = st === 'denied' || st === 'error' ? st : 'none';
+    tokDetail = tokStatus === 'none' ? '' : String(r.detail ?? '').slice(0, 240);
+  });
+  return tokLoad;
+}
+
+/** Keep `t` (the module's file, or `localStorage`); this launch uses it at once either way. */
+async function saveToken(t: string, native: Native): Promise<{ ok: boolean; status: string }> {
+  token = t.trim();
+  tokStatus = token ? 'ready' : 'none';
+  tokDetail = '';
+  tokSaves++;
+  if (!native?.available) return { ok: true, status: 'saved for this session' };
+  try {
+    const r = await native.later(token ? { op: 'tokenSet', token } : { op: 'tokenForget' });
+    return r?.ok === true ? { ok: true, status: 'saved' } : { ok: false, status: `not saved: ${String(r?.detail ?? '?')}` };
+  } catch (e) {
+    return { ok: false, status: `not saved: ${String((e as Error)?.message ?? e)}` };
+  }
+}
+
+const tokView = () => ({ ver: token ? tokenVer(token) : '', has: token !== '', status: tokStatus, detail: tokDetail });
+
+/** The page's own server (the web, same-origin SSO) and the demo need no token and never wait
+ *  on its read; a server that may want one waits for it. */
+function needsToken(server: string): boolean {
+  const s = server.trim();
+  if (s === 'demo') return false;
+  const origin = (globalThis as { origin?: unknown }).origin;
+  if (s === '' && typeof origin === 'string' && /^https?:\/\//.test(origin)) return false;
+  return resolveBase(s) !== '';
+}
 
 // ---- state ---------------------------------------------------------------------------------
 const tl = new Timeline();
@@ -162,6 +235,10 @@ async function demoLive(): Promise<void> {
 type Conn = Result<'connect'>;
 /** Connects started: only the newest one's outcome counts for the token-file hook. */
 let connects = 0;
+/** The latest connect, by what it connected with: conn is asked again when `tok` lands (its
+ *  version and status), and a connect that already used that token is the same connect, not a
+ *  second snapshot (fx-kc). */
+let lastConnect: { key: string; p: Promise<Conn> } | null = null;
 
 async function connect(server: string, token: string, epoch0: number): Promise<Conn> {
   epochAtZero = epoch0;
@@ -346,34 +423,56 @@ export const sources: Sources = {
   parseLink: ([u, server, token]) => parseLink(u, server, token),
   // SWITCHYARD_TOKEN_FILE (macOS, env only; src/hooks.ts): the token, once, through parseLink.
   tokenFile: (_a, _store, _storage, native) => takeTokenFile(native, DEFAULT_SERVER, parseLink),
-  saveTokenFile: (_a, store: Store) => saveTokenFile(store, TOKEN),
+  saveTokenFile: (_a, _store, _storage, native) => saveTokenFile((t) => saveToken(t, native)),
   tokenFileReport: (_a, _store, _storage, native) => tokenFileReport(native),
   updateState: (_a, _store, _storage, native) => updateState(native),
   updateDo: ([op], _store, _storage, native) => updateDo(op, native),
-  // The token never leaves the data module: Contract sees whether one is saved and a version (a
-  // short hash that changes when the token does, so conn/feed re-ask). A resource's answer and
-  // its identifying arguments are kept on disk for the next launch (exact.kept), so a token there
-  // would sit in plain text beside the Keychain; the sources read it from the store themselves.
-  loadToken: (_a, store: Store, _storage, native) => {
-    const t = store.get(TOKEN) ?? '';
-    scrubKept(native, t); // older builds' kept answers holding this token: deleted (macOS)
-    return { ver: t ? tokenVer(t) : '', has: t !== '' };
+  // The token never leaves the data module: Contract sees whether one is saved, a version (a
+  // short hash that changes when the token does, so conn/feed re-ask) and how its read went. A
+  // resource's answer and its identifying arguments are kept on disk for the next launch
+  // (exact.kept), so a token there would sit in plain text; the sources use it themselves. The
+  // module scrubs older builds' kept answers holding it as it reads it (Keychain.swift).
+  // `hook`: the route's `?keychain=denied`, the agent's test hook (one read answers denied).
+  loadToken: async ([gen, hook], _store, _storage, native) => {
+    const h = hook === 'denied' ? 'denied' : '';
+    if (!tokLoad) void readToken(native, h);
+    else if (h && h !== tokAsked.hook) void readToken(native, h);
+    // "Try again" (tokGen): reads again after a denial or a failure; a loaded token stands.
+    else if (gen !== tokAsked.gen && (tokStatus === 'denied' || tokStatus === 'error')) void readToken(native);
+    tokAsked = { gen, hook: h };
+    if (tokStatus === 'loading') await tokLoad;
+    return tokView();
   },
-  saveToken: ([token, set], store: Store) => {
-    if (set) store.set(TOKEN, token);
-    return { ok: true, status: set ? 'saved' : 'kept' };
+  saveToken: ([t, set], _store, _storage, native) => {
+    if (!set || !String(t).trim()) return { ok: true, status: 'kept' };
+    return saveToken(String(t), native);
   },
-  connect: async ([server, _ver, _gen, epoch0, offset], store: Store) => {
-    const token = store.get(TOKEN) ?? '';
+  connect: async ([server, _ver, gen, epoch0, offset], _store, _storage, native) => {
     yard.offsetMin = offset;
+    const needs = needsToken(server);
+    if (needs) {
+      if (!tokLoad) void readToken(native);
+      if (tokStatus === 'loading') await tokLoad;
+    }
+    const t = needs ? token : '';
+    const key = `${server}\u0000${gen}\u0000${t ? tokenVer(t) : ''}\u0000${needs ? tokStatus : ''}`;
+    if (lastConnect?.key === key) return lastConnect.p;
     const mine = ++connects;
-    const c = await connect(server, token, epoch0);
-    // A connect with SWITCHYARD_TOKEN_FILE's token, when no newer one started meanwhile (an
-    // older one's answer is let go): how it went, for tokenFileReport to log.
-    if (token && mine === connects) connectedWith(token, server === 'demo' ? '' : resolveBase(server), c.ok, c.error || c.status);
-    return c;
+    const p = (async (): Promise<Conn> => {
+      if (needs && !t && (tokStatus === 'denied' || tokStatus === 'error')) {
+        // the saved token could not be read: the token card says why and what to do
+        return { ok: false, status: 'no token', error: tokStatus === 'denied' ? 'Keychain access was denied.' : 'The saved token could not be read.', seq: 0, label: '', kind: '', needsSetup: true, signIn: '' };
+      }
+      const c = await connect(server, t, epoch0);
+      // A connect with SWITCHYARD_TOKEN_FILE's token, when no newer one started meanwhile (an
+      // older one's answer is let go): how it went, for tokenFileReport to log.
+      if (t && mine === connects) connectedWith(t, server === 'demo' ? '' : resolveBase(server), c.ok, c.error || c.status);
+      return c;
+    })();
+    lastConnect = { key, p };
+    return p;
   },
-  liveFeed: ([server, _ver, seq, _gen, ok], store: Store) => liveFeed(server, store.get(TOKEN) ?? '', seq, ok),
+  liveFeed: ([server, _ver, seq, _gen, ok]) => liveFeed(server, needsToken(server) ? token : '', seq, ok),
   overview: ([t]) => { if (t > 0) advance(t); safe('plantHist', 0, () => { factory.plant.pump(clock); return 0; }); return safe('overview', EMPTY_OV, overview); }, // fab-w6: the machine walls' 24 h histories are asked here (a source), never in a draw
   timeControl: async ([what, speed]) => {
     if (what === 'pause') tl.pause();

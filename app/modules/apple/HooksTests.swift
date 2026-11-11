@@ -107,6 +107,7 @@ extension SYUpdaterTests {
         check(SYKeptScrub.scrub(roots: [kv], token: nil) == 0, "scrub: a second pass finds nothing")
         check(SYKeptScrub.scrub(roots: [dir.appendingPathComponent("missing")], token: "x") == 0, "scrub: a missing store → nothing, no error")
         check(!SYKeptScrub.holds(Data("short".utf8), token: "short"), "scrub: a stored token under 8 characters is not matched by value")
+        tokenAtRest() // fx-kc: the token at rest (KeychainTests.swift)
     }
 }
 #endif
