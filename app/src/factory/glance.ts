@@ -48,7 +48,7 @@ import { DAY, VERDICT_WORD, WINS, ago, type Verdict, type Win } from './anomaly.
 import type { Coffee } from './coffee.ts';
 import { K_CARD, K_INK, K_RED, pulse, tint } from './fx.ts';
 import { FACTOR } from './stress.ts';
-import { heapsOf, namedHeap } from './clusters.ts'; // the heap the belt names, the same pick
+import { heapsOf, namedGroup, namedHeap } from './clusters.ts'; // the heap the belt names, the same pick
 import { clockWords } from './prims.ts';
 
 const SMALL = 12;
@@ -357,7 +357,7 @@ export class Glance {
       // the return belt's tallest heap names its own signature (fx-engine, plant.ts): the worst
       // cluster's callout gives way to it when that is its subject (one name per thing)
       const heaps = heapsOf(f.lens.parked);
-      const named = heaps ? namedHeap(heaps) : null;
+      const named = heaps ? namedHeap(heaps) : null, namedG = heaps ? namedGroup(heaps) : null; // v4-heaps: the group the belt names (its repo)
       const tall = heaps ? (named?.cl ?? '') : tallestCluster(pgs);
       // p3 (#5): a flaky heap the belt names says "· flaky" itself: the flaky callout of its step gives way
       const tallFlaky = named?.flakyCl ? named.step : '';
@@ -383,7 +383,7 @@ export class Glance {
         if (h.kind === 'flaky' && tallFlaky && h.lead === tallFlaky) return;
         if ((h.kind === 'red' || h.kind === 'conc') && h.id === focal) return;
         // v4-verdict (#1): the belt's named heap is the concentrated repo's (its words, the same): one name
-        if (h.kind === 'conc' && named && named.repoList.length > 0 && named.repoList.every((r) => r === h.id)) return;
+        if (h.kind === 'conc' && namedG?.repo === h.id) return;
         // a flaky cluster never takes the first slot (w2-glance2, #6)
         if (h.kind === 'flaky' && !this.callouts.length) return;
         // counts × the stress factor, never the ages ("13h", "24h")

@@ -271,7 +271,9 @@ export const VERDICT_WORD: Record<Verdict, string> = { flowing: 'flowing', stead
 /** What decided the verdict (the verdict lens opens on it). */
 export type FactKey = '' | 'watcher' | 'down' | 'acute' | 'pass' | 'red' | 'fails' | 'jam' | 'conc';
 
-export type Smoke = { id: string; step: string; repos: readonly string[]; repoN: number; n1h: number; fresh: boolean; k: number; at: number };
+/** `heap`: v4-verdict, the concentrated repo whose clusters this ONE plume stands for (it rises from
+ *  that repo's heap on the return belt, not the scanner); absent otherwise. */
+export type Smoke = { id: string; step: string; repos: readonly string[]; repoN: number; n1h: number; fresh: boolean; k: number; at: number; heap?: string };
 export type Beacon = { kind: 'red' | 'down' | 'watcher'; id: string; at: number; sev: number };
 export type Crack = { kind: 'red' | 'down'; id: string; since: number };
 /** A stage of the floor (its fleet metric) or a group (any of its metrics). */
@@ -531,6 +533,19 @@ export function marks(inp: MarkInput): Marks {
     const fresh = c.last_seen > since || inWin.has(c.id);
     out.smoke.push({ id: c.id, step: c.step, repos: c.repos, repoN: c.repo_count, n1h: c.count_1h, fresh, k: clamp01(0.4 + c.repo_count / 10 + c.count_1h / 20 + (fresh ? 0.15 : 0)), at: fresh ? Math.max(since, c.last_seen) : since });
   }
+  // v4-verdict (sy-client): the clusters that are all the concentrated repo's (one repo's crons
+  // failing the same way) are ONE thing: one plume, at that repo's heap on the return belt
+  const conc = (out.conc = concentration(w, now, HOUR));
+  if (conc) {
+    const mine = out.smoke.filter((s) => s.repos.length > 0 && s.repos.every((r) => r === conc.repo));
+    if (mine.length) {
+      let n1h = 0, fresh = false, k = 0, at = since;
+      for (const s of mine) { n1h += s.n1h; fresh ||= s.fresh; k = Math.max(k, s.k); at = Math.max(at, s.at); }
+      const head = mine.reduce((a, b) => (b.n1h > a.n1h ? b : a));
+      out.smoke = out.smoke.filter((s) => !mine.includes(s));
+      out.smoke.push({ id: head.id, step: conc.label, repos: [conc.repo], repoN: 1, n1h, fresh, k, at, heap: conc.repo });
+    }
+  }
   out.smoke.sort((a, b) => b.repoN - a.repoN || b.n1h - a.n1h || (a.id < b.id ? -1 : 1));
   if (out.smoke.length > 3) out.smoke.length = 3;
   // beacons (acute) and cracks (chronic): main lines, apps; the outage watcher
@@ -590,7 +605,6 @@ export function marks(inp: MarkInput): Marks {
     }
     for (let i = acute.length - 1; i >= 0; i--) if (flapping(w.repos.get(acute[i].id)?.main?.recent, acute[i].at, failedOn.get(acute[i].id))) acute.splice(i, 1);
   }
-  const conc = (out.conc = concentration(w, now, HOUR));
   const u = (out.usual = usualOf(fleet, redNow, now, Math.max(0, now - since) / HOUR, inp.replay ? momentOf(w, now) : null));
   // v4-verdict (#1): the fleet WITHOUT the concentrated repo, this hour: its pass rate (null: under
   // MOMENT_MIN runs left) and whether it is at or over its usual (the pass rate's 7 d, the failures'

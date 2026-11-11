@@ -41,6 +41,7 @@ import {
   type Fingerprint, type Fresh, type Marks, type QueueState, type Totals, type VisitRec, type Win,
 } from './anomaly.ts';
 import { floorGroups } from './groups.ts';
+import { heapGroups, heapsOf } from './clusters.ts'; // v4-verdict: the concentrated repo's heap group (its one plume)
 import { emberPass } from './trendmarks.ts';
 import { FACTOR } from './stress.ts';
 import { K_AMBER, K_BLACK, K_INK, K_OK, K_RED, Nums, beacons, chevrons, crackAt, cracks, dodge, embers, rings, smoke, tint } from './fx.ts';
@@ -349,7 +350,7 @@ export class Coffee {
     this.openAt = t; this.skipAt = -1; this.camAt = this.f.cam.ver;
     console.log(`coffee: open at ${Math.round(t)} · ${this.words()}`);
     const m = this.dg.marks; // w2-glance2: the evidence tools read what decided the verdict and the callouts' candidates
-    console.log(`coffee: verdict ${m.verdict} · ${m.fact} · pct ${m.usual.pct.toFixed(2)} (${m.usual.pctOf}) · embers ${m.embers.map((e) => `${e.kind}:${e.id}[${e.metrics.join(',')}]`).join(' ')} · hot ${m.hot.map((h) => `${h.kind}:${h.lead}${h.rest}`).join(' | ')}`);
+    console.log(`coffee: verdict ${m.verdict} · ${m.fact} · smoke ${m.smoke.map((s) => `${s.step}${s.heap ? '@heap' : ''}`).join(',')} · pct ${m.usual.pct.toFixed(2)} (${m.usual.pctOf}) · embers ${m.embers.map((e) => `${e.kind}:${e.id}[${e.metrics.join(',')}]`).join(' ')} · hot ${m.hot.map((h) => `${h.kind}:${h.lead}${h.rest}`).join(' | ')}`);
   }
   private firstT = -1;
 
@@ -533,10 +534,16 @@ export class Coffee {
     const sm = this.mSmoke; sm.reset();
     const wisp = new Map<string, [number, number]>();
     const ws = Math.min(1.2, sz);
-    m.smoke.forEach((s, i) => {
-      const v = 300 + i * 70;
-      const top = cam.y(P.SCAN_U, v, 40);
-      pushN(sm, cam.x(P.SCAN_U, v), top, s.k, ws, clamp(2 + s.repoN, 3, 12), 40, s.fresh ? cam.y(P.SCAN_U, v, 0) - top : 0, s.at);
+    // v4-verdict: a concentrated repo's ONE plume rises from its heap group on the return belt
+    const hg = m.smoke.some((s) => s.heap) ? heapGroups(heapsOf(f.lens.parked) ?? []) : [];
+    let slot = 0;
+    m.smoke.forEach((s) => {
+      const g = s.heap ? hg.find((x) => x.repo === s.heap) : undefined;
+      let u = P.SCAN_U, v = 300 + slot * 70;
+      if (g) { let u0 = Infinity, u1 = -Infinity; for (const h of g.heaps) { u0 = Math.min(u0, h.u0); u1 = Math.max(u1, h.u1); } u = (u0 + u1) / 2; v = P.RETURN_V; }
+      else slot++;
+      const top = cam.y(u, v, 40);
+      pushN(sm, cam.x(u, v), top, s.k, ws, clamp(2 + s.repoN, 3, 12), 40, s.fresh ? cam.y(u, v, 0) - top : 0, s.at);
       for (const r of s.repos) { const o = w.orgOf(r), x = wisp.get(o); wisp.set(o, [Math.max(x?.[0] ?? 0, s.k * 0.7), (x?.[1] ?? 0) + 1]); }
     });
     for (const [o, [kk, n]] of wisp) { const v = fx.dockV(o); pushN(sm, cam.x(P.DOCK_U0 + 20, v), cam.y(P.DOCK_U0 + 20, v, 14), kk, ws, clamp(1 + n, 2, 6), 24, 0, m.smoke[0]?.at ?? d.now); }

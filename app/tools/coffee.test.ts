@@ -461,6 +461,17 @@ const redSince = (s: Snapshot, from: number) => list(s.repos).filter((r) => (r.m
     const h = m.hot.find((x) => x.kind === 'conc');
     eq(h ? [h.id, `${h.lead}${h.rest}`, m.hot.indexOf(h)] : null, [lt.id, `${name} crons · 8 / h`, 0], '#1 the callout\'s slot 1: the repo, in the belt\'s words, at its rail');
   }
+  // sy-client: legal-tracker's three cron clusters (all its own) smoke as ONE plume, at its heap; a
+  // cluster across repos keeps its own
+  {
+    const { s, now, lt } = build(18, 0);
+    const name = lt.name ?? lt.id.split('/')[1];
+    const cl = (id: string, step: string, repos: string[]) => ({ id, signature: step, step, class: 'exit', line: 'returned HTTP 000', count: 30, count_1h: 3, repos, repo_count: repos.length, groups: [], first_seen: now - DAY, last_seen: now - 5 * M, examples: [], open: 1 });
+    const other = list(s.repos).filter((r) => r.id !== lt.id).slice(0, 3).map((r) => r.id);
+    s.clusters = [cl('f:lt1', 'notification-outbox', [lt.id]), cl('f:lt2', 'esign-sync', [lt.id]), cl('f:lt3', 'patent-integrity-cron', [lt.id]), cl('f:wide', 'security-scan', [lt.id, ...other])] as never;
+    const { m } = run(s, now);
+    eq(m.smoke.map((x) => [x.step, x.heap ?? '', x.n1h]), [['security-scan', '', 3], [`${name} crons`, lt.id, 9]], '#1 one repo\'s clusters: ONE plume at its heap (9 failures this hour), the cross-repo cluster keeps its own');
+  }
   // #1 the 16:30Z hour: pass 72 % against 76 % (not the server's `bad`), steady; the low rate is all
   // legal-tracker's: the fact names it, not the rate
   {
