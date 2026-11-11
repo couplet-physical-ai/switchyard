@@ -398,6 +398,12 @@ export class CanvasTable<R> {
 
   /** Paints the rows in view; true while the table animates (the canvas asks for a frame). */
   draw(ctx: Ctx2D, frame: Frame, paint: Painter<R>, now: number, empty = ''): boolean {
+    // A host may hand back the context as the last frame left it (macOS does): a known start.
+    ctx.textAlign = 'left';
+    ctx.globalAlpha = 1;
+    ctx.letterSpacing = '0px';
+    ctx.setLineDash([]);
+    ctx.lineCap = 'butt';
     if (frame.width > 0 && frame.height > 0) {
       if (frame.width !== this.W || frame.height !== this.H) {
         this.W = frame.width;

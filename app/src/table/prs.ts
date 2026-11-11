@@ -295,7 +295,9 @@ function paintPr(ctx: Ctx2D, row: PrTableRow, rc: RowCtx, k: Cols, nextGroup: nu
   L.text(F11, upd.startsWith('stale') ? C.amberText : TXT3, upd, k.right - upd.length * a11, cy, detail);
 
   if (e <= 0.05) return;
-  // LOD0: the labelled track, what blocks it, the review and the head
+  // LOD0: the labelled track, what blocks it, the review and the head (left-aligned: the
+  // context keeps the last frame's state on macOS)
+  ctx.textAlign = 'left';
   ctx.globalAlpha = Math.min(1, Math.max(0, (e - 0.2) / 0.8));
   const y2 = y + 31, y3 = y + 50;
   let x = k.name;

@@ -307,7 +307,9 @@ function paintRow(ctx: Ctx2D, row: MlRow, rc: RowCtx, k: Cols, nextSt: MlState |
   else bars(ctx, dots, k.dots0, x1, lineY, now, red);
 
   if (e <= 0.05) return;
-  // LOD0 text: the commit in question, then the ways in
+  // LOD0 text: the commit in question, then the ways in. (The context keeps its state from the
+  // last frame on macOS: say the alignment, the header ended right-aligned.)
+  ctx.textAlign = 'left';
   ctx.globalAlpha = clamp((e - 0.25) / 0.75, 0, 1);
   const leftW = k.dots0 - 16 - k.name;
   const sha = openSha(r);
