@@ -38,7 +38,7 @@ timeout 60 git push -q origin "v$V"
 echo "pushed tag v$V; waiting for the release workflow…"
 run=""
 for _ in $(seq 1 30); do
-  run=$(gh run list -R "$REPO" -w release.yml --branch "v$V" --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+  run=$(gh run list -R "$REPO" -w release.yml --branch "v$V" --commit "$sha" --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
   [[ -n "$run" ]] && break; sleep 10
 done
 [[ -n "$run" ]] || { echo "no release run appeared for v$V" >&2; exit 1; }
