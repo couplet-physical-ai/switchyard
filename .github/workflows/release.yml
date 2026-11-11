@@ -78,6 +78,8 @@ jobs:
           [[ "$(bun --version)" == 1.4.2 ]] || { echo "Exact needs Bun 1.4.2 exactly, got $(bun --version)"; exit 1; }
           git clone -q --filter=blob:none https://github.com/expo/exact.git "$RUNNER_TEMP/exact"
           git -C "$RUNNER_TEMP/exact" checkout -q "${{ steps.v.outputs.exact_pin }}"
+          # app/'s local patches to the pinned Exact (e.g. the Hermes max heap); a no-op until app/ has them.
+          if [[ -x app/scripts/patch-exact.sh ]]; then app/scripts/patch-exact.sh "$RUNNER_TEMP/exact"; git -C "$RUNNER_TEMP/exact" diff --stat; fi
           echo "EXACT_DIR=$RUNNER_TEMP/exact" >> "$GITHUB_ENV"
       - name: Cache (cargo registry, Hermes bundle, Exact target)
         if: env.MODE != 'placeholder'

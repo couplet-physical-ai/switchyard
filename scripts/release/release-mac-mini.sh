@@ -34,8 +34,9 @@ timeout 7200 "${SSH[@]}" "set -e
   export CARGO_HOME='$MINI_DIR/cargo' RUSTUP_HOME='$MINI_DIR/rustup' XDG_CACHE_HOME='$MINI_DIR/cache'
   export PATH=\"\$CARGO_HOME/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin\" DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer EXACT_FEEDBACK=0
   export EXACT_DIR='$MINI_DIR/exact'
-  git -C \"\$EXACT_DIR\" fetch -q origin && git -C \"\$EXACT_DIR\" checkout -q '$pin'
+  git -C \"\$EXACT_DIR\" fetch -q origin && git -C \"\$EXACT_DIR\" checkout -q -f '$pin'
   cd '$src'
+  if [ -x app/scripts/patch-exact.sh ]; then app/scripts/patch-exact.sh \"\$EXACT_DIR\"; fi
   scripts/release/build-macos.sh --mode '$MODE' --version '$V'
   scripts/release/package-macos.sh '$V'
   if [ '$MODE' = app ]; then EXACT2=\$EXACT_DIR app/scripts/build.sh test macos; fi"
