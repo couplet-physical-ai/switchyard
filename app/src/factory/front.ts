@@ -241,12 +241,12 @@ export class Front implements Layer {
         const sp = ft?.intake_ms.spark ?? [], from = v05 ? 0 : this.runsFrom(cnt.at)[0];
         out.up = Array.from({ length: 24 }, (_, k) => { const v = sp.length === 24 && k >= from ? sp[k] : null; return v === null || v === undefined ? null : Math.round(v / 100) / 10; });
         out.upWhat = 'wait (s, p50)';
-        // worse than usual: over the ring's same-hour p90, else over the day's own p90 (and
-        // 1.25 × the typical hour): a diurnal peak is not an anomaly
+        // worse than usual: over the ring's same-hour p90 (7 d) and the typical hour × 1.25
         const ring = baseline().p90('fleet', 'intake_s', cnt.at);
         const day = (out.up.filter((x) => x !== null) as number[]).sort((a, b) => a - b);
         const typ = ft ? threshold(ft.intake_ms, 'fleet', 'intake_ms', cnt.at) : null;
-        out.over = ring ?? (day.length >= 6 ? Math.max(day[Math.round(0.9 * (day.length - 1))]!, typ === null ? 0 : typ / 1000) : null);
+        // (and always over the day's own p90: at most the day's few worst hours are marked)
+        out.over = day.length >= 6 ? Math.max(ring ?? 0, day[Math.round(0.9 * (day.length - 1))]!, typ === null ? 0 : typ / 1000) : ring;
         [out.ghost, out.flat] = ghost('intake_s', ft && ft.intake_ms.d7 !== null && ft.hours_7d >= 24 ? Math.round(ft.intake_ms.d7 / 100) / 10 : null);
         break;
       }
@@ -629,10 +629,13 @@ export class Front implements Layer {
     const edgesNow = this.boards.map((d) => [d.b.u1 - 3, d.b.z0, d.b.z1] as const);
     g.begin_();
     for (const [u, za, zb] of edgesNow) { const [xa, ya] = P(u, za), [xb, yb] = P(u, zb); g.move(xa, ya); g.line(xb, yb); }
-    g.stroke(withAlpha(col, 0.16 * a), 5);
+    g.stroke(withAlpha(col, 0.07 + 0.2 * k), 8);
     g.begin_();
     for (const [u, za, zb] of edgesNow) { const [xa, ya] = P(u, za), [xb, yb] = P(u, zb); g.move(xa, ya); g.line(xb, yb); }
-    g.stroke(withAlpha(col, a), Math.max(1, g.hair * 1.5));
+    g.stroke(withAlpha(col, 0.18 + 0.2 * k), 4);
+    g.begin_();
+    for (const [u, za, zb] of edgesNow) { const [xa, ya] = P(u, za), [xb, yb] = P(u, zb); g.move(xa, ya); g.line(xb, yb); }
+    g.stroke(withAlpha(col, a), 1.6);
     // the joint: one hairline along the wall's foot through every board's NOW edge (the seam)
     g.begin_();
     { const b0 = this.boards[0]!.b, bl = this.boards[this.boards.length - 1]!.b; const [xa, ya] = P(b0.u0, 1), [xb, yb] = P(bl.u1, 1); g.move(xa, ya); g.line(xb, yb); }
@@ -640,8 +643,9 @@ export class Front implements Layer {
     // the curbs' ends: one seam across every row
     if (this.lanes.length) {
       const u = CURB.U1, va = curbV(0, u) - 1, vb = curbV(this.lanes[this.lanes.length - 1]!.i, u) + CURB.DV + 1;
-      g.begin_(); g.move(cam.x(u, va), cam.y(u, va, CURB.Z + 2)); g.line(cam.x(u, vb), cam.y(u, vb, CURB.Z + 2)); g.line(cam.x(u, vb), cam.y(u, vb, 0));
-      g.stroke(withAlpha(col, a * 0.85), Math.max(1, g.hair * 1.5));
+      const seam = () => { g.begin_(); g.move(cam.x(u, va), cam.y(u, va, CURB.Z + 2)); g.line(cam.x(u, vb), cam.y(u, vb, CURB.Z + 2)); g.line(cam.x(u, vb), cam.y(u, vb, 0)); };
+      seam(); g.stroke(withAlpha(col, 0.06 + 0.18 * k), 7);
+      seam(); g.stroke(withAlpha(col, a * 0.9), 1.6);
     }
     g.ops += 4 * edgesNow.length + 6;
     return false;
