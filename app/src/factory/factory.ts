@@ -31,7 +31,9 @@ import { Coffee } from './coffee.ts'; // fab-lens
 import type { FactoryFx } from './lens.ts'; // fab-lens
 import { PLAN, VIA_WORDS } from './layout.ts';
 import { F, HOUR_MS, MONO, SMALL, TITLE, box as boxP, clockWords, crate as crateP, dur, easeInOut, flushLights as flushLightsP, hash, onScreen as onScreenP, pipeWords as pipeWordsP, poly as polyP, quad as quadP, ring as ringP, runningStep } from './prims.ts';
-import type { Bay, Block, Crate, HitBox, Label, Pt } from './types.ts';
+import type { Bay, Block, Crate, HitBox, Label, LiveFrame, Pt } from './types.ts';
+import { Crates, Reactions } from './crates.ts';
+import { Labels } from './labels.ts';
 
 export type { Plan } from './types.ts';
 export { dur };
@@ -48,15 +50,17 @@ export class Factory {
   readonly budget = new Budget();
   private gf = new Gfx();
   private gl = new Gfx();
-  private crates: Crate[] = [];
-  /** Reactions scheduled for when a crate arrives (motion.ts). */
-  private ripples = new Ripples();
-  private bays: Bay[] = [];
-  private blocks: Block[] = [];
-  private blockAt = new Map<string, Block>();
-  private districtBox: { team: string; u0: number; v0: number; u1: number; v1: number; n: number }[] = [];
+  /** Crates in motion and the reactions they set off (crates.ts); the floor's words (labels.ts). */
+  readonly crates = new Crates(this);
+  readonly reactions = new Reactions(this);
+  readonly words = new Labels(this);
+  bays: Bay[] = [];
+  blocks: Block[] = [];
+  blockAt = new Map<string, Block>();
+  districtBox: { team: string; u0: number; v0: number; u1: number; v1: number; n: number }[] = [];
   private hits: HitBox[] = [];
-  private labels: Label[] = [];
+  /** The labels placed this frame (the placer's, labels.ts). */
+  get labels(): Label[] { return this.words.list; }
   private floorSig = '';
   private cityKey = '';
   private cityRows: Block[][] = [];
@@ -68,10 +72,10 @@ export class Factory {
   /** The developer HUD's switch (shared with the yard's, ⌘⇧D) and the factory's own panel. */
   hud: Hud | null = null;
   private fhud = new FacHud();
-  private bA = new BoxBatch(); private bB = new BoxBatch(); private bC = new BoxBatch(); private bD = new BoxBatch();
-  private trains = new TrainTable();
-  private routeIds = new Map<string, number>();
-  private pt = new Float32Array(2);
+  /** Scratch batches: a section fills and flushes them before the next one draws. */
+  readonly bA = new BoxBatch(); readonly bB = new BoxBatch(); readonly bC = new BoxBatch(); readonly bD = new BoxBatch();
+  /** This live frame (the layers' hooks read it). */
+  private fr: LiveFrame = { ctx: null as unknown as Ctx2D, f: null as unknown as Frame, t: 0, now: 0, q: 0, detail: false };
   /** Did the last live frame ask for another (false: it slept, so the next interval is no frame). */
   private awake = false;
   /** Since the last live frame: 1 the census recounted, 2 the static floor redrew. */
@@ -142,9 +146,9 @@ export class Factory {
   // building when the crate reaches it.
   onEvent(e: Event, w: World, t: number): void {
     if (this.reduced) return;
-    if (this.crates.length > 160) this.crates.splice(0, this.crates.length - 160);
+    this.crates.cap();
     const orgOf = (repo: string) => w.orgOf(repo);
-    const R = this.ripples;
+    const R = this.reactions.rp;
     switch (e.k) {
       case 'push': {
         const org = e.bot || e.author?.endsWith('[bot]') ? BOTS : orgOf(e.repo);
@@ -153,17 +157,17 @@ export class Factory {
         const route: Pt[] = [[DOCK_U1 - 6, dv], [COLLECT_U, dv], [COLLECT_U, AISLE_V]];
         if (main) route.push([YARD_U1, AISLE_V], [GATE_U + 10, AISLE_V], [RAIL_U0 + 10, this.railV(orgOf(e.repo))]);
         else route.push([ROW_U[1], AISLE_V], [ROW_U[1], AGE_V[0]]);
-        const cr = this.spawn(`${e.repo}@${e.sha}`, 'commit', route, t, main ? 4200 : 2600, false, '', org);
+        const cr = this.crates.spawn(`${e.repo}@${e.sha}`, 'commit', route, t, main ? 4200 : 2600, false, '', org);
         R.add(R_DOOR, DOCK_U1, dv, 6, cr.t0, false, 700);
-        if (main) { R.add(R_RING, GATE_U + 4, AISLE_V, 40, this.arrives(cr, 4), false); R.add(R_RING, RAIL_U0 + 10, this.railV(orgOf(e.repo)), 4, this.arrives(cr, 5), false); }
-        else R.add(R_RING, ROW_U[1], AGE_V[0] + STACK_DV / 2, 4, this.arrives(cr, 4), false, 900);
+        if (main) { R.add(R_RING, GATE_U + 4, AISLE_V, 40, this.crates.arrives(cr, 4), false); R.add(R_RING, RAIL_U0 + 10, this.railV(orgOf(e.repo)), 4, this.crates.arrives(cr, 5), false); }
+        else R.add(R_RING, ROW_U[1], AGE_V[0] + STACK_DV / 2, 4, this.crates.arrives(cr, 4), false, 900);
         break;
       }
       case 'merge': {
         const org = orgOf(e.repo);
-        const cr = this.spawn(`${e.repo}@${e.sha}`, 'commit', [[ROW_U[3], AGE_V[1]], [ROW_U[3], AISLE_V], [YARD_U1, AISLE_V], [GATE_U + 10, AISLE_V], [RAIL_U0 + 10, this.railV(org)], [RAIL_U0 + 60, this.railV(org)]], t, 2600, false, '', org);
-        R.add(R_RING, GATE_U + 4, AISLE_V, 40, this.arrives(cr, 3), false);
-        R.add(R_RING, RAIL_U0 + 10, this.railV(org), 4, this.arrives(cr, 4), false);
+        const cr = this.crates.spawn(`${e.repo}@${e.sha}`, 'commit', [[ROW_U[3], AGE_V[1]], [ROW_U[3], AISLE_V], [YARD_U1, AISLE_V], [GATE_U + 10, AISLE_V], [RAIL_U0 + 10, this.railV(org)], [RAIL_U0 + 60, this.railV(org)]], t, 2600, false, '', org);
+        R.add(R_RING, GATE_U + 4, AISLE_V, 40, this.crates.arrives(cr, 3), false);
+        R.add(R_RING, RAIL_U0 + 10, this.railV(org), 4, this.crates.arrives(cr, 4), false);
         break;
       }
       case 'enqueue': {
@@ -171,8 +175,8 @@ export class Factory {
         const lane = e.lane === 'gha' ? 1 : 0;
         const q = lane ? this.census.gha.length : this.census.rr.length;
         const end = Math.max(INTAKE_U0 + 8, INTAKE_U1 - 8 - q * 11);
-        const cr = this.spawn(e.pipeline, 'pipeline', [[RAIL_U1 - 10, this.railV(org)], [RAIL_U1 + 12, this.railV(org)], [INTAKE_U0, LANE_V[lane]], [end, LANE_V[lane]]], t, 1800, false, '', org);
-        R.add(R_RING, end, LANE_V[lane], 4, this.arrives(cr, 3), false, 900);
+        const cr = this.crates.spawn(e.pipeline, 'pipeline', [[RAIL_U1 - 10, this.railV(org)], [RAIL_U1 + 12, this.railV(org)], [INTAKE_U0, LANE_V[lane]], [end, LANE_V[lane]]], t, 1800, false, '', org);
+        R.add(R_RING, end, LANE_V[lane], 4, this.crates.arrives(cr, 3), false, 900);
         break;
       }
       case 'start': {
@@ -180,8 +184,8 @@ export class Factory {
         const bay = this.bayOf(e.pipeline, w);
         const lane = p?.lane === 'gha' ? 1 : 0;
         if (bay) {
-          const cr = this.spawn(e.pipeline, 'pipeline', [[INTAKE_U1 - 6, LANE_V[lane]], [DIST_U, LANE_V[lane]], [DIST_U, bay.v + bay.dv / 2], [bay.u + 6, bay.v + bay.dv / 2]], t, 1600, false, '', p ? orgOf(p.repo) : '');
-          R.add(R_RING, bay.u + bay.du / 2, bay.v + bay.dv / 2, ENG_H, this.arrives(cr, 3), false, 1000);
+          const cr = this.crates.spawn(e.pipeline, 'pipeline', [[INTAKE_U1 - 6, LANE_V[lane]], [DIST_U, LANE_V[lane]], [DIST_U, bay.v + bay.dv / 2], [bay.u + 6, bay.v + bay.dv / 2]], t, 1600, false, '', p ? orgOf(p.repo) : '');
+          R.add(R_RING, bay.u + bay.du / 2, bay.v + bay.dv / 2, ENG_H, this.crates.arrives(cr, 3), false, 1000);
         }
         break;
       }
@@ -200,9 +204,9 @@ export class Factory {
           route.push([SCAN_U, RETURN_V], [24, RETURN_V], [24, this.dockV(org)], [DOCK_U0 + 8, this.dockV(org)]);
           dur = 9000;
         } else route.push([SCAN_U + 14, v0]);
-        const cr = this.spawn(e.pipeline, 'pipeline', route, t, dur, red, red ? `${p.repo.split('/')[1]} · ${failingStep(p)}` : '', org);
-        R.add(R_BEAM, SCAN_U, v0, 56, this.arrives(cr, 2), red, 700);
-        if (red) { R.add(R_DOOR, DOCK_U1, this.dockV(org), 6, this.arrives(cr, 6), true, 1400); R.add(R_RING, DOCK_U0 + 8, this.dockV(org), 8, this.arrives(cr, 6), true, 1400); }
+        const cr = this.crates.spawn(e.pipeline, 'pipeline', route, t, dur, red, red ? `${p.repo.split('/')[1]} · ${failingStep(p)}` : '', org);
+        R.add(R_BEAM, SCAN_U, v0, 56, this.crates.arrives(cr, 2), red, 700);
+        if (red) { R.add(R_DOOR, DOCK_U1, this.dockV(org), 6, this.crates.arrives(cr, 6), true, 1400); R.add(R_RING, DOCK_U0 + 8, this.dockV(org), 8, this.crates.arrives(cr, 6), true, 1400); }
         break;
       }
       case 'deploy': {
@@ -210,8 +214,8 @@ export class Factory {
         const b = this.blockAt.get(e.app);
         const vi = Math.max(0, VIAS.indexOf((e.via === 'manual' ? 'gha_fallback' : e.via) as typeof VIAS[number]));
         if (e.state === 'running' && b) {
-          const cr = this.spawn(`${e.app}@${e.sha}`, 'deploy', [[SCAN_U + 14, TRACK_V[vi]], [TRACK_U1, TRACK_V[vi]], [CITY_U0 - 4, b.v + b.d / 2], [b.u + b.d / 2, b.v + b.d / 2]], t, 2400, false, '', '');
-          R.add(R_RING, b.u + b.d / 2, b.v + b.d / 2, b.h + 1.5, this.arrives(cr, 3), false, 1200);
+          const cr = this.crates.spawn(`${e.app}@${e.sha}`, 'deploy', [[SCAN_U + 14, TRACK_V[vi]], [TRACK_U1, TRACK_V[vi]], [CITY_U0 - 4, b.v + b.d / 2], [b.u + b.d / 2, b.v + b.d / 2]], t, 2400, false, '', '');
+          R.add(R_RING, b.u + b.d / 2, b.v + b.d / 2, b.h + 1.5, this.crates.arrives(cr, 3), false, 1200);
         }
         if (e.state !== 'running' && b) R.add(R_RING, b.u + b.d / 2, b.v + b.d / 2, b.h + 1.5, t, e.state === 'failure', 1600, e.state === 'success');
         break;
@@ -225,29 +229,11 @@ export class Factory {
     }
   }
 
-  /** When crate `cr` reaches its route's point `k` (the frame clock). */
-  private arrives(cr: Crate, k: number): number {
-    const i = Math.min(k, cr.cum.length - 1);
-    return cr.t0 + cr.dur * arrival(cr.len ? cr.cum[i] / cr.len : 1);
-  }
-
   private lastBay = new Map<string, Bay>();
   private flown = false;
   /** fab-lens: every object is a lens (lens.ts); what changed since you last looked (coffee.ts). */
   readonly lens = new Lenses(this);
   readonly coffee = new Coffee(this);
-
-  private spawn(id: string, kind: Crate['kind'], route: Pt[], t: number, dur: number, red: boolean, label: string, org: string): Crate {
-    const cum = [0];
-    let len = 0;
-    for (let i = 1; i < route.length; i++) { len += Math.hypot(route[i][0] - route[i - 1][0], route[i][1] - route[i - 1][1]); cum.push(len); }
-    // a crate waits its turn on the same route start so bursts read as a line, not a blob
-    let hold = 0;
-    for (const c of this.crates) if (c.route[0][0] === route[0][0] && c.route[0][1] === route[0][1] && t - c.t0 < 400) hold = Math.max(hold, c.t0 + 260 - t);
-    const cr: Crate = { id, kind, route, len, cum, t0: t + Math.max(0, hold), dur, red, label, org, hold: 0, rid: -1 };
-    this.crates.push(cr);
-    return cr;
-  }
 
   private dockV(org: string): number {
     const i = this.census.docks.findIndex((d) => d.org === org);
@@ -882,14 +868,16 @@ export class Factory {
     ctx.clearRect(0, 0, f.width, f.height);
     this.hits = [];
     this.lens.under(g, t); // fab-lens: every floor object's hit, parked failures, fresh glows, smoke, beacons
-    this.labels = [];
+    this.words.reset();
     const st = this.stat;
     const sec = Math.floor(t / 1000);
     if (sec !== st.sec) { st.floorRate = st.floorDraws; st.floorDraws = 0; st.sec = sec; }
-    if (c.skeleton) { this.drawIdle(g); this.awake = false; return false; }
+    if (c.skeleton) { this.words.idle(g); this.awake = false; return false; }
     const z = cam.zoom;
     const detail = z >= 1.6;
     const q = this.budget.quality;
+    const fr = this.fr;
+    fr.ctx = ctx; fr.f = f; fr.t = t; fr.now = now; fr.q = q; fr.detail = detail;
     const offX = (x: number) => x < -24 || x > cam.W + 24;
     const offY = (y: number) => y < -24 || y > cam.H + 24;
     // the floor moved under us (pan, zoom, a new shape): the floor layer redraws on its key;
@@ -1042,31 +1030,7 @@ export class Factory {
     }
     // reactions (motion.ts), each where and when its crate arrived: rings, the scanner's beam,
     // a dock's door
-    let pulsing = false;
-    {
-      const Rp = this.ripples;
-      for (let i = 0; i < Rp.dur.length; i++) {
-        const d = Rp.dur[i];
-        if (!d) continue;
-        const age = t - Rp.at[i];
-        if (age > d) continue;
-        pulsing = true;
-        if (age < 0 || q >= 4) continue;
-        const e = age / d;
-        const col = Rp.red[i] ? C.red : Rp.green[i] ? C.green : C.packet;
-        const u = Rp.u[i], v = Rp.v[i], zz = Rp.z[i];
-        if (Rp.kind[i] === R_BEAM) {
-          g.begin_(); this.quad(g, SCAN_U - 1, 36, SCAN_U + 1, 594, 54); g.fill(withAlpha(col, 0.55 * (1 - e)));
-          g.begin_(); g.circle(cam.x(u, v), cam.y(u, v, zz * 0.5), 4 + 10 * e); g.stroke(withAlpha(col, 0.7 * (1 - e)), 1.2);
-        } else if (Rp.kind[i] === R_DOOR) {
-          g.begin_(); this.poly(g, [DOCK_U1, v - 12, 1, DOCK_U1, v + 12, 1, DOCK_U1, v + 12, 10, DOCK_U1, v - 12, 10]); g.fill(withAlpha(col, 0.85 * (1 - e)));
-        } else {
-          const x = cam.x(u, v), y = cam.y(u, v, zz);
-          if (offX(x) || offY(y)) continue;
-          g.begin_(); g.circle(x, y, 3 + e * 18 * Math.max(0.8, cam.s)); g.stroke(withAlpha(col, 0.8 * (1 - e)), 1.2);
-        }
-      }
-    }
+    const pulsing = this.reactions.live(g, fr);
     // deploys in flight sit on their track, nearer the city the longer they have run
     const lanes = [0, 0, 0];
     const dep = this.bA;
@@ -1086,31 +1050,19 @@ export class Factory {
     dep.flush(g, cam, F.crateTop, F.crateSide, F.crateFront, '', 1, q >= 2 ? 1 : 3);
     // 7. crates in motion: one path per face and colour; on the ladder's train rungs, crates on
     //    the same stretch of the same route ride as one with a ×N badge
-    const moving = this.drawCrates(g, t, q);
+    const moving = this.crates.live(g, fr);
     // 8. the journey of the selection: its path lights across the floor, the rest dims to 25 %
     const selP = this.selPipeline();
     // 9. labels: stage titles in the band above the floor's back edge, with leader lines
-    this.drawLabels(g, detail, now);
+    this.words.live(g, fr);
     this.lens.draw(g, ctx, f, t); // fab-lens: the lens on top dims the rest and tells its story
     if (this.selected) this.drawJourney(g, ctx, f, selP, t);
     // failures riding home are named (failure is the main character), under the conveyor
-    let tags = 0;
-    for (const cr of this.crates) {
-      if (!cr.red || !cr.label) continue;
-      if (q >= 4 && tags >= 3) break;
-      const u = (t - cr.t0) / cr.dur;
-      if (u < 0 || u > 1 || !this.pastScanner(cr, u)) continue;
-      const [cu, cv] = this.along(cr, easeInOut(u));
-      const x = cam.x(cu, cv), y = cam.y(cu, cv);
-      if (cv < RETURN_V - 4) continue;
-      g.vline(x, y + 4, y + 16, withAlpha(C.red, 0.6));
-      this.tag(g, cr.label, x - 4, y + 28, C.redText, C.red);
-      tags++;
-    }
+    this.crates.tags(g, t, q);
     st.labels = this.labels.length;
     // 10. the drawer, the time strip, the camera controls
     if (this.selected) this.drawDrawer(g, f, selP, now);
-    if (this.lens.legacyKey && !this.selected && this.cam.zoom < 1.2) this.drawLegend(g, f); // fab-lens: the key is on demand (?)
+    if (this.lens.legacyKey && !this.selected && this.cam.zoom < 1.2) this.words.legend(g, f); // fab-lens: the key is on demand (?)
     // hover: quick facts beside the pointer
     if (this.hoverId && !this.drag) {
       const h = this.hitAt(this.px, this.py);
@@ -1142,7 +1094,7 @@ export class Factory {
     st.hits = this.hits.length;
     // the frame's cost (the cost model, budget.ts) and the ladder; the HUD draws last and
     // counts itself (it is the developer's, so it is outside the factory's own budget)
-    const est = this.budget.estimate(g.ops, g.arcs, g.texts, this.computed + st.crates) + (heavy === 2 && camMoving ? st.floorMs : 0);
+    const est = this.budget.estimate(g.ops, g.arcs, g.texts, this.crates.computed + st.crates) + (heavy === 2 && camMoving ? st.floorMs : 0);
     const allCrates = st.crates + st.stressCrates;
     const per = this.budget.host === 'hermes' ? 0.026 : 0.006;
     // a step up is predicted from what that rung cost when last drawn (30 s at most ago), else
@@ -1164,113 +1116,6 @@ export class Factory {
     return awake;
   }
 
-  /** Real crates (events in flight) and, in stress mode, the synthesized ones. Returns whether
-   *  any real crate is still travelling (or waiting to). */
-  private drawCrates(g: Gfx, t: number, q: number): boolean {
-    const cam = this.cam, st = this.stat;
-    const amber = this.bA, red = this.bB;
-    const trains = q >= 3;
-    const tt = this.trains;
-    tt.reset();
-    // a train's stretch: 32 units on the trains rung, 56 on survival
-    const bin = q >= 4 ? 56 : 32;
-    let moving = false, crates = 0, sprites = 0;
-    this.computed = 0;
-    // the wake: the belt brightens under each travelling crate, a short stretch behind it
-    if (q < 3 && !this.reduced) {
-      g.begin_();
-      let any = false;
-      for (const cr of this.crates) {
-        const u = (t - cr.t0) / cr.dur;
-        if (u < 0 || u > 1 || !cr.len) continue;
-        const d = easeInOut(u) * cr.len;
-        for (let k = 0; k < 4; k++) {
-          const [wu, wv] = this.along(cr, Math.max(0, d - k * 9) / cr.len);
-          const x = cam.x(wu, wv), y = cam.y(wu, wv, 0.7);
-          if (k) g.line(x, y); else g.move(x, y);
-        }
-        any = true;
-      }
-      if (any) { g.ctx.lineCap = 'round'; g.ctx.lineJoin = 'round'; g.stroke(cr0Wake, Math.max(2, 5 * cam.s)); g.ctx.lineCap = 'butt'; }
-    }
-    for (let i = this.crates.length - 1; i >= 0; i--) {
-      const cr = this.crates[i];
-      const u = (t - cr.t0) / cr.dur;
-      if (u > 1) { this.crates.splice(i, 1); continue; }
-      moving = true;
-      if (u < 0) continue;
-      crates++;
-      const e = easeInOut(u);
-      const [cu, cv] = this.along(cr, e);
-      const isRed = cr.red && (cr.route.length < 4 || this.pastScanner(cr, u));
-      const x = cam.x(cu, cv), y = cam.y(cu, cv);
-      if (x < -20 || x > cam.W + 20 || y < -20 || y > cam.H + 20) continue;
-      this.hit(x - 7, cam.y(cu, cv, 8) - 7, 14, 14, cr.kind === 'pipeline' ? 'pipeline' : 'commit', cr.id, cr.label || cr.id);
-      if (trains) { if (!tt.add(this.routeId(cr) * 4096 + Math.floor((e * cr.len) / bin), cu, cv, isRed)) (isRed ? red : amber).crate(cu, cv, 8); }
-      else { (isRed ? red : amber).crate(cu, cv, 8); sprites++; }
-    }
-    // stress: STRESS_CRATES more on the floor's routes, a pure function of (route, index, time)
-    let sc = 0;
-    if (this.stress.on && !this.reduced) {
-      this.stressRoutes();
-      const S = this.stress, pt = this.pt;
-      // survival computes every 4th crate and counts it 4 times (the trains' sizes hold)
-      const stride = q >= 4 ? 4 : 1;
-      for (let ri = 0; ri < S.routes.length; ri++) {
-        const r = S.routes[ri];
-        for (let i = 0; i < r.n; i += stride) {
-          const d = S.dist(r, ri, i, t);
-          S.at(r, d, pt);
-          sc += stride;
-          this.computed++;
-          const x = cam.x(pt[0], pt[1]);
-          if (x < -20 || x > cam.W + 20) continue;
-          const y = cam.y(pt[0], pt[1]);
-          if (y < -20 || y > cam.H + 20) continue;
-          if (trains) { for (let k = 0; k < stride; k++) tt.add((1000 + ri) * 4096 + Math.floor(d / bin), pt[0], pt[1], r.red); }
-          else { (r.red ? red : amber).crate(pt[0], pt[1], 8); sprites++; }
-        }
-      }
-    }
-    // the trains: one crate leads each, the biggest get a ×N badge
-    let nTrains = 0;
-    const badges = this.top;
-    let nb = 0;
-    if (trains) {
-      const cap = q >= 4 ? 60 : Infinity;
-      const K = q >= 4 ? 6 : 12;
-      for (let j = 0; j < tt.nUsed; j++) {
-        const h = tt.used[j];
-        if (sprites >= cap) break;
-        (tt.red[h] ? red : amber).crate(tt.u[h], tt.v[h], 8);
-        sprites++;
-        nTrains++;
-        if (tt.count[h] < 2) continue;
-        // keep the K biggest (insertion into a short sorted list)
-        let k: number;
-        if (nb < K) k = nb++;
-        else if (tt.count[h] > tt.count[badges[K - 1]]) k = K - 1;
-        else continue;
-        badges[k] = h;
-        while (k > 0 && tt.count[badges[k - 1]] < tt.count[badges[k]]) { const s = badges[k - 1]; badges[k - 1] = badges[k]; badges[k] = s; k--; }
-      }
-    }
-    const faces = q >= 2 ? 1 : 3;
-    amber.flush(g, cam, F.crateTop, F.crateSide, F.crateFront, '', 1, faces);
-    red.flush(g, cam, F.redTop, F.redSide, F.redFront, '', 1, faces);
-    for (let k = 0; k < nb; k++) {
-      const h = badges[k];
-      const x = cam.x(tt.u[h], tt.v[h]) + 6, y = cam.y(tt.u[h], tt.v[h], 8) - 3;
-      g.text(times(tt.count[h]), x, y, tt.red[h] ? C.redText : C.amberText, SMALL);
-    }
-    st.crates = crates;
-    st.stressCrates = sc;
-    st.sprites = sprites;
-    st.trains = nTrains;
-    return moving;
-  }
-
-  private top = new Int32Array(16);
   /** The draw estimate (ms) each quality rung cost when it was last drawn, and when. */
   private qCost = new Float32Array(5);
   private qCostAt = new Float64Array(5).fill(-1e12);
@@ -1285,57 +1130,6 @@ export class Factory {
       this.trouble = this.blocks.filter((b) => { const h = this.healthOf(b); return h === 1 || h === 2; });
     }
     return this.trouble;
-  }
-  /** Crates whose position this frame computed (the cost model's packets). */
-  private computed = 0;
-  private nameOrder: Block[] = [];
-  private nameOrderAt = -1;
-
-  /** A crate's route as a small integer (the trains' key): routes repeat (a dock's belt, a rail). */
-  private routeId(cr: Crate): number {
-    if (cr.rid >= 0) return cr.rid;
-    const k = cr.route.map((p) => `${Math.round(p[0])},${Math.round(p[1])}`).join(' ');
-    let id = this.routeIds.get(k);
-    if (id === undefined) { id = this.routeIds.size % 4000; if (this.routeIds.size > 4000) this.routeIds.clear(); this.routeIds.set(k, id); }
-    cr.rid = id;
-    return id;
-  }
-
-  /** Stress mode's routes: the floor's real ones (each dock's belt to the yard, the gate onto
-   *  each rail, each rail to the intake, the intake to each machine, each machine through the
-   *  scanner, the deploy tracks into the city, and the return conveyor), weighted by flow. */
-  private stressRoutes(): void {
-    const c = this.census;
-    const key = `${c.docks.length}|${c.rails.length}|${c.groups.length}`;
-    const list: [number, number][][] = [], wts: number[] = [], red: boolean[] = [];
-    const add = (pts: [number, number][], wt: number, isRed = false) => { list.push(pts); wts.push(wt); red.push(isRed); };
-    c.docks.forEach((_d, i) => {
-      const dv = 66 + i * 96;
-      add([[DOCK_U1 - 6, dv], [COLLECT_U, dv], [COLLECT_U, AISLE_V], [ROW_U[1], AISLE_V], [ROW_U[1], AGE_V[0]]], 3);
-    });
-    c.rails.forEach((_r, i) => {
-      add([[COLLECT_U, AISLE_V], [YARD_U1, AISLE_V], [GATE_U + 10, AISLE_V], [RAIL_U0 + 10, RAIL_V[i]], [RAIL_U1 - 10, RAIL_V[i]]], 3);
-      add([[RAIL_U1 - 10, RAIL_V[i]], [RAIL_U1 + 12, RAIL_V[i]], [INTAKE_U0, LANE_V[i % 2]], [INTAKE_U1 - 8, LANE_V[i % 2]]], 1.5);
-    });
-    c.groups.forEach((_g, gi) => {
-      const v = ENG_V0 + gi * ENG_STEP + ENG_DV / 2;
-      add([[INTAKE_U1 - 6, LANE_V[gi % 2]], [DIST_U, LANE_V[gi % 2]], [DIST_U, v], [ENG_U0 + 10, v]], 2);
-      add([[ENG_U1 - 10, v], [ENG_U1 + 6, v], [SCAN_U, v], [SCAN_U + 14, v]], 2);
-    });
-    TRACK_V.forEach((v) => add([[SCAN_U + 14, v], [TRACK_U1, v], [CITY_U0 - 4, v]], 1.5));
-    add([[SCAN_U, RETURN_V], [24, RETURN_V], [24, 66], [DOCK_U0 + 8, 66]], 4, true);
-    this.stress.setRoutes(key, list, wts, red);
-  }
-
-  /** The idle floor (no fleet yet): the stage titles only, quiet. */
-  private drawIdle(g: Gfx): void {
-    const cam = this.cam;
-    const titles: [string, string, number, number, number][] = [['01', 'sources', 36, 30, 14], ['02', 'pr yard', YARD_U0 + 30, 92, 2], ['04', 'main lines', RAIL_U0 + 40, RAIL_V[0] - 8, 0], ['06', 'consumption engine', ENG_U0 + 10, ENG_V0, ENG_H], ['07', 'tests', SCAN_U, 30, 56], ['09', 'apps', CITY_U0 + 20, CITY_V0, 6]];
-    for (const [n, s, u, v, z] of titles) {
-      const x = Math.round(cam.x(u, v) - 3), y = Math.round(cam.y(u, v, z) - 30);
-      g.vline(g.crisp(cam.x(u, v)), y + 6, cam.y(u, v, z) - 1, '#2E2E30');
-      g.runs([[`${n} `, C.ink3], [s, C.ink3, true]], x, y, TITLE);
-    }
   }
 
   /** The developer HUD (⌘⇧D) over the floor: top right, left of an open drawer. */
@@ -1352,21 +1146,6 @@ export class Factory {
     this.hit(r.quality.x, r.quality.y, r.quality.w, r.quality.h, 'quality', '', 'Pin quality');
   }
 
-  private pastScanner(cr: Crate, u: number): boolean {
-    const [cu] = this.along(cr, easeInOut(u));
-    return cu <= SCAN_U + 1 && this.along(cr, easeInOut(u))[1] > cr.route[0][1] + 2 || cu < SCAN_U - 2 && cr.route[0][0] > SCAN_U - 60;
-  }
-
-  private along(cr: Crate, u: number): Pt {
-    const d = u * cr.len;
-    let i = 1;
-    while (i < cr.cum.length - 1 && cr.cum[i] < d) i++;
-    const a = cr.route[i - 1], b = cr.route[i];
-    const seg = cr.cum[i] - cr.cum[i - 1] || 1;
-    const k = clamp((d - cr.cum[i - 1]) / seg, 0, 1);
-    return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
-  }
-
   /** One car (a lens draws a lit one over the floor's batched cars). */
   private car(g: Gfx, u: number, v: number, red: boolean, settled: boolean): void {
     this.box(g, u - 4, v - 4, 8, 8, 5, red ? F.redTop : settled ? '#6E6A62' : F.crateTop, red ? F.redSide : settled ? '#4A4844' : F.crateSide, red ? F.redFront : settled ? '#3E3C38' : F.crateFront, red ? '#E08088' : settled ? '#8A867E' : '#F0CC8A', this.gl.hair);
@@ -1374,259 +1153,15 @@ export class Factory {
 
   private ring(g: Gfx, u: number, v: number, r: number, z = 0): void { ringP(this.cam, g, u, v, r, z); }
 
-  private hit(x: number, y: number, w: number, h: number, kind: string, id: string, label: string): void {
+  hit(x: number, y: number, w: number, h: number, kind: string, id: string, label: string): void {
     if (x + w < 0 || y + h < 0 || x > this.cam.W || y > this.cam.H) return;
     this.hits.push({ x, y, w, h, kind, id, label });
   }
 
   private pipeWords(p: Pipeline | undefined): string { return pipeWordsP(p); }
 
-  // ---- labels ----------------------------------------------------------------------------------
-  /** Reserve a label rect, nudged up in 15 px rows until it touches no other label. */
-  private place(x: number, y: number, w: number, h: number, maxUp = 9): number {
-    const r = this.placeAt(x, y, w, h, maxUp, false);
-    return r ? r[1] : -1;
-  }
-
-  /** Greedy placement over candidate positions (rows up, and with `slide` shifts sideways),
-   *  measured boxes, a 12 px gap; null when nothing is free. */
-  private placeAt(x: number, y: number, w: number, h: number, maxUp: number, slide: boolean): [number, number] | null {
-    const G = 12;
-    const free = (xx: number, yy: number) => {
-      if (yy - h < 40 || xx < 4 || xx + w > this.cam.W - 4) return false;
-      for (const l of this.labels) if (xx < l.x + l.w + G && xx + w + G > l.x && yy - h - 3 < l.y && yy + 3 > l.y - l.h) return false;
-      return true;
-    };
-    const shifts = slide ? [0, 28, -28, 56, -56, 90, -90] : [0];
-    for (let k = 0; k <= maxUp; k++) {
-      for (const dx of shifts) {
-        const xx = x + dx, yy = y - k * 15;
-        if (free(xx, yy)) { this.labels.push({ x: xx, y: yy, w, h }); return [xx, yy]; }
-      }
-    }
-    if (maxUp === 0 && !slide) return null;
-    return null;
-  }
-
-  /** A label with its leader line: from the object's anchor (ax, ay) up to a label band. */
-  private leader(g: Gfx, ax: number, ay: number, lift: number, parts: [string, string, boolean?][], px = MONO): [number, number] {
-    let wsum = 0;
-    for (const [s, , b] of parts) wsum += g.width(s, px, !!b);
-    const at = this.placeAt(Math.round(ax - 3), Math.round(ay - lift), wsum, px + 3, 8, true);
-    if (!at) return [0, -1];
-    const [x, y] = at;
-    const lx = Math.min(Math.max(ax, x + 2), x + wsum - 2);
-    g.begin_(); g.move(ax, ay - 1); g.line(lx, y + 4); g.stroke('#4A4A4E', g.hair * 1.5);
-    g.begin_(); g.circle(ax, ay, 1.6); g.fill('#6A6A6E');
-    // a dark band under the words so nothing behind them competes
-    g.fillRect(x - 3, y - px, wsum + 6, px + 5, withAlpha(C.canvas, 0.86));
-    g.runs(parts, x, y, px);
-    return [x, y];
-  }
-
-  private tag(g: Gfx, s: string, x: number, y: number, ink: string, edge: string): void {
-    // (x moves with the placement)
-    const w = g.width(s, SMALL) + 10;
-    const at = this.placeAt(x, y, w, 16, 3, true);
-    if (!at) return;
-    const [xt, yy] = at;
-    x = xt;
-    g.fillRect(x, yy - 12, w, 16, withAlpha(C.canvas, 0.9));
-    g.begin_(); g.rect(x + 0.5, yy - 11.5, w - 1, 15); g.stroke(withAlpha(edge, 0.7), 1);
-    g.text(s, x + 5, yy, ink, SMALL);
-  }
-
-  private drawLabels(g: Gfx, detail: boolean, now: number): void {
-    const cam = this.cam, c = this.census, w = this.world, f = c.flow;
-    // the ladder thins the words: q1 fewer job names, q2 no stack counts or age axis, q3 no
-    // rail, track or pallet names; stage titles, counts and failures always stay
-    const q = this.budget.quality;
-    const jobsPer = q === 0 ? (detail ? 3 : 2) : q === 1 ? (detail ? 2 : 1) : 0;
-    const num = (n: number) => n.toLocaleString('en-US');
-    // the stage titles: anchored at each stage's back edge, lifted into the band above it
-    const stage = (n: string, title: string, u: number, v: number, z: number, stat: string, why: string, id: string, statCol: string = C.ink2) => {
-      const ax = cam.x(u, v), ay = cam.y(u, v, z);
-      const l1 = g.width(`${n} `, SMALL) + g.width(title, TITLE, true), sub = stat + (why ? ` · ${why}` : '');
-      const wv = Math.max(l1, g.width(sub, SMALL));
-      const x = Math.round(ax - 3);
-      // two lines placed as one block, so a neighbour's second line never lands on ours
-      const yb = this.place(x, Math.round(ay - 34), wv, 36, 8);
-      if (yb < 60) return;
-      const y = yb - 17;
-      g.vline(g.crisp(ax), yb + 3, ay - 1, '#4A4A4E');
-      g.begin_(); g.circle(ax, ay, 1.8); g.fill('#7A7A7E');
-      g.fillRect(x - 4, y - TITLE, wv + 8, 38, withAlpha(C.canvas, 0.86));
-      g.runs([[`${n} `, C.ink3], [title, C.ink, true]], x, y, TITLE);
-      g.runs([[stat, statCol], [why ? ` · ${why}` : '', C.ink3]], x, y + 17, SMALL);
-      this.hit(x - 3, y - 14, wv + 6, 36, 'stage', id, title);
-    };
-    const pushes = c.docks.reduce((a, d) => a + d.perHour, 0);
-    const busiest = [...c.docks].sort((a, b) => b.perHour - a.perHour)[0];
-    stage('01', 'sources', 36, 30, 14, `${pushes} pushes/h`, busiest && busiest.perHour ? `${busiest.short} busiest` : 'quiet hour', '36,300,2');
-    const open = c.phaseN.reduce((a, b) => a + b, 0);
-    const stuck = c.stacks.reduce((a, r) => a + r.reduce((b, s) => b + s.stuck, 0), 0);
-    stage('02', 'pr yard', YARD_U0 + 30, 92, 2, `${num(open)} open`, `${num(c.botN)} bot · depth = age`, '270,330,2');
-    stage('03', 'merge gate', GATE_U + 4, AISLE_V - 36, 40, `${f.merges} merged/h`, '', `${GATE_U},${AISLE_V},2.6`);
-    stage('04', 'main lines', RAIL_U0 + 40, RAIL_V[0] - 8, 0, `${c.redLines} red`, `one rail per org`, '550,290,2.4', C.redText);
-    const waiting = c.waiting;
-    stage('05', 'intake', INTAKE_U0 + 10, 258, 6, `${waiting} queued`, c.oldestWait > 60_000 ? `oldest ${dur(c.oldestWait)}` : `p50 ${dur(w.stats.p50_queue_ms || 0)}`, '705,291,3');
-    const slots = c.groups.reduce((a, gr) => a + (gr.hosted ? 0 : gr.slots), 0);
-    const busy = c.groups.reduce((a, gr) => a + (gr.hosted ? 0 : gr.running.length), 0);
-    stage('06', 'consumption engine', ENG_U0 + 10, ENG_V0, ENG_H, `${c.building} building · ${busy} of ${slots} bays`, `${f.started} jobs/h · p50 ${dur(w.stats.p50_build_ms || 0)}`, '915,300,1.9', C.amberText);
-    const pass = f.finished ? Math.round(((f.finished - f.failed) / f.finished) * 100) : Math.round((w.stats.success_rate_24h || 0) * 100);
-    stage('07', 'tests', SCAN_U, 30, 56, `${pass}% pass`, `${f.failed} failed/h`, `${SCAN_U},330,2.4`);
-    stage('08', 'deploy', SCAN_U + 40, TRACK_V[0] - 6, 0, `${c.deploying.length} deploying · ${f.deploys}/h`, '', `1165,330,2.6`, c.deploying.length ? C.amberText : C.ink2);
-    let up = 0;
-    for (const a of w.apps.values()) if (a.health === 'up') up++;
-    stage('09', 'apps', CITY_U0 + 20, CITY_V0, 6, `${up} of ${w.apps.size} up`, `${c.districts.length} districts`, '1360,320,2');
-    // engines: one label per machine (host · platform · busy/slots · cpu mem)
-    c.groups.forEach((gr, gi) => {
-      const v0 = ENG_V0 + gi * ENG_STEP;
-      const ax = cam.x(ENG_U1 - 6, v0 + ENG_DV), ay = cam.y(ENG_U1 - 6, v0 + ENG_DV, 0);
-      void ax; void ay;
-      // the machine's name on its front face, screen-aligned, left
-      const x = cam.x(ENG_U0 + 6, v0 + ENG_DV) + 4, y = cam.y(ENG_U0 + 6, v0 + ENG_DV, 0) + 16;
-      const util = gr.slots ? Math.round((gr.running.length / gr.slots) * 100) : 0;
-      const gauges = gr.cpu >= 0 ? `cpu ${Math.round(gr.cpu)}% · mem ${Math.round(gr.mem)}%` : gr.hosted ? 'hosted' : 'no gauges';
-      const parts: [string, string, boolean?][] = [[gr.name, gr.online ? C.ink : C.ink3, true], [`  ${gr.hosted ? `${gr.running.length} running` : `${gr.running.length}/${gr.slots} · ${util}%`}`, gr.running.length ? C.amberText : C.ink3], [`  ${gauges}`, C.ink3]];
-      let wsum = 0; for (const [s, , b] of parts) wsum += g.width(s, SMALL, !!b);
-      const at = this.placeAt(x, y, wsum, 14, 2, true);
-      let xx = x, yy = y;
-      if (at) [xx, yy] = at; else this.labels.push({ x, y, w: wsum, h: 14 });
-      const x2 = xx;
-      g.fillRect(x2 - 3, yy - 11, wsum + 6, 15, withAlpha(C.canvas, 0.82));
-      g.runs(parts, x2, yy, SMALL);
-      this.hit(x2 - 3, yy - 11, wsum + 6, 15, 'engine', `915,${v0 + ENG_DV / 2},2.4`, gr.name);
-    });
-    // busy bays: the job's repo and how long it has run (red over 1.5× typical). At fleet
-    // zoom only the four that matter most are named (overruns, then the longest running).
-    const busyBays = this.bays.filter((b) => b.pid && w.pipelines.get(b.pid));
-    const el = (b: Bay) => { const p = w.pipelines.get(b.pid)!; return p.started ? Math.max(0, now - p.started) : 0; };
-    const over = (b: Bay) => { const p = w.pipelines.get(b.pid)!; return p.expected_ms ? el(b) / p.expected_ms : 0; };
-    busyBays.sort((a, b) => (over(b) > 1.5 ? 1 : 0) - (over(a) > 1.5 ? 1 : 0) || el(b) - el(a));
-    const perMachine = new Map<number, number>();
-    const named = busyBays.filter((b) => {
-      if (b.pid === this.hoverId) return true;
-      const n = perMachine.get(b.group) ?? 0;
-      if (n >= jobsPer) return false;
-      perMachine.set(b.group, n + 1);
-      return true;
-    });
-    named.sort((a, b) => a.group - b.group || a.slot - b.slot);
-    for (const b of named) {
-      const p = w.pipelines.get(b.pid)!;
-      const e = el(b), exp = p.expected_ms ?? 0;
-      const name = p.repo.split('/')[1] ?? p.repo;
-      const ax = cam.x(b.u + b.du * 0.5, b.v), ay = cam.y(b.u + b.du * 0.5, b.v, ENG_H);
-      const step = detail ? runningStep(p) : '';
-      this.leader(g, ax, ay, 18 + (b.slot % 2) * 16, [[name, C.ink], [` ${dur(e)}`, exp && e > exp * 1.5 ? C.redText : C.amberText], [step.length >= 3 ? ` · ${step}` : '', C.ink3]], SMALL);
-    }
-    if (!detail && busyBays.length > named.length) {
-      const gx = cam.x(ENG_U1 - 40, ENG_V0), gy = cam.y(ENG_U1 - 40, ENG_V0, ENG_H);
-      void gx; void gy;
-    }
-    // PR yard: phase names along the front, counts on stacks when zoomed, pallet names
-    PHASES.forEach((ph, r) => {
-      const x = cam.x(ROW_U[r] - ROW_DU / 2, AGE_V[0] + STACK_DV + 14), y = cam.y(ROW_U[r] - ROW_DU / 2, AGE_V[0] + STACK_DV + 14) + 4;
-      const s = `${ph} ${c.phaseN[r]}`;
-      const yy = this.place(x, y, g.width(s, SMALL), 13, 0);
-      if (yy >= 0) g.text(s, x, yy, C.ink2, SMALL);
-      if (detail && q < 2) {
-        AGE_V.forEach((v, b) => {
-          const st = c.stacks[r][b];
-          if (!st.n) return;
-          const layers = Math.min(16, Math.ceil(st.n / 3));
-          const sx = cam.x(ROW_U[r], v + STACK_DV / 2), sy = cam.y(ROW_U[r], v + STACK_DV / 2, 4 + layers * 2.6) - 4;
-          const col = st.red >= st.n / 2 && st.red ? C.redText : st.stuck >= st.n / 2 ? C.ink : C.ink2;
-          g.text(String(st.n), sx, sy, col, SMALL, true, 'center');
-        });
-      }
-    });
-    // the age axis along the yard's right edge (depth = age)
-    {
-      const ages = detail && q < 2 ? [0, 1, 2, 3, 4, 5] : [];
-      for (const b of ages) {
-        const x = cam.x(YARD_U0 + 4, AGE_V[b] + STACK_DV / 2) - 4, y = cam.y(YARD_U0 + 4, AGE_V[b] + STACK_DV / 2) + 4;
-        g.fillRect(x - g.width(AGE_WORDS[b], SMALL) - 2, y - 10, g.width(AGE_WORDS[b], SMALL) + 4, 13, withAlpha(C.canvas, 0.8));
-        g.text(AGE_WORDS[b], x, y, C.ink3, SMALL, false, 'right');
-      }
-    }
-    if (q < 3) c.pallets.forEach((p, i) => {
-      const u0 = YARD_U0 + 8 + i * 76;
-      const x = cam.x(u0, PALLET_V + 18) + 2, y = cam.y(u0, PALLET_V + 18) + 14;
-      const yy = this.place(x, y, g.width(`${p.bot} ${p.n}`, SMALL), 13, 0);
-      if (yy >= 0) g.text(`${p.bot} ${p.n}`, x, yy, C.ink3, SMALL);
-    });
-    // sources: each dock's org and push rate
-    c.docks.forEach((d, i) => {
-      const v = 66 + i * 96;
-      const x = cam.x(DOCK_U0, v + 30) - 4, y = cam.y(DOCK_U0, v + 30) + 14;
-      const s = `${d.short} ${d.perHour}/h`;
-      const wv = g.width(s, SMALL);
-      const yy = this.place(x - wv, y, wv, 13, 0);
-      if (yy >= 0) g.text(s, x - wv, yy, d.org === BOTS ? C.ink3 : C.ink2, SMALL);
-    });
-    // rails: the org at the rail's start
-    if (q < 3) c.rails.forEach((r, i) => {
-      const x = cam.x(RAIL_U0 + 2, RAIL_V[i] - 18), y = cam.y(RAIL_U0 + 2, RAIL_V[i] - 18) - 2;
-      const s = `${r.short}${r.red ? ` ${r.red} red` : ''}`;
-      const yy = this.place(x, y, g.width(s, SMALL), 13, 0);
-      if (yy >= 0 && r.red) g.runs([[r.short, C.ink3], [` ${r.red} red`, C.redText]], x, yy, SMALL);
-      else if (yy >= 0) g.text(r.short, x, yy, C.ink3, SMALL);
-    });
-    // deploy tracks
-    if (q < 3) VIAS.forEach((via, i) => {
-      const x = cam.x(SCAN_U + 16, TRACK_V[i] - 30), y = cam.y(SCAN_U + 16, TRACK_V[i] - 30) - 2;
-      const s = `${VIA_WORDS[via]} ${f.byVia[via] ?? 0}/h`;
-      const yy = this.place(x, y, g.width(s, SMALL), 13, 0);
-      if (yy >= 0) g.text(s, x, yy, C.ink3, SMALL);
-    });
-    // city districts: team names; zoomed, the apps' names too
-    for (const d of this.districtBox) {
-      const x = cam.x(d.u0, d.v1) - 2, y = cam.y(d.u0, d.v1) + 12;
-      const s = `${d.team} ${d.n}`;
-      const yy = this.place(x, y, g.width(s, SMALL), 13, 0);
-      if (yy >= 0) {
-        g.fillRect(x - 2, yy - 10, g.width(s, SMALL) + 4, 13, withAlpha(C.canvas, 0.75));
-        g.text(s, x, yy, C.ink2, SMALL);
-        this.hit(x - 2, yy - 10, g.width(s, SMALL) + 4, 13, 'district', `${(d.u0 + d.u1) / 2},${(d.v0 + d.v1) / 2},3.2`, d.team);
-      }
-    }
-    // the focal story: the newest commit that broke a main line, named over its car
-    const fc = c.focal;
-    if (fc && !this.selected) {
-      const ri = c.rails.findIndex((r) => r.org === w.orgOf(fc.repo));
-      const rail = c.rails[ri];
-      const k = rail ? rail.cars.findIndex((x) => x.sha === fc.sha && x.repo === fc.repo) : -1;
-      if (rail && k >= 0) {
-        const u = RAIL_U1 - 12 - (rail.cars.length - 1 - k) * 10, v = RAIL_V[ri];
-        const ax = cam.x(u, v), ay = cam.y(u, v, 6);
-        const name = fc.repo.split('/')[1] ?? fc.repo;
-        this.leader(g, ax, ay, 46, [[name, C.redText, true], [' broke main', C.redText], [` · ${fc.sha.slice(0, 7)} · ${fc.author} · ${dur(now - fc.at)} ago`, C.ink2]], SMALL);
-      }
-    }
-    if (cam.zoom >= 2.6) {
-      // apps by name, whole names only: those that deployed today first, then the rest while
-      // the placer finds room (never a cut name)
-      if (this.nameOrderAt !== c.at || this.nameOrder.length !== this.blocks.length) {
-        this.nameOrderAt = c.at;
-        this.nameOrder = [...this.blocks].sort((a, b) => (c.deploys24.get(b.id) ?? 0) - (c.deploys24.get(a.id) ?? 0));
-      }
-      const order = this.nameOrder;
-      let n = 0;
-      const most = [48, 24, 12, 0, 0][q];
-      for (const b of order) {
-        if (n >= most) break;
-        const x = cam.x(b.u + b.d, b.v + b.d / 2) + 3, y = cam.y(b.u + b.d, b.v + b.d / 2, b.h) + 4;
-        if (x < 0 || x > cam.W - 380 * (this.selected ? 1 : 0) - 8 || y < 60 || y > cam.H - 70) continue;
-        const wv = g.width(b.id, SMALL);
-        if (this.place(x, y, wv, 13, 0) < 0) continue;
-        g.fillRect(x - 2, y - 10, wv + 4, 13, withAlpha(C.canvas, 0.78));
-        g.text(b.id, x, y, (c.deploys24.get(b.id) ?? 0) > 0 ? C.ink2 : C.ink3, SMALL);
-        n++;
-      }
-    }
-  }
+  /** Greedy label placement (labels.ts), for the lens system. */
+  placeAt(x: number, y: number, w: number, h: number, maxUp: number, slide: boolean): [number, number] | null { return this.words.placeAt(x, y, w, h, maxUp, slide); }
 
   // ---- the journey -------------------------------------------------------------------------------
   private journeyPath(p: Pipeline | null): { pts: Pt[]; red: boolean; stops: [Pt, string][] } {
@@ -1691,12 +1226,12 @@ export class Factory {
     }
     void total; void t;
     // stops: the stations it passed, named (the dimmed words below no longer claim space)
-    this.labels = [];
+    this.words.reset();
     stops.forEach(([[u, v], s], i) => {
       const x = cam.x(u, v), y = cam.y(u, v, 1);
       g.begin_(); g.move(x, y - 4); g.line(x + 4, y); g.line(x, y + 4); g.line(x - 4, y); g.ctx.closePath(); g.fill(i === stops.length - 1 ? col : C.ink);
       const bad = s.startsWith('failed');
-      this.tag(g, s, x + 7, y - 6, bad ? C.redText : C.ink2, bad ? C.red : '#5A5A5E');
+      this.words.tag(g, s, x + 7, y - 6, bad ? C.redText : C.ink2, bad ? C.red : '#5A5A5E');
     });
   }
 
@@ -1886,18 +1421,6 @@ export class Factory {
     return [h.label];
   }
 
-  /** The key, in the floor's empty front-left corner: what each physical thing is. */
-  private drawLegend(g: Gfx, f: Frame): void {
-    const x = 18, y = f.height - 58 - 26;
-    const items: [string, string][] = [['crate', 'a pipeline (amber: in flight)'], ['car', 'a merged commit on its org\'s main line'], ['stack', 'open PRs by phase; height = count, depth = age'], ['bay', 'an engine slot, lit while it builds']];
-    let yy = y - (items.length - 1) * 17;
-    for (const [k, s] of items) {
-      g.runs([[k.padEnd(6, ' '), C.ink2, true], [s, C.ink3]], x, yy, SMALL);
-      yy += 17;
-    }
-    g.text('failed crates turn red at the scanner and ride the return conveyor home', x, yy + 2, C.redText, SMALL);
-  }
-
   private drawControls(g: Gfx, f: Frame): void {
     const x = 16, y = 46;
     const btn = (s: string, k: string, xx: number) => {
@@ -1923,8 +1446,5 @@ export class Factory {
   get fx(): FactoryFx { return this as unknown as FactoryFx; }
   readonly plan = PLAN;
 }
-
-/** A crate's wake on its belt: a step lighter than the slats. */
-const cr0Wake = '#38383E';
 
 void AGES; void short; void font;
