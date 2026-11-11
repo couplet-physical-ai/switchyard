@@ -9,7 +9,7 @@ import { createSim, type Sim } from '../server/sim.ts';
 import type { Upstream } from './api.ts';
 import type { Frame as WireFrame, History, Journey, Meta, PrDetail, SearchResults, Snapshot } from './wire.ts';
 
-async function yieldTurn(): Promise<void> {
+export async function yieldTurn(): Promise<void> {
   const s = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
   if (s?.yield) await s.yield();
 }
@@ -26,13 +26,15 @@ export class DemoUpstream implements Upstream {
   private constructor(readonly epoch: number, seed: number) {
     this.sim = createSim({ epoch, seed, warmupMs: DEMO_WARMUP, checkpointMs: 60_000, maxCommits: 1200, lite: true, deferWarmup: true });
   }
-  /** A demo at `epoch`, its warm-up run 10 s of fleet time per turn (a turn has 100 ms). */
+  /** A demo at `epoch`, its warm-up run 4 s of fleet time per turn (a turn has 100 ms of CPU;
+   *  10 s took 99–119 ms on the build Mac under load, so a `connect` could fail its budget). */
   static async start(epoch: number, seed = 7): Promise<DemoUpstream> {
     const d = new DemoUpstream(epoch, seed);
     // The seeding is one turn and the warm-up others: on a busy Mac (efficiency cores) the
     // two together went over a turn's 100 ms budget.
     await yieldTurn();
-    while (!d.sim.warm(10_000)) await yieldTurn();
+    while (!d.sim.warm(4_000)) await yieldTurn();
+    await yieldTurn(); // the caller loads the world next: give it a turn of its own
     return d;
   }
   /** Runs the simulation toward `ms` (at most 5 s per call, so a long gap catches up over

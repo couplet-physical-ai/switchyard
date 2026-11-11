@@ -1,560 +1,869 @@
-// The yard's two layers. `drawStatic` paints what only a resize or a layout change moves
-// (wires, machines, titles); `drawLive` paints every frame: packets, rings, dots, numbers.
+// The yard (DESIGN.md, "Layout of the Yard", "Rendering"): three canvas layers over one scene.
+//
+//   yardStatic  wires, machines, port tabs, the bus, the return wire: redrawn only when the
+//               layout changes (a resize, the fleet's shape, the rows picked), at low detail
+//               on the bottom rungs of the quality ladder.
+//   yardInfo    panels of text and data (info.ts), each redrawn only when what it shows changed.
+//   yardLive    every frame: packets (pooled, fixed-step, trains), progress rings, effects,
+//               labels, the dial, the hover lens (an element promoted to LOD0), the HUD.
+//
+// `Yard` owns the scene, the LOD book, the frame budget, the packet pool and the aggregates,
+// and keeps them in step with the world.
 
-import type { Ctx2D } from '../../app.contract.d.ts';
-import type { Pipeline, Repo, Step } from '../wire.ts';
+import type { Ctx2D, Frame } from '../../app.contract.d.ts';
+import type { Pipeline } from '../wire.ts';
 import type { World } from '../world.ts';
 import type { Timeline } from '../timeline.ts';
-import { type Layout, type Pt, BOTS, enginesOf, isRed, wire } from './layout.ts';
-import { type Motion, slotPoint } from './motion.ts';
-import { arrow, chip, dotLine, eyebrow, fmtClock, fmtDur, machine, port, runs, text, withAlpha } from './paint.ts';
-import { C, TAU, clamp, easeOut, font } from './theme.ts';
+import { Budget, type Quality } from './budget.ts';
+import { Gfx, machine, port, times } from './gfx.ts';
+import { Hud } from './hud.ts';
+import { InfoLayer, type View, fmtDur, fmtShort, mainLine } from './info.ts';
+import { type Leg, type Scene, census, engineGroups, enginesOf, layout, scaleFor } from './layout.ts';
+import { LodBook } from './lod.ts';
+import { E_FLASH, E_POP, E_PORT, E_PULSE, Pool, ST_RET, ST_SLOT, T_AMBER, T_GRAY, T_GREEN, T_RED, engineOf } from './pool.ts';
+import { Aggregates, buildingIds, isRed, mainStory, queueTruth } from './select.ts';
+import { StressFleet } from './stress.ts';
+import { C, T, TAU, clamp, easeOut, withAlpha } from './theme.ts';
 
-export type Hit = { x: number; y: number; w: number; h: number; kind: string; id: string; label: string };
+export type Hit = { kind: string; id: string; label: string };
 
-function bez(ctx: Ctx2D, a: Pt, b: Pt): void {
-  const c = wire(a, b);
-  ctx.moveTo(c[0].x, c[0].y);
-  ctx.bezierCurveTo(c[1].x, c[1].y, c[2].x, c[2].y, c[3].x, c[3].y);
-}
+const TINTS = [C.packet, C.red, C.green, C.dotDim];
+const PICKS_MS = 8000;
+const BUCKETS = 4096;
 
-function drainX(L: Layout): number {
-  return L.cols.engines + (L.engines[0]?.w ?? 200) + 16;
-}
-
-export function drawStatic(ctx: Ctx2D, L: Layout): void {
-  ctx.clearRect(0, 0, L.W, L.H);
-  ctx.lineCap = 'round';
-  // band rules
-  ctx.beginPath();
-  for (const y of [L.now.y0, L.queue.y0]) if (y < L.H - 2) { ctx.moveTo(L.m, y + 0.5); ctx.lineTo(L.W - L.m, y + 0.5); }
-  ctx.strokeStyle = C.rule;
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  // wires
-  ctx.beginPath();
-  for (const s of L.sources) bez(ctx, s.port, L.junction);
-  bez(ctx, L.junction, L.intake.roadrunner.inPort);
-  bez(ctx, L.junction, L.intake.gha.inPort);
-  for (const e of L.engines) {
-    bez(ctx, e.kind === 'gha_runner' ? L.intake.gha.outPort : L.intake.roadrunner.outPort, e.inPort);
-    bez(ctx, e.outPort, L.gate.inPort);
-  }
-  // gate → bus → main lines; bus → deploy → apps
-  ctx.moveTo(L.gate.outPort.x, L.gate.outPort.y);
-  ctx.lineTo(L.bus.x, L.gate.outPort.y);
-  ctx.moveTo(L.bus.x, Math.min(L.bus.y0, L.gate.outPort.y));
-  ctx.lineTo(L.bus.x, L.ret.y);
-  for (const l of L.mains) { ctx.moveTo(L.bus.x, l.y); ctx.lineTo(l.x0, l.y); }
-  ctx.moveTo(L.bus.x, L.agg.y); ctx.lineTo(L.agg.x0, L.agg.y);
-  ctx.moveTo(L.deploy.outPort.x, L.deploy.outPort.y); ctx.lineTo(L.bus.x, L.deploy.outPort.y);
-  ctx.moveTo(L.bus.x, L.appsBox.y + L.appsBox.h / 2); ctx.lineTo(L.appsBox.x - 6, L.appsBox.y + L.appsBox.h / 2);
-  // gate → review
-  ctx.moveTo(L.gate.x + L.gate.w / 2, L.gate.y + L.gate.h);
-  ctx.lineTo(L.review.x + L.review.w / 2, L.review.y);
-  // return wire: drain beside the engines, the long run home, up to the sources
-  const dx = drainX(L);
-  ctx.moveTo(dx, (L.engines[0]?.outPort.y ?? L.gate.y));
-  ctx.lineTo(dx, L.ret.y - 10);
-  ctx.arcTo(dx, L.ret.y, dx - 10, L.ret.y, 10);
-  ctx.moveTo(L.bus.x, L.ret.y - 10);
-  ctx.arcTo(L.bus.x, L.ret.y, L.bus.x - 10, L.ret.y, 10);
-  ctx.lineTo(L.ret.x0 + 10, L.ret.y);
-  ctx.arcTo(L.ret.x0, L.ret.y, L.ret.x0, L.ret.y - 10, 10);
-  ctx.lineTo(L.ret.x0, L.sources[0].y + 10);
-  ctx.arcTo(L.ret.x0, L.sources[0].y, L.ret.x0 + 10, L.sources[0].y, 10);
-  for (const e of L.engines) { ctx.moveTo(e.outPort.x, e.outPort.y); ctx.lineTo(dx, e.outPort.y); }
-  ctx.strokeStyle = C.wire;
-  ctx.lineWidth = 1;
-  ctx.stroke();
-  text(ctx, 'failures go back to whoever pushed them', (L.ret.x0 + L.bus.x) / 2, L.ret.y + 17, C.ink4, 12, false, 'center');
-
-  // column titles
-  const ty = L.titleY;
-  runs(ctx, [['sources', C.ink, true], [' · pushes', C.ink3]], L.cols.sources, ty);
-  runs(ctx, [['intake', C.ink, true]], L.cols.intake, ty);
-  runs(ctx, [['engines', C.ink, true], [' · slots', C.ink3]], L.cols.engines, ty);
-  runs(ctx, [['gates', C.ink, true]], L.cols.gates, ty);
-  runs(ctx, [['main lines', C.ink, true], [' · newest right', C.ink3]], L.cols.mains, ty);
-
-  // machines
-  for (const m of [L.intake.roadrunner, L.intake.gha]) {
-    machine(ctx, m.x, m.y, m.w, m.h, 12);
-    port(ctx, m.inPort.x, m.inPort.y);
-    port(ctx, m.outPort.x, m.outPort.y);
-    text(ctx, m.title, m.x + m.w / 2, m.y + m.h + 16, C.ink2, 12, false, 'center');
-  }
-  for (const e of L.engines) {
-    machine(ctx, e.x, e.y, e.w, e.h, 10);
-    port(ctx, e.inPort.x, e.inPort.y);
-    port(ctx, e.outPort.x, e.outPort.y);
-    text(ctx, e.title, e.x, e.y - 7, C.ink2, 12);
-    ctx.beginPath();
-    for (const s of e.slots) { ctx.moveTo(s.x + s.r, s.y); ctx.arc(s.x, s.y, s.r, 0, TAU); }
-    ctx.strokeStyle = C.machineDim;
-    ctx.lineWidth = 1.2;
-    ctx.stroke();
-  }
-  // gates: the integrator's clamp
-  {
-    const g = L.gate;
-    machine(ctx, g.x, g.y, g.w, g.h, 12);
-    port(ctx, g.inPort.x, g.inPort.y);
-    port(ctx, g.outPort.x, g.outPort.y);
-    const cx = g.x + g.w / 2, cy = g.y + g.h / 2;
-    ctx.beginPath();
-    ctx.moveTo(cx, g.y + 10); ctx.lineTo(cx, g.y + g.h - 10);
-    ctx.strokeStyle = C.machine; ctx.lineWidth = 2; ctx.stroke();
-    for (const yy of [g.y + 6, g.y + g.h - 6]) {
-      ctx.beginPath(); ctx.roundRect(cx - 22, yy - 2, 44, 4, 2); ctx.fillStyle = '#3A3A3C'; ctx.fill();
-    }
-    text(ctx, 'required checks', g.x + g.w / 2, g.y + g.h + 16, C.ink3, 12, false, 'center');
-  }
-  {
-    const r = L.review;
-    machine(ctx, r.x, r.y, r.w, r.h, 12);
-    ctx.beginPath(); ctx.roundRect(r.x + r.w / 2 - 14, r.y - 3, 28, 6, 2.5); ctx.fillStyle = C.port; ctx.fill(); ctx.strokeStyle = C.portEdge; ctx.lineWidth = 1.2; ctx.stroke();
-    ctx.beginPath(); ctx.arc(r.x + r.w / 2, r.y + r.h / 2, 12, 0, TAU); ctx.strokeStyle = C.machineDim; ctx.lineWidth = 1.2; ctx.stroke();
-    text(ctx, 'review · pull requests', r.x + r.w / 2, r.y + r.h + 16, C.ink3, 12, false, 'center');
-  }
-  {
-    const d = L.deploy;
-    machine(ctx, d.x, d.y, d.w, d.h, 12);
-    port(ctx, d.outPort.x, d.outPort.y);
-    ctx.beginPath(); ctx.moveTo(d.x + 18, d.y + d.h / 2); ctx.lineTo(d.x + d.w - 22, d.y + d.h / 2); ctx.strokeStyle = C.machine; ctx.lineWidth = 2; ctx.stroke();
-    runs(ctx, [['deploy', C.ink, true], [' · provisioning', C.ink3]], d.x, d.y - 9, 13);
-  }
-  // dial frame
-  ctx.beginPath(); ctx.arc(L.dial.x, L.dial.y, L.dial.r, 0, TAU); ctx.strokeStyle = C.ink2; ctx.lineWidth = 1.5; ctx.stroke();
-}
-
-type Focus = { pipeline: string; since: number };
-
-export class LiveLayer {
-  hits: Hit[] = [];
-  private focus: Focus = { pipeline: '', since: 0 };
+export class Yard {
+  readonly lod = new LodBook();
+  readonly budget = new Budget();
+  readonly pool = new Pool();
+  readonly agg = new Aggregates();
+  readonly stress = new StressFleet();
+  readonly hud = new Hud();
+  readonly info = new InfoLayer();
+  private gs = new Gfx();
+  private gi = new Gfx();
+  private gl = new Gfx();
+  private gt = new Gfx();
+  S: Scene | null = null;
+  private sceneSig = '';
+  private picks: string[] = [];
+  private picksAt = -1e9;
+  private picksFresh = -1;
+  private laneSig = '';
+  private laneSigVer = -1;
+  private lastW = 0;
+  private lastH = 0;
+  private lastScale = 1;
+  focus: Pipeline | null = null;
+  private focusId = '';
+  private focusSince = 0;
+  private focusAt = -1e9;
   selected = '';
-  hover = '';
   offsetMin = 0;
+  reduced = false;
+  private stressWanted = false;
+  // hover lens
+  hover: Hit & { x: number; y: number; t0: number } = { kind: '', id: '', label: '', x: 0, y: 0, t0: 0 };
+  private lens: Hit & { x: number; y: number; t0: number; out: number } = { kind: '', id: '', label: '', x: 0, y: 0, t0: 0, out: 0 };
+  // stats
+  private infoCount = 0;
+  private infoSec = 0;
+  infoRate = 0;
+  trains = 0;
+  private staticQ = -1;
+  private pt = { x: 0, y: 0 };
+  // trains (per frame, zero allocation)
+  private bKey = new Int32Array(BUCKETS); private bGen = new Int32Array(BUCKETS); private bCount = new Int32Array(BUCKETS);
+  private bLead = new Int32Array(BUCKETS); private bX = new Float32Array(BUCKETS); private bY = new Float32Array(BUCKETS);
+  private bTint = new Uint8Array(BUCKETS); private bUsed = new Int32Array(BUCKETS); private nUsed = 0; private gen = 1;
+  private placed = new Float32Array(4 * 8);
+  private top = new Int32Array(16);
+  private unknown = new Float32Array(512);
 
-  draw(ctx: Ctx2D, L: Layout, tl: Timeline, mo: Motion, t: number, reduced: boolean): void {
-    const w = tl.shown;
-    const now = tl.playhead;
-    ctx.clearRect(0, 0, L.W, L.H);
-    ctx.lineCap = 'round';
-    this.hits = [];
-    this.header(ctx, L, tl, w, t, reduced);
-    this.sources(ctx, L, w, now);
-    this.intake(ctx, L, w, now);
-    this.engines(ctx, L, w, now, t, reduced);
-    this.mains(ctx, L, w, now, t);
-    this.apps(ctx, L, w);
-    this.lower(ctx, L, w);
-    this.effects(ctx, mo, t);
-    this.packets(ctx, mo, t);
-    if (L.now.y1 > L.now.y0) this.nowBand(ctx, L, w, now, t);
-    if (L.queue.y1 > L.queue.y0) this.queueBand(ctx, L, w, now);
+  constructor(public tl: Timeline) {}
+
+  get world(): World { return this.tl.world; }
+
+  setStress(on: boolean): void { this.stressWanted = on; }
+
+  // ---- the scene ------------------------------------------------------------------------------
+  /** The scene for a canvas of W×H at `scale`, rebuilt only when something it depends on moved. */
+  ensure(W: number, H: number, scale: number, t: number): Scene {
+    const w = this.world;
+    if (W > 0) { this.lastW = W; this.lastH = H; this.lastScale = scale; }
+    W = this.lastW || 1440; H = this.lastH || 860; scale = this.lastScale || 1;
+    const first = !this.S;
+    this.agg.update(w);
+    this.agg.pump(first);
+    if (this.stressWanted !== this.stress.on) {
+      this.stress.on = this.stressWanted;
+      if (!this.stress.on) { this.stress.clear(); this.pool.setStress(false, t); }
+      this.sceneSig = '';
+    }
+    if (w.kv.engine !== this.laneSigVer) {
+      this.laneSigVer = w.kv.engine;
+      this.laneSig = enginesOf(w).map((e) => `${e.id}:${e.slots}:${e.online === false ? 0 : 1}:${e.host ?? ''}`).join(',');
+    }
+    const ra = this.agg.repos;
+    if (t - this.picksAt > PICKS_MS || ra.fresh !== this.picksFresh || !this.picks.length) {
+      this.picks = ra.ranked.slice(0, 120);
+      this.picksAt = t;
+      this.picksFresh = ra.fresh;
+    }
+    // The scene depends on the fleet's shape (counts, tiers, org runs), not on every state
+    // change: those the info layer redraws in place.
+    const sig = `${W}|${H}|${scale}|${w.shapeVer}|${ra.ids.length}:${ra.fresh}:${ra.hot}:${ra.orgs.length}|${this.agg.apps.ids.length}|${this.picksAt}|${this.laneSig}|${this.stress.on ? 1 : 0}|${this.lod.histogram.length}`;
+    if (sig !== this.sceneSig || !this.S) {
+      this.sceneSig = sig;
+      const c = census(w, ra, this.agg.apps, this.stress.on ? this.stress : null);
+      const S = layout(W, H, scale, c, this.lod, this.picks, t);
+      this.S = S;
+      this.lod.histogram = S.hist;
+      const p = this.pool;
+      p.S = S;
+      p.repoIndex.clear();
+      ra.ids.forEach((id, i) => p.repoIndex.set(id, i));
+      p.appIndex.clear();
+      this.agg.apps.ids.forEach((id, i) => p.appIndex.set(id, i));
+      p.reseat(w, true);
+      if (this.stress.on) { p.buildJourneys(); p.setStress(true, t); }
+    }
+    return this.S!;
   }
 
-  private header(ctx: Ctx2D, L: Layout, tl: Timeline, w: World, t: number, reduced: boolean): void {
-    const y = 38;
-    const mode = tl.mode;
-    const tag: [string, string] = mode === 'live' ? ['live', C.green] : mode === 'paused' ? ['paused', C.packet] : mode === 'replay' ? ['replay', C.packet] : ['behind', C.amberText];
-    const parts: [string, string][] = [tag, [' · ', C.ink4]];
-    if (mode === 'live') parts.push([`all orgs · ${w.repos.size} repos`, C.ink3]);
-    else if (mode === 'replay') parts.push([`${fmtClock(tl.replayFrom, this.offsetMin)} → ${fmtClock(tl.replayTo, this.offsetMin)} · at ${fmtClock(tl.playhead, this.offsetMin)} · 60×`, C.ink3]);
-    else parts.push([`${fmtDur(tl.behindMs())} behind live${mode === 'behind' ? ` · ${tl.speed === 1 ? '1×' : '¼×'}` : ''}`, C.ink3]);
-    eyebrow(ctx, parts, L.m, y);
-    // the dial: "1 hour, sped up"
-    const d = L.dial;
-    text(ctx, mode === 'replay' ? `${Math.round(tl.replayProgress() * 60)} of 60 min` : '1 hour, sped up', d.x - d.r - 12, d.y + 4, mode === 'replay' ? C.amberText : C.ink3, 13, false, 'right');
-    const ang = mode === 'replay' ? -Math.PI / 2 + tl.replayProgress() * TAU : reduced ? -Math.PI / 4 : -Math.PI / 2 + ((t / 60000) % 1) * TAU;
-    ctx.beginPath(); ctx.moveTo(d.x, d.y); ctx.lineTo(d.x + Math.cos(ang) * (d.r - 4), d.y + Math.sin(ang) * (d.r - 4));
-    ctx.strokeStyle = mode === 'replay' ? C.packet : C.ink; ctx.lineWidth = 1.8; ctx.stroke();
-    if (mode === 'replay') {
-      ctx.beginPath(); ctx.arc(d.x, d.y, d.r + 3, -Math.PI / 2, -Math.PI / 2 + tl.replayProgress() * TAU); ctx.strokeStyle = withAlpha(C.packet, 0.7); ctx.lineWidth = 1.5; ctx.stroke();
-    }
-    ctx.font = font(13);
-    const tw = ctx.measureText('1 hour, sped up').width;
-    this.hits.push({ x: d.x - d.r - 16 - tw, y: d.y - 14, w: tw + d.r * 2 + 20, h: 28, kind: 'replay', id: 'replay', label: 'Replay the last hour, sped up' });
+  /** Called when the world was replaced or jumped: packets re-seat without travel. */
+  sync(t: number): void {
+    // Deferred to the next live draw: a source's turn (connect, a snapshot) has 100 ms of CPU
+    // on Hermes, and the first scene (aggregates, layout) would push it over.
+    void t;
+    this.needSync = true;
   }
+  private needSync = false;
 
-  private sources(ctx: Ctx2D, L: Layout, w: World, now: number): void {
-    for (const s of L.sources) {
-      const n10 = w.pushesSince(s.org, now - 600_000);
-      const rate = w.rate(s.org, now);
-      // the source glyph: a document with one line per recent push (a robot for bots)
-      const gx = s.x, gy = s.y - 9;
-      ctx.beginPath(); ctx.roundRect(gx, gy, 24, 18, 3); ctx.strokeStyle = n10 ? C.ink2 : C.machineDim; ctx.lineWidth = 1.3; ctx.stroke();
-      if (s.bot) {
-        ctx.beginPath(); ctx.arc(gx + 8.5, gy + 9, 1.8, 0, TAU); ctx.arc(gx + 15.5, gy + 9, 1.8, 0, TAU); ctx.fillStyle = n10 ? C.ink : C.ink4; ctx.fill();
-        ctx.beginPath(); ctx.moveTo(gx + 12, gy); ctx.lineTo(gx + 12, gy - 4); ctx.strokeStyle = n10 ? C.ink2 : C.machineDim; ctx.stroke();
-      } else {
-        ctx.beginPath();
-        const lines = Math.min(3, n10);
-        for (let i = 0; i < lines; i++) { ctx.moveTo(gx + 5, gy + 5 + i * 4); ctx.lineTo(gx + 19 - (i % 2) * 5, gy + 5 + i * 4); }
-        ctx.strokeStyle = C.ink2; ctx.lineWidth = 1.3; ctx.stroke();
-      }
-      const lx = runs(ctx, [[s.label, n10 ? C.ink2 : C.ink3]], gx + 34, s.y + 4.5, 13);
-      text(ctx, `${rate}/h`, s.port.x - 8, s.y + 4.5, C.ink4, 11, false, 'right');
-      void lx;
-      this.hits.push({ x: gx - 4, y: s.y - 14, w: s.port.x - gx + 8, h: 28, kind: 'org', id: s.org, label: s.bot ? 'Bots' : s.org });
-    }
-  }
-
-  private intake(ctx: Ctx2D, L: Layout, w: World, now: number): void {
-    for (const id of ['roadrunner', 'gha'] as const) {
-      const m = L.intake[id];
-      const q = w.queues.get(id);
-      const pend = q?.pending ?? 0;
-      const visible = Math.max(1, Math.floor((m.h - 20) / 13));
-      if (pend > visible) text(ctx, `+${pend - visible}`, m.x + m.w / 2, m.y + 15, C.amberText, 11, false, 'center');
-      const sub = pend ? `${pend} waiting · ${fmtDur(q?.oldest_wait_ms ?? 0)}` : 'nothing waiting';
-      text(ctx, sub, m.x + m.w / 2, m.y + m.h + 31, pend ? C.amberText : C.ink4, 11, false, 'center');
-      this.hits.push({ x: m.x - 6, y: m.y - 6, w: m.w + 12, h: m.h + 40, kind: 'queue', id, label: `${id} queue` });
-    }
-    void now;
-    if (w.watcher.tripped) text(ctx, `github ${w.watcher.gh_status}`, L.intake.gha.x + L.intake.gha.w / 2, L.intake.gha.y - 8, C.redText, 11, false, 'center');
-  }
-
-  private engines(ctx: Ctx2D, L: Layout, w: World, now: number, t: number, reduced: boolean): void {
-    const ringOk: number[] = [], ringRun: [number, number, number, number][] = [];
-    const byId = new Map(enginesOf(w).map((e) => [e.id, e]));
-    const fallbackExp = w.stats.p50_build_ms || 0;
-    for (const box of L.engines) {
-      let busy = 0, slots = 0, cpu = 0, ncpu = 0;
-      for (const id of box.engines) {
-        const e = byId.get(id);
-        if (!e) continue;
-        busy += Math.min(e.slots ?? 0, e.running?.length ?? 0); slots += e.slots ?? 0;
-      }
-      for (const id of box.stats.length ? box.stats : box.engines) {
-        const e = byId.get(id);
-        if (e?.cpu != null) { cpu += e.cpu; ncpu++; }
-      }
-      const load = ncpu ? ` · cpu ${Math.round((cpu / ncpu) * (cpu / ncpu <= 1 ? 100 : 1))}%` : '';
-      if (box.offline) text(ctx, 'offline', box.x + box.w, box.y - 7, C.ink4, 11, false, 'right');
-      else text(ctx, `${busy}/${slots}${load}`, box.x + box.w, box.y - 7, busy ? C.amberText : C.ink4, 11, false, 'right');
-      this.hits.push({ x: box.x - 4, y: box.y - 20, w: box.w + 8, h: box.h + 24, kind: 'engine', id: box.id, label: box.title });
-      for (const id of box.engines) {
-        const e = byId.get(id);
-        if (!e) continue;
-        const slotsOf = L.slotByEngine.get(id) ?? [];
-        (e.running ?? []).forEach((pid, i) => {
-          const s = slotsOf[Math.min(i, slotsOf.length - 1)];
-          if (!s) return;
-          const p = w.pipelines.get(pid);
-          const exp = p?.expected_ms ?? w.repos.get(p?.repo ?? '')?.p50_build_ms ?? fallbackExp;
-          const el = p?.started ? Math.max(0, now - p.started) : 0;
-          if (exp > 0) ringRun.push([s.x, s.y, s.r + 3.5, clamp(el / exp, 0.02, 0.98)]);
-          else ringOk.push(s.x, s.y, s.r + 3.5);
-          this.hits.push({ x: s.x - s.r - 3, y: s.y - s.r - 3, w: s.r * 2 + 6, h: s.r * 2 + 6, kind: 'pipeline', id: pid, label: p ? `${p.repo} #${p.number}` : pid });
-        });
-      }
-    }
-    // progress rings (elapsed over typical), an indeterminate quarter when unknown
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = C.packet;
-    ctx.beginPath();
-    for (const [x, y, r, u] of ringRun) { const a0 = -Math.PI / 2; ctx.moveTo(x + Math.cos(a0) * r, y + Math.sin(a0) * r); ctx.arc(x, y, r, a0, a0 + u * TAU); }
-    const spin = reduced ? 0 : ((t / 900) % 1) * TAU;
-    for (let i = 0; i < ringOk.length; i += 3) { const [x, y, r] = [ringOk[i], ringOk[i + 1], ringOk[i + 2]]; ctx.moveTo(x + Math.cos(spin) * r, y + Math.sin(spin) * r); ctx.arc(x, y, r, spin, spin + Math.PI / 2); }
-    ctx.stroke();
-    ctx.beginPath();
-    for (const [x, y, r, u] of ringRun) { const a0 = -Math.PI / 2 + u * TAU; ctx.moveTo(x + Math.cos(a0) * r, y + Math.sin(a0) * r); ctx.arc(x, y, r, a0, -Math.PI / 2 + TAU); }
-    ctx.strokeStyle = withAlpha(C.packet, 0.16);
-    ctx.stroke();
-  }
-
-  private mains(ctx: Ctx2D, L: Layout, w: World, now: number, t: number): void {
-    for (const l of L.mains) {
-      const r = w.repos.get(l.repo);
-      if (!r) continue;
-      const red = isRed(r);
-      const name = r.name ?? l.repo;
-      const parts: [string, string, boolean?][] = [[name, l.repo === this.selected ? C.packet : C.ink, true]];
-      if (red) {
-        parts.push([` · red ${fmtDur(now - r.main.since)}`, C.redText]);
-        const c = r.main.culprit ? (r.main.recent ?? []).find((d) => d?.sha === r.main.culprit) : undefined;
-        if (c) parts.push([` · culprit ${String(c.sha ?? '').slice(0, 7)} by ${String(c.author ?? '').replace(/\[bot\]$/, '')}`, C.ink3]);
-      } else if (r.main?.state === 'running' || r.main?.state === 'pending') parts.push([' · building', C.amberText]);
-      else parts.push([' · green', C.ink3]);
-      fitRuns(ctx, parts, l.x0, l.y - 13, l.x1 + 22 - l.x0, 12.5);
-      dotLine(ctx, r.main?.recent ?? [], l.x0, l.x1 - 14, l.y, l.step, t, { red, culprit: red ? r.main.culprit : null, label: false });
-      this.hits.push({ x: l.x0 - 4, y: l.y - 26, w: l.x1 - l.x0 + 26, h: 36, kind: 'repo', id: l.repo, label: l.repo });
-    }
-    // the rest, as one row
-    const shown = new Set(L.mains.map((l) => l.repo));
-    let rest = 0, red = 0, building = 0;
-    for (const r of w.repos.values()) {
-      if (shown.has(r.id)) continue;
-      rest++;
-      if (isRed(r)) red++;
-      else if (r.main?.state === 'running') building++;
-    }
-    const parts: [string, string][] = [[`+${rest} more`, C.ink2]];
-    if (red) parts.push([` · ${red} red`, C.redText]);
-    if (building) parts.push([` · ${building} building`, C.amberText]);
-    parts.push([' · mainlines ›', C.ink4]);
-    runs(ctx, parts, L.agg.x0, L.agg.y + 4, 12);
-    this.hits.push({ x: L.agg.x0 - 4, y: L.agg.y - 12, w: L.agg.x1 - L.agg.x0, h: 24, kind: 'view', id: 'mainlines', label: 'All main lines' });
-  }
-
-  private apps(ctx: Ctx2D, L: Layout, w: World): void {
-    let up = 0;
-    const down: string[] = [];
-    const groups: Record<string, number[]> = { up: [], degraded: [], down: [], unknown: [] };
-    for (const c of L.apps) {
-      const a = w.apps.get(c.app);
-      const h = a?.health ?? 'unknown';
-      if (h === 'up') up++;
-      else if (h === 'down' || h === 'degraded') down.push(c.app);
-      (groups[h] ?? groups.unknown).push(c.x, c.y, c.s);
-      this.hits.push({ x: c.x - 2, y: c.y - 2, w: c.s + 4, h: c.s + 4, kind: 'app', id: c.app, label: c.app });
-    }
-    const fill = (xs: number[], color: string, stroke = false) => {
-      if (!xs.length) return;
-      ctx.beginPath();
-      for (let i = 0; i < xs.length; i += 3) ctx.roundRect(xs[i], xs[i + 1], xs[i + 2], xs[i + 2], 2);
-      if (stroke) { ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.stroke(); } else { ctx.fillStyle = color; ctx.fill(); }
-    };
-    fill(groups.up, '#3B4A40');
-    fill(groups.degraded, C.packet);
-    fill(groups.down, C.red);
-    fill(groups.unknown, C.machineDim, true);
-    const total = L.apps.length;
-    const parts: [string, string, boolean?][] = [['apps', C.ink, true], [` · ${up} of ${total} up`, C.ink3]];
-    if (down.length) parts.push([` · ${down.slice(0, 3).join(', ')}${down.length > 3 ? ` +${down.length - 3}` : ''}`, C.redText]);
-    runs(ctx, parts, L.appsBox.x, L.appsBox.y - 9, 12.5);
-  }
-
-  private lower(ctx: Ctx2D, L: Layout, w: World): void {
-    const s = w.stats;
-    text(ctx, `${Math.round((s.success_rate_24h <= 1 ? s.success_rate_24h * 100 : s.success_rate_24h))}% green · 24 h`, L.gate.x + L.gate.w / 2, L.gate.y + L.gate.h + 31, C.ink4, 11, false, 'center');
-    let deploying = 0, rr = 0, gha = 0, fb = 0;
-    for (const d of w.deploys.values()) {
-      if (d.state === 'running' || d.state === 'pending') deploying++;
-      if (d.via === 'roadrunner') rr++; else if (d.via === 'gha') gha++; else if (d.via === 'gha_fallback') fb++;
-    }
-    text(ctx, deploying ? `${deploying} deploying` : `${s.deploys_24h} today`, L.deploy.x + L.deploy.w / 2, L.deploy.y + L.deploy.h + 16, deploying ? C.amberText : C.ink4, 11, false, 'center');
-    text(ctx, `rr ${rr} · gha ${gha} · fallback ${fb}`, L.deploy.x + L.deploy.w / 2, L.deploy.y + L.deploy.h + 31, fb ? C.amberText : C.ink4, 11, false, 'center');
-    this.hits.push({ x: L.deploy.x - 4, y: L.deploy.y - 22, w: L.deploy.w + 8, h: L.deploy.h + 40, kind: 'view', id: 'fleet', label: 'Deploys and apps' });
-    this.hits.push({ x: L.review.x - 4, y: L.review.y - 6, w: L.review.w + 120, h: L.review.h + 12, kind: 'view', id: 'prs', label: 'Pull requests' });
-  }
-
-  private effects(ctx: Ctx2D, mo: Motion, t: number): void {
-    for (const e of mo.effects) {
-      const u = clamp((t - e.t0) / e.dur, 0, 1);
-      if (e.k === 'pop') {
-        const r = u < 0.6 ? 6.5 * easeOut(u / 0.6) : 6.5 - 2 * ((u - 0.6) / 0.4);
-        ctx.beginPath(); ctx.arc(e.x, e.y, r, 0, TAU); ctx.fillStyle = e.color; ctx.fill();
-      } else if (e.k === 'pulse') {
-        const r = (e.r ?? 10) * (0.6 + u * 1.4);
-        ctx.beginPath(); ctx.roundRect(e.x - r / 2, e.y - r / 2, r, r, 3); ctx.strokeStyle = withAlpha(e.color, 1 - u); ctx.lineWidth = 2; ctx.stroke();
-      } else if (e.k === 'flash') {
-        const r = (e.r ?? 10) + 3 + u * 9;
-        ctx.beginPath(); ctx.arc(e.x, e.y, r, 0, TAU); ctx.strokeStyle = withAlpha(e.color, 0.9 * (1 - u)); ctx.lineWidth = 1.5; ctx.stroke();
-      } else if (e.k === 'port') {
-        ctx.beginPath(); ctx.roundRect(e.x - 1, e.y - 8, 2, 16, 1); ctx.fillStyle = withAlpha(e.color, 1 - u); ctx.fill();
-      }
-    }
-  }
-
-  private packets(ctx: Ctx2D, mo: Motion, t: number): void {
-    const groups: Record<string, Packet2[]> = { amber: [], red: [], green: [], gray: [] };
-    for (const pk of mo.packets.values()) {
-      const a = pk.die ? clamp(1 - (t - pk.die) / 600, 0, 1) : clamp((t - pk.born) / 200, 0, 1);
-      groups[pk.tint].push({ x: pk.x, y: pk.y, a, bot: pk.bot, label: t < pk.labelUntil ? pk.label : '', la: clamp((pk.labelUntil - t) / 500, 0, 1), count: pk.count });
-    }
-    const col: Record<string, string> = { amber: C.packet, red: C.red, green: C.green, gray: C.dotDim };
-    for (const k of Object.keys(groups)) {
-      const list = groups[k];
-      if (!list.length) continue;
-      // full-opacity packets in one path; fading ones one by one
-      ctx.beginPath();
-      for (const p of list) if (p.a >= 1) ctx.roundRect(p.x - 6.5, p.y - 4.5, 13, 9, 2);
-      ctx.fillStyle = col[k];
-      ctx.fill();
-      for (const p of list) if (p.a < 1) { ctx.beginPath(); ctx.roundRect(p.x - 6.5, p.y - 4.5, 13, 9, 2); ctx.fillStyle = withAlpha(col[k], p.a); ctx.fill(); }
-    }
-    // bot marks and labels
-    ctx.beginPath();
-    for (const k of Object.keys(groups)) for (const p of groups[k]) if (p.bot) { ctx.moveTo(p.x - 3.5, p.y); ctx.lineTo(p.x + 3.5, p.y); }
-    ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = 1.5; ctx.stroke();
-    // Labels: newest first, never on top of each other, at most a handful at once, each on a
-    // patch of the canvas colour so it reads over wires.
-    const cand: Packet2[] = [];
-    for (const k of Object.keys(groups)) for (const p of groups[k]) {
-      if (p.count > 1) text(ctx, `×${p.count}`, p.x + 9, p.y - 6, C.amberText, 10);
-      if (p.label) cand.push(p);
-    }
-    cand.sort((a, b) => b.la - a.la);
-    const placed: { x: number; y: number; w: number; h: number }[] = [];
-    ctx.font = font(10.5);
-    for (const p of cand) {
-      if (placed.length >= MAX_LABELS) break;
-      const w = ctx.measureText(p.label).width + 6;
-      const r = { x: p.x + 8, y: p.y - 7, w, h: 14 };
-      if (placed.some((q) => r.x < q.x + q.w + 4 && q.x < r.x + r.w + 4 && r.y < q.y + q.h + 2 && q.y < r.y + r.h + 2)) continue;
-      placed.push(r);
-      ctx.globalAlpha = p.la * p.a;
-      ctx.fillStyle = withAlpha(C.canvas, 0.82);
-      ctx.beginPath(); ctx.roundRect(r.x, r.y, r.w, r.h, 3); ctx.fill();
-      text(ctx, p.label, p.x + 11, p.y + 3.5, C.ink2, 10.5);
-      ctx.globalAlpha = 1;
-    }
-  }
-
-  /** NOW: one pipeline up close, its steps as dashed chips, its repo's main line beside it. */
-  private nowBand(ctx: Ctx2D, L: Layout, w: World, now: number, t: number): void {
-    const y0 = L.now.y0;
-    const p = this.pickFocus(w, now);
-    if (!p) {
-      eyebrow(ctx, [['now', C.ink3], [' · ', C.ink4], ['nothing building', C.ink4]], L.m, y0 + 30);
-      return;
-    }
-    const r = w.repos.get(p.repo);
-    const el = p.started ? now - p.started : 0;
-    const where = p.state === 'running' ? `building on ${(p.engine ?? '').toLowerCase()} · ${fmtDur(el)}` : p.state === 'pending' ? `queued ${fmtDur(now - p.created)}` : `${p.state} · ${fmtDur((p.finished ?? now) - (p.started ?? p.created))}`;
-    eyebrow(ctx, [['now', C.ink3], [' · ', C.ink4], [`${String(p.repo ?? '').split('/')[1] ?? p.repo} #${p.number}`, C.ink2], [` · ${p.branch} · ${where}`, C.ink3]], L.m, y0 + 30);
-    this.hits.push({ x: L.m, y: y0 + 12, w: L.W * 0.5, h: 26, kind: 'pipeline', id: p.id ?? "", label: `${p.repo} #${p.number}` });
-    // Steps: the running workflow's (else the first), as many as fit before the main line;
-    // a window around the active step, the rest folded into "N done" and "+M" chips.
-    const wf = p.workflows?.find((x) => x.state === 'running') ?? p.workflows?.[0];
-    const steps: Step[] = wf?.steps ?? [];
-    const sx = L.m + 150, limit = L.cols.mains - 36;
-    const cy = y0 + 70;
-    arrow(ctx, L.m + 60, sx - 4, cy);
-    text(ctx, trim(wf?.name ?? 'pipeline', 12), L.m, cy + 4, C.ink3, 12);
-    ctx.font = font(11);
-    const labels = steps.map((st) => trim(st.name, 18) + (st.cached ? ' ⟳' : ''));
-    const widths = labels.map((l) => Math.ceil(ctx.measureText(l).width) + 14);
-    let act = steps.findIndex((st) => st.state === 'running');
-    if (act < 0) act = Math.max(0, steps.findIndex((st) => st.state !== 'success' && st.state !== 'skipped'));
-    let lo = 0, hi = steps.length;
-    const need = (a: number, b: number) => widths.slice(a, b).reduce((n, v) => n + v, 0) + 20 * Math.max(0, b - a - 1) + (a > 0 ? 84 : 0) + (b < steps.length ? 56 : 0);
-    while (hi - lo > 1 && sx + need(lo, hi) > limit) { if (act - lo > hi - 1 - act) lo++; else hi--; }
-    let x = sx;
-    if (lo > 0) { x += chip(ctx, `${lo} done`, x, cy, 'ok'); arrow(ctx, x + 3, x + 17, cy); x += 20; }
-    let activeX = -1;
-    for (let i = lo; i < hi; i++) {
-      const st0 = steps[i];
-      const st = st0.state === 'success' ? 'ok' : st0.state === 'failure' || st0.state === 'error' ? 'bad' : st0.state === 'running' ? 'active' : st0.state === 'skipped' || st0.state === 'canceled' ? 'skip' : 'idle';
-      const cw = chip(ctx, labels[i], x, cy, st);
-      if (st0.state === 'running') activeX = x + cw / 2;
-      x += cw;
-      if (i < hi - 1 || hi < steps.length) { arrow(ctx, x + 3, x + 17, cy); x += 20; }
-    }
-    if (hi < steps.length) x += chip(ctx, `+${steps.length - hi}`, x, cy, 'idle');
-    if (activeX >= 0) {
-      const bob = Math.sin(t / 380) * 1.2;
-      ctx.beginPath(); ctx.roundRect(activeX - 9, cy - 27 + bob, 18, 11, 2.5); ctx.fillStyle = C.packet; ctx.fill();
-    }
-    // the sentence under the chips
-    const exp = p.expected_ms ?? r?.p50_build_ms ?? w.stats.p50_build_ms ?? 0;
-    const done = steps.filter((st) => st.state === 'success').length;
-    const line = [`${done} of ${steps.length} steps`, exp ? `typical ${fmtDur(exp)}` : '', p.lane === 'gha' ? 'github actions' : 'roadrunner', p.event === 'pull_request' ? `pull request${p.pr ? ` #${p.pr}` : ''}` : `push to ${p.branch}`].filter(Boolean).join(' · ');
-    text(ctx, line, sx, cy + 30, C.ink3, 12);
-    // other workflows as small chips, only those that fit
-    let x2 = Math.max(sx + 320, x + 34);
-    const others = (p.workflows ?? []).filter((o) => o !== wf).slice(0, 4);
-    if (others.length && x2 + 120 < limit) {
-      text(ctx, 'also', x2, cy + 4, C.ink4, 12);
-      x2 += 40;
-      ctx.font = font(11);
-      for (const o of others) {
-        const label = trim(o.name, 16);
-        if (x2 + ctx.measureText(label).width + 14 > limit) break;
-        const st = o.state === 'success' ? 'ok' : o.state === 'failure' || o.state === 'error' ? 'bad' : o.state === 'running' ? 'active' : 'idle';
-        x2 += chip(ctx, label, x2, cy, st) + 8;
-      }
-    }
-    // the repo's main line, its culprit labelled
-    if (r) {
-      const red = isRed(r);
-      const x0 = L.cols.mains, x1 = L.W - L.m - 30;
-      runs(ctx, [[r.name ?? r.id, C.ink, true], [red ? ` · red ${fmtDur(now - r.main.since)}` : ' · main', red ? C.redText : C.ink3]], x0, cy - 20, 12.5);
-      dotLine(ctx, r.main?.recent ?? [], x0, x1, cy, 18, t, { red, culprit: red ? r.main.culprit : null, r: 5 });
-      text(ctx, red ? 'red → fix forward; the culprit is named' : 'green · each dot is a commit on main', x0, cy + 30, red ? C.redText : C.ink4, 12);
-    }
-  }
-
-  private pickFocus(w: World, now: number): Pipeline | null {
+  private pickFocus(w: World, now: number, t: number): Pipeline | null {
+    if (t - this.focusAt < 400 && (this.focus || !w.pipelines.size)) return this.focus;
+    this.focusAt = t;
     const sel = this.selected ? w.pipelines.get(this.selected) : undefined;
-    if (sel) return sel;
-    const cur = w.pipelines.get(this.focus.pipeline);
-    const fresh = cur && (cur.state === 'running' || now - (cur.finished ?? now) < 4000);
-    if (fresh && now - this.focus.since < 9000) return cur!;
-    let best: Pipeline | null = null, score = -1;
+    if (sel) return (this.focus = sel);
+    // Failure is the main character: the newest red on a main line (last 10 minutes) takes NOW,
+    // with its failing step and culprit, until a newer one comes or it ages out.
+    let red: Pipeline | null = null;
     for (const p of w.pipelines.values()) {
-      if (p.state !== 'running' || p.id === this.focus.pipeline) continue;
+      if ((p.state !== 'failure' && p.state !== 'error') || !p.finished || now - p.finished > 600_000 || p.finished > now) continue;
+      if (p.event === 'pull_request' || p.branch !== (w.repos.get(p.repo)?.default_branch ?? 'main')) continue;
+      if (!red || p.finished > (red.finished ?? 0)) red = p;
+    }
+    if (red) { this.focusId = red.id ?? ''; this.focusSince = now; return (this.focus = red); }
+    const cur = w.pipelines.get(this.focusId);
+    const fresh = cur && (cur.state === 'running' || now - (cur.finished ?? now) < 4000);
+    if (fresh && now - this.focusSince < 9000) return (this.focus = cur!);
+    const building = buildingIds(w);
+    let best: Pipeline | null = null, score = -1e18;
+    for (const id of building) {
+      const p = w.pipelines.get(id);
+      if (!p || id === this.focusId) continue;
       const heat = w.repos.get(p.repo)?.heat ?? 0;
-      const s = heat * 10 + (p.workflows?.[0]?.steps?.length ?? 0) - (now - (p.started ?? now)) / 60000;
+      const s = heat * 10 + (p.workflows?.[0]?.steps?.length ?? 0) * 0.3 - (now - (p.started ?? now)) / 60000;
       if (s > score) { score = s; best = p; }
     }
-    if (best) { this.focus = { pipeline: best.id ?? "", since: now }; return best; }
-    return cur ?? null;
+    if (best) { this.focusId = best.id ?? ''; this.focusSince = now; return (this.focus = best); }
+    if (cur) return (this.focus = cur);
+    // Nothing building: the most recently finished pipeline.
+    let last: Pipeline | null = null;
+    for (const p of w.pipelines.values()) if (p.finished && (!last || p.finished > (last.finished ?? 0))) last = p;
+    return (this.focus = last);
   }
 
-  /** QUEUE: what runs next, in order. */
-  private queueBand(ctx: Ctx2D, L: Layout, w: World, now: number): void {
-    const y0 = L.queue.y0;
-    const items: Pipeline[] = [];
-    for (const id of ['roadrunner', 'gha']) for (const pid of w.queues.get(id)?.items ?? []) { const p = w.pipelines.get(pid); if (p) items.push(p); }
-    items.sort((a, b) => a.created - b.created);
-    const oldest = items.length ? now - items[0].created : 0;
-    eyebrow(ctx, [['queue', C.ink3], [' · in order', C.ink3], [items.length ? ` · ${items.length} waiting · oldest ${fmtDur(oldest)}` : ' · nothing waiting', C.ink4]], L.m, y0 + 30);
-    const rows = items.slice(0, 3);
-    rows.forEach((p, i) => {
-      const y = y0 + 62 + i * 30;
-      const repo = String(p.repo ?? '').split('/')[1] ?? p.repo ?? '';
-      runs(ctx, [[`#${p.number} `, C.ink2], [trim(repo, 20), C.ink3]], L.m, y + 4, 12.5);
-      let x = L.m + 250;
-      const est = p.expected_ms ?? w.repos.get(p.repo)?.p50_build_ms ?? w.stats.p50_build_ms ?? 0;
-      const chips = [`${p.event === 'pull_request' ? 'pr' : 'push'} · ${trim(p.branch, 18)}`, `waiting ${fmtDur(now - p.created)}`, p.lane === 'gha' ? 'gha runner' : 'roadrunner', est ? `~${fmtDur(est)} build` : 'then build'];
-      chips.forEach((c, j) => {
-        x += chip(ctx, c, x, y, j === 1 && now - p.created > 120_000 ? 'bad' : 'idle');
-        if (j < chips.length - 1) { arrow(ctx, x + 3, x + 19, y); x += 22; }
-      });
-      this.hits.push({ x: L.m, y: y - 12, w: x - L.m, h: 24, kind: 'pipeline', id: p.id ?? "", label: `${p.repo} #${p.number}` });
+  view(t: number): View {
+    const S = this.S!;
+    return { w: this.world, S, tl: this.tl, agg: this.agg, lod: this.lod, stress: this.stress, t, now: this.tl.playhead, q: this.budget.quality, offsetMin: this.offsetMin, focus: this.focus };
+  }
+
+  // ---- layers ------------------------------------------------------------------------------------
+  drawStatic(ctx: Ctx2D, f: Frame, t: number): void {
+    const S = this.ensure(f.width, f.height, f.scale, t);
+    const g = this.gs;
+    g.begin(ctx, f.scale * S.k);
+    if (f.cause === 'font') g.resetFonts();
+    ctx.resetTransform();
+    ctx.clearRect(0, 0, f.width, f.height);
+    if (S.k !== 1) ctx.setTransform(S.k, 0, 0, S.k, 0, 0);
+    this.staticQ = this.budget.quality;
+    drawStatic(g, S, this.budget.quality >= 3);
+  }
+
+  drawInfo(ctx: Ctx2D, f: Frame, t: number): boolean {
+    const S = this.ensure(f.width, f.height, f.scale, t);
+    const g = this.gi;
+    g.begin(ctx, f.scale * S.k);
+    if (f.cause === 'font') g.resetFonts();
+    if (S.k !== 1) ctx.setTransform(S.k, 0, 0, S.k, 0, 0); else ctx.resetTransform();
+    this.pickFocus(this.world, this.tl.playhead, t);
+    const full = f.cause === 'mount' || f.cause === 'size' || f.cause === 'font' || f.cause === 'style';
+    const more = this.info.draw(g, this.view(t), full);
+    const sec = Math.floor(t / 1000);
+    if (sec !== this.infoSec) { this.infoRate = this.infoCount; this.infoCount = 0; this.infoSec = sec; }
+    this.infoCount++;
+    this.lastInfoCost = this.budget.estimate(g.ops, g.arcs, g.texts, 0);
+    return more;
+  }
+  private lastInfoCost = 0;
+  /** The last info-layer redraw's estimated cost (ms), for the HUD. */
+  infoMs = 0;
+
+  /** True while the static layer was drawn at another detail than the ladder now asks. */
+  get staticStale(): boolean {
+    return this.staticQ >= 0 && (this.staticQ >= 3) !== (this.budget.quality >= 3);
+  }
+
+  drawLive(ctx: Ctx2D, f: Frame, t: number): boolean {
+    const interval = this.budget.tick(t);
+    const S = this.ensure(f.width, f.height, f.scale, t);
+    const w = this.world;
+    const g = this.gl;
+    g.begin(ctx, f.scale * S.k);
+    if (f.cause === 'font') g.resetFonts();
+    ctx.resetTransform();
+    ctx.clearRect(0, 0, f.width, f.height);
+    if (S.k !== 1) ctx.setTransform(S.k, 0, 0, S.k, 0, 0);
+    const p = this.pool;
+    if (this.needSync) { this.needSync = false; p.sync(w, t); }
+    p.reduced = this.reduced;
+    p.update(t, w);
+    this.pickFocus(w, this.tl.playhead, t);
+    const q = this.budget.quality;
+    const paused = this.tl.mode === 'paused';
+    this.rings(g, S, w, q, t, paused);
+    const drawn = this.packets(g, S, q, t, paused);
+    if (q < 4) this.effects(g, t);
+    this.nowBob(g, t, paused);
+    this.dial(g, S, t);
+    if (this.tl.mode === 'replay') this.strip(g, S);
+    // the cost of this frame (plus the info layer's, when it redrew this frame)
+    // The info layer is a cache: its redraw is a one-off rebuild (mount, resize, new data), a
+    // hitch rather than a load, so it is shown in the HUD but never steps the ladder down.
+    // Only when it redraws often (over 8 times a second) does it count, averaged.
+    const est = this.budget.estimate(g.ops, g.arcs, g.texts, drawn) + (this.infoRate > 8 ? this.lastInfoCost * Math.min(1, this.infoRate / 60) : 0);
+    if (this.lastInfoCost) this.infoMs = this.lastInfoCost;
+    this.lastInfoCost = 0;
+    this.budget.record(est + this.lastTopCost, g.ops, g.texts, interval, (qq) => this.predict(qq, est, q));
+    this.lastTopCost = 0;
+    // Sleep when nothing moves (a game's idle frame): the canvas keeps its last picture and the
+    // 250 ms tick (a surface argument) redraws it, enough for the slow progress rings. The HUD
+    // keeps frames coming, since it measures them.
+    return this.hud.on || this.tl.mode === 'replay' || this.tl.mode === 'behind' || this.hover.kind !== '' || p.busy(t);
+  }
+  private lastTopCost = 0;
+
+  /** The overlay over the info layer: the hover lens (an element promoted to LOD0) and the
+   *  HUD. It animates only while a lens shows or fades, or the HUD is on. */
+  drawTop(ctx: Ctx2D, f: Frame, t: number): boolean {
+    const S = this.ensure(f.width, f.height, f.scale, t);
+    const g = this.gt;
+    g.begin(ctx, f.scale * S.k);
+    if (f.cause === 'font') g.resetFonts();
+    ctx.resetTransform();
+    ctx.clearRect(0, 0, f.width, f.height);
+    if (S.k !== 1) ctx.setTransform(S.k, 0, 0, S.k, 0, 0);
+    const lensOn = this.drawLens(g, S, t);
+    const p = this.pool;
+    this.hud.draw(g, S.W, S.H, {
+      budget: this.budget, hist: this.lod.histogram, live: p.nAct, real: p.real, pooled: p.pooled, trains: this.trains,
+      infoDraws: this.infoRate, infoMs: this.infoMs, stress: this.stress.on, host: this.budget.host, scale: S.k, sceneW: S.W, sceneH: S.H,
     });
-    if (items.length > 3) {
-      const x0 = L.cols.mains;
-      const n = Math.min(items.length - 3, 18);
-      ctx.beginPath();
-      for (let i = 0; i < n; i++) ctx.roundRect(x0 + i * 15, y0 + 55, 10, 10, 2);
-      ctx.strokeStyle = C.chipEdge; ctx.lineWidth = 1; ctx.stroke();
-      text(ctx, `${items.length - 3} more behind these`, x0, y0 + 85, C.ink4, 12);
+    this.lastTopCost = this.budget.estimate(g.ops, g.arcs, g.texts, 0);
+    return lensOn || this.hud.on || this.hover.kind !== '';
+  }
+
+  /** The estimate at quality qq, from this frame's at q: packets are most of the difference. */
+  private predict(qq: Quality, est: number, q: Quality): number {
+    const n = this.pool.nAct;
+    const per = this.budget.host === 'hermes' ? [0.03, 0.022, 0.006, 0, 0] : [0.008, 0.006, 0.0015, 0, 0];
+    const sprites = (lv: number) => (lv >= 3 ? Math.min(n, this.trains || n) : n);
+    const cost = (lv: number) => sprites(lv) * (per[lv] || per[2]) * (lv >= 3 ? 1 : 1);
+    return Math.max(0, est - cost(q) + cost(qq));
+  }
+
+  // ---- live: rings ---------------------------------------------------------------------------------
+  private rings(g: Gfx, S: Scene, w: World, q: Quality, t: number, paused: boolean): void {
+    if (S.engines.lod >= 2) return;
+    const now = this.tl.playhead;
+    const building = buildingIds(w);
+    const fallback = w.stats.p50_build_ms || 0;
+    g.begin_();
+    let anyTrack = false, anySpin = false;
+    const unknown = this.unknown;
+    let nUnknown = 0;
+    void t; void paused;
+    for (const lane of S.engines.lanes) {
+      if (lane.virtual) continue;
+      for (const id of lane.engines) {
+        const e = w.engines.get(id) ?? enginesOf(w).find((x) => x.id === id);
+        const slots = S.engines.slotByEngine.get(id);
+        if (!e || !slots) continue;
+        let k = 0;
+        for (const pid of e.running) {
+          if (!building.has(pid)) continue;
+          const s = slots[Math.min(k++, slots.length - 1)];
+          const pl = w.pipelines.get(pid);
+          const exp = pl?.expected_ms ?? w.repos.get(pl?.repo ?? '')?.p50_build_ms ?? fallback;
+          const el = pl?.started ? Math.max(0, now - pl.started) : 0;
+          const r = s.r + 2.5;
+          if (exp > 0) { const u = clamp(el / exp, 0.02, 0.98); g.arc(s.x, s.y, r, -Math.PI / 2, -Math.PI / 2 + u * TAU); anyTrack = true; }
+          else { unknown[nUnknown++] = s.x; unknown[nUnknown++] = s.y; anySpin = true; }
+        }
+      }
     }
-    if (!items.length) text(ctx, 'every slot can take the next push', L.m, y0 + 64, C.ink4, 12);
+    if (anyTrack) g.stroke(C.packet, lane0(S) ? 1.5 : 1.2);
+    // No typical duration known: a still dashed ring (motion is kept for events).
+    if (anySpin) {
+      g.begin_();
+      for (let k = 0; k < nUnknown; k += 2) g.circle(unknown[k], unknown[k + 1], 7.5);
+      g.dash(true, 2, 2.5); g.stroke(withAlpha(C.packet, 0.7), 1.2); g.dash(false);
+    }
+    if (q <= 1 && anyTrack) {
+      g.begin_();
+      for (const lane of S.engines.lanes) for (const s of lane.slots) if (!lane.offline) g.circle(s.x, s.y, s.r + 2.5);
+      g.stroke(withAlpha(C.packet, 0.1), 1);
+    }
+  }
+
+  // ---- live: packets --------------------------------------------------------------------------------
+  /** Draws the packets at the ladder's level; returns how many sprites it drew. */
+  private packets(g: Gfx, S: Scene, q: Quality, t: number, paused: boolean): number {
+    const p = this.pool;
+    const a = p.alpha;
+    const W = S.W, H = S.H;
+    const hideSlots = S.engines.lod >= 1;
+    const pt = this.pt;
+    let drawn = 0;
+    if (paused) g.alpha(0.5);
+    if (q >= 3) {
+      drawn = this.drawTrains(g, S, q, t);
+    } else {
+      // one path per colour (instancing): docked amber is dim, amber in motion is full, so
+      // brightness means something is happening now. Fading packets go one by one below.
+      for (let pass = 0; pass < 5; pass++) {
+        const tint = pass === 4 ? T_AMBER : pass;
+        const docked = pass === 4;
+        const col = docked ? C.packetDock : TINTS[tint];
+        if (q <= 1) g.begin_(); else g.setFill(col);
+        let any = false;
+        for (let k = 0; k < p.nAct; k++) {
+          const i = p.act[k];
+          if (p.tint[i] !== tint) continue;
+          if (tint === T_AMBER && !(p.flags[i] & 4) && p.moving(i) === docked) continue;
+          const stress = (p.flags[i] & 4) !== 0;
+          if (stress) { const dd = p.d[i] >= p.dPrev[i] ? p.dPrev[i] + (p.d[i] - p.dPrev[i]) * a : p.d[i]; p.at(i, dd, pt); }
+          else {
+            if (hideSlots && p.st[i] === ST_SLOT && !(p.flags[i] & 8)) continue;
+            pt.x = p.px[i] + (p.x[i] - p.px[i]) * a; pt.y = p.py[i] + (p.y[i] - p.py[i]) * a;
+          }
+          if (pt.x < -10 || pt.y < -10 || pt.x > W + 10 || pt.y > H + 10) continue; // culled
+          if (!stress && (p.die[i] || t - p.born[i] < 200)) continue; // fading: below
+          if (q <= 1) g.rrect(pt.x - 4.5, pt.y - 3, 9, 6, 1.5); else g.cell(pt.x - 4.5, pt.y - 3, 9, 6);
+          any = true;
+          drawn++;
+        }
+        if (q <= 1 && any) g.fill(col);
+      }
+      // fading in or out: alpha per packet (few at a time)
+      for (let k = 0; k < p.nAct; k++) {
+        const i = p.act[k];
+        if (p.flags[i] & 4) continue;
+        const fade = p.die[i] ? clamp(1 - (t - p.die[i]) / 600, 0, 1) : t - p.born[i] < 200 ? clamp((t - p.born[i]) / 200, 0, 1) : 1;
+        if (fade >= 1) continue;
+        pt.x = p.px[i] + (p.x[i] - p.px[i]) * a; pt.y = p.py[i] + (p.y[i] - p.py[i]) * a;
+        g.alpha((paused ? 0.5 : 1) * fade);
+        g.begin_(); g.rrect(pt.x - 4.5, pt.y - 3, 9, 6, 1.5); g.fill(p.tint[i] === T_AMBER && !p.moving(i) ? C.packetDock : TINTS[p.tint[i]]);
+        drawn++;
+      }
+      if (paused) g.alpha(0.5); else g.alpha(1);
+      // At 60× a packet crosses the yard in a few frames: three ghosts behind each traveller
+      // (where it was 1, 2, 3 sim steps ago, extrapolated) say where it came from.
+      if (q <= 1 && !paused && this.tl.speed >= 30) {
+        for (let gh = 1; gh <= 3; gh++) {
+          g.begin_();
+          let any = false;
+          for (let k = 0; k < p.nAct && k < 600; k++) {
+            const i = p.act[k];
+            if ((p.flags[i] & 4) || !p.moving(i)) continue;
+            const dx = p.x[i] - p.px[i], dy = p.y[i] - p.py[i];
+            if (dx * dx + dy * dy < 4) continue;
+            g.rrect(p.px[i] - dx * (gh - 1) * 1.6 - 4, p.py[i] - dy * (gh - 1) * 1.6 - 2.5, 8, 5, 1.5); any = true;
+          }
+          if (any) g.fill(withAlpha(C.packet, 0.42 - gh * 0.11));
+        }
+      }
+      // the lead packets' glow and fast-move trails (full quality only)
+      if (q === 0 && !paused) {
+        g.begin_();
+        let any = false;
+        for (let k = 0; k < p.nAct && k < 400; k++) {
+          const i = p.act[k];
+          if (!(p.flags[i] & 8) || (p.flags[i] & 4) || p.tint[i] !== T_AMBER) continue;
+          const dx = p.x[i] - p.px[i], dy = p.y[i] - p.py[i];
+          if (dx * dx + dy * dy > 30) { g.rrect(p.px[i] - 4.5 - dx * 0.8, p.py[i] - 3 - dy * 0.8, 9, 6, 1.5); any = true; }
+        }
+        if (any) g.fill(withAlpha(C.packet, 0.22));
+        g.begin_(); any = false;
+        for (let k = 0; k < p.nAct && k < 400; k++) {
+          const i = p.act[k];
+          if (!(p.flags[i] & 8) || (p.flags[i] & 4)) continue;
+          pt.x = p.px[i] + (p.x[i] - p.px[i]) * a; pt.y = p.py[i] + (p.y[i] - p.py[i]) * a;
+          g.rrect(pt.x - 7, pt.y - 5, 14, 10, 4); any = true;
+        }
+        if (any) g.fill(withAlpha(C.packet, 0.12));
+      }
+      // bot marks
+      if (q <= 1) {
+        g.begin_();
+        let any = false;
+        for (let k = 0; k < p.nAct; k++) {
+          const i = p.act[k];
+          if (!(p.flags[i] & 2)) continue;
+          pt.x = p.px[i] + (p.x[i] - p.px[i]) * a; pt.y = p.py[i] + (p.y[i] - p.py[i]) * a;
+          g.move(pt.x - 2.5, pt.y); g.line(pt.x + 2.5, pt.y); any = true;
+        }
+        if (any) g.stroke('rgba(0,0,0,0.6)', 1.2);
+      }
+      this.trains = 0;
+      // ×N badges on coalesced packets
+      for (let k = 0; k < p.nAct; k++) {
+        const i = p.act[k];
+        if (p.count[i] < 2 || (p.flags[i] & 4) || !(p.flags[i] & 8)) continue;
+        pt.x = p.px[i] + (p.x[i] - p.px[i]) * a; pt.y = p.py[i] + (p.y[i] - p.py[i]) * a;
+        g.text(times(p.count[i]), pt.x + 7, pt.y - 4, C.amberText, T.caption);
+      }
+      this.labels(g, S, q, t);
+    }
+    if (paused || q >= 3) g.alpha(1);
+    return drawn;
+  }
+
+  /** Packets sharing a stretch of wire merge into one train with a ×N badge. */
+  private drawTrains(g: Gfx, S: Scene, q: Quality, t: number): number {
+    const p = this.pool;
+    const gen = ++this.gen;
+    this.nUsed = 0;
+    const span = q >= 4 ? 120 : 40;
+    const hideSlots = S.engines.lod >= 1;
+    const a = p.alpha;
+    for (let k = 0; k < p.nAct; k++) {
+      const i = p.act[k];
+      const stress = (p.flags[i] & 4) !== 0;
+      let key: number;
+      if (stress) key = p.cellOf(i, q >= 4) | (p.tint[i] === T_RED ? 1 << 26 : 0);
+      else {
+        if (p.die[i] || (hideSlots && p.st[i] === ST_SLOT && !(p.flags[i] & 8))) continue;
+        key = (Math.floor(p.x[i] / span) << 12) | (Math.floor(p.y[i] / span) & 0xfff) | (p.tint[i] << 24);
+      }
+      let hh = (Math.imul(key, 0x9e3779b1) >>> 20) & (BUCKETS - 1);
+      for (let probe = 0; probe < 32; probe++) {
+        if (this.bGen[hh] !== gen) {
+          this.bGen[hh] = gen; this.bKey[hh] = key; this.bCount[hh] = 1; this.bLead[hh] = i; this.bTint[hh] = p.tint[i];
+          this.bUsed[this.nUsed++] = hh;
+          break;
+        }
+        if (this.bKey[hh] === key) {
+          this.bCount[hh]++;
+          if (stress && p.d[i] > p.d[this.bLead[hh]] && p.roff[i] === p.roff[this.bLead[hh]]) this.bLead[hh] = i;
+          break;
+        }
+        hh = (hh + 1) & (BUCKETS - 1);
+      }
+    }
+    const pt = this.pt;
+    for (let u = 0; u < this.nUsed; u++) {
+      const hh = this.bUsed[u], i = this.bLead[hh];
+      if (p.flags[i] & 4) { const dd = p.d[i] >= p.dPrev[i] ? p.dPrev[i] + (p.d[i] - p.dPrev[i]) * a : p.d[i]; p.at(i, dd, pt); }
+      else { pt.x = p.px[i] + (p.x[i] - p.px[i]) * a; pt.y = p.py[i] + (p.y[i] - p.py[i]) * a; }
+      this.bX[hh] = pt.x; this.bY[hh] = pt.y;
+    }
+    let drawn = 0;
+    const maxSprites = q >= 4 ? 600 : 2400;
+    for (let tint = 0; tint < 4; tint++) {
+      g.setFill(TINTS[tint]);
+      for (let u = 0; u < this.nUsed && drawn < maxSprites; u++) {
+        const hh = this.bUsed[u];
+        if (this.bTint[hh] !== tint) continue;
+        const n = this.bCount[hh];
+        const len = n > 1 ? 9 + Math.min(9, 1.5 * Math.log2(n)) : 9;
+        const x = this.bX[hh], y = this.bY[hh];
+        if (x < -20 || y < -10 || x > S.W + 20 || y > S.H + 10) continue;
+        g.cell(x - len / 2, y - 3, len, 6);
+        drawn++;
+      }
+    }
+    this.trains = this.nUsed;
+    // badges on the biggest trains: a small sorted top-K, kept in a fixed array
+    const K = q >= 4 ? 6 : 12;
+    const top = this.top;
+    let nTop = 0;
+    for (let u = 0; u < this.nUsed; u++) {
+      const hh = this.bUsed[u], n = this.bCount[hh];
+      if (n < 2) continue;
+      if (nTop < K) top[nTop++] = hh;
+      else if (n > this.bCount[top[nTop - 1]]) top[nTop - 1] = hh;
+      else continue;
+      for (let j = nTop - 1; j > 0 && this.bCount[top[j]] > this.bCount[top[j - 1]]; j--) { const tmp = top[j]; top[j] = top[j - 1]; top[j - 1] = tmp; }
+    }
+    for (let j = 0; j < nTop; j++) {
+      const hh = top[j];
+      g.text(times(this.bCount[hh]), this.bX[hh] + 10, this.bY[hh] - 4, C.amberText, T.caption);
+    }
+    void t;
+    return drawn;
+  }
+
+  /** Repo names on the packets that just set out: newest first, never overlapping. */
+  private labels(g: Gfx, S: Scene, q: Quality, t: number): void {
+    const max = q === 0 ? 6 : q === 1 ? 3 : 0;
+    if (!max) return;
+    const fast = this.tl.mode === 'replay' || this.tl.speed > 4;
+    const p = this.pool;
+    const a = p.alpha;
+    let placed = 0;
+    // newest first: a few passes picking the latest labelUntil not yet placed
+    let lastU = Infinity;
+    for (let pass = 0; pass < 12 && placed < max; pass++) {
+      let best = -1, bu = t;
+      for (let k = 0; k < p.nAct; k++) {
+        const i = p.act[k];
+        const u = p.labelUntil[i];
+        // Names ride the first hop (source → queue) and a failure's way home, while travelling;
+        // above 4× only failures are named.
+        const home = p.st[i] === ST_RET && p.tint[i] === T_RED;
+        if (u > bu && u < lastU && !(p.flags[i] & 4) && p.moving(i) && (home || (p.st[i] <= 1 && !fast)) && p.label[i]) { bu = u; best = i; }
+      }
+      if (best < 0) break;
+      lastU = bu;
+      const x = p.px[best] + (p.x[best] - p.px[best]) * a, y = p.py[best] + (p.y[best] - p.py[best]) * a;
+      const s = p.label[best];
+      const wdt = g.width(s, T.caption) + 6;
+      const rx = x + 8, ry = y - 7;
+      if (rx + wdt > S.W - 2) continue;
+      if (overMachine(S, rx, ry, wdt, 14)) continue;
+      let hit = false;
+      for (let j = 0; j < placed; j++) {
+        const o = j * 4;
+        if (rx < this.placed[o] + this.placed[o + 2] + 4 && this.placed[o] < rx + wdt + 4 && ry < this.placed[o + 1] + this.placed[o + 3] + 2 && this.placed[o + 1] < ry + 14) { hit = true; break; }
+      }
+      if (hit) continue;
+      const o = placed * 4;
+      this.placed[o] = rx; this.placed[o + 1] = ry; this.placed[o + 2] = wdt; this.placed[o + 3] = 14;
+      placed++;
+      const la = clamp((bu - t) / 500, 0, 1);
+      g.alpha(la);
+      // a halo of the canvas colour so the name reads over wires
+      g.begin_(); g.rrect(rx, ry, wdt, 13, 3); g.fill(withAlpha(C.canvas, 0.85));
+      g.text(s, rx + 3, y + 3, p.tint[best] === T_RED ? C.redText : C.ink2, T.caption);
+      g.alpha(1);
+    }
+  }
+
+  // ---- live: effects -------------------------------------------------------------------------------
+  private effects(g: Gfx, t: number): void {
+    const p = this.pool;
+    for (let j = 0; j < p.nFx; j++) {
+      const u = clamp((t - p.et0[j]) / p.edur[j], 0, 1);
+      const x = p.exx[j], y = p.eyy[j], red = p.ered[j] === 1;
+      const k = p.ek[j];
+      if (k === E_POP) {
+        const r = u < 0.6 ? 5.5 * easeOut(u / 0.6) : 5.5 - 2 * ((u - 0.6) / 0.4);
+        g.begin_(); g.circle(x, y, Math.max(0.5, r)); g.fill(red ? C.red : C.dot);
+      } else if (k === E_PULSE) {
+        const r = p.er[j] * (0.6 + u * 1.4);
+        g.begin_(); g.rrect(x - r / 2, y - r / 2, r, r, 2); g.stroke(withAlpha(red ? C.red : C.green, 1 - u), 1.5);
+      } else if (k === E_FLASH) {
+        const r = p.er[j] + 2 + u * 8;
+        g.begin_(); g.circle(x, y, r); g.stroke(withAlpha(red ? C.red : C.ink, 0.85 * (1 - u)), 1.2);
+      } else if (k === E_PORT) {
+        g.fillRect(x - 1, y - 6, 2, 12, withAlpha(C.packet, 1 - u));
+      }
+    }
+  }
+
+  private nowBob(g: Gfx, t: number, paused: boolean): void {
+    const c = this.info.activeChip;
+    if (c.x < 0) return;
+    const bob = 0; // still: the chip's state says it runs; motion is for events
+    void t;
+    g.begin_(); g.rrect(c.x - 6, c.y - 5 + bob, 12, 7, 2); g.fill(paused ? withAlpha(C.packet, 0.5) : C.packet);
+  }
+
+  // ---- live: the dial ("1 hour, sped up"); the Contract button over it is the replay entry -------
+  private dial(g: Gfx, S: Scene, t: number): void {
+    const d = S.dial, tl = this.tl;
+    const mode = tl.mode;
+    g.begin_(); g.circle(d.x, d.y, d.r);
+    if (mode === 'paused') { g.dash(true, 2, 2); g.stroke(C.packet, 1.2); g.dash(false); }
+    else g.stroke(mode === 'replay' ? C.packet : C.ink2, 1.2);
+    const prog = tl.replayProgress();
+    // The hand moves only while replaying (it is the replay's progress); live, it rests at 12.
+    const ang = mode === 'replay' ? -Math.PI / 2 + prog * TAU : -Math.PI / 2;
+    void t;
+    g.begin_(); g.move(d.x, d.y); g.line(d.x + Math.cos(ang) * (d.r - 2.5), d.y + Math.sin(ang) * (d.r - 2.5));
+    g.stroke(mode === 'replay' || mode === 'paused' ? C.packet : C.ink, 1.4);
+    if (mode === 'replay') { g.begin_(); g.arc(d.x, d.y, d.r + 2.5, -Math.PI / 2, -Math.PI / 2 + prog * TAU); g.stroke(withAlpha(C.packet, 0.7), 1.2); }
+  }
+
+  /** Replay: the hour as a 1 px event-density strip under the header, failures as red ticks,
+   *  the playhead as an amber tick. */
+  private strip(g: Gfx, S: Scene): void {
+    const tl = this.tl, d = tl.density, f = tl.fails;
+    const x0 = S.m, x1 = S.W - S.m, y = S.header.h + 2;
+    const bw = (x1 - x0) / d.length;
+    let mx = 1;
+    for (let i = 0; i < d.length; i++) if (d[i] > mx) mx = d[i];
+    g.fillRect(x0, y, x1 - x0, 1, C.rule);
+    for (let lvl = 1; lvl <= 4; lvl++) {
+      g.setFill(withAlpha(C.ink2, lvl * 0.22));
+      for (let i = 0; i < d.length; i++) { if (!d[i]) continue; const l = Math.min(4, 1 + Math.floor((d[i] / mx) * 3.99)); if (l === lvl) g.cell(x0 + i * bw, y, Math.max(1, bw), 1); }
+    }
+    g.setFill(C.red);
+    for (let i = 0; i < f.length; i++) if (f[i]) g.cell(x0 + i * bw, y - 2, Math.max(1, bw), 5);
+    const px = x0 + tl.replayProgress() * (x1 - x0);
+    g.fillRect(px - 0.5, y - 4, 1.5, 9, C.packet);
+  }
+
+  // ---- hits and the lens ---------------------------------------------------------------------------
+  /** What is under a point (yard px). */
+  hitAt(x: number, y: number): Hit | null {
+    const S = this.S;
+    if (!S) return null;
+    const hb = this.hud;
+    if (hb.on) {
+      const inR = (r: { x: number; y: number; w: number; h: number }) => r.w > 0 && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+      if (inR(hb.stressBtn)) return { kind: 'stress', id: this.stress.on ? 'off' : 'on', label: 'Stress mode' };
+      if (inR(hb.qualityBtn)) return { kind: 'quality', id: '', label: 'Pin quality' };
+    }
+    const w = this.world;
+    // a slot with a pipeline in it
+    for (const lane of S.engines.lanes) {
+      if (y < lane.y - 4 || y > lane.y + lane.h + 4 || lane.virtual) continue;
+      for (const id of lane.engines) {
+        const e = w.engines.get(id) ?? enginesOf(w).find((z) => z.id === id);
+        const slots = S.engines.slotByEngine.get(id);
+        if (!e || !slots) continue;
+        const b = buildingIds(w);
+        const run = e.running.filter((pid) => b.has(pid));
+        for (let k = 0; k < run.length && k < slots.length; k++) {
+          const s = slots[k];
+          if (Math.abs(x - s.x) <= Math.max(7, s.r + 3) && Math.abs(y - s.y) <= Math.max(8, s.r + 4)) {
+            const p = w.pipelines.get(run[k]);
+            return { kind: 'pipeline', id: run[k], label: p ? `${p.repo} #${p.number}` : run[k] };
+          }
+        }
+      }
+    }
+    let best: Hit | null = null, bestA = Infinity;
+    for (const h of S.hits) {
+      if (x < h.x || x > h.x + h.w || y < h.y || y > h.y + h.h) continue;
+      if (h.grid) {
+        const gr = h.grid;
+        const c = Math.floor((x - h.x) / gr.pitch), r = Math.floor((y - h.y) / gr.pitch);
+        if (c >= gr.cols) continue;
+        const idx = gr.start + r * gr.cols + c;
+        if (idx >= gr.end) continue;
+        if (gr.kind === 'repo') {
+          const ids = this.agg.repos.ids;
+          const real = idx % Math.max(1, ids.length);
+          const id = ids[real];
+          if (!id) continue;
+          return { kind: 'repo', id, label: idx >= ids.length ? `${id} (stress copy)` : id };
+        }
+        const ids = this.agg.apps.ids;
+        const id = ids[idx % Math.max(1, ids.length)];
+        if (!id) continue;
+        return { kind: 'app', id, label: id };
+      }
+      const area = h.w * h.h;
+      if (area < bestA) { bestA = area; best = { kind: h.kind, id: h.id, label: h.label }; }
+    }
+    if (best?.kind === 'now') {
+      const f = this.focus;
+      return f ? { kind: 'pipeline', id: f.id ?? '', label: `${f.repo} #${f.number}` } : null;
+    }
+    if (best?.kind === 'queue') {
+      // a press on the queue opens its oldest waiting pipeline
+      const qt = queueTruth(w);
+      const list = best.id === 'gha' ? qt.gha : qt.rr;
+      if (list[0]) return { kind: 'pipeline', id: list[0].id ?? '', label: `${list[0].repo} #${list[0].number}` };
+    }
+    if (best?.kind === 'engine' && best.id === '*') return null;
+    return best;
+  }
+
+  /** The pointer moved (yard px): what is under it is promoted to LOD0 in a lens. */
+  hoverAt(x: number, y: number, t: number): Hit | null {
+    const h = x < 0 ? null : this.hitAt(x, y);
+    const promotable = h && (h.kind === 'repo' || h.kind === 'app' || h.kind === 'pipeline' || h.kind === 'org' || h.kind === 'engine');
+    const cur = this.hover;
+    if (promotable && h) {
+      if (cur.kind !== h.kind || cur.id !== h.id) { cur.kind = h.kind; cur.id = h.id; cur.label = h.label; cur.t0 = t; }
+      cur.x = x; cur.y = y;
+      return h;
+    }
+    if (cur.kind) { this.lens.out = t; cur.kind = ''; cur.id = ''; }
+    return null;
+  }
+
+  private drawLens(g: Gfx, S: Scene, t: number): boolean {
+    const hv = this.hover, L = this.lens;
+    if (hv.kind) {
+      if (L.kind !== hv.kind || L.id !== hv.id) { L.kind = hv.kind; L.id = hv.id; L.label = hv.label; L.t0 = hv.t0; }
+      L.x = hv.x; L.y = hv.y; L.out = 0;
+    }
+    if (!L.kind) return false;
+    const a = L.out ? 1 - clamp((t - L.out) / 150, 0, 1) : easeOut(clamp((t - L.t0) / 150, 0, 1));
+    if (a <= 0) { L.kind = ''; return false; }
+    const w = this.world, now = this.tl.playhead;
+    const cw = L.kind === 'repo' ? Math.min(560, S.W - 24) : 320;
+    const ch = L.kind === 'repo' ? 70 : L.kind === 'engine' ? 30 + 16 * 6 : 64;
+    let x = L.x + 14, y = L.y + 16;
+    if (x + cw > S.W - 8) x = L.x - cw - 14;
+    if (x < 8) x = 8;
+    if (y + ch > S.H - 8) y = L.y - ch - 12;
+    if (y < 4) y = 4;
+    g.alpha(a);
+    g.begin_(); g.rrect(x, y, cw, ch, 6); g.fill(C.raised); g.stroke(C.machine, 1);
+    const px = T.caption;
+    if (L.kind === 'repo') {
+      const r = w.repos.get(L.id);
+      if (r) {
+        const story = mainStory(r, now, fmtDur);
+        const tone = story.tone === 'red' ? C.redText : story.tone === 'green' ? C.greenInk : story.tone === 'amber' ? C.amberText : C.ink3;
+        g.runs([[r.name, C.ink, true], [`  ${r.org}`, C.ink3], [`  ${story.text}`, tone]], x + 10, y + 16, T.label, cw - 20);
+        mainLine(g, r, x + 12, x + cw - 22, y + 40, 12, 3.5, 0, this.budget.quality, now, true);
+        const last = r.main.recent[r.main.recent.length - 1];
+        if (last) g.runs([[last.sha.slice(0, 7), C.ink3], [` ${last.title}`, C.ink2], [` · ${last.author} · ${fmtShort(now - last.at)} ago`, C.ink3]], x + 10, y + 62, px, cw - 20);
+      }
+    } else if (L.kind === 'app') {
+      const ap = w.apps.get(L.id);
+      if (ap) {
+        g.runs([[L.id, C.ink, true], [`  ${ap.health}`, ap.health === 'up' ? C.greenInk : ap.health === 'down' ? C.redText : C.amberText], [ap.latency_ms ? ` · ${ap.latency_ms} ms` : '', C.ink3]], x + 10, y + 18, T.label, cw - 20);
+        g.runs([['live ', C.ink3], [(ap.live_sha ?? '–').slice(0, 7), C.ink2], [' · main ', C.ink3], [(ap.main_sha ?? '–').slice(0, 7), C.ink2], [ap.behind ? ` · ${ap.behind} behind` : ' · current', ap.behind ? C.amberText : C.ink3]], x + 10, y + 36, px, cw - 20);
+        const d = ap.last_deploy ? w.deploys.get(ap.last_deploy.id) : undefined;
+        g.runs([[d ? `deployed ${fmtShort(now - d.started)} ago via ${d.via.replace('_', ' ')}` : 'no deploy on record', C.ink3], [ap.runtime ? ` · ${ap.runtime}` : '', C.ink3]], x + 10, y + 54, px, cw - 20);
+      }
+    } else if (L.kind === 'pipeline') {
+      const p = w.pipelines.get(L.id);
+      if (p) {
+        const wf = p.workflows?.find((z) => z.state === 'running') ?? p.workflows?.[0];
+        const st = wf?.steps.find((z) => z.state === 'running') ?? wf?.steps[wf.steps.length - 1];
+        const exp = p.expected_ms ?? w.repos.get(p.repo)?.p50_build_ms ?? 0;
+        const el = p.started ? now - p.started : 0;
+        g.runs([[w.repos.get(p.repo)?.name ?? p.repo, C.ink, true], [` #${p.number}`, C.ink2], [` · ${p.branch}`, C.ink3]], x + 10, y + 18, T.label, cw - 20);
+        g.runs([[wf?.name ?? '', C.ink3], [st ? ` › ${st.name}` : '', C.ink2], [` · ${wf?.steps.filter((z) => z.state === 'success').length ?? 0}/${wf?.steps.length ?? 0} steps`, C.ink3]], x + 10, y + 36, px, cw - 20);
+        g.runs([[fmtDur(el), exp && el > exp * 1.5 ? C.amberText : C.ink2], [exp ? ` of ~${fmtDur(exp)} typical` : '', C.ink3], [` · ${(p.engine ?? p.lane).toLowerCase()}`, C.ink3]], x + 10, y + 54, px, cw - 20);
+      }
+    } else if (L.kind === 'engine') {
+      const g2 = engineGroups(w).find((z) => z.id === L.id);
+      g.runs([[L.label, C.ink, true], [g2 ? ` · ${g2.sub}` : '', C.ink3]], x + 10, y + 18, T.label, cw - 20);
+      const b = buildingIds(w);
+      let ly = y + 36, n = 0;
+      for (const e of g2?.engines ?? []) for (const pid of e.running) {
+        if (!b.has(pid) || n >= 5) continue;
+        const p = w.pipelines.get(pid);
+        g.runs([[`${(e.label ?? e.id).toLowerCase()}  `, C.ink3], [w.repos.get(p?.repo ?? '')?.name ?? pid, C.ink2], [p?.started ? `  ${fmtShort(now - p.started)}` : '', C.ink3]], x + 10, ly, px, cw - 20);
+        ly += 16; n++;
+      }
+      if (!n) g.text(g2?.engines.every((e) => e.online === false) ? 'offline' : 'every slot idle', x + 10, ly, C.ink3, px);
+    } else if (L.kind === 'org') {
+      g.runs([[L.label, C.ink, true], [`  ${w.rate(L.id, now)} pushes an hour`, C.amberText]], x + 10, y + 18, T.label, cw - 20);
+      let red = 0, n = 0;
+      for (const r of w.repos.values()) if (r.org === L.id) { n++; if (isRed(r)) red++; }
+      g.runs([[`${n} repos`, C.ink2], [red ? ` · ${red} red` : ' · all green', red ? C.redText : C.greenInk]], x + 10, y + 36, px, cw - 20);
+      g.text(`${w.pushesSince(L.id, now - 600_000)} pushes in the last 10 minutes`, x + 10, y + 54, C.ink3, px);
+    }
+    g.alpha(1);
+    return true;
   }
 }
 
-const MAX_LABELS = 6;
+/** Whether a label's box would sit on a machine (labels go where the wires are, not on boxes). */
+function overMachine(S: Scene, x: number, y: number, w: number, h: number): boolean {
+  const hit = (r: { x: number; y: number; w: number; h: number }) => x < r.x + r.w + 2 && r.x - 2 < x + w && y < r.y + r.h + 2 && r.y - 2 < y + h;
+  if (hit(S.intake.rr) || hit(S.intake.gha) || hit(S.gates.gate) || hit(S.gates.review) || hit(S.deploy)) return true;
+  for (const l of S.engines.lanes) if (hit(l)) return true;
+  // the layout's text: station heads, lane labels, the source rows, everything under the
+  // return wire, and the right column
+  if (y < S.top.body - 2) return true;
+  for (const l of S.engines.lanes) if (y < l.y && y + h > l.labelY - 10 && x + w > l.x && x < l.x + l.w) return true;
+  if (hit({ x: S.sources.x, y: S.top.body - 8, w: S.sources.w, h: S.divY - 22 - S.top.body })) return true;
+  if (y + h > S.divY + 8) return true;
+  return x + w > S.R.x0 - 4;
+}
 
-type Packet2 = { x: number; y: number; a: number; bot: boolean; label: string; la: number; count: number };
+function lane0(S: Scene): boolean {
+  return S.engines.lod === 0;
+}
 
-/** Runs of text cut to fit `maxW`, the last run losing its tail first. */
-function fitRuns(ctx: Ctx2D, parts: [string, string, boolean?][], x: number, y: number, maxW: number, px: number): void {
-  let used = 0;
-  const out: [string, string, boolean?][] = [];
-  for (const [s, c, b] of parts) {
-    ctx.font = font(px, !!b);
-    const w = ctx.measureText(s).width;
-    if (used + w <= maxW) { out.push([s, c, b]); used += w; continue; }
-    let k = s.length;
-    while (k > 1 && ctx.measureText(`${s.slice(0, k)}…`).width + used > maxW) k--;
-    if (k > 1) out.push([`${s.slice(0, k)}…`, c, b]);
-    break;
+// ---- the static layer ---------------------------------------------------------------------------
+export function drawStatic(g: Gfx, S: Scene, low: boolean): void {
+  const L = S.legs;
+  // wires: every leg in one path
+  g.begin_();
+  const leg = (l: Leg | undefined) => {
+    if (!l) return;
+    const p = l.pts;
+    g.move(p[0], p[1]);
+    // low detail: every 4th point of a long curve (short polylines keep their corners)
+    const step = low && p.length > 12 ? 8 : 2;
+    for (let i = step; i < p.length; i += step) g.line(p[i], p[i + 1]);
+    if (step > 2) g.line(p[p.length - 2], p[p.length - 1]);
+  };
+  for (const l of L.fan) leg(l);
+  leg(L.jRr); leg(L.jGha);
+  for (const l of L.toLane) leg(l);
+  for (const l of L.fromLane) leg(l);
+  leg(L.gateBus); leg(L.review); leg(L.deploy); leg(L.apps);
+  // the bus and its ticks to the rows and the heatmap
+  g.move(S.bus.x, Math.min(S.bus.y0, S.divY)); g.line(S.bus.x, S.bus.y1);
+  for (const r of S.mains.rows) { g.move(S.bus.x, r.y); g.line(r.x0 - 4, r.y); }
+  const hb = S.mains.heat.blocks[0];
+  if (hb) { g.move(S.bus.x, hb.y + 2); g.line(S.mains.x0 - 4, hb.y + 2); }
+  g.stroke(C.wire, 1);
+  // the return wire, a shade brighter: it is the band's edge and the way home for reds
+  g.begin_();
+  leg(L.ret); leg(L.reject);
+  for (const l of L.retTicks) leg(l);
+  g.stroke('#343436', 1);
+  // band rules in the lower left
+  g.hline(S.L.x0, S.L.x1, S.queue.y - 7, C.rule);
+  g.hline(S.L.x0, S.L.x1, S.pulse.y - 7, C.rule);
+  // machines
+  const I = S.intake;
+  for (const m of [I.rr, I.gha]) {
+    machine(g, m.x, m.y, m.w, m.h, 5, C.machine, low);
+    if (!low) { port(g, m.inPort.x, m.inPort.y, Math.min(14, m.h - 6)); port(g, m.outPort.x, m.outPort.y, Math.min(14, m.h - 6)); }
   }
-  runs(ctx, out, x, y, px);
+  for (const ln of S.engines.lanes) {
+    machine(g, ln.x, ln.y, ln.w, ln.h, ln.lod === 0 ? 6 : 4, ln.offline ? C.machineDim : C.machine, low, ln.offline);
+    if (!low && !ln.offline) { port(g, ln.inPort.x, ln.inPort.y, Math.min(14, ln.h - 6)); port(g, ln.outPort.x, ln.outPort.y, Math.min(14, ln.h - 6)); }
+    // empty slots
+    g.begin_();
+    for (const s of ln.slots) g.circle(s.x, s.y, s.r);
+    if (ln.offline) { g.dash(true, 1.5, 2); g.stroke(C.machineDim, 1); g.dash(false); } else g.stroke(C.machineDim, 1);
+  }
+  const G = S.gates.gate;
+  machine(g, G.x, G.y, G.w, G.h, 6, C.machine, low);
+  if (!low) { port(g, G.inPort.x, G.inPort.y, 14); port(g, G.outPort.x, G.outPort.y, 14); }
+  {
+    // the integrator's clamp
+    const cx = G.x + G.w / 2, cy = G.y + G.h / 2;
+    g.begin_(); g.move(cx, G.y + 7); g.line(cx, G.y + G.h - 7); g.stroke(C.machine, 1.5);
+    g.begin_(); g.rect(cx - 15, G.y + 5, 30, 2.5); g.rect(cx - 15, G.y + G.h - 7.5, 30, 2.5); g.fill('#3A3A3C');
+    g.begin_(); g.rect(cx - 9, cy - 3, 18, 6); g.stroke(C.machine, 1);
+  }
+  const Rv = S.gates.review;
+  machine(g, Rv.x, Rv.y, Rv.w, Rv.h, 6, C.machine, low);
+  g.begin_(); g.circle(Rv.x + Rv.w / 2, Rv.y + Rv.h / 2, 6); g.stroke(C.machineDim, 1);
+  if (!low) { g.begin_(); g.rrect(Rv.x + Rv.w / 2 - 10, Rv.y - 2.5, 20, 5, 2); g.fill(C.port); g.stroke(C.portEdge, 1); }
+  const D = S.deploy;
+  machine(g, D.x, D.y, D.w, D.h, 6, C.machine, low);
+  g.begin_(); g.move(D.x + 12, D.y + D.h / 2); g.line(D.x + D.w - 16, D.y + D.h / 2); g.stroke(C.machine, 1.5);
+  if (!low) { port(g, D.inPort.x, D.inPort.y, 12); port(g, D.outPort.x, D.outPort.y, 12); }
 }
 
-function trim(s: string | undefined, n: number): string {
-  s = s == null ? '' : String(s);
-  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
-}
-
-export { BOTS, slotPoint };
-export type { Repo };
+export { T_GRAY, T_GREEN, T_RED, engineOf, scaleFor };

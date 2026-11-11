@@ -32,6 +32,8 @@ export class World {
   ver = 0;
   /** Bumps when the set of repos, orgs, engines or apps changes (the yard's layout). */
   shapeVer = 0;
+  /** Per-kind change counters: the yard's panels redraw only when what they show changed. */
+  kv: Record<string, number> = { org: 0, repo: 0, commit: 0, pipeline: 0, pr: 0, deploy: 0, app: 0, engine: 0, queue: 0, lane: 0, watcher: 0, stats: 0 };
   /** Push times by org, newest last, for the sources column's rate (last 60 minutes). */
   pushes = new Map<string, number[]>();
   /** Events applied, newest last (bounded): the yard's recent-activity feed. */
@@ -63,6 +65,7 @@ export class World {
     this.loaded = true;
     this.ver++;
     this.shapeVer++;
+    for (const k of Object.keys(this.kv)) this.kv[k]++;
   }
 
   /** Applies a frame; returns false when it must be refetched (a reset or a gap). */
@@ -87,7 +90,7 @@ export class World {
     this.ver++;
     if (events) {
       for (const e of events) {
-        if (e.k === 'push') this.notePush(e.bot || e.author?.endsWith('[bot]') ? BOTS : this.orgOf(e.repo), e.at);
+        if (e.k === 'push') { this.notePush(e.bot || e.author?.endsWith('[bot]') ? BOTS : this.orgOf(e.repo), e.at); this.kv.commit++; }
         this.recent.push(e);
         listener?.(e, this);
       }
@@ -97,6 +100,7 @@ export class World {
   }
 
   private upsert(kind: Kind | string, id: string, v: unknown): void {
+    if (kind in this.kv) this.kv[kind]++;
     const m = this.mapOf(kind);
     if (m) {
       if (!m.has(id) && (kind === 'repo' || kind === 'org' || kind === 'engine' || kind === 'app' || kind === 'queue')) this.shapeVer++;
@@ -131,6 +135,7 @@ export class World {
   }
 
   private remove(kind: Kind | string, id: string): void {
+    if (kind in this.kv) this.kv[kind]++;
     const m = this.mapOf(kind);
     if (m?.delete(id) && (kind === 'repo' || kind === 'org' || kind === 'engine' || kind === 'app' || kind === 'queue')) this.shapeVer++;
   }

@@ -10,7 +10,12 @@ EXACT2=${EXACT2:-$("$here/scripts/fetch-exact.sh" | tail -1)}
 export EXACT2 EXACT_FEEDBACK=${EXACT_FEEDBACK:-0}
 cd "$here"
 case "${1:-}" in
-  web) timeout 1800 bun exact.mjs web-build --out "${2:-$here/dist}" ;;
+  web)
+    # The commit this build is, so a page the server has since replaced can offer a reload
+    # (it compares /api/v1/meta's web.sha).
+    SWITCHYARD_WEB_SHA=${SWITCHYARD_WEB_SHA:-$(git -C "$here" rev-parse HEAD 2>/dev/null || true)}
+    export SWITCHYARD_WEB_SHA
+    timeout 1800 bun exact.mjs web-build --out "${2:-$here/dist}" ;;
   mac)
     export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
     timeout 3600 bun exact.mjs mac ${SWITCHYARD_MAC_FLAGS:---release} >&2

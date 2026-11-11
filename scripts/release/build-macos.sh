@@ -44,7 +44,6 @@ placeholder)
   ;;
 exact-probe)
   : "${EXACT_DIR:?set EXACT_DIR to the expo/exact checkout}"
-  stamp=$(mktemp); sleep 1
   (cd "$EXACT_DIR" && bun host/apple/build.mjs --bundle)
   built=$(find "$EXACT_DIR/target" -maxdepth 6 -name '*.app' -type d -newer "$stamp" 2>/dev/null | head -1); rm -f "$stamp"
   [[ -n "$built" ]] || { echo "exact-probe: no .app produced under $EXACT_DIR/target" >&2; exit 1; }
@@ -54,18 +53,19 @@ app)
   : "${EXACT_DIR:?set EXACT_DIR to the expo/exact checkout}"
   [[ -f app/app.contract ]] || { echo "app/ does not exist yet; use --mode placeholder" >&2; exit 1; }
   export EXACT2="$EXACT_DIR"   # app/exact.mjs finds the exact checkout through EXACT2
-  stamp=$(mktemp); sleep 1
-  # The client's own release command (owned by app/) wins: it prints the built .app path last.
-  if [[ -x app/scripts/build-macos-release.sh ]]; then
-    built=$(SWITCHYARD_VERSION="$VERSION" app/scripts/build-macos-release.sh | tail -1)
-  else
-    (cd app && bun exact.mjs mac --bundle ${SWITCHYARD_MAC_FLAGS:-})
-    built=$(find app "$EXACT_DIR/target" -maxdepth 8 -type d -name 'Switchyard.app' -newer "$stamp" 2>/dev/null | head -1)
-    [[ -n "$built" ]] || built=$(find app "$EXACT_DIR/target" -maxdepth 8 -type d -name '*.app' -newer "$stamp" 2>/dev/null | head -1)
-  fi
-  rm -f "$stamp"
+  # Only the client's own release command (owned by app/) builds a release: it bakes the TS data
+  # module and prints the built .app path last. No other path (a bare exact.mjs, Exact's
+  # host/apple/build.mjs) is allowed to produce a shipped bundle.
+  [[ -x app/scripts/build-macos-release.sh ]] || { echo "app/scripts/build-macos-release.sh missing" >&2; exit 1; }
+  [[ "$(git -C "$EXACT_DIR" rev-parse HEAD)" == "$(tr -d '[:space:]' < app/exact.pin)" ]] \
+    || { echo "EXACT_DIR is at $(git -C "$EXACT_DIR" rev-parse --short HEAD), app/exact.pin wants $(cut -c1-12 app/exact.pin)" >&2; exit 1; }
+  built=$(SWITCHYARD_VERSION="$VERSION" app/scripts/build-macos-release.sh | tail -1)
   [[ -n "$built" && -d "$built" ]] || { echo "app: no .app produced" >&2; exit 1; }
   echo "app bundle: $built"
+  # The data module must be baked in: without it the app fails at launch with
+  # "unknown source loadToken". loadToken is a function of app/src (the token store).
+  grep -q loadToken "$built/Contents/MacOS/Switchyard" \
+    || { echo "app: $built lacks the baked data module (no loadToken in Contents/MacOS/Switchyard)" >&2; exit 1; }
   ditto "$built" "$OUT/Switchyard.app"
   # The release version is the tag's; Exact stamps app.json's. Changing Info.plist voids the
   # build's ad-hoc signature, so package-macos.sh signs again (entitlements preserved).

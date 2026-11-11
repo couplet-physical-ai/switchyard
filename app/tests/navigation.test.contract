@@ -8,7 +8,8 @@ test "a fresh install asks where to connect, and the demo starts at once"
   clock data
   clock +500
   expect tree missing "setup"
-  expect text "conn-status" == "demo · built-in demo"
+  expect text "conn-status" == "built-in demo"
+  expect text "mode-pill" == "live"
   expect state ov.repos == 410
 
 test "each tab opens its view and the yard comes back"
