@@ -86,6 +86,8 @@ component App
   derive dropped = feed.status == "closed" or feed.status == "error" or conn.status == "offline"
   derive hitNow = match hit { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }
   derive replayOk = match replayed { case some(r) => r.ok, case none => false }
+  // fx-day: a replay's answer says its speed (60 the hour, 720 the day; a resumed one its own)
+  derive replaySpeed = match replayed { case some(r) => (match parseNumber(r.status) { case some(n) => n, case none => 60 }), case none => 60 }
   derive hovering = match hov { case some(h) => h.kind != "", case none => false }
   derive facNow = match fac { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }
   // fab-lens: the coffee check (src/factory/coffee.ts). The last visit per server, kept as the
@@ -191,18 +193,22 @@ component App
     send ctl = timeControl("live", 1)
   action togglePause
     if mode == "paused"
+      // fx-day: a paused replay goes on at its speed (afterReplay); else 1× behind live
       speed = 1
       mode = "behind"
-      send ctl = timeControl("play", 1)
+      send replayed = replayResume(clockMs)
     else
       mode = "paused"
       send ctl = timeControl("pause", speed)
   action startReplay
     send replayed = replayHour(clockMs)
+  // fx-day: the last 24 h in 2 min (DAY_SPEED, app.ts), then live
+  action startDay
+    send replayed = replayDay(clockMs)
   action afterReplay
     if replayOk
       mode = "replay"
-      speed = 60
+      speed = replaySpeed
 
   // The yard: a press picks what is under it; the pointer over it promotes what is under it
   // to full detail (a lens); leaving the canvas lets the lens go.
@@ -230,8 +236,10 @@ component App
     facWheel = facWheel + e.deltaY
     preventDefault()
   action afterFac
-    if facNow.kind == "replay" or facNow.kind == "replay24"
+    if facNow.kind == "replay"
       startReplay()
+    else if facNow.kind == "replay24"
+      startDay()
     else if facNow.kind == "replayAt"
       send replayed = replayAt(clockMs, facNow.id)
     else if facNow.kind == "live"
@@ -323,8 +331,12 @@ component App
               // still a target on every host, an opacity 0 one is not on macOS). fx-glance: the strip
               // starts with it now ("live" is the status line's one control).
               button appearance="none" press=startReplay testId="replay" aria-label="Replay the last hour, sped up" disabled=(ov.mode == "replay" or not conn.ok)
-                position="absolute" bottom=17 left=18 width=140 height=28 background-color="transparent" padding=0
+                position="absolute" bottom=17 left=18 width=160 height=28 background-color="transparent" padding=0
                 text "last hour" color="#00000000" font-size=1
+              // fx-day: and beside it the day's, "24 h in 2 min" (the demo's: "6 h in 2 min", its last 6 h)
+              button appearance="none" press=startDay testId="replay-day" aria-label="Replay the last 24 hours in two minutes" disabled=(ov.mode == "replay" or not conn.ok)
+                position="absolute" bottom=17 left=180 width=130 height=28 background-color="transparent" padding=0
+                text "24 h" color="#00000000" font-size=1
               // Offline or not set up: a card over the floor (the idle floor, or the last fleet
               // it showed, dimmed behind it), never a black void.
               if not conn.ok and conn.status != "connecting"

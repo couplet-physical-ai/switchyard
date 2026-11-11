@@ -18,7 +18,7 @@ import { drawFleetLoad } from './src/fleetload.ts';
 import { fleet, journeyView, prDetailView, search } from './src/project.ts';
 import { MainlinesModel, stateWords } from './src/table/mainlines.ts';
 import { PrsModel } from './src/table/prs.ts';
-import { Timeline } from './src/timeline.ts';
+import { nextChunkMs, replaySizing, Timeline } from './src/timeline.ts';
 import { bindBaselineStore } from './src/factory/agg/baseline.ts';
 import { connectedWith, saveTokenFile, scrubKept, takeTokenFile, tokenFileReport } from './src/hooks.ts';
 import { updateDo, updateState } from './src/update.ts';
@@ -98,39 +98,119 @@ function advance(t: number, asking = true): void {
   }
 }
 
-/** A replay streams in chunks of server time, fetched this far ahead of the playhead, each
+/** A replay streams in chunks of server time, asked a lookahead ahead of the playhead, each
  *  reply bounded by REPLAY_CEILING: an hour of real history can be ~30 MB (a server's boot
  *  burst), far more than the native data module's 64 MiB heap holds beside the world. A chunk
  *  over the ceiling is refused before any of it is read, and the window halves; quiet
- *  stretches grow it back. A window that will not fit even at REPLAY_MIN jumps over the gap
- *  with `/snapshot?at=`. */
-const REPLAY_MAX = 6 * 60_000;
-const REPLAY_MIN = 5_000;
+ *  stretches grow it back. The lookahead and the window scale with the speed
+ *  (src/timeline.ts `replaySizing`: ~3 s of real time ahead, chunks of up to 6 s of it, so 6 min
+ *  at 60× and 30 min at 720×). A stretch that will not stream at the speed (its window would
+ *  shrink under what the playhead plays between two asks) is jumped with `/snapshot?at=`,
+ *  taken when the playhead reaches it. */
 const REPLAY_LOOKAHEAD = 60_000;
 const REPLAY_CEILING = 1536 << 10;
+/** The day: the last 24 h at DAY_SPEED (two minutes), then live again. One constant, to retune. */
+const DAY_SPEED = 720;
+const DAY_MS = 24 * 3_600_000;
+/** The built-in demo has no history: its simulation runs forward as the playhead pulls it
+ *  (src/demo.ts, at most 5 s of fleet time a call, a call a frame), so ~300× at 60 fps is its
+ *  ceiling, and a fleet hour costs it more the longer it has run (Bun: 0.3 s of CPU at hour 1,
+ *  1.9 s at hour 24; Hermes 10-25× that). Its day is the last 6 h at 180× (two minutes too:
+ *  ~1.4 % of a core in Bun, pumps p99 1.6 ms), and the strip says so. */
+const DEMO_DAY_MS = 6 * 3_600_000;
+const DEMO_DAY_SPEED = 180;
 let chunkMs = 60_000;
 let chunking: Promise<void> | null = null;
-/** A window that will not fit even at REPLAY_MIN: jump the replay to the fleet at this time. */
+/** A stretch that will not stream at the speed: jump the replay to the fleet at this time. */
 let rebaseAt = 0;
 const refused = (e: unknown) => /refus|ceiling|exceeds/i.test(`${(e as { kind?: string }).kind ?? ''} ${(e as Error).message ?? e}`);
+/** A replay's streaming, measured and logged when it ends (`replayDial`): what it asked and
+ *  fetched, its jumps, the most unplayed frames it held; the waits are the timeline's. */
+const rs = { on: false, what: '', speed: 0, t0: 0, bytes: 0, requests: 0, refused: 0, jumps: 0, held: 0 };
 function fetchChunk(from: number): Promise<void> {
   if (!up || demo || chunking) return chunking ?? Promise.resolve();
+  const z = replaySizing(tl.speed);
+  chunkMs = Math.min(z.max, chunkMs);
   const to = Math.min(from + chunkMs, tl.replayTo);
+  rs.requests++;
   chunking = up.history(from, to, false, REPLAY_CEILING).then(
     (h) => {
-      tl.appendReplay(h);
+      // the last chunk ends the replay (the server ends a window at its now, if that is earlier)
+      tl.appendReplay(to >= tl.replayTo ? { ...h, to: tl.replayTo } : h);
       const bytes = h.bytes ?? 0;
-      if (bytes < REPLAY_CEILING / 4) chunkMs = Math.min(REPLAY_MAX, Math.round(chunkMs * 1.5));
-      else if (bytes > REPLAY_CEILING / 2) chunkMs = Math.max(REPLAY_MIN, Math.floor(chunkMs / 2));
+      rs.bytes += bytes; rs.held = Math.max(rs.held, tl.replayHeld);
+      chunkMs = nextChunkMs(chunkMs, bytes, REPLAY_CEILING, z);
+      // denser than the speed streams: what follows this chunk is jumped
+      if (chunkMs < z.min) { chunkMs = z.min; if (to < tl.replayTo) jump(to + z.skip); }
     },
     (e) => {
       if (!refused(e)) return; // the network: asked again by the next answer
-      if (chunkMs > REPLAY_MIN) { chunkMs = Math.max(REPLAY_MIN, Math.floor(chunkMs / 2)); return; }
-      console.log(`replay: ${Math.round((to - from) / 1000)} s from ${from} is over ${REPLAY_CEILING >> 10} KB; jumping it`);
-      rebaseAt = to;
+      rs.refused++;
+      if (Math.floor(chunkMs / 2) >= z.min) { chunkMs = Math.floor(chunkMs / 2); return; }
+      console.log(`replay: ${Math.round((to - from) / 1000)} s from ${from} is over ${REPLAY_CEILING >> 10} KB; jumping ${Math.round(z.skip / 60_000)} min`);
+      jump(from + z.skip);
     },
   ).finally(() => { chunking = null; });
   return chunking;
+}
+/** The next answer fetches the fleet at `at` (advance), and the replay goes on from there. */
+function jump(at: number): void { rebaseAt = Math.min(at, tl.replayTo); rs.jumps++; }
+
+/** Starts a replay from `from` to now at `speed`: the demo rewinds (a simulation started at
+ *  `from`, pulled by the playhead); a server sends the fleet at `from` (v0.3), then frames only. */
+async function startReplayAt(from: number, to: number, speed: number, what: string): Promise<{ ok: boolean; status: string }> {
+  if (!up) return { ok: false, status: 'not connected' };
+  if (rs.on) logReplay();
+  Object.assign(rs, { on: false, what, speed, t0: clock, bytes: 0, requests: 0, refused: 0, jumps: 0, held: 0 });
+  try {
+    let ok: boolean;
+    if (demo) {
+      demo = null;
+      demo = await DemoUpstream.start(from);
+      up = demo;
+      tl.load(await demo.snapshot(), clock);
+      tl.beginPlayback(from, to, speed);
+      ok = true;
+    } else {
+      const z = replaySizing(speed);
+      chunkMs = z.start; rebaseAt = 0;
+      // never a base inside a big window
+      const base = up.snapshotAt ? await up.snapshotAt(from).catch(() => null) : null;
+      const h = base ? { from, to: from, base, frames: [] } : await up.history(from, from + 60_000, true, 12 << 20);
+      ok = tl.startReplay(h, to, speed);
+      if (ok && tl.world.repos.size === 0) jump(tl.playhead + z.skip); // a server's first moments (an empty fleet, then its boot burst): jumped
+      else if (ok) void fetchChunk(tl.replayLoadedTo); // the first chunk now, not at the next answer
+    }
+    rs.on = ok;
+    return { ok, status: String(speed) };
+  } catch (e) {
+    return { ok: false, status: String((e as Error).message ?? e) };
+  }
+}
+
+/** Now as the replay controls count it: the demo's wall clock, else the server's. */
+const replayNow = () => (demo ? Math.floor((epochAtZero + clock) / 1000) * 1000 : tl.liveNow());
+/** A day replay is playing (or paused): a seek keeps its speed. */
+const dayReplay = () => (tl.mode === 'replay' || tl.replayPaused) && tl.replaySpeed === (demo ? DEMO_DAY_SPEED : DAY_SPEED);
+
+const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
+
+/** A replay's streaming in the log, once (it ended, or another replaced it, or live was asked). */
+function logReplay(): void {
+  rs.on = false;
+  const real = ((tl.endClock || clock) - rs.t0) / 1000;
+  console.log(`replay: ${rs.what} at ${rs.speed}× ${tl.endClock ? 'ended' : 'left'} after ${real.toFixed(1)} s real · ${rs.requests} chunk requests (${rs.refused} refused), ${(rs.bytes / 1048576).toFixed(1)} MB of frames, ${rs.jumps} jumps · first frames after ${Math.round(tl.startMs)} ms · ${tl.stalls} stalls, ${Math.round(tl.stallMs)} ms in all · at most ${rs.held} frames held`);
+}
+
+/** The yard's dial in words (and, once a replay has ended, its streaming numbers in the log). */
+function replayDial(): string {
+  if (rs.on && tl.mode !== 'replay' && !tl.replayPaused) logReplay();
+  if (tl.mode === 'replay' || tl.replayPaused) {
+    const span = tl.replayTo - tl.replayFrom, p = clamp01((tl.playhead - tl.replayFrom) / Math.max(1, span));
+    const at = span > 2 * 3_600_000 ? `${Math.round((p * span) / 3_600_000)} of ${Math.round(span / 3_600_000)} h` : `${Math.round((p * span) / 60_000)} of ${Math.round(span / 60_000)} min`;
+    return `${tl.replayPaused ? 'paused' : 'replaying'} · ${at}`;
+  }
+  return tl.mode === 'paused' ? 'paused · 1 hour, sped up' : '1 hour, sped up';
 }
 
 /** The world stopped following the server (a replay, a long pause, a reset): refetch it. */
@@ -264,7 +344,7 @@ function overview(): Result<'overview'> {
   const summary = w.loaded ? `The delivery yard: ${building} pipelines building, ${queued} queued, ${red} main ${red === 1 ? 'line' : 'lines'} red, ${appsUp} of ${appsTotal} apps up.` : 'The delivery yard, waiting for data.'; // fx-glance
   const k = S?.k ?? 1;
   factory.city.pump(clock); // fab-w5: the city's app histories (H7), a few fetches per data turn, never from a draw
-  const dial = tl.mode === 'replay' ? `replaying · ${Math.round(tl.replayProgress() * 60)} of 60 min` : tl.mode === 'paused' ? `paused · 1 hour, sped up` : '1 hour, sped up';
+  const dial = replayDial(); // fx-day: the dial counts a day replay's hours (and logs a replay's streaming when it ends)
   return {
     status: w.loaded ? 'ready' : 'waiting', mode: tl.mode, speed: tl.speed, sentence, summary, layoutKey: `${S?.key ?? ''}|${yard.budget.quality >= 3 ? 'lo' : 'hi'}`, repos: w.repos.size,
     building, queued, red, appsUp, appsTotal, appsDown, facHead: factory.coffee.glance0.drawn, behind, seq: w.seq, // fx-glance: the coffee header's totals as drawn
@@ -386,28 +466,22 @@ export const sources: Sources = {
   },
   replayHour: async ([t]) => {
     if (t > 0) advance(t);
-    if (!up) return { ok: false, status: 'not connected' };
-    try {
-      if (demo) {
-        const to = Math.floor((epochAtZero + clock) / 1000) * 1000;
-        const from = to - DEMO_REPLAY;
-        demo = null;
-        demo = await DemoUpstream.start(from);
-        up = demo;
-        tl.load(await demo.snapshot(), clock);
-        tl.beginPlayback(from, to);
-        return { ok: true, status: 'replay' };
-      }
-      const to = tl.liveNow();
-      const from = to - 3_600_000;
-      chunkMs = 60_000;
-      // The fleet at `from` (v0.3), then frames only: never a base inside a big window.
-      const base = up.snapshotAt ? await up.snapshotAt(from).catch(() => null) : null;
-      const h = base ? { from, to: from, base, frames: [] } : await up.history(from, from + 60_000, true, 12 << 20);
-      return { ok: tl.startReplay(h, to), status: 'replay' };
-    } catch (e) {
-      return { ok: false, status: String((e as Error).message ?? e) };
-    }
+    const to = replayNow();
+    return startReplayAt(to - (demo ? DEMO_REPLAY : 3_600_000), to, 60, 'the last hour');
+  },
+  // fx-day: the last 24 h at DAY_SPEED (the demo: its last 6 h at 180×), then live
+  replayDay: async ([t]) => {
+    if (t > 0) advance(t);
+    const to = replayNow();
+    // (a minute inside the server's 24 h: its clock is a little ahead of ours)
+    return demo ? startReplayAt(to - DEMO_DAY_MS, to, DEMO_DAY_SPEED, 'the demo day') : startReplayAt(to - DAY_MS + 60_000, to, DAY_SPEED, '24 h');
+  },
+  // fx-day: Play on a paused replay goes on with it at its speed; else plays at 1× behind live
+  replayResume: ([t]) => {
+    if (t > 0) advance(t);
+    const was = tl.replayPaused;
+    tl.resume();
+    return { ok: was, status: String(tl.speed) };
   },
   pickAt: ([x, y]) => {
     const k = yard.S?.k ?? 1;
@@ -457,28 +531,12 @@ export const sources: Sources = {
     const v = safe('coffeeMark', '', () => factory.coffee.mark(String(server ?? ''), String(visits ?? '')));
     return { ok: v !== '', status: v };
   },
-  // fab-lens: a time-strip tick replays from that moment at 60×
+  // fab-lens: a time-strip tick replays from that moment at 60×; in a day replay, at its speed (fx-day)
   replayAt: async ([t, at]) => {
     if (t > 0) advance(t);
-    if (!up) return { ok: false, status: 'not connected' };
-    const to = demo ? Math.floor((epochAtZero + clock) / 1000) * 1000 : tl.liveNow();
-    const from = Math.min(to - 60_000, Math.max(to - 24 * 3_600_000, Number(at) || to - 3_600_000));
-    try {
-      if (demo) {
-        demo = null;
-        demo = await DemoUpstream.start(from);
-        up = demo;
-        tl.load(await demo.snapshot(), clock);
-        tl.beginPlayback(from, to);
-        return { ok: true, status: 'replay' };
-      }
-      chunkMs = 60_000;
-      const base = up.snapshotAt ? await up.snapshotAt(from).catch(() => null) : null;
-      const h = base ? { from, to: from, base, frames: [] } : await up.history(from, from + 60_000, true, 12 << 20);
-      return { ok: tl.startReplay(h, to), status: 'replay' };
-    } catch (e) {
-      return { ok: false, status: String((e as Error).message ?? e) };
-    }
+    const to = replayNow(), day = dayReplay();
+    const from = Math.min(to - 60_000, Math.max(to - DAY_MS + 60_000, Number(at) || to - 3_600_000));
+    return startReplayAt(from, to, day ? tl.replaySpeed : 60, day ? (demo ? 'the demo day, from a tick' : '24 h, from a tick') : 'from a tick');
   },
   devToggle: ([what, on]) => {
     if (what === 'hud') yard.hud.on = on === 1;

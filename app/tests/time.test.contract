@@ -47,3 +47,58 @@ test "the hour replay plays history at 60× and comes back live"
   tap "go-live"
   clock data
   expect state ov.mode == "live"
+
+// fx-day: "24 h in 2 min". The built-in demo has no history: it simulates its fleet as the
+// playhead pulls it, so its day is the last 6 h at 180× (app.ts DEMO_DAY_*; a server's is the
+// last 24 h at DAY_SPEED, 720×, below). The playhead runs at the day's speed (the dial counts its
+// hours: 20 s are an hour at 180×), a pause holds it, Play goes on at the day's speed, and live
+// leaves it.
+test "the 24 h replay plays the day at its speed, pauses and resumes at it, and comes back live"
+  clock data
+  tap "setup-demo"
+  clock data
+  clock +1000
+  tap "replay-day"
+  clock data
+  expect state mode == "replay"
+  expect state ov.mode == "replay"
+  expect state speed == 180
+  expect state ov.speed == 180
+  expect state ov.dial == "replaying · 0 of 6 h"
+  clock +20000
+  expect state ov.dial == "replaying · 1 of 6 h"
+  clock +40000
+  expect state ov.dial == "replaying · 3 of 6 h"
+  tap "pause"
+  clock data
+  expect state ov.mode == "paused"
+  expect state ov.dial == "paused · 3 of 6 h"
+  clock +5000
+  expect state ov.dial == "paused · 3 of 6 h"
+  tap "pause"
+  clock data
+  expect state mode == "replay"
+  expect state ov.mode == "replay"
+  expect state speed == 180
+  expect state ov.speed == 180
+  clock +20000
+  expect state ov.dial == "replaying · 4 of 6 h"
+  tap "go-live"
+  clock data
+  expect state ov.mode == "live"
+  expect state ov.speed == 1
+
+test "the 24 h replay of a server plays at the day's speed, 720×"
+  clock data
+  tap "setup-connect"
+  clock settle
+  type "server-field" "fixtures"
+  tap "settings-save"
+  clock data
+  clock +500
+  expect state conn.ok == true
+  tap "replay-day"
+  clock data
+  expect state replayOk == true
+  expect state replaySpeed == 720
+  expect state speed == 720
