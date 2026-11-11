@@ -90,12 +90,19 @@ echo "--- brew info"; ($B info --cask switchyard 2>&1 | head -2)
 echo "--- app log (this launch)"; grep -h "pid \$pid " ~/Library/Logs/Switchyard/*.log 2>/dev/null | grep -v "download: [0-9]*%" | tail -n 12 | cut -c1-240 || true
 TOKF="$TOK_REMOTE"
 if [[ -n "\$TOKF" ]]; then
-  # The token must live only in the Keychain: grep its value (read from the file, never argv)
-  # through the app's files, while it runs and again after it quits (kept state is flushed then).
-  leak() { grep -rlF -f "\$TOKF" ~/Library/Application\ Support/com.exowatt.switchyard ~/Library/Logs/Switchyard ~/Library/Preferences/com.exowatt.switchyard.plist 2>/dev/null || true; }
-  l=\$(leak); [[ -z "\$l" ]] && echo "token at rest (running): none" || { echo "FAIL: token found in: \$l" >&2; exit 1; }
+  # The token may live in one place only: 0.1.3+ keep it in Application Support/<id>/token (mode
+  # 0600, dir 0700; README → Security), 0.1.2 and earlier in the Keychain. Its value (read from the
+  # file, never argv) must be nowhere else under the app's files, while it runs and after it quits.
+  AS=~/Library/Application\ Support/com.exowatt.switchyard
+  leak() { grep -rlF -f "\$TOKF" "\$AS" ~/Library/Logs/Switchyard ~/Library/Preferences/com.exowatt.switchyard.plist 2>/dev/null | grep -vx "\$AS/token" || true; }
+  if [[ -e "\$AS/token" ]]; then
+    m=\$(stat -f %Lp "\$AS/token"); dm=\$(stat -f %Lp "\$AS")
+    echo "token file: mode \$m, dir \$dm"
+    [[ "\$m" == 600 && "\$dm" == 700 ]] || { echo "FAIL: token file mode \$m / dir \$dm (want 600 / 700)" >&2; exit 1; }
+  fi
+  l=\$(leak); [[ -z "\$l" ]] && echo "token at rest (running): none outside the token file" || { echo "FAIL: token found in: \$l" >&2; exit 1; }
   quit_
-  l=\$(leak); [[ -z "\$l" ]] && echo "token at rest (after quit): none" || { echo "FAIL: token found in: \$l" >&2; exit 1; }
+  l=\$(leak); [[ -z "\$l" ]] && echo "token at rest (after quit): none outside the token file" || { echo "FAIL: token found in: \$l" >&2; exit 1; }
   # The app's own log is written as it quits: the connect line must be there by now.
   grep -h "pid \$pid token-file:" ~/Library/Logs/Switchyard/switchyard.log | tail -1
   grep -q "pid \$pid token-file: connected" ~/Library/Logs/Switchyard/switchyard.log || { echo "FAIL: no 'token-file: connected' for pid \$pid" >&2; exit 1; }
