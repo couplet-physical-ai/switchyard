@@ -354,7 +354,7 @@ component NowNeedRow
     testKey: string
   view
     row min-height=34 flex-wrap="wrap" align-items="center" column-gap=12 row-gap=4 padding=(narrow ? "5px 0" : "4px 0 4px 80px") border-top="1px solid zr.rule" testId=`now-need-${testKey}`
-      row gap=10 align-items="baseline" min-width=0 flex=(narrow ? "1 1 100%" : "0 1 auto")
+      row flex-wrap="wrap" column-gap=10 row-gap=2 align-items="baseline" min-width=0 flex=(narrow ? "1 1 100%" : "0 1 auto")
         text "✕" font-size=13 font-weight=700 color="zr.fail" width=14 flex-shrink=0
         text n.what font-size=14 font-weight=600 white-space="nowrap"
         text n.word font-size=14 color="zr.fail" white-space="nowrap" testId=`now-need-${testKey}-word`
