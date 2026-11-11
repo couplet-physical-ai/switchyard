@@ -145,12 +145,37 @@ shape AppRow
 
 shape EngineRow
   id: string
+  label: string
   kind: string
   slots: number
   busy: number
+  online: bool
   cpu: string
   mem: string
   running: string
+  sub: string
+
+shape EngineHost
+  id: string
+  title: string
+  sub: string
+  busy: number
+  slots: number
+  load: string
+  offline: bool
+  engines: EngineRow[]
+
+shape LaneSeg
+  id: string
+  label: string
+  n: number
+  color: string
+  width: string
+
+shape DeployBar
+  id: number
+  ok: number
+  bad: number
 
 shape QueueRow
   id: string
@@ -177,6 +202,18 @@ shape Fleet
   behindN: number
   never: number
   hasLatency: bool
+  hosts: EngineHost[]
+  loadRows: number
+  loadH: number
+  deploysN: string
+  deploysText: string
+  deploysVia: string
+  deployBars: DeployBar[]
+  deployMax: number
+  lanes: LaneSeg[]
+  lanesTotal: number
+  lanesNote: string
+  loadTick: number
 
 shape SpanRow
   id: string
