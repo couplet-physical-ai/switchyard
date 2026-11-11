@@ -47,17 +47,39 @@ export class Drawer {
     const cm = this.selCommit();
     const repo = p?.repo ?? cm?.repo ?? '';
     const org = w.orgOf(repo);
-    const dv = this.f.dockV(org), rv = this.f.railV(org);
-    const pts: Pt[] = [[DOCK_U0 + 20, dv], [COLLECT_U, dv], [COLLECT_U, AISLE_V]];
-    const stops: [Pt, string][] = [[[DOCK_U0 + 20, dv], 'pushed']];
     const prN = p?.pr ?? w.commits.get(`${repo}@${cm?.sha ?? ''}`)?.pr;
-    if (prN || p?.event === 'pull_request') {
-      pts.push([ROW_U[1], AISLE_V], [ROW_U[1], AGE_V[0] + 10], [ROW_U[3], AGE_V[0] + 10], [ROW_U[3], AISLE_V]);
-      stops.push([[ROW_U[1], AGE_V[0] + 10], `PR #${prN ?? ''}`]);
+    const iv = LANE_V[p?.lane === 'gha' ? 1 : 0];
+    let pts: Pt[], stops: [Pt, string][];
+    const fl = this.f.floor, lp = fl.on ? fl.lanePath(repo) : null;
+    if (lp) {
+      // fx-lens: on the group lanes: its lane's dock, belt (by its PR cell when a PR carried it),
+      // the gate, its lane's rail (its car's spot), the merge into the intake
+      const [a, b] = lp;
+      pts = [...a];
+      stops = [[a[0]!, 'pushed']];
+      const L = fl.lanesNow[fl.laneIndex(repo)];
+      if ((prN || p?.event === 'pull_request') && L && !L.s.stripe) {
+        const cv = (L.s.cell0 + L.s.cell1) / 2;
+        stops.push([[ROW_U[1], cv], `PR #${prN ?? ''}`]);
+        pts.splice(pts.length - 1, 0, [ROW_U[1] - 20, a[a.length - 1]![1]], [ROW_U[1] - 20, cv], [ROW_U[3], cv], [ROW_U[3] + 20, a[a.length - 1]![1]]);
+      }
+      stops.push([b[0]!, 'merged']);
+      const car = fl.carSpot(`${repo}@${p?.sha ?? cm?.sha ?? ''}`);
+      pts.push(...b.slice(1, -1));
+      if (car) stops.push([car, 'landed']);
+      pts.push([INTAKE_U0, iv], [INTAKE_U1, iv]);
+    } else {
+      const dv = this.f.dockV(org), rv = this.f.railV(org);
+      pts = [[DOCK_U0 + 20, dv], [COLLECT_U, dv], [COLLECT_U, AISLE_V]];
+      stops = [[[DOCK_U0 + 20, dv], 'pushed']];
+      if (prN || p?.event === 'pull_request') {
+        pts.push([ROW_U[1], AISLE_V], [ROW_U[1], AGE_V[0] + 10], [ROW_U[3], AGE_V[0] + 10], [ROW_U[3], AISLE_V]);
+        stops.push([[ROW_U[1], AGE_V[0] + 10], `PR #${prN ?? ''}`]);
+      }
+      pts.push([YARD_U1, AISLE_V], [GATE_U + 4, AISLE_V], [RAIL_U0, rv], [RAIL_U1, rv], [INTAKE_U0, iv], [INTAKE_U1, iv]);
+      stops.push([[GATE_U + 4, AISLE_V], 'merged']);
     }
-    pts.push([YARD_U1, AISLE_V], [GATE_U + 4, AISLE_V], [RAIL_U0, rv], [RAIL_U1, rv], [INTAKE_U0, LANE_V[p?.lane === 'gha' ? 1 : 0]], [INTAKE_U1, LANE_V[p?.lane === 'gha' ? 1 : 0]]);
-    stops.push([[GATE_U + 4, AISLE_V], 'merged']);
-    stops.push([[INTAKE_U0 + 20, LANE_V[p?.lane === 'gha' ? 1 : 0]], 'queued']);
+    stops.push([[INTAKE_U0 + 20, iv], 'queued']);
     const bay = p ? (this.f.bays.find((b) => b.pid === p.id) ?? this.f.plant.lastBay.get(p.id ?? '')) : undefined;
     const gi = p?.lane === 'gha' ? this.f.census.groups.length - 1 : 0;
     const bv = bay ? bay.v + bay.dv / 2 : ENG_V0 + gi * ENG_STEP + ENG_DV / 2;
@@ -69,10 +91,11 @@ export class Drawer {
     const red = p.state === 'failure' || p.state === 'error';
     stops.push([[SCAN_U, bv], red ? `failed · ${failingStep(p)}` : 'passed']);
     if (red) {
-      pts.push([SCAN_U, RETURN_V], [24, RETURN_V], [24, dv]);
+      pts.push([SCAN_U, RETURN_V], [24, RETURN_V], [24, this.f.dockV(repo)]);
       return { pts, red, stops };
     }
-    const dep = w.deploys.get(`${p.repo}@${p.sha}`);
+    let dep = w.deploys.get(`${p.repo}@${p.sha}`);
+    if (!dep) for (const d of w.deploys.values()) if (d.repo === p.repo && d.sha === p.sha) { dep = d; break; } // fx-lens: the world keys deploys by app
     const app = dep?.app ?? w.repos.get(p.repo)?.app;
     const b = app ? this.f.blockAt.get(app) : undefined;
     if (b && (dep || p.deploy)) {
@@ -213,22 +236,12 @@ export class Drawer {
     }
   }
 
-  /** The hover card: quick facts beside the pointer (the stage titles and the drawer have none). */
-  hover(g: Gfx, f: Frame): void {
-    const h = this.f.hitAt(this.f.px, this.f.py);
-    if (h && h.label && h.kind !== 'stage' && h.kind !== 'drawer') {
-      const facts = this.facts(h);
-      const wv = Math.max(...facts.map((l) => g.width(l, SMALL))) + 16;
-      const bx = Math.min(this.f.px + 14, f.width - wv - 8), by = this.f.py + 18;
-      g.fillRect(bx, by, wv, facts.length * 16 + 10, '#161618');
-      g.begin_(); g.rect(bx + 0.5, by + 0.5, wv - 1, facts.length * 16 + 9); g.stroke('#3A3A3E', 1);
-      facts.forEach((l, i) => g.text(l, bx + 8, by + 18 + i * 16, i ? C.ink2 : C.ink, SMALL, i === 0));
-    }
-  }
+  /** The hover card: hover.ts draws it (fx-lens: one card, beside its object, over the lens's
+   *  story); this stays for factory.ts's call. */
+  hover(_g: Gfx, _f: Frame): void {}
 
-  private facts(h: HitBox): string[] {
-    const lf = this.f.words.hoverFor(h) ?? this.f.lens.preview(h); // fab-lens: ≤ 3 short lines per kind; fab-w1: the lanes' and stages' own first
-    if (lf) return lf;
+  /** Quick facts for a hit nothing else words (the hover card's last resort). */
+  facts(h: HitBox): string[] {
     const w = this.f.world, now = this.f.tl.playhead;
     if (h.kind === 'pipeline') {
       const p = w.pipelines.get(h.id);

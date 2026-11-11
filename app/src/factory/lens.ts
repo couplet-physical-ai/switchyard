@@ -38,10 +38,13 @@ import type { Census } from './census.ts';
 import type { Factory } from './factory.ts';
 import { clusterOf, groupOf as insGroupOf, insights, insightsVer } from '../insights.ts';
 import { Hover } from './hover.ts';
-import { BOTS_LANE, floorGroups } from './groups.ts';
+import { BOTS_LANE, OTHER_LANE, floorGroups } from './groups.ts';
+import { stackH } from './floor.ts';
+import { LANE_V0, LANE_V1 } from './layout.ts';
+import { normTeam } from '../../server/floor.ts';
 import { drawCompare } from './compare.ts';
 import { drawLegend } from './legend.ts'; // fab-w1
-import { appHist, appHist7, engineSeries, healthSegs, machineEngines, wantAppHistory, wantEngineHistory } from './lenses.ts';
+import { appHist, appHist7, engineSeries, healthSegs, hostedRuns, machineEngines, wantAppHistory, wantEngineHistory } from './lenses.ts';
 import { classGlyph, clusterBody, clusterFacts, groupApps, groupFlow, groupForApps, groupForOrg, groupTrend, parkByCluster, ribbonW, trendRows } from './lenses.ts';
 import type { ClusterFacts, GroupFlow, ParkGroup, Parked } from './lenses.ts';
 import { heapUp, heapsOf } from './clusters.ts'; // fx-engine: the return conveyor's heaps (drawParked)
@@ -56,7 +59,7 @@ export type FactoryFx = {
 type Hit = Factory['hits'][number];
 type Pt = [number, number];
 
-export type LensKind = 'group' | 'org' | 'repo' | 'stack' | 'pallet' | 'pipeline' | 'bay' | 'vm' | 'queue' | 'scanner' | 'failure' | 'track' | 'app' | 'district' | 'fresh' | 'gate';
+export type LensKind = 'group' | 'org' | 'repo' | 'stack' | 'pallet' | 'pipeline' | 'bay' | 'vm' | 'queue' | 'scanner' | 'failure' | 'track' | 'app' | 'district' | 'fresh' | 'gate' | 'cell' | 'rail';
 export type Lens = { kind: LensKind; id: string; name: string; sub: string };
 
 /** The lit set of a lens. */
@@ -67,6 +70,11 @@ type Rel = {
   stackN: Int16Array; stackRed: Int16Array; palletN: Map<string, number>;
   groups: Set<number>; tracks: Set<number>; districts: Set<number>; fails: Set<string>;
   scanner: boolean; intake: boolean;
+  /** fx-lens: the lit repos' PR cells and rails are lit on the lanes (off: a lens whose story is
+   *  elsewhere, so the yard does not shout over it) */
+  yard: boolean;
+  /** fx-lens: lanes whose main-line cars the lens lights itself (the rail and gate lenses) */
+  laneSet: Set<string> | null;
   m: Metrics;
 };
 /** One lens's numbers (the story card; the compare card's rows). */
@@ -91,8 +99,10 @@ const TITLE = 15;
 
 const KIND_WORD: Record<LensKind, string> = {
   group: 'group', org: 'org', repo: 'repo', stack: 'PR stack', pallet: 'bot pallet', pipeline: 'run', bay: 'bay', vm: 'machine', queue: 'intake',
-  scanner: 'tests', failure: 'failure cluster', track: 'deploy track', app: 'app', district: 'team', fresh: 'since you looked', gate: 'merge gate',
+  scanner: 'tests', failure: 'failure cluster', track: 'deploy track', app: 'app', district: 'district', fresh: 'since you looked', gate: 'merge gate',
+  cell: 'PR cell', rail: 'main lines',
 };
+const PHASE_WORD = ['draft', 'checks', 'review', 'approved'];
 
 export class Lenses {
   stack: Lens[] = [];
@@ -184,7 +194,9 @@ export class Lenses {
     // one clock: act on it once, or Esc walks back two steps. A second press comes at a later
     // clock: every live frame advances it (app.ts draws), and the floor draws at least on its
     // 125 ms pulse.
-    const dup = k === this.lastKey && t === this.lastKeyT;
+    // fx-lens: in a browser the two handlers' clocks can differ by a frame: one press is one
+    // within 60 ms (no hand presses a key twice that fast; tests step the clock 300 ms between)
+    const dup = k === this.lastKey && Math.abs(t - this.lastKeyT) < 60;
     this.lastKey = k; this.lastKeyT = t;
     if (dup) { /* already handled */ } else if (k === 'Escape' || k === 'Backspace') {
       if (this.legend) this.legend = false;
@@ -236,7 +248,7 @@ export class Lenses {
     if (top && top.kind === l.kind && top.id === l.id) { this.pop(t); return h; }
     this.cmp = null; this.relB = null;
     this.push(l, t);
-    return h;
+    return { ...h, kind: l.kind, id: l.id }; // fx-lens: the press answers the lens it opened (a lane's cell, rail; a city district)
   }
 
   private pipeName(id: string): string {
@@ -247,6 +259,21 @@ export class Lenses {
   /** The lens a hit opens. */
   private lensFor(h: Hit): Lens | null {
     const f = this.f, w = f.world, c = f.census, P = f.plan;
+    // fx-lens: a lane's PR cell, its main-line rail and the city's districts are lenses of their
+    // own (floor.ts registers them as the group's dock / district: `part` tells them apart)
+    const pt = this.part(h);
+    if (pt === 'cell' || pt === 'rail') {
+      const lid = this.laneOf(h);
+      const short = floorGroups().lane(lid)?.short ?? h.label.replace(/ dock$| \d+$/, '');
+      if (lid && pt === 'cell') { const r = this.rowAt(h); return { kind: 'cell', id: `${lid}|${r}`, name: `${short} · ${PHASE_WORD[r]}`, sub: '' }; }
+      if (lid && lid !== BOTS_LANE) return { kind: 'rail', id: lid, name: `${short} main lines`, sub: '' };
+    }
+    if (pt === 'city') {
+      const team = h.label.replace(/ \d+$/, '');
+      if (c.districts.some((x) => x.team === team)) return { kind: 'district', id: team, name: team, sub: '' };
+    }
+    if (pt === 'post' || pt === 'row') { const at = h.id.indexOf('@'); const repo = h.id.slice(0, at); if (w.repos.has(repo)) return { kind: 'repo', id: repo, name: repoName(repo), sub: h.id.slice(at + 1) }; }
+    if (pt === 'deploy') return { kind: 'pipeline', id: h.id, name: h.label.slice(0, 40), sub: 'commit' };
     switch (h.kind) {
       case 'dock': case 'rail': {
         // fab-w3: a dock opens its GROUP (insights.groupOf: team:/org:); the bots siding stays an org
@@ -258,15 +285,16 @@ export class Lenses {
       case 'commit': {
         const at = h.id.indexOf('@');
         const repo = h.id.slice(0, at), sha = h.id.slice(at + 1);
+        // fx-lens: a car on a main line: red, its failure cluster; else its whole journey (the
+        // drawer); the floor's own cars live on the lanes (floor.ts), the census's on org rails
+        const red = (cm: { culprit: boolean; state: string } | undefined) => !!cm && (cm.culprit || cm.state === 'failure' || cm.state === 'error');
+        const dot = w.repos.get(repo)?.main?.recent?.find((d) => d.sha === sha);
         const car = c.rails.find((r) => r.org === w.orgOf(repo))?.cars.find((x) => x.repo === repo && x.sha === sha);
-        if (car) {
-          if (car.culprit || car.state === 'failure' || car.state === 'error') {
-            const p = failedRunOf(w, repo, sha);
-            if (p?.id) return { kind: 'failure', id: p.id, name: clusterOf(p.id)?.step || failingStep(p), sub: '' };
-          }
-          return { kind: 'repo', id: repo, name: repoName(repo), sub: sha };
+        if (red(car) || red(dot ? { culprit: !!dot.culprit, state: dot.state } : undefined)) {
+          const p = failedRunOf(w, repo, sha);
+          if (p?.id) return { kind: 'failure', id: p.id, name: clusterOf(p.id)?.step || failingStep(p), sub: '' };
         }
-        return { kind: 'pipeline', id: h.id, name: h.label.slice(0, 40) || h.id, sub: 'commit' };
+        return { kind: 'pipeline', id: h.id, name: `${repoName(repo)} · ${sha.slice(0, 7)}`, sub: 'commit' };
       }
       case 'pipeline': case 'failure': {
         const p = w.pipelines.get(h.id);
@@ -303,9 +331,59 @@ export class Lenses {
     }
   }
 
+  /** fx-lens: which floor object a hit is. floor.ts registers a lane's dock door, approach road,
+   *  PR cells, rail and (accordion) stripe all as its group's `dock` / `district`, and its signal
+   *  posts, cars and repo sub-rows as `commit`s; labels.ts names a city district as a `district`
+   *  whose id is the camera's target (`u,v,z`). Told apart by the hit's geometry: a box hit's
+   *  centre unprojects to its footprint's centre less 0.28 × its height in u (iso.ts). */
+  part(h: Hit): string {
+    const f = this.f, cam = f.cam;
+    if (h.kind === 'districtArea') return 'city';
+    if (h.kind === 'commit') {
+      if (h.label.startsWith('deploy ')) return 'deploy';
+      if (!f.floor.on) return 'car';
+      const cs = f.floor.carSpot(h.id);
+      if (cs && Math.abs(cam.x(cs[0], cs[1]) - (h.x + h.w / 2)) < 2 && Math.abs(cam.y(cs[0], cs[1], 8) - (h.y + h.h / 2)) < 2) return 'car';
+      return h.h === 12 && h.w <= 40 ? 'post' : 'row';
+    }
+    if (h.kind === 'district' && h.id.includes(',')) return 'city';
+    if ((h.kind !== 'dock' && h.kind !== 'district') || !f.floor.on) return h.kind;
+    const L = f.floor.lanesNow[this.laneIndexOf(h)];
+    if (L?.s.stripe) return 'stripe';
+    const [u] = cam.unproject(h.x + h.w / 2, h.y + h.h / 2);
+    return u < 0 ? 'road' : u < 100 ? 'dock' : u < f.plan.GATE_U - 4 ? 'cell' : 'rail';
+  }
+
+  /** The lane (index into floor.lanesNow) a lane hit belongs to: an org's or the bots' dock id, a
+   *  team's district name. */
+  private laneIndexOf(h: Hit): number {
+    const fl = this.f.floor;
+    if (h.kind === 'dock') return fl.laneIndex(h.id);
+    if (h.id === 'other teams') return fl.lanes.index(OTHER_LANE);
+    const slug = normTeam(h.id);
+    const l = floorGroups().lanes().find((x) => x.kind === 'team' && (x.id === `team:${slug}` || x.short === slug));
+    return l ? fl.lanes.index(l.id) : -1;
+  }
+  laneOf(h: Hit): string { return this.f.floor.lanes.ids[this.laneIndexOf(h)] ?? ''; }
+  /** A PR cell hit's phase row: the nearest cell centre (ROW_U) to its footprint. */
+  rowAt(h: Hit): number {
+    const cam = this.f.cam, [u] = cam.unproject(h.x + h.w / 2, h.y + h.h / 2);
+    const R = this.f.plan.ROW_U;
+    let best = 0;
+    for (let r = 1; r < R.length; r++) if (Math.abs(R[r] - (u + 6)) < Math.abs(R[best] - (u + 6))) best = r;
+    return best;
+  }
+
   /** Hover: a quick preview, ≤ 3 short lines (null: the floor's own facts). */
   preview(h: Hit): string[] | null {
     const f = this.f, w = f.world, c = f.census, now = f.tl.playhead;
+    // fx-lens: a lane's dock door (an org's or a team's): the lane's own numbers, not its district's
+    const pt = this.part(h);
+    if (pt === 'dock' && f.floor.on) {
+      const lid = this.laneOf(h), G = floorGroups(), s = G.stats(lid), L = G.lane(lid);
+      if (s && L) return [`${L.short} dock`, `${s.pushes1h} pushes/h \u00b7 ${s.repos} repos`, `${s.prsOpen} open PRs \u00b7 ${s.redMains} red mains${s.stale ? ` \u00b7 ${s.stale} stale` : ''}`, 'click: the group across the floor'];
+    }
+    if (pt === 'gate') return ['merge gate', `${c.flow.merges} merged/h`, 'click: what landed today, by lane'];
     switch (h.kind) {
       case 'dock': case 'rail': {
         const d = c.docks.find((x) => x.org === h.id), r = c.rails.find((x) => x.org === h.id);
@@ -327,15 +405,15 @@ export class Lenses {
         const g = c.groups[Number(h.id)];
         if (!g) return null;
         const q = g.hosted ? c.gha.length : c.rr.length;
-        return [g.name, `${g.running.length}/${g.slots} busy${g.cpu >= 0 ? ` · cpu ${Math.round(pct(g.cpu))}%` : ''}${g.mem >= 0 ? ` · mem ${Math.round(pct(g.mem))}%` : ''}`, `${q} queued · busy over time:`];
+        return [g.name, `${g.running.length}/${g.slots} busy${g.cpu >= 0 ? ` · cpu ${Math.round(pct(g.cpu))}%` : ''}${g.mem >= 0 ? ` · mem ${Math.round(pct(g.mem))}%` : ''}`, `${q} queued · its 24 h busy, below`, 'click: its wall, cpu and mem'];
       }
       case 'intake': return ['intake', `${c.waiting} queued${c.oldestWait > 0 ? ` · oldest ${ago(c.oldestWait)}` : ''}`, 'click: each wait'];
-      case 'gate': return ['merge gate', `${c.flow.merges} merged/h`, 'click: 24 h of merges'];
+      case 'gate': return ['merge gate', `${c.flow.merges} merged/h`, 'click: what landed today, by lane'];
       case 'scanner': case 'return': {
         const f1 = c.flow;
         const sm = f.coffee.smokeWords();
         const top = this.parkGroups[0];
-        return ['tests', `${f1.finished ? Math.round(((f1.finished - f1.failed) / f1.finished) * 100) : 100}% pass · ${f1.failed} failed/h`, sm ? `smoke: ${sm}` : top ? `worst: ${short2(top.step)} ×${top.n}` : 'runs and failures, 24 h:'];
+        return ['tests', `${f1.finished ? Math.round(((f1.finished - f1.failed) / f1.finished) * 100) : 100}% pass · ${f1.failed} failed/h`, sm ? `smoke: ${sm}` : top ? `worst: ${short2(top.step)} ×${top.n}` : 'runs and failures, 24 h'];
       }
       case 'failure': {
         const p = w.pipelines.get(h.id);
@@ -422,15 +500,20 @@ export class Lenses {
         st.note = r && isRed(r) ? `red ${ago(now - (r.main.since || now))}` : r ? 'green' : '';
         break;
       }
-      case 'stack': case 'pallet': {
-        const [row, b] = l.kind === 'stack' ? l.id.split(',').map(Number) : [-1, -1];
+      case 'stack': case 'pallet': case 'cell': {
+        // fx-lens: a lane's PR cell is its group's PRs in one phase, every age (the lane's cell)
+        const [row, b] = l.kind === 'stack' ? l.id.split(',').map(Number) : l.kind === 'cell' ? [Number(l.id.split('|')[1]), -1] : [-1, -1];
+        const lane = l.kind === 'cell' ? l.id.split('|')[0] : '', G = floorGroups();
         const counts = new Map<string, number>();
         let oldest: Pr | null = null, n = 0, stale = 0;
         const prs: [number, string][] = (st.prs = []);
+        const byRepo = new Map<string, number>();
+        if (l.kind === 'cell') rel.yard = false;
         for (const p of w.prs.values()) {
           const r = phaseRow(p);
           if (r < 0) continue;
           if (l.kind === 'stack') { if (isBot(p) || r !== row || ageBucket(now - p.created) !== b) continue; }
+          else if (l.kind === 'cell') { if (isBot(p) || r !== row || G.laneOfRepo(p.repo) !== lane) continue; }
           else if (!isBot(p) || botName(p.author) !== l.id) continue;
           R.add(p.repo);
           n++;
@@ -439,7 +522,10 @@ export class Lenses {
           counts.set(k, (counts.get(k) ?? 0) + 1);
           if (!oldest || p.created < oldest.created) oldest = p;
           if (prs.length < 400) prs.push([Math.max(0, now - p.created), BLOCKERS.find((x) => x[0] === k)?.[1] ?? '#8A8A8E']);
+          const rn = repoName(p.repo);
+          byRepo.set(rn, (byRepo.get(rn) ?? 0) + 1);
         }
+        st.bars2 = [...byRepo].sort((a2, b2) => b2[1] - a2[1]).slice(0, 4);
         st.n = n;
         st.blockers = BLOCKERS.filter(([k]) => counts.get(k)).map(([k, col]) => [k, counts.get(k) ?? 0, col] as [string, number, string]);
         st.oldest = oldest ? { label: `${repoName(oldest.repo)} #${oldest.number}`, age: now - oldest.created } : null;
@@ -454,13 +540,19 @@ export class Lenses {
         const g = c.groups[gi];
         const engines = new Set<string>(g?.engines ?? []);
         if (p?.engine) engines.add(p.engine);
+        // fx-lens: the job lights its own repo (its dock, cells, car, app); the machine's last hour
+        // of occupants is the card's list (lighting all of them lit half the floor)
         let served = 0;
+        const occ = new Map<string, number>();
         for (const q of w.pipelines.values()) {
           if (!q.engine || !engines.has(q.engine)) continue;
           if ((q.started ?? 0) < now - HOUR) continue;
-          R.add(q.repo); served++;
+          served++;
+          occ.set(repoName(q.repo), (occ.get(repoName(q.repo)) ?? 0) + 1);
         }
         if (p) R.add(p.repo);
+        st.bars2 = [...occ].sort((a2, b2) => b2[1] - a2[1]).slice(0, 4);
+        rel.yard = false;
         st.pid = pid; st.gi = gi; st.n = served;
         st.steps = [];
         for (const wf of p?.workflows ?? []) for (const s of wf.steps ?? []) st.steps.push({ name: s.name, state: s.state, wf: wf.name });
@@ -475,9 +567,18 @@ export class Lenses {
         for (const id of g?.hosted ? c.gha : c.rr) { const p = w.pipelines.get(id); if (p) { R.add(p.repo); rel.pipes.add(id); } }
         rel.groups.add(gi);
         rel.intake = true;
+        rel.yard = false;
         break;
       }
       case 'queue': {
+        // fx-lens: the last 24 h of waits, the slowest tenth of each hour's starts (p90)
+        const waits: number[][] = Array.from({ length: 24 }, () => []);
+        for (const p of w.pipelines.values()) {
+          if (!p.started || p.started < now - 24 * HOUR || p.started > now) continue;
+          waits[23 - Math.min(23, Math.floor((now - p.started) / HOUR))].push(Math.max(0, p.started - p.created));
+        }
+        st.hours = waits.map((a) => { if (!a.length) return 0; a.sort((x, y) => x - y); return a[Math.min(a.length - 1, Math.floor(a.length * 0.9))]; });
+        rel.yard = false;
         st.items = [];
         for (const id of [...c.rr, ...c.gha]) {
           const p = w.pipelines.get(id);
@@ -504,6 +605,7 @@ export class Lenses {
         st.bars2 = [...repos].sort((a, b) => b[1] - a[1]).slice(0, 5);
         st.n = fin;
         rel.scanner = true;
+        rel.yard = false;
         break;
       }
       case 'failure': {
@@ -533,6 +635,10 @@ export class Lenses {
         }
         st.items.sort((a, b) => a.v - b.v);
         rel.tracks.add(i);
+        // fx-lens: how long its deploys take (finished ones, 24 h)
+        st.dpts = [];
+        for (const d of w.deploys.values()) if (viaIndex(d.via) === i && d.finished && d.started >= now - 24 * HOUR && d.started <= now && st.dpts.length < 600) st.dpts.push([d.started, Math.max(0, d.finished - d.started), d.state === 'failure']);
+        rel.yard = false;
         break;
       }
       case 'app': {
@@ -562,19 +668,56 @@ export class Lenses {
         let team = '', most = 0;
         for (const [gid, n] of votes) if (n > most) { team = gid; most = n; }
         if (team) for (const r of w.repos.values()) if (groupOf(w, r.id).id === team) R.add(r.id);
+        // fx-lens: the district's deploys today against the day before (its scorecard's ghost)
+        let prev = 0;
+        const apps = new Set(d?.apps ?? []);
+        for (const dp of w.deploys.values()) if (apps.has(dp.app) && dp.started < now - 24 * HOUR && dp.started >= now - 48 * HOUR) prev++;
+        st.p50 = prev;
+        let old = false;
+        for (const dp of w.deploys.values()) if (dp.started < now - 24 * HOUR) { old = true; break; }
+        st.ghost = old;
+        break;
+      }
+      case 'rail': {
+        // fx-lens: a lane's MAIN LINES: its repos' posts red first (how long red, the culprit), what
+        // landed on them per hour today, the red ones named
+        const G = floorGroups(), info = f.floor.data.last.lanes.get(l.id);
+        for (const r of w.repos.values()) if (G.laneOfRepo(r.id) === l.id) R.add(r.id);
+        const posts = info?.posts ?? [];
+        st.n = posts.filter((p) => p.st === 0).length; st.k = posts.length;
+        st.posts = posts.filter((p) => p.st === 0).slice(0, 6).map((p) => ({
+          repo: p.repo, name: p.name, since: p.since,
+          dots: (w.repos.get(p.repo)?.main?.recent ?? []).slice(-12).map((d) => ({ state: d.state, culprit: !!d.culprit, sha: d.sha, at: d.at })),
+        }));
+        const [bars, red] = landings(w, R, now);
+        st.hours = bars; st.hoursRed = red;
+        rel.yard = false;
+        rel.laneSet = new Set([l.id]);
         break;
       }
       case 'gate': {
-        // 24 h of merges: the merged repos lit, merges per hour as bars
-        const bars = new Array<number>(24).fill(0);
+        // fx-lens: 24 h of landings on the main lines (each lane's cars: what crossed the gate), per
+        // hour and per lane; open PR → merged times when the PRs carry them
+        const G = floorGroups(), per = new Map<string, [number, number]>();
+        for (const r of w.repos.values()) {
+          for (const d of r.main?.recent ?? []) {
+            if (d.at < now - 24 * HOUR || d.at > now) continue;
+            const lid = G.laneOfRepo(r.id), e = per.get(lid) ?? [0, 0];
+            e[0]++; if (d.state === 'failure' || d.state === 'error') e[1]++;
+            per.set(lid, e);
+          }
+        }
+        const all = new Set(w.repos.keys());
+        const [bars, red] = landings(w, all, now);
+        st.hours = bars; st.hoursRed = red;
+        st.lanes = [...per].map(([id, [n, rd]]) => [id, n, rd] as [string, number, number]);
+        rel.yard = false;
+        rel.laneSet = new Set(per.keys());
         const ttm: number[] = [];
         for (const p of w.prs.values()) {
           if (!p.merged_at || p.merged_at < now - 24 * HOUR || p.merged_at > now) continue;
-          R.add(p.repo);
-          bars[Math.min(23, Math.floor((now - p.merged_at) / HOUR))]++;
           ttm.push(p.merged_at - p.created);
         }
-        st.hours = bars.reverse();
         ttm.sort((a, b) => a - b);
         st.p50 = ttm.length ? ttm[ttm.length >> 1] : 0;
         st.p90 = ttm.length ? ttm[Math.min(ttm.length - 1, Math.floor(ttm.length * 0.9))] : 0;
@@ -854,18 +997,19 @@ export class Lenses {
   private route(g: Gfx, rel: Rel, tint: string): void {
     const f = this.f, c = f.census, P = f.plan, cam = f.cam, fx = this.fx;
     const k = this.topLens?.kind;
-    if (k !== 'org' && k !== 'district' && k !== 'repo' && k !== 'fresh' && k !== 'stack' && k !== 'pallet') return;
+    if (k !== 'org' && k !== 'district' && k !== 'repo' && k !== 'fresh' && k !== 'stack' && k !== 'pallet' && k !== 'cell' && k !== 'rail') return;
     const seg: Pt[][] = [];
+    const prOnly = k === 'stack' || k === 'pallet' || k === 'cell'; // fx-lens: a PR cell's way ends at the gate; a rail's starts there
     // fab-w3: from each lit dock (W2's group lanes, else the org docks) to the aisle; then, past
     // the gate, onto each lit org's rail
-    if (f.floor.on) for (const id of this.litLanes(rel)) { const lp = f.floor.lanePath(id); if (lp) seg.push(k === 'stack' || k === 'pallet' ? lp[0] : [...lp[0], ...lp[1]]); } // fab-w1: each lit lane's way
+    if (f.floor.on) for (const id of this.litLanes(rel)) { const lp = f.floor.lanePath(id); if (lp) seg.push(prOnly ? lp[0] : k === 'rail' ? lp[1] : [...lp[0], ...lp[1]]); } // fab-w1: each lit lane's way
     else for (const dk of this.litDocks(rel)) seg.push([[P.DOCK_U1, dk.v], [P.COLLECT_U, dk.v], [P.COLLECT_U, P.AISLE_V]]);
-    if (k !== 'stack' && k !== 'pallet' && !f.floor.on) for (const d of c.docks) {
+    if (!prOnly && !f.floor.on) for (const d of c.docks) {
       if (!rel.orgs.has(d.org)) continue;
       const ri = c.rails.findIndex((r) => r.org === d.org);
       if (ri >= 0) seg.push([[P.COLLECT_U, P.AISLE_V], [P.YARD_U1, P.AISLE_V], [P.GATE_U + 4, P.AISLE_V], [P.RAIL_U0, P.RAIL_V[ri]], [P.RAIL_U1, P.RAIL_V[ri]], [P.INTAKE_U0, 291]]);
     }
-    if (k !== 'stack' && k !== 'pallet') {
+    if (!prOnly && k !== 'rail') {
       for (const b of fx.bays) if (b.pid && rel.pipes.has(b.pid)) seg.push([[P.INTAKE_U1, 291], [P.DIST_U, 291], [P.DIST_U, b.v + b.dv / 2], [b.u, b.v + b.dv / 2]]);
       for (const di of rel.districts) {
         const d = fx.districtBox[di];
@@ -905,6 +1049,75 @@ export class Lenses {
     return lanes;
   }
 
+  /** fx-lens: where each repo's signal post stands on its lane's back curb (floor.ts `posts`: one
+   *  per active repo, red first, `pitch` apart) and its state and height. Cached per lane count. */
+  postSpots(): Map<string, [number, number, number, number]> {
+    const fl = this.f.floor, key = `${fl.data.ver}|${fl.lanes.ver}`;
+    if (key === this.postKey) return this.postAt;
+    this.postKey = key;
+    const P = this.f.plan, now = this.f.tl.playhead, out = new Map<string, [number, number, number, number]>();
+    for (const L of fl.lanesNow) {
+      const posts = fl.data.last.lanes.get(L.id)?.posts ?? [];
+      const span = P.RAIL_U1 - P.RAIL_U0 - 8, max = Math.floor(span / 3.6);
+      const list = posts.slice(0, max), pitch = Math.min(7, span / Math.max(1, list.length));
+      list.forEach((p, j) => out.set(p.repo, [P.RAIL_U0 + 4 + j * pitch, L.s.curb, p.st === 0 ? Math.min(14, 4 + 2.4 * Math.log2(1 + Math.max(0, now - p.since) / HOUR)) : p.st === 1 ? 4 : 1, p.st]));
+    }
+    this.postAt = out;
+    return out;
+  }
+  private postKey = '';
+  private postAt = new Map<string, [number, number, number, number]>();
+
+  /** fx-lens: the lit repos' posts over the veil: red ones as the floor draws them (a red cube on
+   *  a stem as tall as its time red), running amber, the rest a bright lamp. */
+  private litPosts(g: Gfx, rel: Rel): void {
+    const cam = this.f.cam, spots = this.postSpots();
+    const lamps: number[] = [];
+    g.begin_();
+    let stems = 0;
+    for (const r of rel.repos) {
+      const s = spots.get(r);
+      if (!s || s[3] > 1) { if (s && s[3] === 2) lamps.push(s[0], s[1]); continue; }
+      g.move(cam.x(s[0], s[1]), cam.y(s[0], s[1], 0)); g.line(cam.x(s[0], s[1]), cam.y(s[0], s[1], s[2])); stems++;
+    }
+    if (stems) g.stroke('#B07074', Math.max(1, g.hair * 1.5));
+    // the heads: a square at each stem's top, red (failing) or amber (running)
+    for (const st of [0, 1]) {
+      const d = Math.max(st === 0 ? 3 : 2.4, (st === 0 ? 3.4 : 2.6) * this.f.cam.s);
+      let any = false;
+      g.begin_();
+      for (const r of rel.repos) {
+        const s = spots.get(r);
+        if (!s || s[3] !== st) continue;
+        g.ctx.rect(cam.x(s[0], s[1]) - d / 2, cam.y(s[0], s[1], s[2]) - d, d, d);
+        any = true;
+      }
+      if (any) g.fill(st === 0 ? C.red : C.packet);
+    }
+    if (lamps.length) {
+      const r = Math.max(1.3, 1.4 * cam.s);
+      g.begin_();
+      for (let k = 0; k < lamps.length; k += 2) { const x = cam.x(lamps[k], lamps[k + 1]), y = cam.y(lamps[k], lamps[k + 1], 1); g.ctx.moveTo(x + r, y); g.ctx.arc(x, y, r, 0, TAU); }
+      g.ops += lamps.length; g.fill('#9CC3A6');
+    }
+  }
+
+  /** fx-lens: the cars of some lanes' main lines over the veil (floor.ts `drawCars`' places). */
+  private litCars(g: Gfx, lanes: Set<string>): void {
+    const fl = this.f.floor, P = this.f.plan;
+    for (const L of fl.lanesNow) {
+      if (!lanes.has(L.id) || L.s.stripe || L.kind === 'bots') continue;
+      const list = fl.data.last.lanes.get(L.id)?.cars ?? [];
+      const n = list.length, v = L.s.rail;
+      list.forEach((car, k) => {
+        const u = P.RAIL_U1 - 12 - (n - 1 - k) * 10;
+        if (u < P.RAIL_U0 + 4) return;
+        const run = car.state === 'running' || car.state === 'pending';
+        this.fx.car(g, u, v, car.culprit, !run && !car.culprit);
+      });
+    }
+  }
+
   /** A repo's dock v: its group lane's (W2) when on, else its org's dock. */
   private repoDockV(repo: string): number { return this.f.w2.on ? this.fx.dockV(repo) : this.fx.dockV(this.f.world.orgOf(repo)); }
 
@@ -920,7 +1133,9 @@ export class Lenses {
     // the PR yard (fab-w3, overseer note 2): in each stack, the lens's share of its open PRs as a
     // core as tall as that share of the stack, its outline heavier and its top fuller the more PRs
     // it holds, its red slice (CI failing) on the front; the count on top. The card's key says so.
-    if (f.floor.on) f.floor.lit(g, rel.repos, rel.cars, rel.palletN, tint, hw, (s, x, y, red) => this.num(g, s, x + ndx, y, red ? (side ? HUE_B : C.redText) : ncol)); // fab-w1: the relation on the lanes
+    if (f.floor.on && rel.yard) f.floor.lit(g, rel.repos, rel.cars, rel.palletN, tint, hw, (s, x, y, red) => this.num(g, s, x + ndx, y, red ? (side ? HUE_B : C.redText) : ncol)); // fab-w1: the relation on the lanes
+    if (f.floor.on && (rel.yard || rel.laneSet)) this.litPosts(g, rel); // fx-lens: the lit repos' signal posts (red first)
+    if (f.floor.on && rel.laneSet) this.litCars(g, rel.laneSet);
     let maxN = 1;
     for (let i = 0; i < 24; i++) if (rel.stackN[i] > maxN) maxN = rel.stackN[i];
     if (!f.floor.on) for (let r = 0; r < 4; r++) for (let b = 0; b < 6; b++) { // fab-w1
@@ -1033,7 +1248,9 @@ export class Lenses {
     if (!st) return;
     switch (l.kind) {
       case 'repo': return this.repoStory(g, l, st);
-      case 'stack': case 'pallet': return this.stackStory(g, l, st);
+      case 'stack': case 'pallet': case 'cell': return this.stackStory(g, l, st);
+      case 'rail': return this.railStory(g, l, st);
+      case 'district': return this.districtStory(g, l);
       case 'bay': return this.bayStory(g, st, t);
       case 'vm': return this.vmStory(g, st);
       case 'queue': return this.queueStory(g, st);
@@ -1042,7 +1259,7 @@ export class Lenses {
       case 'group': return this.groupStory(g, st, this.cmp && this.relB ? HUE_A : '', this.rel!);
       case 'track': return this.trackStory(g, l, st);
       case 'app': return this.appStory(g, l, st);
-      case 'gate': return this.gateStory(g);
+      case 'gate': return this.gateStory(g, st);
       case 'fresh': return this.freshStory(g, l);
       default: return;
     }
@@ -1089,8 +1306,20 @@ export class Lenses {
    *  their docks (the route) and wait for the merge gate ahead (dashed). */
   private stackStory(g: Gfx, l: Lens, st: Story): void {
     const f = this.f, P = f.plan, cam = f.cam, c = f.census;
-    let u = 0, v = 0, z = 0;
-    if (l.kind === 'stack') {
+    let u = 0, v = 0, z = 0, ahead: Pt[] | null = null;
+    if (l.kind === 'cell') {
+      // fx-lens: the lane's cell, lit whole (its PRs are the story), the way on to the gate along
+      // the lane's belt
+      const [lid, rs] = l.id.split('|'), r = Number(rs);
+      const L = f.floor.lanesNow[f.floor.laneIndex(lid)];
+      if (!L) return;
+      const n = f.floor.data.last.lanes.get(lid)?.cells[r]?.n ?? 0;
+      const u0 = P.ROW_U[r] - 25, v0 = L.s.cell0, du = 50, dv = Math.max(3, L.s.cell1 - L.s.cell0);
+      u = P.ROW_U[r]; v = v0 + dv / 2; z = stackH(n);
+      this.fx.box(g, u0 + 3, v0 + 1, du - 6, dv - 2, z, '#4A4A4E', '#343438', '#2A2A2E', LIT, Math.max(1, g.hair * 3));
+      this.num(g, String(st.n ?? n), cam.x(u, v), cam.y(u, v, z) - 6, C.ink);
+      ahead = [[u, v], [u, L.s.belt], [P.GATE_U - 2, L.s.belt]];
+    } else if (l.kind === 'stack') {
       const [r, b] = l.id.split(',').map(Number);
       u = P.ROW_U[r]; v = P.AGE_V[b] + P.STACK_DV / 2; z = 4 + Math.min(16, Math.ceil((c.stacks[r]?.[b]?.n ?? 0) / 3)) * 2.6;
     } else {
@@ -1099,12 +1328,13 @@ export class Lenses {
       const pb = f.floor.on ? f.floor.palletBox(l.id) : null; // fab-w1: its pallet on the bots' siding
       if (pb) { u = pb[0] + pb[2] / 2; v = pb[1] + pb[3] / 2; z = pb[4]; }
     }
-    // ahead: the aisle to the merge gate
+    // ahead: the way to the merge gate (a lane's belt; the old floor's aisle)
+    if (!ahead) ahead = f.floor.on ? [[u, v], [P.GATE_U - 2, v]] : [[u, v], [u, P.AISLE_V], [P.GATE_U + 4, P.AISLE_V]];
     g.dash(true, 3, 4);
-    g.begin_(); g.move(cam.x(u, v), cam.y(u, v, 1)); g.line(cam.x(u, P.AISLE_V), cam.y(u, P.AISLE_V, 1)); g.line(cam.x(P.GATE_U + 4, P.AISLE_V), cam.y(P.GATE_U + 4, P.AISLE_V, 1));
-    g.stroke(withAlpha(C.ink3, 0.7), 1.2);
+    g.begin_(); ahead.forEach(([a, b2], i) => (i ? g.line(cam.x(a, b2), cam.y(a, b2, 1)) : g.move(cam.x(a, b2), cam.y(a, b2, 1))));
+    g.stroke(withAlpha(C.ink2, 0.8), 1.4);
     g.dash(false);
-    this.ring(g, u, v, 18, z, LIT);
+    if (l.kind !== 'cell') this.ring(g, u, v, 18, z, LIT);
     const bl = st.blockers ?? [];
     const total = bl.reduce((a, x) => a + x[1], 0);
     if (!total) return;
@@ -1197,7 +1427,7 @@ export class Lenses {
     });
     // fab-w3: the machine's back wall becomes its 24 h chart (FACTORY-SPEC §D): busy share as an
     // amber tide, cpu and mem as lines, a red tick under every stretch with every slot busy
-    const es = engineSeries(this.hosts, gr, machineEngines(f.world, gr));
+    const es = engineSeries(this.hosts, gr, machineEngines(f.world, gr), f.plant.hist.tide(gr.id), hostedRuns(f.world, gr, f.tl.playhead));
     if (!es || es.busy.length < 2) return;
     const fx = this.fx, vb = P.ENG_V0 + gi * P.ENG_STEP, z0 = P.ENG_H + 1, WH = 54, ua = P.ENG_U0 + 4, ub = P.ENG_U1 - 4;
     const n = es.busy.length, du = (ub - ua) / (n - 1);
@@ -1492,12 +1722,71 @@ export class Lenses {
     void cam;
   }
 
-  /** merge gate: the gate ringed (its 24 h of merges are the card's bars; the merged repos lit). */
-  private gateStory(g: Gfx): void {
-    const P = this.f.plan, cam = this.f.cam;
-    this.ring(g, P.GATE_U + 4, P.AISLE_V, 30, 40, LIT);
-    const x = cam.x(P.GATE_U + 4, P.AISLE_V), y = cam.y(P.GATE_U + 4, P.AISLE_V, 40);
-    g.begin_(); g.circle(x, y, 3); g.fill(LIT);
+  /** merge gate (fx-lens): the gate outlined across every lane, and at each lane's lintel what
+   *  crossed it today (its count; red: how many of them broke main); the cars lit on the rails.
+   *  The card: landings per hour, the PRs' open → merged time. */
+  private gateStory(g: Gfx, st: Story): void {
+    const f = this.f, P = f.plan, cam = f.cam, fx = this.fx;
+    if (!f.floor.on) { this.ring(g, P.GATE_U + 4, P.AISLE_V, 30, 40, LIT); return; }
+    g.begin_(); fx.quad(g, P.GATE_U - 2, LANE_V0, P.GATE_U + 8, LANE_V1, 24); g.stroke(LIT, Math.max(1.2, g.hair * 3));
+    g.begin_();
+    g.move(cam.x(P.GATE_U + 3, LANE_V0), cam.y(P.GATE_U + 3, LANE_V0, 24)); g.line(cam.x(P.GATE_U + 3, LANE_V0), cam.y(P.GATE_U + 3, LANE_V0, 0));
+    g.move(cam.x(P.GATE_U + 3, LANE_V1), cam.y(P.GATE_U + 3, LANE_V1, 24)); g.line(cam.x(P.GATE_U + 3, LANE_V1), cam.y(P.GATE_U + 3, LANE_V1, 0));
+    g.stroke(withAlpha(LIT, 0.7), 1.2);
+    const by = new Map((st.lanes ?? []).map((x) => [x[0], x]));
+    const G = floorGroups();
+    for (const L of f.floor.lanesNow) {
+      const e = by.get(L.id);
+      if (!e || L.s.stripe || L.v1 - L.v0 < 12) continue;
+      const v = (L.v0 + L.v1) / 2, x = cam.x(P.GATE_U + 3, v), y = cam.y(P.GATE_U + 3, v, 24) - 4;
+      // the lane's hue tick on the lintel, the count over it (red: those that broke main)
+      g.begin_(); g.move(cam.x(P.GATE_U + 3, L.v0 + 2), cam.y(P.GATE_U + 3, L.v0 + 2, 24.5)); g.line(cam.x(P.GATE_U + 3, L.v1 - 2), cam.y(P.GATE_U + 3, L.v1 - 2, 24.5)); g.stroke(G.hex(L.id), 3);
+      const s = String(e[1]), red = e[2] ? ` ${e[2]}` : '';
+      const wv = g.width(s, SMALL, true) + (red ? g.width(red, SMALL, true) : 0);
+      const at = fx.placeAt(Math.round(x - wv - 10), Math.round(y), wv, 14, 2, true);
+      if (!at) continue;
+      g.fillRect(at[0] - 3, at[1] - 11, wv + 6, 15, withAlpha(CARD, 0.88));
+      g.runs([[s, C.ink, true], [red, C.redText, true]], at[0], at[1], SMALL);
+    }
+  }
+
+  /** main lines (fx-lens): the lane's rail traced and its cars lit; each red post ringed red,
+   *  the longest-red named with how long. The card lists the red ones with their last 12 runs. */
+  private railStory(g: Gfx, l: Lens, st: Story): void {
+    const f = this.f, P = f.plan, cam = f.cam;
+    const L = f.floor.lanesNow[f.floor.laneIndex(l.id)];
+    if (!L) return;
+    const v = L.s.rail;
+    g.begin_();
+    g.move(cam.x(P.RAIL_U0, v - 3), cam.y(P.RAIL_U0, v - 3)); g.line(cam.x(P.RAIL_U1, v - 3), cam.y(P.RAIL_U1, v - 3));
+    g.move(cam.x(P.RAIL_U0, v + 3), cam.y(P.RAIL_U0, v + 3)); g.line(cam.x(P.RAIL_U1, v + 3), cam.y(P.RAIL_U1, v + 3));
+    g.stroke(withAlpha(floorGroups().hex(l.id), 0.9), Math.max(1.4, g.hair * 3));
+    const spots = this.postSpots(), now = f.tl.playhead;
+    g.begin_();
+    for (const p of st.posts ?? []) { const s = spots.get(p.repo); if (s) { const x = cam.x(s[0], s[1]), y = cam.y(s[0], s[1], s[2]); g.ctx.moveTo(x + 4, y - 1.5); g.ctx.ellipse(x, y - 1.5, 4, 2.8, 0, 0, TAU); } }
+    g.stroke(C.red, 1.2);
+    // the two longest red, named (the placer keeps them apart)
+    const longest = [...(st.posts ?? [])].sort((a, b) => a.since - b.since).slice(0, 2);
+    for (const p of longest) {
+      const s = spots.get(p.repo);
+      if (!s) continue;
+      const words = `${p.name} · ${ago(now - p.since)}`, wv = g.width(words, SMALL);
+      // below-right of its post, over the dimmed floor (the stage titles stand above the back lanes)
+      const at = this.fx.placeAt(Math.round(cam.x(s[0], s[1]) + 8), Math.round(cam.y(s[0], s[1], 0) + 16), wv, 14, 30, true);
+      if (!at) continue;
+      g.fillRect(at[0] - 3, at[1] - 11, wv + 6, 15, withAlpha(CARD, 0.9));
+      g.runs([[p.name, C.redText], [` · ${ago(now - p.since)}`, C.ink3]], at[0], at[1], SMALL);
+    }
+  }
+
+  /** district (fx-lens): the district outlined in the city, its apps' health lights lit (lit())
+   *  and its lanes' way to it (route). The card is its scorecard and its apps at a glance. */
+  private districtStory(g: Gfx, l: Lens): void {
+    const f = this.f, fx = this.fx;
+    const d = fx.districtBox.find((x) => x.team === l.id);
+    if (!d) return;
+    g.begin_(); fx.quad(g, d.u0 - 3, d.v0 - 3, d.u1 + 3, d.v1 + 3, 0.5); g.stroke(LIT, Math.max(1.2, g.hair * 3));
+    void f;
   }
 
   // ---- over everything: the breadcrumb, the story card, the compare card, the key -----------------
@@ -1544,7 +1833,7 @@ export class Lenses {
   private logAnchors(): void {
     const f = this.f;
     if (f.cam.zoom !== 1 || this.stack.length) return;
-    const key = `${f.cam.key}|${f.census.sig}|${this.parked.length}|${f.census.focal?.sha ?? ''}`;
+    const key = `${f.cam.key}|${f.census.sig}|${this.parked.length}|${f.census.focal?.sha ?? ''}|${f.floor.data.ver}`; // fx-lens: and the lanes' count (cells, posts)
     if (key === this.logged) return;
     this.logged = key;
     const out: Record<string, number[]> = {};
@@ -1555,16 +1844,30 @@ export class Lenses {
     const open = (h: Hit) => { const [mx, my] = mid(h); return f.hitAt(mx, my) === h; }; // not covered by something drawn later
     for (const h of this.fx.hits) {
       let k = h.kind;
+      // fx-lens: the lane parts (cell, rail, road, dock door, stripe, post, car, a city district)
+      const pt = this.part(h);
+      if (pt !== k && pt !== 'dock' && pt !== 'district') { const key = pt === 'city' ? 'cityDistrict' : pt === 'dock' ? 'laneDock' : pt; if (!out[key] && open(h)) out[key] = mid(h); if (pt !== 'car') continue; }
+      if (pt === 'dock' && f.floor.on && !out.laneDock && open(h)) out.laneDock = mid(h);
       if (k === 'pipeline' && this.fx.bays.some((b) => b.pid === h.id)) k = 'bay';
       if (k === 'commit' && culprits.has(h.id)) k = 'culprit';
       if (k === 'stack') { const n = Number(h.label.split(' ').pop()); if (n > best && open(h)) { best = n; out.stack = mid(h); } continue; }
       if (k === 'app' && !out.appBehind && (f.world.apps.get(h.id)?.behind ?? 0) > 0 && open(h)) out.appBehind = mid(h);
+      if (k === 'machine' && open(h)) out[`machine${h.id}`] = mid(h); // fx-lens: each machine's wall
       if (k === 'dock' || k === 'districtArea' || k === 'district' || k === 'track') { const re = new RegExp(`^${k}\\d+$`); const i = Object.keys(out).filter((x) => re.test(x)).length; if (i < 3 && open(h)) out[`${k}${i}`] = mid(h); continue; }
       if (!out[k] && open(h)) out[k] = mid(h);
     }
     // fab-w3: the parked clusters' first crates (cluster0: nearest the scanner), a flaky one, and
     // one whose repos have open PRs (its lens lights PR-yard cores)
     const cam = f.cam, V = f.plan.RETURN_V, w = f.world;
+    // fx-lens: the first lane's rail, on its front edge (clear of its cars' hits)
+    if (f.floor.on) {
+      for (const L of f.floor.lanesNow) {
+        if (L.s.stripe || L.kind === 'bots') continue;
+        const u = f.plan.RAIL_U0 + (f.plan.RAIL_U1 - f.plan.RAIL_U0) * 0.3, x = cam.x(u, L.s.rail + 4), y = cam.y(u, L.s.rail + 4, 0);
+        const h = f.hitAt(x, y);
+        if (h && this.part(h) === 'rail') { out.rail = [Math.round(x), Math.round(y)]; break; }
+      }
+    }
     const prRepos = new Set<string>();
     for (const p of w.prs.values()) if (p.phase !== 'merged' && p.phase !== 'closed' && p.phase !== 'deployed') prRepos.add(p.repo);
     this.parkGroups.slice(0, 6).forEach((pg, k) => { const x = this.parked.find((q) => q.k === k); if (x) out[`cluster${k}`] = [Math.round(cam.x(x.u, V)), Math.round(cam.y(x.u, V, 8))]; });
@@ -1634,7 +1937,7 @@ export class Lenses {
     const body = this.cardBody(g, l, st, rel, x + P, 0, W - P * 2, false);
     // fab-w3 (overseer note 2): what the lit cores in the PR yard are, when this lens lights some
     let yn = 0, yr = 0;
-    if (l.kind !== 'stack' && l.kind !== 'pallet') for (let i = 0; i < 24; i++) { yn += rel.stackN[i]; yr += rel.stackRed[i]; }
+    if (l.kind !== 'stack' && l.kind !== 'pallet' && rel.yard) for (let i = 0; i < 24; i++) { yn += rel.stackN[i]; yr += rel.stackRed[i]; } // fx-lens: only when the yard is lit
     const H = 46 + body + (yn ? 22 : 0) + 10;
     const y = Math.max(102, fh - 58 - 12 - H);
     g.fillRect(x, y, W, H, withAlpha(CARD, 0.95));
@@ -1680,17 +1983,78 @@ export class Lenses {
         h += this.flowCells(g, rel, x, y + h + 4, W, paint) + 4;
         break;
       }
-      case 'gate': {
-        const bars = st.hours ?? [];
-        const mx = Math.max(1, ...bars);
-        if (paint) {
-          const bw = W / 24;
-          bars.forEach((n, i) => { if (n) g.fillRect(x + i * bw, y + h + 30 - (n / mx) * 26, bw - 1, (n / mx) * 26, '#9A9AA0'); });
-          g.hline(x, x + W, y + h + 30.5, '#2A2A2C');
-          g.text('24 h', x, y + h + 44, C.ink3, SMALL); g.text('now', x + W, y + h + 44, C.ink3, SMALL, false, 'right');
+      case 'gate': case 'rail': {
+        // fx-lens: what landed on main per hour today (red: the runs that went red)
+        const bars = st.hours ?? [], red = st.hoursRed ?? [];
+        const tot = bars.reduce((a, b) => a + b, 0), totR = red.reduce((a, b) => a + b, 0);
+        if (l.kind === 'rail') line([[`${st.n ?? 0}`, (st.n ?? 0) ? C.redText : C.ink, true], [` red of ${st.k ?? 0} active · `, C.ink3], [`${tot}`, C.ink, true], [' landed today', C.ink3], [totR ? ` · ${totR} ran red` : '', C.redText]]);
+        else line([[`${tot}`, C.ink, true], [' landed on main today', C.ink3], [totR ? ` · ${totR} ran red` : '', C.redText]]);
+        h += this.hourBars(g, bars, red, x, y + h + 2, W, paint) + 2;
+        if (l.kind === 'gate') {
+          if (st.n) line([[`${st.n}`, C.ink, true], [' PRs merged · open → merged ', C.ink3], [`p50 ${ago(st.p50 ?? 0)}`, C.ink, true], [` · p90 ${ago(st.p90 ?? 0)}`, C.ink3]]);
+          // the lanes that landed most, in their hues
+          const top = [...(st.lanes ?? [])].sort((a, b) => b[1] - a[1]).slice(0, 4), G = floorGroups();
+          if (paint && top.length) {
+            let gx = x;
+            for (const [id, n, rd] of top) {
+              const name = `${G.lane(id)?.short ?? id} ${n}`, ww = g.width(name, SMALL) + 16;
+              if (gx + ww > x + W) break;
+              g.fillRect(gx, y + h + 7, 9, 9, G.hex(id));
+              g.text(name, gx + 13, y + h + 16, C.ink2, SMALL);
+              gx += ww + 4;
+            }
+          }
+          if (top.length) h += 18;
+          break;
         }
-        h += 48;
-        line([[`${st.n ?? 0}`, C.ink, true], [' merged in 24 h · open → merged ', C.ink3], [`p50 ${ago(st.p50 ?? 0)}`, C.ink, true], [` · p90 ${ago(st.p90 ?? 0)}`, C.ink3]]);
+        // a rail: its red repos, longest first, each with its last 12 runs of main
+        const now2 = f.tl.playhead;
+        for (const p of [...(st.posts ?? [])].sort((a, b) => a.since - b.since).slice(0, 5)) {
+          if (paint) {
+            p.dots.forEach((d, i) => {
+              const bad = d.state === 'failure' || d.state === 'error', run = d.state === 'running' || d.state === 'pending';
+              g.fillRect(x + i * 7, y + h + 6, 5, 9, bad ? C.red : run ? C.packet : '#5A6E5F');
+              if (d.culprit) g.fillRect(x + i * 7, y + h + 16, 5, 1.5, C.redText);
+            });
+            g.runs([[g.fit(p.name, SMALL, W - 150), C.redText], [`  ${ago(now2 - p.since)}`, C.ink3]], x + 90, y + h + 15, SMALL, W - 90);
+          }
+          h += 18;
+        }
+        if (!(st.posts ?? []).length) line([['every main line here is green', C.greenInk]]);
+        break;
+      }
+      case 'district': {
+        // fx-lens: the district's scorecard (ghost: the day before, when the world holds it) and its
+        // apps at a glance, one tile each in its health (amber notch: behind main)
+        const ids = [...rel.apps];
+        let behind = 0;
+        for (const id of ids) if ((w.apps.get(id)?.behind ?? 0) > 0) behind++;
+        const rows: [string, number, number, string][] = [
+          ['up', m.up, m.apps, '#6FA27C'],
+          ['deploys 24 h', m.deploys24, st.ghost ? st.p50 ?? 0 : NaN, '#9A9AA0'],
+          ['behind main', behind, m.apps, C.packet],
+          ['red mains', m.red, m.repos, C.red],
+        ];
+        for (const [word, v, gh, col] of rows) {
+          if (paint) {
+            const bx = x + 96, bw = W - 96 - 44, mx = Math.max(1, v, Number.isFinite(gh) ? gh : 0);
+            g.text(word, x, y + h + 13, C.ink3, SMALL);
+            g.fillRect(bx, y + h + 5, Math.max(v ? 2 : 0, (v / mx) * bw), 8, col);
+            if (Number.isFinite(gh) && gh > 0) { g.dash(true, 2, 2); g.begin_(); g.rect(bx + 0.5, y + h + 4.5, (gh / mx) * bw, 9); g.stroke('#6A6A6E', 1); g.dash(false); }
+            g.text(Number.isFinite(gh) && word !== 'deploys 24 h' ? `${v}/${gh}` : String(v), x + W, y + h + 13, v && col === C.red ? C.redText : C.ink2, SMALL, false, 'right');
+          }
+          h += 17;
+        }
+        h += 4;
+        const order = ids.map((id) => w.apps.get(id)).sort((a, b) => hRank(a?.health) - hRank(b?.health) || (b?.behind ?? 0) - (a?.behind ?? 0));
+        const per = Math.floor(W / 12), rowsN = Math.min(4, Math.ceil(order.length / per));
+        if (paint) order.slice(0, per * rowsN).forEach((a, i) => {
+          const tx = x + (i % per) * 12, ty = y + h + 2 + Math.floor(i / per) * 12;
+          g.fillRect(tx, ty, 10, 10, healthCol(a?.health));
+          if ((a?.behind ?? 0) > 0) g.fillRect(tx, ty, 10, 2.5, C.packet);
+        });
+        h += rowsN * 12 + 4;
+        if (order.length > per * rowsN) line([[`+${order.length - per * rowsN} more`, C.ink3]]);
         break;
       }
       case 'group': {
@@ -1707,7 +2071,7 @@ export class Lenses {
         h += trendRows(g, st.trend ?? null, x, y + h, W, paint, hue);
         break;
       }
-      case 'org': case 'district': case 'repo': {
+      case 'org': case 'repo': {
         h += this.flowCells(g, rel, x, y + h + 6, W, paint) + 6;
         if (l.kind === 'repo') {
           const dots = st.dots ?? [];
@@ -1723,7 +2087,7 @@ export class Lenses {
         }
         break;
       }
-      case 'stack': case 'pallet': {
+      case 'stack': case 'pallet': case 'cell': {
         const bl = st.blockers ?? [];
         const total = bl.reduce((a, b) => a + b[1], 0) || 1;
         if (paint) { let bx = x; for (const [, n, col] of bl) { const ww = (n / total) * W; g.fillRect(bx, y + h + 8, Math.max(1, ww - 1), 10, col); bx += ww; } }
@@ -1738,27 +2102,48 @@ export class Lenses {
         }
         if (st.oldest) line([['oldest ', C.ink3], [st.oldest.label, C.ink2], [` · ${ago(st.oldest.age)}`, C.ink3], [st.note ? ` · ${st.note}` : '', C.ink3]]);
         h += this.ageLadder(g, l, st, x, y + h + 6, W, paint) + 6;
+        // fx-lens: a lane cell's PRs by repo (where they pile up)
+        if (l.kind === 'cell' && (st.bars2 ?? []).length) line([[(st.bars2 ?? []).map(([r, n]) => `${r} ${n}`).join(' · '), C.ink2]]);
         break;
       }
       case 'bay': {
         const p = w.pipelines.get(st.pid ?? '');
         const el = p?.started ? now - p.started : 0, exp = p?.expected_ms ?? 0;
         if (p) line([[`${repoName(p.repo)} #${p.number}`, C.ink], [`  ${ago(el)}`, exp && el > exp * 1.5 ? C.redText : C.amberText], [exp ? ` of ~${ago(exp)}` : '', C.ink3]]);
+        // fx-lens: the job's steps as chips (done / running / failed / to come), its progress
+        const steps = st.steps ?? [];
+        if (steps.length) {
+          if (paint) {
+            const cw = Math.max(4, Math.min(12, Math.floor(W / Math.min(steps.length, 40)) - 2));
+            steps.slice(0, 40).forEach((s, i) => {
+              const bad = s.state === 'failure' || s.state === 'error', on = s.state === 'running', ok = s.state === 'success' || s.state === 'skipped';
+              if (bad || on || ok) g.fillRect(x + i * (cw + 2), y + h + 5, cw, 10, bad ? C.red : on ? C.packet : s.state === 'skipped' ? '#2A2A2D' : '#5A6E5F');
+              else { g.begin_(); g.rect(x + i * (cw + 2) + 0.5, y + h + 5.5, cw - 1, 9); g.stroke('#5A5A5E', 1); }
+            });
+          }
+          h += 18;
+          const run = steps.find((s) => s.state === 'running');
+          line([[`${steps.filter((s) => s.state === 'success' || s.state === 'skipped').length}/${steps.length}`, C.ink, true], [' steps', C.ink3], [run ? ` · at ${run.name}` : '', C.amberText]]);
+        }
         h += this.sparkRow(g, 'busy', this.hosts.series(c.groups[st.gi ?? 0]?.id ?? '', 'busy'), x, y + h + 4, W, paint, C.packet, 100, '%') + 4;
-        line([[`${st.n ?? 0} ${st.n === 1 ? 'run' : 'runs'}`, C.ink, true], [` in the last hour · ${rel.repos.size} ${rel.repos.size === 1 ? 'repo' : 'repos'} lit`, C.ink3]]);
+        line([[`${st.n ?? 0} ${st.n === 1 ? 'run' : 'runs'}`, C.ink, true], [' on this machine in the last hour', C.ink3]]);
+        if ((st.bars2 ?? []).length) line([[(st.bars2 ?? []).map(([r, n]) => `${r} ${n}`).join(' · '), C.ink2]]);
         break;
       }
       case 'vm': {
         // fab-w3: the server's 24 h (GET /engine/{id}/history) when it answered, else since open
         const gr = c.groups[st.gi ?? 0];
-        const es = engineSeries(this.hosts, gr, machineEngines(w, gr));
+        const es = engineSeries(this.hosts, gr, machineEngines(w, gr), f.plant.hist.tide(gr?.id ?? ''), hostedRuns(w, gr, now));
         const nan = (a: (number | null)[] | undefined) => (a ?? []).map((v) => (v === null ? NaN : v));
         if (paint) g.text(es ? es.span : 'no samples yet', x + W, y + h + 12, C.ink3, SMALL, false, 'right');
         h += 16;
         h += this.sparkRow(g, 'busy', nan(es?.busy), x, y + h + 4, W, paint, C.packet, 100, '%');
-        h += this.sparkRow(g, 'cpu', nan(es?.cpu), x, y + h + 2, W, paint, C.ink, 100, '%');
-        h += this.sparkRow(g, 'mem', nan(es?.mem), x, y + h + 2, W, paint, C.ink2, 100, '%');
-        h += this.sparkRow(g, 'load', nan(es?.load), x, y + h + 2, W, paint, C.ink3, 0, '') + 4;
+        // fx-lens: only the rows the machine reports (hosted runners: busy alone; the wall's fold: no load)
+        const has = (a: (number | null)[] | undefined) => !!a && a.some((v) => v !== null);
+        if (!es || has(es.cpu)) h += this.sparkRow(g, 'cpu', nan(es?.cpu), x, y + h + 2, W, paint, C.ink, 100, '%');
+        if (!es || has(es.mem)) h += this.sparkRow(g, 'mem', nan(es?.mem), x, y + h + 2, W, paint, C.ink2, 100, '%');
+        if (!es || has(es.load)) h += this.sparkRow(g, 'load', nan(es?.load), x, y + h + 2, W, paint, C.ink3, 0, '');
+        h += 4;
         const full = es ? es.full.filter(Boolean).length : 0;
         if (es && full) line([[`${Math.round((full / es.full.length) * 100)}%`, C.redText, true], [` of ${es.span} with every slot busy`, C.ink3]]);
         const top3 = (es?.repos ?? []).slice().sort((a, b) => b.runs - a.runs).slice(0, 3);
@@ -1779,6 +2164,12 @@ export class Lenses {
           h += 16;
         }
         if (!items.length) line([['nothing waits', C.ink3]]);
+        // fx-lens: the slowest tenth of each hour's waits, 24 h
+        const wh = st.hours ?? [];
+        if (wh.some((v) => v > 0)) {
+          line([['waits today ', C.ink3], ['p90 per hour', C.ink2], [` · worst ${ago(Math.max(...wh))}`, C.ink3]]);
+          h += this.hourBars(g, wh, [], x, y + h + 2, W, paint, withAlpha(C.packet, 0.75)) + 2;
+        }
         break;
       }
       case 'scanner': {
@@ -1811,6 +2202,28 @@ export class Lenses {
         line([[`${items.length}`, C.ink, true], [' deploys in 24 h · ', C.ink3], [`${ok} ok`, C.greenInk], [bad ? ` · ${bad} failed` : '', C.redText], [` · ${rel.apps.size} apps`, C.ink3]]);
         if (paint) this.ticks(g, items, x, y + h + 4, W, now);
         h += 34;
+        // fx-lens: how long each deploy took, by when it started (a dot each on 24 h, log time up;
+        // red failed). Deploys that report no duration are left out.
+        const ds = (st.dpts ?? []).filter((d) => d[1] >= 1000);
+        if (ds.length >= 2) {
+          const sorted = ds.map((d) => d[1]).sort((a, b) => a - b);
+          const p50v = sorted[sorted.length >> 1], p90v = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.9))];
+          const lo = sorted[0], hi = Math.max(lo * 4, sorted[sorted.length - 1]);
+          const ly = (d: number) => Math.log(Math.max(d, lo) / lo) / Math.log(hi / lo);
+          line([['each deploy\'s time \u00b7 ', C.ink3], [`p50 ${ago(p50v)}`, C.ink, true], [` \u00b7 p90 ${ago(p90v)}`, C.ink2]]);
+          if (paint) {
+            const H = 28, y0 = y + h + 4, W2 = W - 40;
+            g.hline(x, x + W2, y0 + H + 0.5, '#2A2A2C');
+            g.dash(true, 2, 3); g.hline(x, x + W2, Math.round(y0 + H - ly(p50v) * H) + 0.5, '#6A6A6E'); g.dash(false);
+            for (const [at, d, bad] of ds) {
+              const px = x + clamp(1 - (now - at) / (24 * HOUR), 0, 1) * W2, py = y0 + H - ly(d) * H;
+              g.fillRect(px - 1, py - 1, 2.5, 2.5, bad ? C.red : d > p90v ? C.amberText : '#9A9AA0');
+            }
+            g.text(ago(hi), x + W, y0 + 8, C.ink3, SMALL, false, 'right');
+            g.text(ago(lo), x + W, y0 + H + 1, C.ink3, SMALL, false, 'right');
+          }
+          h += 36;
+        }
         break;
       }
       case 'app': {
@@ -1938,6 +2351,21 @@ export class Lenses {
     }
   }
 
+  /** fx-lens: 24 hourly bars (oldest left), their red part on top of each, the axis named. */
+  private hourBars(g: Gfx, bars: number[], red: number[], x: number, y: number, W: number, paint: boolean, col = '#8A8A8E'): number {
+    if (!paint) return 38;
+    const mx = Math.max(1, ...bars), bw = W / 24, H = 22;
+    bars.forEach((n, i) => {
+      if (!n) return;
+      const hh = Math.max(1, (n / mx) * H), hr = red[i] ? Math.max(1.5, (red[i] / mx) * H) : 0;
+      if (hh > hr) g.fillRect(x + i * bw, y + H - hh + hr, bw - 1, hh - hr, col);
+      if (hr) g.fillRect(x + i * bw, y + H - hh, bw - 1, hr, C.red);
+    });
+    g.hline(x, x + W, y + H + 0.5, '#2A2A2C');
+    g.text('24 h ago', x, y + H + 14, C.ink3, SMALL); g.text('now', x + W, y + H + 14, C.ink3, SMALL, false, 'right');
+    return 38;
+  }
+
   /** Deploys on a 24 h axis: a tick each, green ok, red failed, amber in flight. */
   private ticks(g: Gfx, items: { v: number; state?: string }[], x: number, y: number, W: number, now: number): void {
     g.hline(x, x + W, y + 14, '#2A2A2C');
@@ -1998,12 +2426,32 @@ type Story = {
   gf?: GroupFlow; trend?: Trend | null;
   /** fab-w3: a PR stack's PRs, [age, blocker colour], for its age ladder. */
   prs?: [number, string][];
+  /** fx-lens: landings per hour that went red (gate, rail); a track's deploy durations; the gate's
+   *  landings per lane [lane, n, red]; a rail's red posts; the district's ghost holds a day before */
+  hoursRed?: number[]; dpts?: [number, number, boolean][]; lanes?: [string, number, number][];
+  posts?: { repo: string; name: string; since: number; dots: { state: string; culprit: boolean; sha: string; at: number }[] }[];
+  ghost?: boolean;
 };
+
+/** fx-lens: what landed on a set of repos' main lines per hour over 24 h (oldest first), and of it
+ *  what went red. O(repos × recent). */
+function landings(w: World, R: ReadonlySet<string>, now: number): [number[], number[]] {
+  const bars = new Array<number>(24).fill(0), red = new Array<number>(24).fill(0);
+  for (const id of R) {
+    for (const d of w.repos.get(id)?.main?.recent ?? []) {
+      if (d.at < now - 24 * HOUR || d.at > now) continue;
+      const k = 23 - Math.min(23, Math.floor((now - d.at) / HOUR));
+      bars[k]++;
+      if (d.state === 'failure' || d.state === 'error') red[k]++;
+    }
+  }
+  return [bars, red];
+}
 
 function newRel(): Rel {
   return {
     repos: new Set(), orgs: new Set(), apps: new Set(), pipes: new Set(), cars: new Set(), stackN: new Int16Array(24), stackRed: new Int16Array(24), palletN: new Map(),
-    groups: new Set(), tracks: new Set(), districts: new Set(), fails: new Set(), scanner: false, intake: false,
+    groups: new Set(), tracks: new Set(), districts: new Set(), fails: new Set(), scanner: false, intake: false, yard: true, laneSet: null,
     m: { repos: 0, prs: 0, merged24: 0, runs: 0, failed: 0, waits: [], red: 0, apps: 0, up: 0, down: 0, deploys24: 0, building: 0, queued: 0, pushes: 0 },
   };
 }
@@ -2064,6 +2512,8 @@ export function short2(step: string): string {
 }
 export function pct(v: number): number { return v <= 1 ? v * 100 : v; }
 function p50(a: number[]): number { if (!a.length) return 0; const s = a.slice().sort((x, y) => x - y); return s[s.length >> 1]; }
+/** fx-lens: worst health first (a district's tiles). */
+function hRank(h: string | undefined): number { return h === 'down' ? 0 : h === 'degraded' ? 1 : h === 'unknown' || !h ? 2 : 3; }
 export function healthCol(h: string | undefined): string { return h === 'down' ? C.red : h === 'degraded' ? C.packet : h === 'up' ? '#6FA27C' : C.ink4; }
 export function ago(ms: number): string {
   if (!(ms > 0)) return '0s';
@@ -2094,8 +2544,8 @@ export function glyph(g: Gfx, k: LensKind, x: number, y: number, col: string): v
   switch (k) {
     case 'group': g.begin_(); g.move(x - 6, y + 4); g.line(x - 1, y - 4); g.line(x + 6, y - 4); g.line(x + 1, y + 4); g.ctx.closePath(); g.fill(col); return;
     case 'org': g.begin_(); g.rect(x - 5, y - 4, 10, 8); g.stroke(col, 1); g.fillRect(x + 2, y - 2, 3, 4, col); return;
-    case 'repo': g.hline(x - 6, x + 6, y - 2, col, 1); g.hline(x - 6, x + 6, y + 2, col, 1); g.fillRect(x - 2, y - 4, 4, 4, col); return;
-    case 'stack': case 'pallet': for (let i = 0; i < 3; i++) g.fillRect(x - 5, y + 2 - i * 3.5, 10, 2.5, col); return;
+    case 'repo': case 'rail': g.hline(x - 6, x + 6, y - 2, col, 1); g.hline(x - 6, x + 6, y + 2, col, 1); g.fillRect(x - 2, y - 4, 4, 4, col); return;
+    case 'stack': case 'pallet': case 'cell': for (let i = 0; i < 3; i++) g.fillRect(x - 5, y + 2 - i * 3.5, 10, 2.5, col); return;
     case 'pipeline': cube(g, x, y - 1, 5, col, withAlpha(col, 0.7), withAlpha(col, 0.5)); return;
     case 'bay': g.begin_(); g.rect(x - 5, y - 5, 10, 10); g.stroke(col, 1); g.fillRect(x - 2, y - 2, 4, 4, col); return;
     case 'vm': g.begin_(); g.rect(x - 5, y - 5, 10, 10); g.stroke(col, 1); g.hline(x - 3, x + 3, y - 1.5, col, 1); g.hline(x - 3, x + 3, y + 1.5, col, 1); return;
