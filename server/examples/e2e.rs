@@ -146,6 +146,46 @@ async fn main() {
             m(&i, "trends"),
             c["counts"]
         );
+        // Per-app and per-engine history for the first of each.
+        let enc = |x: &str| {
+            x.bytes()
+                .map(|b| match b {
+                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => {
+                        (b as char).to_string()
+                    }
+                    _ => format!("%{b:02X}"),
+                })
+                .collect::<String>()
+        };
+        for (what, path) in [
+            (
+                "app",
+                s["apps"][0]["id"]
+                    .as_str()
+                    .map(|a| format!("/api/v1/app/{}", enc(a))),
+            ),
+            (
+                "engine",
+                s["engines"][0]["id"]
+                    .as_str()
+                    .map(|e| format!("/api/v1/engine/{}/history", enc(e))),
+            ),
+        ] {
+            let Some(path) = path else { continue };
+            let r = get(&path)
+                .await
+                .unwrap_or_else(|e| fail(format!("{what}: {e}")));
+            if !r.status().is_success() {
+                fail(format!("{path}: HTTP {}", r.status()));
+            }
+            let v: serde_json::Value = r.json().await.unwrap_or_default();
+            println!(
+                "{what:12} {path}  deploys {} health {} busy {}",
+                m(&v, "deploys"),
+                m(&v, "health"),
+                m(&v, "busy")
+            );
+        }
         if ungrouped > 0 || m(&i, "groups") == 0 || m(&i, "trends") == 0 || c["counts"].is_null() {
             fail(format!(
                 "factory floor incomplete ({ungrouped} repos without a group)"

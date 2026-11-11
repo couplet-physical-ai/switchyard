@@ -64,6 +64,8 @@ pub fn router(st: Arc<AppState>) -> Router {
         .route("/search", get(search))
         .route("/meta", get(meta))
         .route("/insights", get(insights))
+        .route("/app/{id}", get(app_history))
+        .route("/engine/{id}/history", get(engine_history))
         .route("/changes", get(changes))
         .route("/whoami", get(auth::whoami))
         .route("/tokens", get(auth::list_tokens))
@@ -782,6 +784,7 @@ fn bootstrap_ledger(hub: &Hub) -> u64 {
     };
     let base: Value = serde_json::from_slice(&h.base).unwrap_or(Value::Null);
     let mut w = WireState::from_snapshot(&base);
+    hub.ledger.seed_engines(&w, h.base_at);
     let mut last = h.base_seq;
     for f in &h.frames {
         let Ok(v) = serde_json::from_slice::<Value>(f) else {
@@ -815,6 +818,30 @@ async fn changes(State(st): State<Arc<AppState>>, Query(q): Query<ChangesQ>) -> 
     let until = q.until.unwrap_or(now).min(now);
     let v = st.hub.ledger.changes(since, until, &st.mirror.read());
     (StatusCode::OK, axum::Json(v)).into_response()
+}
+
+async fn app_history(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    let now = (st.clock)();
+    match st.hub.ledger.app(&id, &st.mirror.read(), now) {
+        Some(v) => (StatusCode::OK, axum::Json(v)).into_response(),
+        None => not_found_json("no such app"),
+    }
+}
+
+async fn engine_history(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    let now = (st.clock)();
+    match st.hub.ledger.engine_history(&id, &st.mirror.read(), now) {
+        Some(v) => (StatusCode::OK, axum::Json(v)).into_response(),
+        None => not_found_json("no such engine"),
+    }
+}
+
+fn not_found_json(msg: &str) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        axum::Json(json!({"error": "not_found", "message": msg})),
+    )
+        .into_response()
 }
 
 async fn insights(State(st): State<Arc<AppState>>) -> Response {

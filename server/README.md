@@ -68,8 +68,11 @@ Then `curl -s localhost:8080/api/v1/meta | jq` or open `ws://localhost:8080/api/
   A step that failed and passed on the same sha within 6 h is a `flake`. `trend`s compare
   the last hour with 24 h and 7 d per stage, for the fleet and each group, in 5-minute
   buckets, from the registers plus hourly rollups persisted in `<data-dir>/rollups.jsonl`.
-  `/api/v1/changes?since=` answers "since my last visit" from a 24 h ledger kept off the
-  stream (rebuilt from history at boot). All of it is computed from the registers like
+  `/api/v1/changes?since=` answers "since my last visit" (up to 7 days) from a ledger kept
+  off the stream and persisted to `<data-dir>/ledger.jsonl` (appended as things happen,
+  compacted at boot and daily); the same ledger serves `/api/v1/app/{id}` (last deploys,
+  health over 7 days) and `/api/v1/engine/{id}/history` (24 h of engine load by the minute,
+  rebuilt from history at boot). All of it is computed from the registers like
   every other entity, so the order-independence properties cover it.
 - **Restart settling** (`Hub::begin_settle` / `end_settle`, `Adapters::settled`): a new
   process starts empty and backfills the whole fleet (GitHub's inventory and PR pages take

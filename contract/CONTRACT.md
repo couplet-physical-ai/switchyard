@@ -25,7 +25,9 @@ except the two singleton snapshot fields, which are `null` before their first va
 | `GET /api/v1/search?q=&limit=` | ⌘K: `{q, results: Hit[]}` across repos / apps / PRs / commits / pipelines. |
 | `GET /` and any other non-`/api` path | the web client (`--static-dir` / `SWITCHYARD_WEB_DIR`): the file if it exists, else `shell.html` with 200 (SPA). Content-hashed files (`name-XXXXXXXX.ext`) are `Cache-Control: public, max-age=31536000, immutable`; everything else (`shell.html`, `index.html`, `app.js`, `app.plan`, `style.css`, …) `no-cache`. Unknown `/api/*` paths are a JSON 404, never the shell. |
 | `GET /api/v1/insights` | the Factory Floor in one call: `Insights` (groups, failure clusters, flakes, trends), same entities as the snapshot tables, sorted for display. |
-| `GET /api/v1/changes?since=<ms>[&until=<ms>]` | "since your last visit": `Changes` — what turned red, recovered, deployed, new failure clusters, counts; within the last 24 h. |
+| `GET /api/v1/changes?since=<ms>[&until=<ms>]` | "since your last visit": `Changes` — what turned red, recovered, deployed, new failure clusters, PRs, counts; up to 7 days back. |
+| `GET /api/v1/app/{id}` | `AppHistory`: the app now, its last 10 deploys, its health transitions over 7 days. 404 if unknown. |
+| `GET /api/v1/engine/{id}/history` | `EngineHistory`: one engine (agent, Dagger host, runner pool) over 24 h at one-minute resolution, columnar; the repos it served in the last hour. 404 if unknown. |
 | `GET /api/v1/meta` | `{protocol, version, git_sha, mode: "live"\|"demo", epoch, seq, snapshot:{seq,at,bytes,gzip_bytes}, clients, adapters: AdapterStatus[], orgs, counts, process: {rss_bytes, peak_rss_bytes, threads}, now}` |
 | `GET /api/healthz` | liveness `{ok:true}` (public). |
 | `GET /api/readyz` | `{ready, mode, seq, adapters: AdapterStatus[]}`; 200 when every enabled adapter has synced once, else 503. |
@@ -377,7 +379,7 @@ type Insights = { at: number, groups: Group[],
 type Changes = {                         // GET /api/v1/changes?since=<ms>[&until=<ms>]
   since: number, until: number,
   complete: boolean,                     // false when `since` predates what the server has seen (its
-                                         // retained history, ≤ 24 h); `since` is clamped to 24 h
+                                         // persisted log, ≤ 7 d); `since` is clamped to 7 d
   counts: { red: number, recovered: number, still_red: number, pipelines: number,
             failed: number, deploys: number, deploys_failed: number, clusters_new: number,
             flakes: number, prs_opened: number, prs_merged: number,
@@ -394,6 +396,33 @@ type Changes = {                         // GET /api/v1/changes?since=<ms>[&unti
   groups: { id: string, failed: number, red: number,
             prs: { opened: number, merged: number, stuck: number } }[]  // where it happened,
                                                                          // worst first (red, failed, stuck)
+}
+
+type AppHistory = {                      // GET /api/v1/app/{id}
+  id: string,
+  app: App | null,                       // as in the snapshot (null: gone from the catalog)
+  deploys: { sha: string, via: Deploy["via"] /* the lane */, state: Deploy["state"],
+             started: number, at: number /* finished, else started */,
+             finished?: number, duration_ms?: number, pipeline?: string }[],  // ≤ 10, newest first
+  health: { from: Health, to: Health, at: number }[],   // transitions, newest first, 7 d
+  health_ms: { up?: number, degraded?: number, down?: number, unknown?: number },
+                                         // time in each state from `since` to now
+  since: number, complete: boolean       // the 7 d window, or less while the log is younger
+}
+
+type EngineHistory = {                   // GET /api/v1/engine/{id}/history (id URL-encoded:
+                                         // "dagger%3AVM%20153")
+  id: string, kind: Engine["kind"], host?: string,
+  from: number, step_ms: 60000, n: 1440, // minute i covers [from + i·step_ms, + step_ms)
+  busy:  (number | null)[],              // n values: peak busy slots in the minute (a minute
+                                         // without a change holds the last value); null =
+                                         // offline / no data
+  slots: (number | null)[],
+  cpu:   (number | null)[],              // as Engine.cpu / mem / load, 1 decimal
+  mem:   (number | null)[],
+  load:  (number | null)[],
+  repos: { repo: string, runs: number }[]  // pipelines it (a host: its agents) ran in the
+                                           // last hour, most first
 }
 ```
 
@@ -423,7 +452,9 @@ cargo run --release -- --demo --listen 127.0.0.1:8080   # from server/, fixtures
   `Pipeline.flaky`; `Trend`s per stage for the fleet and each group (1 h / 24 h / 7 d with
   24 h sparks, from hourly rollups kept 8 d); `GET /api/v1/insights`, `GET /api/v1/changes?since=`.
   Measured on the live fleet: the new tables add 127 KB (5 %) to the snapshot (2.39 MB) and
-  49 KB/h (3.4 %) to the stream (1.45 MB/h).
+  49 KB/h (3.4 %) to the stream (1.45 MB/h). Then: `/changes` PR counts (opened / merged /
+  stuck per group) and a 7-day window (a persisted log), `GET /api/v1/app/{id}`,
+  `GET /api/v1/engine/{id}/history`.
 - **0.4**: smaller deltas and snapshot (measured on the live fleet: stream 7.0 → 1.9 MB/h,
   snapshot 3.1 → 2.5 MB, so 1 h of `/history` ≈ 4.4 MB). New ops `patch` (RFC 7386 merge patch) and `dot` (one main-line
   Dot); `Repo.main.recent` keeps 12 dots (was ≤ 40, 20 in practice); `Pr.checks` lists only
