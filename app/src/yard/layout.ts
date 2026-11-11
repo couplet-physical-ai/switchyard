@@ -281,36 +281,35 @@ export function layout(Wc: number, Hc: number, deviceScale: number, c: Census, l
   hits.push({ x: rx0 - 4, y: deployY - 16, w: rw, h: 40, kind: 'view', id: 'fleet', label: 'Deploys and apps' });
   hits.push({ x: rx0, y: appsY, w: appCols * appPitch, h: appsH, kind: 'app', id: '', label: '', grid: { cols: appCols, pitch: appPitch, start: 0, end: nApps, kind: 'app' } });
 
-  // Heatmap: every repo, one cell each, in org blocks (label on the left).
+  // Heatmap: every repo, one cell each, one band per org: the org's label in a fixed left
+  // gutter, vertically centred on its band; the cells start right of the gutter.
   const nRepos = c.repos;
   const heatW = rw;
-  const labelCol = 72;
+  const runs = c.orgRuns;
+  // In stress there are dozens of org runs: merge each copy of the fleet into one block.
+  const blocksSpec = mergeRuns(runs, c.stress);
+  let longest = 0;
+  for (const b of blocksSpec) longest = Math.max(longest, b.label.length);
+  const labelCol = clamp(Math.ceil(longest * 7.2) + 14, 48, 90);
   const cellTarget = clamp(Math.floor(Math.sqrt(((heatW - labelCol) * 120) / Math.max(1, nRepos))), 2, 8);
   const heatLod: Level = 3;
   const cell = cellTarget >= 6 ? 5 : cellTarget >= 4 ? 4 : cellTarget >= 3 ? 3 : 2;
   const pitch = cell + (cell >= 4 ? 2 : 1);
-  const hcols = Math.max(8, Math.floor((heatW - labelCol) / pitch));
-  const runs = c.orgRuns;
-  // In stress there are dozens of org runs: merge each copy of the fleet into one block.
-  const blocksSpec = mergeRuns(runs, c.stress);
-  // Blocks flow left to right (a label, then the cells), wrapping; a line is as tall as its
-  // tallest block and never shorter than a label.
+  const cols = Math.max(8, Math.floor((heatW - labelCol) / pitch));
+  // A band is as tall as its rows, never shorter than a label line; bands stack.
+  const BAND_MIN = 12, BAND_GAP = 2;
   const flow = (dry: boolean, y0: number) => {
     const out: HeatBlock[] = [];
-    let x = rx0, y = y0 + 16, lineH = 0;
+    let y = y0 + 16;
     for (const b of blocksSpec) {
-      const lw = Math.min(labelCol, Math.ceil(b.label.length * 7) + 8);
-      const maxCols = Math.max(4, Math.floor((heatW - lw) / pitch));
-      const cols = Math.min(maxCols, b.count);
       const rowsN = Math.max(1, Math.ceil(b.count / cols));
-      const bw = lw + cols * pitch + 10;
-      if (x > rx0 && x + bw > rx0 + heatW) { x = rx0; y += lineH + 3; lineH = 0; }
-      out.push({ org: b.org, label: b.label, x: x + lw, y, cols, rows: rowsN, start: b.start, end: b.start + b.count, labelY: y + cell + 1 });
-      if (!dry) hits.push({ x: x + lw, y, w: cols * pitch, h: rowsN * pitch, kind: 'repo', id: '', label: '', grid: { cols, pitch, start: b.start, end: b.start + b.count, kind: 'repo' } });
-      lineH = Math.max(lineH, rowsN * pitch, 12);
-      x += bw;
+      const bandH = Math.max(BAND_MIN, rowsN * pitch);
+      const cy = y + Math.round((bandH - rowsN * pitch) / 2);
+      out.push({ org: b.org, label: b.label, x: rx0 + labelCol, y: cy, cols, rows: rowsN, start: b.start, end: b.start + b.count, labelY: y + bandH / 2 });
+      if (!dry) hits.push({ x: rx0 + labelCol, y: cy, w: cols * pitch, h: rowsN * pitch, kind: 'repo', id: '', label: '', grid: { cols, pitch, start: b.start, end: b.start + b.count, kind: 'repo' } });
+      y += bandH + BAND_GAP;
     }
-    return { out, h: y + lineH - y0 };
+    return { out, h: y - BAND_GAP - y0 };
   };
   const heatH = Math.min(flow(true, 0).h + 2, Math.round(H * 0.42));
   const heatY = deployY - 18 - heatH;

@@ -4,7 +4,7 @@
 use Fleet, AppRow from "./shapes.contract"
 
 members App
-  resource fleetData = fleet(here == "fleet" ? clockMs : 0) as shape Fleet else empty(apps=[], engines=[], queues=[], stats=[], up=0, total=0, down=0, degraded=0, watcher="", watcherTripped=false, attention=[], behindN=0, never=0, hasLatency=false)
+  resource fleetData = fleet(here == "fleet" ? clockMs : 0) as shape Fleet else empty(apps=[], engines=[], queues=[], stats=[], up=0, total=0, down=0, degraded=0, watcher="", watcherTripped=false, attention=[], behindN=0, never=0, hasLatency=false, hosts=[], loadRows=0, loadH=0, deploysN="", deploysText="", deploysVia="", deployBars=[], deployMax=0, lanes=[], lanesTotal=0, lanesNote="", loadTick=0)
 
 fn healthColor(h: string): string = h == "up" ? "sy.green" : (h == "degraded" ? "sy.amber" : (h == "down" ? "sy.red" : "sy.ink4"))
 
@@ -51,7 +51,7 @@ component FleetView
           column gap=2 testId="apps-table"
             row gap=10 height=20 padding="0 8px" border-bottom="1px solid sy.rule" align-items="center"
               text "" width=7
-              text `ALL APPS · ${f.total}` width=200 font-size=10 letter-spacing="0.08em" color="sy.ink3"
+              text (f.attention.length > 0 ? `OTHER APPS · ${f.apps.length}` : `ALL APPS · ${f.total}`) width=200 font-size=10 letter-spacing="0.08em" color="sy.ink3"
               text "runtime · team" width=150 font-size=10 color="sy.ink3"
               text "live → main" width=150 font-size=10 color="sy.ink3"
               text "" width=80
@@ -65,17 +65,64 @@ component FleetView
         column padding="12px 16px 24px" gap=16
           column gap=6
             text "ENGINES AND RUNNERS" font-size=11 letter-spacing="0.08em" color="sy.ink3"
-            for e in f.engines key=e.id
-              column gap=3 padding="6px 0" border-bottom="1px solid sy.rule" testId=`engine-${e.id}`
-                row gap=8 align-items="baseline"
-                  text e.id font-size=12 font-weight=600 color="sy.ink" flex=1 min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
-                  text `${e.busy}/${e.slots} busy${e.cpu != "–" ? ` · cpu ${e.cpu}` : ""}${e.mem != "–" ? ` · mem ${e.mem}` : ""}` font-size=11 color=(e.busy >= e.slots and e.slots > 0 ? "sy.amber-text" : "sy.ink3") white-space="nowrap"
-                row gap=3 align-items="center"
-                  for i in range(e.slots) key=i
-                    column width=8 height=8 border-radius=4 border="1px solid sy.machine" background-color=(i < e.busy ? "sy.amber" : "transparent")
-                  text e.kind font-size=10 color="sy.ink3" margin-left=6
-                if e.running != ""
-                  text e.running font-size=11 color="sy.ink3" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+            for h in f.hosts key=h.id
+              column gap=2 padding="4px 0 6px" border-bottom="1px solid sy.rule" testId=`host-${h.id}`
+                row gap=6 align-items="baseline"
+                  text h.title font-size=12 font-weight=600 color=(h.offline ? "sy.ink3" : "sy.ink") white-space="nowrap"
+                  text `${h.sub} · ${h.offline ? "offline" : `${h.busy}/${h.slots} busy`}` font-size=11 color=(h.busy >= h.slots and h.slots > 0 ? "sy.amber-text" : "sy.ink3") white-space="nowrap"
+                if h.load != ""
+                  text h.load font-size=11 color="sy.ink3" white-space="nowrap"
+                for e in h.engines key=e.id
+                  column gap=1 padding="2px 0 2px 10px" testId=`engine-${e.id}`
+                    row gap=8 align-items="center" height=18
+                      text e.label width=150 flex-shrink=0 font-size=11 color=(e.online ? "sy.ink2" : "sy.ink3") white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+                      // The Yard's machine: a rounded box, a ring per slot, amber where a pipeline runs.
+                      row gap=3 align-items="center" padding="2px 4px" border="1px solid sy.machine" border-radius=4 flex-shrink=0
+                        for i in range(e.slots) key=i
+                          row width=9 height=9 border-radius=5 align-items="center" justify-content="center" border=(i < e.busy ? "1px solid sy.amber" : "1px solid sy.chip-edge")
+                            if i < e.busy
+                              column width=5 height=5 border-radius=3 background-color="sy.amber"
+                      text `${e.busy}/${e.slots}` font-size=11 color=(e.busy >= e.slots ? "sy.amber-text" : "sy.ink3") font-variant-numeric="tabular-nums" white-space="nowrap"
+                    if e.sub != ""
+                      text e.sub font-size=11 color="sy.ink3" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+          column gap=6 testId="fleet-load"
+            row gap=6 align-items="baseline"
+              text "LOAD" font-size=11 letter-spacing="0.08em" color="sy.ink3"
+              text "last 5 min · newest right" font-size=10 color="sy.ink3"
+            if f.loadRows > 0
+              column height=f.loadH position="relative"
+                canvas surface=fleetLoad(f.loadTick, f.loadRows) position="absolute" left=0 top=0 width="100%" height="100%" aria-label=`slots busy, cpu, memory and load of ${f.loadRows} engines over the last five minutes`
+            else
+              text "no engine reports cpu, mem or load" font-size=11 color="sy.ink3"
+          column gap=5 testId="fleet-deploys"
+            row gap=6 align-items="baseline"
+              text "DEPLOYS · 24 H" font-size=11 letter-spacing="0.08em" color="sy.ink3"
+              text f.deploysN font-size=13 font-weight=600 color="sy.ink" font-variant-numeric="tabular-nums"
+            text f.deploysText font-size=11 color="sy.ink2"
+            row gap=2 align-items="flex-end" height=40 border-bottom="1px solid sy.rule" aria-label=`deploys an hour over the last 24 hours, at most ${f.deployMax}`
+              for b in f.deployBars key=b.id
+                column flex=1 min-width=0 gap=0 justify-content="flex-end" height=40
+                  if b.bad > 0
+                    column height=b.bad background-color="sy.red"
+                  if b.ok > 0
+                    column height=b.ok background-color="sy.up"
+            row justify-content="space-between"
+              text "−24 h" font-size=10 color="sy.ink3"
+              text `${f.deployMax}/h max` font-size=10 color="sy.ink3"
+              text "now" font-size=10 color="sy.ink3"
+            text f.deploysVia font-size=11 color="sy.ink3" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+          column gap=5 testId="fleet-lanes"
+            row gap=6 align-items="baseline"
+              text "LANE MODES" font-size=11 letter-spacing="0.08em" color="sy.ink3"
+              text `${f.lanesTotal} repos${f.lanesNote != "" ? ` · ${f.lanesNote}` : ""}` font-size=11 color="sy.ink3"
+            row height=8 gap=1 border-radius=2 overflow="hidden"
+              for l in f.lanes key=l.id
+                column width=l.width min-width=2 height=8 background-color=l.color
+            row gap=12 flex-wrap="wrap"
+              for l in f.lanes key=l.id
+                row gap=5 align-items="center"
+                  column width=7 height=7 border-radius=2 background-color=l.color
+                  text `${l.label} ${l.n}` font-size=11 color="sy.ink2" white-space="nowrap"
           column gap=6
             text "QUEUES" font-size=11 letter-spacing="0.08em" color="sy.ink3"
             for q in f.queues key=q.id
