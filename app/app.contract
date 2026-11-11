@@ -12,10 +12,6 @@ font "Commit Mono"
   400 = "assets/fonts/CommitMono-400.ttf"
   700 = "assets/fonts/CommitMono-700.ttf"
 
-font "Inter"
-  400 = "assets/fonts/Inter-400.ttf"
-  600 = "assets/fonts/Inter-600.ttf"
-
 routes nav
   now "/"
   factory "/factory"

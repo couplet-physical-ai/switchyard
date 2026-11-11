@@ -206,10 +206,10 @@ function kindText(e: FlowEvent): string {
 
 function whereOf(j: FlowJob): string {
   const m = j.machine;
-  if (j.ci === 'gha') return 'GitHub Actions';
-  if (j.state === 'queued' || j.state === 'waiting') return j.queuePos ? `Roadrunner · queue #${j.queuePos}` : 'Roadrunner · queued';
-  if (!m) return 'Roadrunner';
-  return `Roadrunner · ${m.label}${m.slot ? ` · slot ${m.slot}` : ''}`;
+  if (j.ci === 'gha') return 'github actions';
+  if (j.state === 'queued' || j.state === 'waiting') return j.queuePos ? `roadrunner · queue #${j.queuePos}` : 'roadrunner · queued';
+  if (!m) return 'roadrunner';
+  return `roadrunner · ${m.label.toLowerCase()}${m.slot ? ` · slot ${m.slot}` : ''}`;
 }
 
 function jobLine(w: World, j: FlowJob, last: boolean, now: number): JobLine {
@@ -377,7 +377,7 @@ export function feedAnswer(d: NowDeps, [tick, repo, app, sha]: FeedArgs): NowFee
     const b = m.busy ?? 0, s = m.slots ?? 0;
     if (m.id !== 'm:gha') { busy += b; slots += s; }
     return {
-      id: m.id, label: m.label === 'GitHub runner' ? 'GitHub' : m.label, text: s ? `${b}/${s}` : `${b}`,
+      id: m.id, label: (m.label === 'GitHub runner' ? 'github actions' : m.label).toLowerCase(), text: s ? `${b}/${s}` : `${b}`,
       cells: s ? Array.from({ length: Math.min(s, 16) }, (_, i) => ({ id: `${m.id}#${i}`, on: i < b })) : [],
       busy: b, slots: s, offline: m.online === false, url: engineUrl(w, m),
     };

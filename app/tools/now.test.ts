@@ -78,10 +78,10 @@ eq(fit('short', 20), 'short', 'fit keeps what fits');
   eq(b.links.map((l) => [l.label, l.url]), [['Commit', `${GH}/o/a/commit/s1`]], 'event link: the commit on GitHub (Pipeline/Commit links)');
   eq(b.jobs.map((j) => [j.state, j.glyph, j.tone, j.last]), [['running', '●', 'run', false], ['queued', '○', 'wait', true]], 'jobs: running then queued; tree ends at the last');
   const r = b.jobs[0];
-  eq([r.where, r.step, r.timer, r.usual, r.hasPct, Math.round(r.pct * 100)], ['Roadrunner · VM 153 · slot 1', '2/2 test', '3:00', 'of ~6:00', true, 50], 'running job: where (CI · machine · slot), step, timer vs usual, progress');
+  eq([r.where, r.step, r.timer, r.usual, r.hasPct, Math.round(r.pct * 100)], ['roadrunner · vm 153 · slot 1', '2/2 test', '3:00', 'of ~6:00', true, 50], 'running job: where (CI · machine · slot), step, timer vs usual, progress');
   eq(r.links.map((l) => [l.label, l.url]), [['Roadrunner', `${CICD}/pipelines/1/9001?tab=steps&step=2`]], 'running job links to its running step in Roadrunner');
-  eq([b.jobs[1].where, b.jobs[1].step], ['GitHub Actions', 'waiting for a slot'], 'queued GHA job');
-  eq(f.machines.map((m) => [m.label, m.text, m.cells.filter((c) => c.on).length, m.url]), [['VM 153', '1/3', 1, `${CICD}/engine`], ['GitHub', '0', 0, '']], 'machines: busy/slots (its agents\' slots) cells, links from Engine.url; GitHub counts running runs');
+  eq([b.jobs[1].where, b.jobs[1].step], ['github actions', 'waiting for a slot'], 'queued GHA job');
+  eq(f.machines.map((m) => [m.label, m.text, m.cells.filter((c) => c.on).length, m.url]), [['vm 153', '1/3', 1, `${CICD}/engine`], ['github actions', '0', 0, '']], 'machines: busy/slots (its agents\' slots) cells, links from Engine.url; GitHub counts running runs');
   // detail: the job's steps, its links, the log asks
   const p = panelAnswer(deps(w), ['job:wp:o/a:9001', 1]);
   eq([p.ok, p.kind, p.logStep, p.logWorkflow, p.logLive, p.logFail], [true, 'job', 'test', 'ci', true, false], 'detail: the running step is the log to tail, live');
