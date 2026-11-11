@@ -626,7 +626,7 @@ export const answer: Answer = ((source: keyof Sources, args: unknown, store: Sto
 
 // ---- canvases ------------------------------------------------------------------------------
 /** Surface → its arity (Contract passes that many arguments); the tables' lifetime is 9. */
-export const surfaces: Record<string, number> = { factoryFloor: 3, factoryLive: 4, yardStatic: 2, yardInfo: 2, yardLive: 3, yardTop: 2, mainlinesTable: 9, prsTable: 9, fleetLoad: 2 };
+export const surfaces: Record<string, number> = { factoryFloor: 3, factoryLive: 4, factoryTop: 4 /* fab-w7 */, yardStatic: 2, yardInfo: 2, yardLive: 3, yardTop: 2, mainlinesTable: 9, prsTable: 9, fleetLoad: 2 };
 
 /** The route on top (`viewOnTop`). The yard stays mounted under every other view; its live
  *  layer animating there cost 3-4× the ops of the view on top. Covered, it is not drawn (the
@@ -637,7 +637,7 @@ export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
   if ((surface === 'yardLive' || surface === 'yardInfo' || surface === 'yardTop') && topView !== '' && topView !== 'yard') return true;
   // Covered, the floor's live layer sleeps; the 250 ms tick (a surface argument) wakes it when
   // it is on top again.
-  if (surface === 'factoryLive' && topView !== '' && topView !== 'factory') return false;
+  if ((surface === 'factoryLive' || surface === 'factoryTop' /* fab-w7 */) && topView !== '' && topView !== 'factory') return false;
   try {
     return drawSurface(surface, args, ctx, frame);
   } catch (e) {
@@ -665,6 +665,7 @@ function drawSurface(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
     factory.reduced = args[0] === 'reduced';
     return factory.drawLive(ctx, frame, clock, Number(args[2]) || 0);
   }
+  if (surface === 'factoryTop') return factory.drawTop(ctx, frame, clock); // fab-w7: the words and the chrome, as changes (src/factory/cache.ts)
   if (surface === 'yardStatic') {
     advance(frame.time, false);
     yard.drawStatic(ctx, frame, clock);

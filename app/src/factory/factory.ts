@@ -26,9 +26,10 @@ import { Gfx } from '../yard/gfx.ts';
 import type { Hud } from '../yard/hud.ts';
 import { C, clamp } from '../yard/theme.ts';
 import { BoxBatch } from './batch.ts';
+import { Retained } from './cache.ts';
 import { Census } from './census.ts';
 import { Drawer } from './drawer.ts';
-import { FacHud } from './hud.ts';
+import { FacHud, type FacHudInfo } from './hud.ts';
 import { Cam } from './iso.ts';
 import { buildLayers } from './layers.ts';
 import { PLAN } from './layout.ts';
@@ -42,6 +43,14 @@ import { GroupFloor } from './groupfloor.ts'; // fab-w2: group docks, stripes, t
 import type { FactoryFx } from './lens.ts'; // fab-lens
 
 export type { Plan } from './types.ts';
+
+/** The layers whose live drawing goes to the top canvas (the last in `order`: words over all). */
+const TOP_LAYERS = new Set(['groups', 'labels']);
+
+/** The host made this canvas a new bitmap (it mounted, or its size changed). */
+function freshBitmap(f: Frame): boolean {
+  return f.causes.length ? f.causes.includes('mount') || f.causes.includes('size') : f.cause === 'mount' || f.cause === 'size';
+}
 export { dur };
 
 const { RAIL_U1, RAIL_V, ENG_H } = PLAN;
@@ -52,6 +61,15 @@ export class Factory {
   readonly budget = new Budget();
   private gf = new Gfx();
   private gl = new Gfx();
+  /** The words and the chrome: drawn into a retained list (cache.ts) that the `factoryTop` canvas,
+   *  over the live one, is sent only the changes of. */
+  readonly ret = new Retained();
+  private gt = new Gfx();
+  /** When the top canvas last drew (it routes nothing until it has: an older Contract has none). */
+  private topAt = -1e9;
+  private topFresh = true;
+  /** The HUD's numbers, sampled four times a second (its box redraws then, not every frame). */
+  private hudSnap: { at: number; b: Budget; info: FacHudInfo; key: string } | null = null;
   // ---- the layers (layers.ts): every stage of the floor, and the registry the loop runs ----
   private readonly L = buildLayers(this);
   readonly floor = this.L.floor;
@@ -90,6 +108,35 @@ export class Factory {
   private qCostAt = new Float64Array(5).fill(-1e12);
   /** Asleep between the calm clock's wake-ups (app.contract's `facBeat` runs while this holds). */
   get calm(): boolean { return !this.awake; }
+  /** Where the live frames' canvas work goes, by phase (the bench and the HUD read it): per
+   *  phase, the frames it ran in and the ops, arcs and texts it recorded, summed since `profReset`. */
+  readonly profNames: string[] = [];
+  readonly prof: Float64Array[] = [];
+  private pAt = new Float64Array(4);
+  /** The bench's probe: the bytes the context has recorded so far (Exact's recorder), or null. */
+  static probe: ((ctx: Ctx2D) => number) | null = null;
+  private pi = 0;
+  profReset(): void { for (const a of this.prof) a.fill(0); }
+  /** Closes phase `name` (the work since the previous mark) of this frame. */
+  private pm(name: string, g: Gfx): void {
+    let a = this.prof[this.pi];
+    if (this.profNames[this.pi] !== name) {
+      const k = this.profNames.indexOf(name);
+      if (k < 0) { this.profNames.push(name); a = new Float64Array(5); this.prof.push(a); this.pi = this.prof.length - 1; } else { this.pi = k; a = this.prof[k]; }
+    }
+    const b = Factory.probe ? Factory.probe(g.ctx) : 0;
+    a[0]++; a[1] += g.ops - this.pAt[0]; a[2] += g.arcs - this.pAt[1]; a[3] += g.texts - this.pAt[2]; a[4] += b - this.pAt[3];
+    this.pAt[0] = g.ops; this.pAt[1] = g.arcs; this.pAt[2] = g.texts; this.pAt[3] = b;
+    this.pi++;
+  }
+  /** The phases by average ops a frame: `name ops/arcs/texts`, biggest first. */
+  profLine(): string {
+    const rows = this.profNames.map((n, i) => [n, this.prof[i]] as const).filter(([, a]) => a[0] > 0);
+    rows.sort((x, y) => y[1][1] / y[1][0] - x[1][1] / x[1][0]);
+    return rows.map(([n, a]) => `${n} ${(a[1] / a[0]).toFixed(0)}/${(a[2] / a[0]).toFixed(0)}/${(a[3] / a[0]).toFixed(1)}${a[4] ? `/${(a[4] / a[0] / 1024).toFixed(1)}K` : ''}`).join(' · ');
+  }
+  /** The last Factory made (the bench reaches the loop through it). */
+  static last: Factory | null = null;
   /** What the last live frame drew, for the HUD and the bench. */
   readonly stat = { crates: 0, stressCrates: 0, sprites: 0, trains: 0, cars: 0, bays: 0, labels: 0, hits: 0, floorDraws: 0, floorRate: 0, floorMs: 0, floorOps: 0, sec: 0, lod: [0, 0, 0, 0], slept: 0 };
   selected = '';
@@ -119,6 +166,7 @@ export class Factory {
     // The floor's full rung costs ~4.4 ms on Hermes at 1× (its words: ~80 texts at ~22 µs);
     // 5.2 ms (13 % under the 6 ms budget) lets it climb back there after a hitch.
     this.budget.upHeadroom = 5.2;
+    Factory.last = this;
   }
 
   get world(): World { return this.tl.world; }
@@ -253,6 +301,7 @@ export class Factory {
 
   drawFloor(ctx: Ctx2D, f: Frame, t: number): boolean {
     this.applyStress();
+    if (freshBitmap(f)) this.floorFresh = true;
     if (this.ensure(f, t)) return true;
     // Contract hands the layer its arguments again whenever the overview it reads from
     // answers (every 250 ms), equal or not: the floor repaints only when what it shows moved
@@ -287,12 +336,28 @@ export class Factory {
     st.floorOps = g.ops;
     st.floorMs = this.budget.estimate(g.ops, g.arcs, g.texts, 0);
     if (!this.heavy) this.heavy = 2;
-    return false;
+    return this.gpuClaim('floor');
+  }
+
+  /** A canvas is given to the macOS host's GPU module (Vello, Metal) only if the first draw with
+   *  anything in it after a fresh bitmap (a mount, a new size) asks for the next frame; otherwise
+   *  Core Graphics keeps it for the bitmap's life: the floor's repaints rasterise on the CPU, and
+   *  the live layer is recorded and replayed by Core Animation on the main thread every frame
+   *  (measured on the mini: 0 GPU replays, 56 recorded a second, work 24-48 ms a frame). So that
+   *  first draw always asks for one more (the next one draws nothing unless it has to). */
+  private floorFresh = true;
+  private liveFresh = true;
+  private gpuClaim(which: 'floor' | 'live'): boolean {
+    if (which === 'floor') { if (!this.floorFresh) return false; this.floorFresh = false; return true; }
+    if (!this.liveFresh) return false;
+    this.liveFresh = false;
+    return true;
   }
 
   // ---- the live layer ---------------------------------------------------------------------------
   drawLive(ctx: Ctx2D, f: Frame, t: number, wheel: number): boolean {
     this.applyStress();
+    if (freshBitmap(f)) this.liveFresh = true;
     // Only the display's own frames time the budget: a draw woken by an argument (the calm
     // clock, a pointer) lands between them, and a frame after a sleep is no interval.
     const own = f.causes.length ? f.causes.every((k) => k === 'frame') : f.cause === 'frame';
@@ -313,54 +378,80 @@ export class Factory {
     const g = this.gl, cam = this.cam, c = this.census;
     const now = this.tl.playhead;
     g.begin(ctx, f.scale);
-    if (f.cause === 'font') g.resetFonts();
+    if (f.cause === 'font') { g.resetFonts(); this.gt.resetFonts(); }
     ctx.resetTransform();
     ctx.clearRect(0, 0, f.width, f.height);
     this.hits = [];
+    // The words and the chrome go to the top canvas (its retained list) unless a lens is open:
+    // the lens's veil desaturates and darkens what is drawn under it on the same canvas
+    // (composite operators), so then everything draws here, in the order it always has.
+    const ret = this.ret;
+    const veiled = !!this.lens.topLens && this.lens.topLens.kind !== 'pipeline';
+    const toTop = t - this.topAt < 1000 && !veiled;
+    ret.begin(f.width, f.height);
+    ret.measurer = ctx;
+    const gt = toTop ? this.gt : g;
+    if (toTop) gt.begin(ret as unknown as Ctx2D, f.scale);
+    this.pAt.fill(0); this.pAt[3] = Factory.probe ? Factory.probe(ctx) : 0; this.pi = 0;
+    this.pm('clear', g);
     this.lens.under(g, t); // fab-lens: every floor object's hit, parked failures, fresh glows, smoke, beacons
+    this.pm('under', g);
     this.words.reset();
     const st = this.stat;
     const sec = Math.floor(t / 1000);
     if (sec !== st.sec) { st.floorRate = st.floorDraws; st.floorDraws = 0; st.sec = sec; }
-    if (c.skeleton) { this.words.idle(g); this.awake = false; return false; }
+    if (c.skeleton) { this.words.idle(gt); ret.end(); this.awake = false; return this.gpuClaim('live'); }
     const q = this.budget.quality;
     const fr = this.fr;
     fr.ctx = ctx; fr.f = f; fr.t = t; fr.now = now; fr.q = q; fr.detail = cam.zoom >= 1.6;
     // the layers, back to front (layers.ts): each one's hits, then each one's live drawing (the
     // haze, belts and cars; the intake, bays and gauges; the city's hits and trouble; the
-    // reactions; deploys on their tracks; crates in motion; the labels). One still moving keeps
-    // the frames coming.
+    // reactions; deploys on their tracks; crates in motion; the groups' stripes and names, the
+    // labels: these last two on the top canvas). One still moving keeps the frames coming.
     for (const L of this.order) L.hits?.(fr);
     let moving = false;
-    for (const L of this.order) if (L.live?.(g, fr)) moving = true;
+    for (const L of this.order) {
+      const top = toTop && TOP_LAYERS.has(L.name);
+      fr.ctx = top ? gt.ctx : ctx;
+      if (L.live?.(top ? gt : g, fr)) moving = true;
+      this.pm(L.name, g);
+    }
+    fr.ctx = ctx;
     // over the layers: the lens on top, the selection's journey, failures named as they ride home
     const selP = this.selPipeline();
     this.lens.draw(g, ctx, f, t); // fab-lens: the lens on top dims the rest and tells its story
-    if (this.selected) this.drawer.journey(g, ctx, f, selP, t);
-    this.crates.tags(g, t, q);
+    if (this.selected) this.drawer.journey(gt, gt.ctx, f, selP, t);
+    this.crates.tags(gt, t, q);
+    this.pm('lens', g);
     st.labels = this.labels.length;
     // the drawer, the hover card, the time strip, the camera controls
-    if (this.selected) this.drawer.draw(g, f, selP, now);
-    if (this.lens.legacyKey && !this.selected && this.cam.zoom < 1.2) this.words.legend(g, f); // fab-lens: the key is on demand (?)
-    if (this.hoverId && !this.drag) this.drawer.hover(g, f);
-    this.strip.draw(g, f, now);
-    this.strip.controls(g, f);
+    if (this.selected) this.drawer.draw(gt, f, selP, now);
+    if (this.lens.legacyKey && !this.selected && this.cam.zoom < 1.2) this.words.legend(gt, f); // fab-lens: the key is on demand (?)
+    if (this.hoverId && !this.drag) this.drawer.hover(gt, f);
+    this.pm('drawer', g);
+    this.strip.draw(gt, f, now);
+    this.strip.controls(gt, f);
+    this.pm('strip', g);
     this.logAnchors();
-    this.lens.top(g, f, t); // fab-lens: breadcrumb, story/compare card, the coffee glance, the key
+    this.lens.top(gt, f, t); // fab-lens: breadcrumb, story/compare card, the coffee glance, the key
+    this.pm('top', g);
     this.lastT = t;
     st.hits = this.hits.length;
-    // the frame's cost (the cost model, budget.ts) and the ladder; the HUD draws last and
-    // counts itself (it is the developer's, so it is outside the factory's own budget)
-    const est = this.budget.estimate(g.ops, g.arcs, g.texts, this.crates.computed + st.crates) + (heavy === 2 && camMoving ? st.floorMs : 0);
+    // the frame's cost (the cost model, budget.ts) and the ladder: what this canvas recorded and
+    // what the top canvas was last sent; the HUD draws last and counts itself (it is the
+    // developer's, so it is outside the factory's own budget)
+    const tl = ret.last;
+    const est = this.budget.estimate(g.ops + tl.ops, g.arcs, g.texts + tl.texts, this.crates.computed + st.crates) + (heavy === 2 && camMoving ? st.floorMs : 0);
     const allCrates = st.crates + st.stressCrates;
     const per = this.budget.host === 'hermes' ? 0.026 : 0.006;
     // a step up is predicted from what that rung cost when last drawn (30 s at most ago), else
     // from this frame: trains undone cost every crate again, other rungs ~15 % more
     this.qCost[q] = this.qCostAt[q] > t - 30_000 ? this.qCost[q] * 0.8 + est * 0.2 : est;
     this.qCostAt[q] = t;
-    this.budget.record(est, g.ops, g.texts, interval, (qq: Quality) => (this.qCostAt[qq] > t - 30_000 ? this.qCost[qq] : qq < 3 && q >= 3 ? est + Math.max(0, allCrates - st.sprites) * per : est * 1.15));
+    this.budget.record(est, g.ops + tl.ops, g.texts + tl.texts, interval, (qq: Quality) => (this.qCostAt[qq] > t - 30_000 ? this.qCost[qq] : qq < 3 && q >= 3 ? est + Math.max(0, allCrates - st.sprites) * per : est * 1.15));
     const hudOn = !!this.hud?.on;
-    if (hudOn) this.drawHud(g, f);
+    if (hudOn) this.drawHud(gt, f, t);
+    ret.end();
     // Sleep when nothing moves (a game's idle frame): the canvas keeps its last picture and the
     // 250 ms tick (a surface argument) redraws it, enough for the slow progress bars. The HUD
     // and stress mode keep frames coming; so do flights, drags, hovers and replays.
@@ -371,7 +462,25 @@ export class Factory {
       || this.coffee.busy(t); // fab-w4: the coffee check's first 10 s draw every frame
     if (!awake) st.slept++;
     this.awake = awake;
-    return awake;
+    return this.gpuClaim('live') || awake;
+  }
+
+  // ---- the top canvas ---------------------------------------------------------------------------
+  /** The `factoryTop` canvas, over the live one (pointer-events none): the words and the chrome
+   *  the live frame recorded into `ret`, sent as changes only (cache.ts). It asks for frames while
+   *  the live layer does, and once more after any argument: a draw woken with the live one may
+   *  run before it, and the next frame flushes what it records. */
+  drawTop(ctx: Ctx2D, f: Frame, t: number): boolean {
+    if (freshBitmap(f) || this.topAt < 0) { this.ret.invalidate(); this.topFresh = true; }
+    const was = this.topAt;
+    this.topAt = t;
+    // routing starts with the next live frame; until then the live canvas still draws the words
+    if (t - was >= 1000) this.ret.invalidate();
+    this.ret.flush(ctx, f.width, f.height, f.scale);
+    const claim = this.topFresh;
+    this.topFresh = false;
+    const args = f.causes.length ? f.causes.some((k) => k !== 'frame') : f.cause !== 'frame';
+    return claim || args || this.awake || this.ret.pending;
   }
 
   /** For drivers and tests, once per camera at the fit: a busy bay's and the first rail's
@@ -391,15 +500,26 @@ export class Factory {
   }
 
   /** The developer HUD (⌘⇧D) over the floor: top right, left of an open drawer. */
-  private drawHud(g: Gfx, f: Frame): void {
-    const st = this.stat;
+  private drawHud(g: Gfx, f: Frame, t: number): void {
+    const st = this.stat, b = this.budget;
     const x = f.width - (this.selected ? 372 : 0) - 344 - 12, y = 44;
     const lodName = this.cam.zoom >= 2.6 ? 'apps' : this.cam.zoom >= 1.6 ? 'org districts' : 'fleet';
-    const r = this.fhud.draw(g, x, y, this.budget, {
-      stress: this.stress.on, lod: lodName, hist: st.lod, crates: st.crates, stressCrates: st.stressCrates, sprites: st.sprites, trains: st.trains,
-      cars: st.cars, bays: st.bays, labels: st.labels, hits: st.hits, floorRate: st.floorRate, floorMs: st.floorMs, floorOps: st.floorOps, slept: st.slept,
-      scale: f.scale, W: f.width, H: f.height,
-    });
+    // sampled four times a second, at once when a button changed what it says
+    const key = `${b.quality}|${b.pinned}|${this.stress.on}|${lodName}`;
+    let snap = this.hudSnap;
+    if (!snap || t - snap.at >= 250 || t < snap.at || snap.key !== key) {
+      const s = b.stats();
+      const frozen = { stats: () => s, ops: b.ops, texts: b.texts, quality: b.quality, pinned: b.pinned, gain: b.gain, host: b.host } as unknown as Budget;
+      snap = this.hudSnap = {
+        at: t, b: frozen, key,
+        info: {
+          stress: this.stress.on, lod: lodName, hist: st.lod.slice(), crates: st.crates, stressCrates: st.stressCrates, sprites: st.sprites, trains: st.trains,
+          cars: st.cars, bays: st.bays, labels: st.labels, hits: st.hits, floorRate: st.floorRate, floorMs: st.floorMs, floorOps: st.floorOps, slept: st.slept,
+          scale: f.scale, W: f.width, H: f.height,
+        },
+      };
+    }
+    const r = this.fhud.draw(g, x, y, snap.b, snap.info);
     this.hit(r.stress.x, r.stress.y, r.stress.w, r.stress.h, 'stress', this.stress.on ? 'off' : 'on', 'Stress mode');
     this.hit(r.quality.x, r.quality.y, r.quality.w, r.quality.h, 'quality', '', 'Pin quality');
   }
