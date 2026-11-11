@@ -59,6 +59,7 @@ shape FlowJobRow
   note: string
   result: string
   tone: string
+  rtone: string
   err: string
   app: string
   health: string
@@ -67,6 +68,7 @@ shape FlowJobRow
   fresh: bool
   fan: string
   live: bool
+  hgt: number
 
 shape FlowRow
   id: string
@@ -160,6 +162,7 @@ shape FlowPanel
   jobs: FlowMini[]
   logCap: bool
   logStep: string
+  logWorkflow: string
   logLive: bool
   empty: string
 
@@ -168,6 +171,7 @@ shape FlowLog
   step: string
   lines: string[]
   note: string
+  pin: number
 
 members App
   state flowRepo = ""
@@ -188,7 +192,7 @@ members App
   resource flowPanelData = flowPanel(flowKind, flowId, (here == "live" and flowId != "") ? flowSec : 0) as shape FlowPanel else empty()
   // The log tail: only with the server's capability, refreshed every 10 s while its step runs,
   // dropped when the panel closes (an empty id).
-  resource flowLogData = flowLog(flowId, flowKind == "job" ? flowPanelData.logStep : "", flowPanelData.logLive ? floor(clockMs / 10000) : 0, flowKind == "job" and flowPanelData.logCap) as shape FlowLog else empty()
+  resource flowLogData = flowLog(flowId, flowKind == "job" ? flowPanelData.logStep : "", flowPanelData.logWorkflow, flowPanelData.logLive ? floor(clockMs / 10000) : 0, flowKind == "job" and flowPanelData.logCap) as shape FlowLog else empty()
   action flowPickRepo(v: string)
     flowRepo = v
   action flowPickTeam(v: string)
@@ -327,7 +331,7 @@ component NowRow
       // HANDLED BY → RESULT
       column flex=1 min-width=0
         for j, ji in r.jobs key=j.id
-          row height=44 align-items="flex-start" testId=`flow-job-now-${ri}-${ji}`
+          row height=j.hgt align-items="flex-start" testId=`flow-job-now-${ri}-${ji}`
             column width=480 flex-shrink=0 padding="0px 8px" border-radius=6 background-color=(sel == j.id ? "sy.control" : "transparent")
               row height=24 gap=8 align-items="center"
                 button appearance="none" press=open("job", j.id) disabled=(j.target == "none") testId=`flow-pipe-now-${ri}-${ji}` aria-label=`${j.kind} pipeline ${j.name}, ${j.state}. Show its steps.`
@@ -342,17 +346,18 @@ component NowRow
                     row gap=6 align-items="center"
                       text j.where font-size=12 color="sy.ink3" white-space="nowrap"
                       text j.machine font-size=12 color=(j.state == "running" ? "sy.ink2" : "sy.ink3") white-space="nowrap"
-              row height=18 gap=10 align-items="center"
-                if j.state == "running"
-                  svg width=140 height=4 viewBox="0 0 140 4" flex-shrink=0 aria-hidden=true
-                    path d="M2 2 H138" stroke="sy.control-on" stroke-width=4 stroke-linecap="round" fill="none"
-                    path d=`M2 2 H${2 + round(j.pct * 1360) / 10}` stroke="sy.amber" stroke-width=4 stroke-linecap="round" fill="none" transition=(reduced ? "none" : "d 1000ms linear")
-                  text j.step font-size=12 color="sy.ink2" white-space="nowrap"
-                  row flex=1
-                  text j.timer font-size=12 font-weight=700 color="sy.amber-text" font-variant-numeric="tabular-nums" white-space="nowrap"
-                  text j.usual font-size=12 color=(j.over ? "sy.amber-text" : "sy.ink3") white-space="nowrap" font-variant-numeric="tabular-nums"
-                else
-                  text j.note font-size=12 color="sy.ink3" white-space="nowrap" font-variant-numeric="tabular-nums"
+              if j.hgt > 24
+                row height=18 gap=10 align-items="center"
+                  if j.state == "running"
+                    svg width=140 height=4 viewBox="0 0 140 4" flex-shrink=0 aria-hidden=true
+                      path d="M2 2 H138" stroke="sy.control-on" stroke-width=4 stroke-linecap="round" fill="none"
+                      path d=`M2 2 H${2 + round(j.pct * 1360) / 10}` stroke="sy.amber" stroke-width=4 stroke-linecap="round" fill="none" transition=(reduced ? "none" : "d 1000ms linear")
+                    text j.step font-size=12 color="sy.ink2" white-space="nowrap"
+                    row flex=1
+                    text j.timer font-size=12 font-weight=700 color="sy.amber-text" font-variant-numeric="tabular-nums" white-space="nowrap"
+                    text j.usual font-size=12 color=(j.over ? "sy.amber-text" : "sy.ink3") white-space="nowrap" font-variant-numeric="tabular-nums"
+                  else
+                    text j.note font-size=12 color="sy.ink3" white-space="nowrap" font-variant-numeric="tabular-nums"
             // the hop: pipeline → its result
             svg width=32 height=24 viewBox="0 0 32 24" flex-shrink=0 aria-hidden=true
               path d="M0 12 H26" fill="none" stroke=(j.tone == "run" or j.tone == "wait" ? "sy.chip-edge" : toneWire(j.tone)) stroke-width=1.5 stroke-dasharray=(j.tone == "run" or j.tone == "wait" ? "3 3" : "1 0")
@@ -409,7 +414,7 @@ component ResultCell
         background-color="sy.control"
       row height=20 gap=8 align-items="center"
         if j.result != ""
-          text j.result font-size=12 font-weight=(j.tone == "fail" ? 700 : 400) color=(j.target == "app" and j.tone == "run" ? "sy.ink3" : toneInk(j.tone)) white-space="nowrap"
+          text j.result font-size=12 font-weight=(j.rtone == "fail" ? 700 : 400) color=toneInk(j.rtone) white-space="nowrap"
         if j.health != ""
           row gap=5 align-items="center"
             column width=7 height=7 border-radius=4 background-color=healthMark(j.health)
@@ -505,7 +510,7 @@ component FlowSide
     close: action
     follow: action
   view
-    column position="absolute" top=0 right=0 bottom=0 width=460 background-color="sy.raised" border-left="1px solid sy.edge" box-shadow="-12px 0px 32px rgba(0, 0, 0, 0.45)" testId="flow-panel"
+    column position="absolute" top=44 right=0 bottom=0 width=460 background-color="sy.raised" border-left="1px solid sy.edge" box-shadow="-12px 0px 32px rgba(0, 0, 0, 0.45)" testId="flow-panel"
       row padding="12px 12px 10px 16px" gap=10 align-items="flex-start" border-bottom="1px solid sy.rule"
         column flex=1 min-width=0 gap=3
           row gap=8 align-items="center"
@@ -526,11 +531,32 @@ component FlowSide
                 row gap=10 align-items="baseline"
                   text f.k width=64 flex-shrink=0 font-size=12 color="sy.ink3"
                   text f.v font-size=12 color=(f.tone == "off" ? "sy.ink2" : toneInk(f.tone)) white-space="nowrap" font-variant-numeric="tabular-nums"
+          row gap=10 flex-wrap="wrap"
+            if p.url != ""
+              link href=p.url testId="flow-panel-url" padding="5px 10px" border-radius=6 border="1px solid sy.edge"
+                text `${p.urlLabel} ↗` font-size=12 color="sy.ink2"
+            if p.route != ""
+              button appearance="none" press=follow(p.route) testId="flow-panel-route" padding="5px 10px" border-radius=6 border="1px solid sy.edge"
+                text `${p.routeLabel} →` font-size=12 color="sy.ink2"
           if p.errorLine != "" or p.failStep != ""
             column gap=4 padding="8px 10px" border-radius=6 background-color="sy.red-fill" border="1px solid sy.red-edge" testId="flow-panel-error"
               text (p.failStep != "" ? `failed at ${p.failStep}` : "failed") font-size=12 font-weight=700 color="sy.red-text"
               if p.errorLine != ""
                 text p.errorLine font-size=12 color="sy.ink" line-height="17px" overflow-wrap="anywhere"
+          // The log tail: only when the server offers it (meta caps `pipeline_log`)
+          if p.logCap and p.logStep != ""
+            column gap=4 testId="flow-panel-log"
+              row gap=8 align-items="baseline"
+                text "LOG TAIL" font-size=12 letter-spacing="0.08em" color="sy.ink3"
+                text p.logStep font-size=12 color="sy.ink2" white-space="nowrap"
+                row flex=1
+                text log.note font-size=12 color="sy.ink3" white-space="nowrap"
+              if log.lines.length > 0
+                // the last ~40 lines in view, opened at the end and following it while the reader is there
+                scroll max-height=500 scrollTop=log.pin border-radius=6 background-color="sy.canvas" border="1px solid sy.rule" testId="flow-panel-log-lines"
+                  column padding="6px 8px"
+                    for l, li in log.lines key=li
+                      text l font-size=12 color="sy.ink2" line-height="16px" white-space="pre-wrap" overflow-wrap="anywhere"
           if p.steps.length > 0
             column gap=1 testId="flow-panel-steps"
               text "WORKFLOWS AND STEPS" font-size=12 letter-spacing="0.08em" color="sy.ink3" padding-bottom=4
@@ -560,24 +586,6 @@ component FlowSide
                     row flex=1
                     text m.step font-size=12 color="sy.ink3" white-space="nowrap"
                     text m.timer font-size=12 color="sy.amber-text" white-space="nowrap" font-variant-numeric="tabular-nums"
-          // The log tail: only when the server offers it (meta caps `pipeline_log`)
-          if p.logCap and p.logStep != ""
-            column gap=4 testId="flow-panel-log"
-              row gap=8 align-items="baseline"
-                text "LOG TAIL" font-size=12 letter-spacing="0.08em" color="sy.ink3"
-                text p.logStep font-size=12 color="sy.ink2" white-space="nowrap"
-                row flex=1
-                text log.note font-size=12 color="sy.ink3" white-space="nowrap"
-              column padding="6px 8px" border-radius=6 background-color="sy.canvas" border="1px solid sy.rule" gap=0
-                for l, li in log.lines key=li
-                  text l font-size=12 color="sy.ink2" line-height="16px" white-space="pre-wrap" overflow-wrap="anywhere"
-          row gap=10 flex-wrap="wrap"
-            if p.url != ""
-              link href=p.url testId="flow-panel-url" padding="5px 10px" border-radius=6 border="1px solid sy.edge"
-                text `${p.urlLabel} ↗` font-size=12 color="sy.ink2"
-            if p.route != ""
-              button appearance="none" press=follow(p.route) testId="flow-panel-route" padding="5px 10px" border-radius=6 border="1px solid sy.edge"
-                text `${p.routeLabel} →` font-size=12 color="sy.ink2"
 
 component LiveFlowView
   props

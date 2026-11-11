@@ -20,6 +20,8 @@ import { flowJob, flowMachine, flowOf, type FlowEvent, type FlowFilter, type Flo
 export const COL = { event: 400, fan: 40, job: 480, hop: 32, result: 440 } as const;
 /** A pipeline's sub-row: two lines in flight (the progress line), one line once finished. */
 export const SUB_NOW = 44, SUB_JUST = 24;
+/** A pipeline's sub-row height: two lines while it is in flight in the now band, else one. */
+const subH = (band: string, state: FlowState) => (band === 'now' && live(state) ? SUB_NOW : SUB_JUST);
 /** The event cell's first line's centre: where the fan starts. */
 const ANCHOR_NOW = 12, ANCHOR_JUST = 12;
 /** The event cell's height in the now band (three lines and padding) and the just band (two). */
@@ -88,8 +90,9 @@ export type JobRow = {
   id: string; kind: string; ci: string; name: string; state: string;
   where: string; machine: string; machineId: string;
   step: string; timer: string; usual: string; pct: number; over: boolean; note: string;
-  result: string; tone: string; err: string; app: string; health: string; healthText: string;
-  target: string; fresh: boolean; fan: string; live: boolean;
+  /** tone: the pipeline's state (run/wait/pass/fail/off); rtone: its result's words. */
+  result: string; tone: string; rtone: string; err: string; app: string; health: string; healthText: string;
+  target: string; fresh: boolean; fan: string; live: boolean; hgt: number;
 };
 export type EvRow = {
   id: string; band: string; kind: string; kindText: string; repo: string; name: string; group: string;
@@ -142,16 +145,16 @@ function where(j: FlowJob, n: number): { where: string; machine: string } {
   return { where: j.ci === 'gha' ? 'GH Actions' : 'Roadrunner', machine: fit(mach, n) };
 }
 
-function resultOf(j: FlowJob, w: World, now: number, budget: number): Pick<JobRow, 'result' | 'tone' | 'err' | 'app' | 'health' | 'healthText' | 'target'> {
+function resultOf(j: FlowJob, w: World, now: number, budget: number): Pick<JobRow, 'result' | 'rtone' | 'err' | 'app' | 'health' | 'healthText' | 'target'> {
   const r = j.result, d = r.deploy;
-  const out = { result: '', tone: toneOf(j.state), err: '', app: '', health: '', healthText: '', target: 'job' };
+  const out = { result: '', rtone: toneOf(j.state), err: '', app: '', health: '', healthText: '', target: 'job' };
   if (d) {
     out.app = d.app; out.target = 'app';
     // the app's health is its health NOW: a result only once the deploy has passed
     const h = d.health ?? (w.apps.get(d.app) as App | undefined)?.health ?? 'unknown';
-    if (d.state === 'pass') { out.result = fit(`${d.app} ← ${short(d.sha)}`, budget - 14); out.health = h; out.healthText = h === 'unknown' ? 'health ?' : h; out.tone = 'pass'; }
-    else if (d.state === 'fail' || j.state === 'fail') { out.result = fit(`${d.app} not deployed`, budget); out.tone = 'fail'; }
-    else if (d.state === 'running' || d.state === 'queued' || d.state === 'waiting' || live(j.state)) { out.result = fit(`deploying ${short(d.sha)} → ${d.app}`, budget); out.tone = j.state === 'running' ? 'run' : 'wait'; }
+    if (d.state === 'pass') { out.result = fit(`${d.app} ← ${short(d.sha)}`, budget - 14); out.health = h; out.healthText = h === 'unknown' ? 'health ?' : h; out.rtone = 'pass'; }
+    else if (live(j.state) || d.state === 'running' || d.state === 'queued' || d.state === 'waiting') { out.result = fit(`deploying ${short(d.sha)} → ${d.app}`, budget); out.rtone = 'wait'; }
+    else if (d.state === 'fail' || j.state === 'fail') { out.result = fit(`${d.app} not deployed`, budget); out.rtone = 'fail'; }
     else out.result = fit(`${d.app} · ${d.state}`, budget);
     if (j.state === 'fail' && r.failStep) out.err = r.errorLine ?? '';
     return out;
@@ -167,7 +170,7 @@ function resultOf(j: FlowJob, w: World, now: number, budget: number): Pick<JobRo
       const app = j.kind === 'deploy' ? w.repos.get(w.pipelines.get(j.id)?.repo ?? '')?.app : undefined;
       out.result = j.expectedMs ? (el < j.expectedMs ? `due in ~${clockDur(j.expectedMs - el)}` : 'past its usual') : '';
       if (app) out.result = fit(`${out.result ? `${out.result} · ` : ''}→ ${app}`, budget);
-      out.tone = 'wait';
+      out.rtone = 'wait';
       break;
     }
     default: out.result = '';
@@ -176,9 +179,9 @@ function resultOf(j: FlowJob, w: World, now: number, budget: number): Pick<JobRo
   return out;
 }
 
-function jobRow(j: FlowJob, i: number, band: string, w: World, now: number): JobRow {
+function jobRow(j: FlowJob, top: number, band: string, w: World, now: number): JobRow {
   const two = band === 'now';
-  const sub = two ? SUB_NOW : SUB_JUST, a = two ? ANCHOR_NOW : ANCHOR_JUST;
+  const a = two ? ANCHOR_NOW : ANCHOR_JUST;
   const inner = COL.job - 16;
   const wh = where(j, 24);
   const whereW = (wh.where.length + 3 + wh.machine.length) * ch(12) + 8;
@@ -202,18 +205,18 @@ function jobRow(j: FlowJob, i: number, band: string, w: World, now: number): Job
   }
   const res = resultOf(j, w, now, cols(COL.result - 24, 12));
   return {
-    id: j.id, kind: j.kind, ci: j.ci, name, state: j.state, where: wh.where, machine: wh.machine, machineId: j.machine?.id ?? (j.ci === 'gha' ? 'm:gha' : ''),
+    id: j.id, kind: j.kind, ci: j.ci, name, state: j.state, tone: toneOf(j.state), where: wh.where, machine: wh.machine, machineId: j.machine?.id ?? (j.ci === 'gha' ? 'm:gha' : ''),
     step, timer, usual, pct: Math.round(pct * 1000) / 1000, over, note,
     ...res, err: res.err ? fit(res.err, cols(COL.result - 24, 12) * (two ? 1 : 1)) : '',
     fresh: !!j.finished && now - j.finished >= 0 && now - j.finished < FRESH_MS,
-    fan: fanPath(a, i * sub + a), live: j.state === 'running',
+    fan: fanPath(a, top + a), live: j.state === 'running', hgt: subH(band, j.state),
   };
 }
 
 function evRow(e: FlowEvent, w: World, now: number, offsetMin: number): EvRow {
   const band = e.band;
   const two = band === 'now';
-  const sub = two ? SUB_NOW : SUB_JUST, a = two ? ANCHOR_NOW : ANCHOR_JUST;
+  const a = two ? ANCHOR_NOW : ANCHOR_JUST;
   const cap = two ? JOBS_NOW : band === 'just' ? JOBS_JUST : 0;
   const state = eventState(e);
   const kt = kindText(e);
@@ -230,17 +233,18 @@ function evRow(e: FlowEvent, w: World, now: number, offsetMin: number): EvRow {
   if (cap) {
     const shown = e.jobs.slice(0, cap);
     more = e.jobs.length - shown.length + (e.more ?? 0);
-    jobs = shown.map((j, i) => jobRow(j, i, band, w, now));
+    let top = 0;
+    jobs = shown.map((j) => { const r = jobRow(j, top, band, w, now); top += r.hgt; return r; });
     if (e.jobs.length === 0 && two) {
       // a push that no CI has picked up yet: "waiting for CI"
       jobs = [{
         id: `${e.id}#wait`, kind: 'ci', ci: '', name: 'waiting for CI', state: 'waiting', where: '', machine: '', machineId: '', step: '', timer: '', usual: '', pct: 0, over: false,
-        note: `pushed ${clockDur(now - e.at)} ago · no pipeline yet`, result: '', tone: 'wait', err: '', app: '', health: '', healthText: '', target: 'none', fresh: false,
-        fan: fanPath(a, a), live: false,
+        note: `pushed ${clockDur(now - e.at)} ago · no pipeline yet`, result: '', tone: 'wait', rtone: 'wait', err: '', app: '', health: '', healthText: '', target: 'none', fresh: false,
+        fan: fanPath(a, a), live: false, hgt: SUB_NOW,
       }];
     }
   }
-  const n = jobs.length + (more > 0 ? 1 : 0);
+  const jobsH = jobs.reduce((t, j) => t + j.hgt, 0) + (more > 0 ? SUB_JUST : 0);
   const fin = e.finished ?? e.jobs.reduce((m, j) => Math.max(m, j.finished ?? 0), 0);
   // the earlier band: one line, the pipelines as pips, the result in words
   const pips = e.jobs.slice(0, 10).map((j) => ({ id: j.id, state: j.state }));
@@ -262,8 +266,8 @@ function evRow(e: FlowEvent, w: World, now: number, offsetMin: number): EvRow {
     id: e.id, band, kind: e.kind, kindText: kt, repo: e.repo, name, group: e.group ?? '', branch: e.branch, sha: short(e.sha), author: e.author, bot: e.bot,
     title: fit(e.title, cols(titleW, 12)), ref, who, ago: agoT, at: hhmm(e.at, offsetMin), url: e.url,
     route: `/commit/${e.repo}/${e.sha}`, state, jobs, more, moreText: more > 0 ? `+${more} more ${more === 1 ? 'pipeline' : 'pipelines'}` : '',
-    moreFan: more > 0 ? fanPath(a, jobs.length * sub + a) : '',
-    h: two ? Math.max(CARD_NOW, n * SUB_NOW) : band === 'just' ? Math.max(CARD_JUST, n * SUB_JUST) : 22,
+    moreFan: more > 0 ? fanPath(a, jobsH - SUB_JUST + a) : '',
+    h: two ? Math.max(CARD_NOW, jobsH) : band === 'just' ? Math.max(CARD_JUST, jobsH) : 22,
     fresh: band === 'just' && fin > 0 && now - fin < FRESH_MS, pips, pipsMore: e.jobs.length > 10 ? `+${e.jobs.length - 10}` : '', summary, result, tone,
   };
 }
@@ -313,7 +317,16 @@ const EMPTY_FLOW: Flow = {
   repos: [], teams: [], branches: [], filtered: false, summary: 'Live flow, waiting for the fleet.', tick: 0,
 };
 
-export function flowAnswer(d: FlowDeps, [tick, repo, team, branch, author]: FlowArgs): Flow {
+/** The first answer, and one after a load or a change in the fleet's shape (World.shapeVer), builds
+ *  the model from scratch: that answer yields between the model and the rows, so it is two turns
+ *  on a slow Mac's Hermes (the data module has no clock to time a turn by). */
+let sliceShape = -1;
+const yieldTurn = async () => {
+  const sc = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+  if (sc?.yield) await sc.yield();
+};
+
+export function flowAnswer(d: FlowDeps, [tick, repo, team, branch, author]: FlowArgs): Flow | Promise<Flow> {
   const w = d.world();
   if (!w.loaded) return EMPTY_FLOW;
   const now = d.now(), off = d.offsetMin();
@@ -325,8 +338,15 @@ export function flowAnswer(d: FlowDeps, [tick, repo, team, branch, author]: Flow
   if (branch) filter.branch = branch;
   if (author) filter.author = author;
   const filtered = !!(repo || team || branch || author);
+  const cold = sliceShape !== w.shapeVer;
+  sliceShape = w.shapeVer;
   const all = flowOf(w, now);
   const v = filtered ? flowOf(w, now, filter) : all;
+  const rows = () => flowRows(w, now, off, all, v, filtered, repo, team, branch, Number(tick) || 0, key);
+  return cold ? yieldTurn().then(rows) : rows();
+}
+
+function flowRows(w: World, now: number, off: number, all: FlowView, v: FlowView, filtered: boolean, repo: string, team: string, branch: string, tick: number, key: string): Flow {
   const groupName = (id: string) => w.groups.get(id)?.name ?? id.replace(/^(team|org):/, '');
   const opts = options(all, groupName);
   // keep a chosen value among the options even when it has gone quiet
@@ -343,13 +363,14 @@ export function flowAnswer(d: FlowDeps, [tick, repo, team, branch, author]: Flow
     idleTitle = filtered ? 'Nothing running for these filters' : 'Nothing running right now';
     const last = v.lastEventAt ?? all.lastEventAt;
     const lastEv = [...v.events].sort((a, b) => b.at - a.at)[0];
-    idleSub = last ? `Last event ${ago(Math.max(0, now - last))}${lastEv ? `: ${kindText(lastEv)} to ${repoName(lastEv.repo)} by ${lastEv.author}` : ''}` : 'No events in the last 2 hours';
+    const what = lastEv ? `${kindText(lastEv)} ${lastEv.kind === 'cron' || lastEv.kind === 'manual' ? 'on' : 'to'} ${repoName(lastEv.repo)}${lastEv.author ? ` by ${lastEv.author}` : ''}` : '';
+    idleSub = last ? `Last event ${ago(Math.max(0, now - last))}${what ? `: ${what}` : ''}. Machines: ${all.machines.map((m) => `${m.id === 'm:gha' ? 'GHA' : m.label} ${m.slots ? `${m.busy ?? 0}/${m.slots}` : `${m.busy ?? 0}`}`).join(' · ')}` : 'No events in the last 2 hours';
   }
   const flow: Flow = {
     ok: true, running: v.running, queued: v.queued, idle: v.idle, idleTitle, idleSub,
     machines: all.machines.slice(0, 8).map(machRow), now: now_, just, earlier, ...opts, filtered,
     summary: `Live flow: ${v.running} running, ${v.queued} queued; ${now_.length} events in flight, ${just.length} just finished, ${earlier.length} earlier.`,
-    tick: Number(tick) || 0,
+    tick,
   };
   flowMemo = { key, v: flow };
   return flow;
@@ -362,11 +383,11 @@ export type Mini = { id: string; repo: string; name: string; step: string; timer
 export type Panel = {
   ok: boolean; kind: string; id: string; title: string; sub: string; state: string; tone: string; facts: Fact[]; steps: StepRow[];
   failStep: string; errorLine: string; url: string; urlLabel: string; route: string; routeLabel: string; jobs: Mini[];
-  logCap: boolean; logStep: string; logLive: boolean; empty: string;
+  logCap: boolean; logStep: string; logWorkflow: string; logLive: boolean; empty: string;
 };
 const EMPTY_PANEL: Panel = {
   ok: false, kind: '', id: '', title: '', sub: '', state: '', tone: 'off', facts: [], steps: [], failStep: '', errorLine: '', url: '', urlLabel: '', route: '', routeLabel: '',
-  jobs: [], logCap: false, logStep: '', logLive: false, empty: '',
+  jobs: [], logCap: false, logStep: '', logWorkflow: '', logLive: false, empty: '',
 };
 const STEP_CAP = 80, MINI_CAP = 20;
 
@@ -395,10 +416,12 @@ export function panelAnswer(d: FlowDeps, [kind, id]: [string, string, number]): 
     else facts.push({ k: st === 'pass' ? 'passed' : st === 'fail' ? 'failed' : st, v: `${dur(j.result.durationMs) || '–'}${j.finished ? ` · ${ago(Math.max(0, now - j.finished))}` : ''}`, tone: toneOf(st) });
     const m = j.machine;
     facts.push({ k: 'where', v: `${ciWord(j.ci)}${m ? ` · ${m.label}${m.slot ? ` · slot ${m.slot}${m.slots ? `/${m.slots}` : ''}` : ''}` : ''}`, tone: 'off' });
-    if (p) facts.push({ k: 'trigger', v: fit(`${p.event === 'pull_request' ? `PR #${p.pr ?? c?.pr ?? ''}` : p.event} · ${j.branch} · ${short(j.sha)}${c?.author || p.author ? ` · ${c?.author ?? p.author}` : ''}`, 56), tone: 'off' });
+    // the author is the trigger's only for a push, a PR or a tag (a cron's commit is not its doing)
+    const by = p && (p.event === 'push' || p.event === 'pull_request' || p.event === 'tag') ? c?.author ?? p.author ?? '' : '';
+    if (p) facts.push({ k: 'trigger', v: fit(`${p.event === 'pull_request' ? `PR #${p.pr ?? c?.pr ?? ''}` : p.event} · ${j.branch} · ${short(j.sha)}${by ? ` · ${by}` : ''}`, 48), tone: 'off' });
     if (j.result.deploy) {
       const dd = j.result.deploy;
-      facts.push({ k: 'deploy', v: fit(`${dd.app} ← ${short(dd.sha)} · ${dd.state}${dd.health ? ` · ${dd.health}` : ''}`, 56), tone: dd.health === 'down' ? 'fail' : dd.state === 'pass' ? 'pass' : 'off' });
+      facts.push({ k: 'deploy', v: fit(`${dd.app} ← ${short(dd.sha)} · ${dd.state}${dd.health ? ` · ${dd.health}` : ''}`, 48), tone: dd.health === 'down' ? 'fail' : dd.state === 'pass' ? 'pass' : 'off' });
     }
     const steps: StepRow[] = [];
     for (const wf of j.workflows) {
@@ -410,13 +433,16 @@ export function panelAnswer(d: FlowDeps, [kind, id]: [string, string, number]): 
         steps.push({ id: `s:${wf.name}/${s.name}`, name: fit(s.name, 30), depth: 1, state: s.state, dur: s.state === 'running' ? clockDur(s.ms ?? 0) : dur(s.ms), cached: !!s.cached, err: s.errorLine ? fit(s.errorLine, 120) : '', where: '' });
       }
     }
-    const running = j.workflows.flatMap((wf) => wf.steps).find((s) => s.state === 'running');
-    const logStep = j.result.failStep ?? running?.name ?? '';
+    // the log tail: the failed step, else the running one
+    const runWf = j.workflows.find((wf) => wf.steps.some((s) => s.state === 'running'));
+    const running = runWf?.steps.find((s) => s.state === 'running');
+    const logStep = j.result.failStep ?? running?.name ?? j.step?.name ?? '';
+    const logWorkflow = j.result.failStep ? j.result.failWorkflow ?? '' : runWf?.name ?? j.step?.workflow ?? '';
     return {
       ok: true, kind, id, title: fit(j.name, 40), sub: fit(`${j.repo} · ${j.kind}${p?.number ? ` · #${p.number}` : ''}`, 56), state: st, tone: toneOf(st), facts, steps,
       failStep: j.result.failStep ?? '', errorLine: j.result.errorLine ?? '', url: j.url, urlLabel: `Open in ${ciWord(j.ci)}`,
       route: `/commit/${j.repo}/${j.sha}`, routeLabel: 'Commit journey', jobs: [],
-      logCap: logCapable(d.upstream()), logStep, logLive: st === 'running', empty: '',
+      logCap: logCapable(d.upstream()), logStep, logWorkflow, logLive: st === 'running', empty: '',
     };
   }
   if (kind === 'machine') {
@@ -449,10 +475,14 @@ export function panelAnswer(d: FlowDeps, [kind, id]: [string, string, number]): 
 }
 
 // ---- the log tail (behind the server's `pipeline_log` capability) ------------------------------
-// GET /api/v1/pipeline/{id}/log?step=<name>&tail=200 → { id, step, workflow?, state, lines,
-// truncated, bytes, fetched }: ≤ 64 KB, redacted. Fetched with the other calls' auth (the Bearer
-// header, never a token in the URL), refreshed every ~10 s while the step runs, ONE tail held,
-// dropped when the panel closes.
+// meta.caps (absent on older servers: none) includes "pipeline_log" →
+// GET /api/v1/pipeline/{id}/log?step=<Step.name>&workflow=<Workflow.name>&tail=200 → { id, step,
+// workflow?, state, lines (oldest first, ≤ 400 chars each), truncated, bytes (≤ 64 KB), fetched }.
+// The same auth as the other calls (the Bearer header, never a token in the URL). Polled every
+// ~10 s while the job runs (the server caches 10 s), never once it has finished; ONE tail is held,
+// dropped when the panel closes. Roadrunner (wp:) gives a running step's live tail; GitHub (gha:)
+// publishes a job's log only when the job ends. Errors (404, 400, 502) are a quiet "log
+// unavailable" (the panel's CI link stays).
 type Caps = { base: string; cap: boolean; asked: boolean };
 let caps: Caps = { base: '', cap: false, asked: false };
 function logCapable(up: Upstream | null): boolean {
@@ -464,38 +494,45 @@ function logCapable(up: Upstream | null): boolean {
     const mine = caps;
     up.meta().then((m) => {
       const mm = m as unknown as { caps?: unknown; features?: Record<string, unknown> } | null;
-      mine.cap = (Array.isArray(mm?.caps) && mm!.caps.includes('pipeline_log')) || mm?.features?.pipeline_log === true;
-    }, () => { mine.asked = false; });
+      mine.cap = (Array.isArray(mm?.caps) && (mm!.caps as unknown[]).includes('pipeline_log')) || mm?.features?.pipeline_log === true;
+      console.log(`flow: ${base} ${mine.cap ? 'offers' : 'does not offer'} pipeline logs`);
+    }, (e) => { mine.asked = false; console.log(`flow: meta failed: ${String((e as Error)?.message ?? e).slice(0, 120)}`); });
   }
   return caps.cap;
 }
 
-export type Log = { ok: boolean; step: string; lines: string[]; note: string };
-const NO_LOG: Log = { ok: false, step: '', lines: [], note: '' };
-const LOG_LINES = 200, LOG_COLS = 240, LOG_BYTES = 96 << 10;
+/** `pin`: changes with each fetch, so the view's scroller goes back to the tail's end. */
+export type Log = { ok: boolean; step: string; lines: string[]; note: string; pin: number };
+const NO_LOG: Log = { ok: false, step: '', lines: [], note: '', pin: 0 };
+let fetches = 0;
+const LOG_LINES = 200, LOG_COLS = 400, LOG_BYTES = 192 << 10;
 let held: { key: string; tick: number; v: Log; p: Promise<Log> | null } | null = null;
+type LogArgs = [string, string, string, number, boolean];
 
-export function logAnswer(d: FlowDeps, [id, step, tick, cap]: [string, string, number, boolean]): Log | Promise<Log> {
+export function logAnswer(d: FlowDeps, [id, step, workflow, tick, cap]: LogArgs): Log | Promise<Log> {
   if (!id || !step || !cap) { held = null; return NO_LOG; }
   const up = d.upstream();
   if (!up || up.kind !== 'http') { held = null; return NO_LOG; }
-  const key = `${id}|${step}`;
+  const key = `${id}|${workflow}|${step}`;
   if (held && held.key !== key) held = null;
   if (held && (held.tick === tick || held.p)) return held.p ?? held.v;
   const u = up as unknown as { base: string; token: string };
   const headers: Record<string, string> = { accept: 'application/json' };
   if (u.token) headers.authorization = `Bearer ${u.token}`;
-  const path = `/api/v1/pipeline/${encodeURIComponent(id)}/log?step=${encodeURIComponent(step)}&tail=${LOG_LINES}`;
+  const path = `/api/v1/pipeline/${encodeURIComponent(id)}/log?step=${encodeURIComponent(step)}${workflow ? `&workflow=${encodeURIComponent(workflow)}` : ''}&tail=${LOG_LINES}`;
+  const gha = id.startsWith('gha:');
   const prev = held?.v ?? { ...NO_LOG, step, note: 'loading the log…' };
   const slot = { key, tick, v: prev, p: null as Promise<Log> | null };
   held = slot;
   slot.p = fetch(u.base + path, { headers, exactTimeout: 10000, exactIndependentHttp: { maxResponseBytes: LOG_BYTES } } as RequestInit)
     .then(async (r): Promise<Log> => {
-      if (!r.ok) return { ok: false, step, lines: [], note: r.status === 404 ? 'No log for this step.' : `The log could not be read (${r.status}).` };
-      const j = (await r.json()) as { lines?: unknown; truncated?: boolean };
+      if (!r.ok) return { ok: false, step, lines: [], note: 'log unavailable', pin: 0 };
+      const j = (await r.json()) as { lines?: unknown; truncated?: boolean; state?: string };
       const lines = (Array.isArray(j.lines) ? j.lines : []).slice(-LOG_LINES).map((l) => String(l).slice(0, LOG_COLS));
-      return { ok: true, step, lines, note: j.truncated ? `last ${lines.length} lines` : '' };
-    }, (e): Log => ({ ok: false, step, lines: [], note: `The log could not be read: ${String((e as Error)?.message ?? e).slice(0, 120)}` }))
+      let note = j.truncated ? `showing last ${lines.length} lines · truncated` : `${lines.length} ${lines.length === 1 ? 'line' : 'lines'}`;
+      if (!lines.length) note = gha && j.state === 'running' ? 'GitHub publishes the log when the job ends' : j.state === 'running' ? 'no output yet' : 'no output';
+      return { ok: true, step, lines, note, pin: 1_000_000 + (++fetches % 1000) };
+    }, (): Log => ({ ok: false, step, lines: [], note: 'log unavailable', pin: 0 }))
     .then((v) => { if (held === slot) { slot.v = v; slot.p = null; } return v; });
   return slot.p;
 }
@@ -503,9 +540,9 @@ export function logAnswer(d: FlowDeps, [id, step, tick, cap]: [string, string, n
 /** The three sources app.ts spreads into its `sources`. */
 export function flowSources(d: FlowDeps) {
   return {
-    flow: (a: FlowArgs) => safe('flow', EMPTY_FLOW, () => flowAnswer(d, a)),
+    flow: (a: FlowArgs) => safe('flow', EMPTY_FLOW as Flow | Promise<Flow>, () => flowAnswer(d, a)),
     flowPanel: (a: [string, string, number]) => safe('flowPanel', EMPTY_PANEL, () => panelAnswer(d, a)),
-    flowLog: (a: [string, string, number, boolean]) => safe('flowLog', NO_LOG as Log | Promise<Log>, () => logAnswer(d, a)),
+    flowLog: (a: LogArgs) => safe('flowLog', NO_LOG as Log | Promise<Log>, () => logAnswer(d, a)),
   };
 }
 
