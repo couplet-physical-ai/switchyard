@@ -371,15 +371,16 @@ component NowLinks
     links: NowLink[]
     testKey: string
   view
-    row gap=6 align-items="center" flex-shrink=0
+    // the Yard's bracket boxes: dashed, 18 high, the word and a small ↗
+    row gap=4 align-items="center" flex-shrink=0
       for l in links key=l.id
-        link href=l.url testId=`now-link-${testKey}-${l.id}` aria-label=`${l.label} (opens in a new tab)` padding="2px 8px" border-radius=5 border="1px solid zr.rule2" display="flex" align-items="center" gap=4 white-space="nowrap" text-decoration="none"
+        link href=l.url testId=`now-link-${testKey}-${l.id}` aria-label=`${l.label} (opens in a new tab)` height=18 padding="0 5px" border-radius=3 border="1px dashed sy.chip-edge" display="flex" align-items="center" gap=3 white-space="nowrap" text-decoration="none"
           :hover
             border-color="zr.ink3"
           :focus-visible
-            box-shadow="0 0 0 2px #9A9AA0"
-          text l.label font-size=11 font-weight=700 color="zr.ink2"
-          text "↗" font-size=11 color="zr.ink3"
+            box-shadow="0 0 0 1px #9A9A9C"
+          text l.label font-size=11 color="#8C8C8E"
+          text "↗" font-size=10 color="zr.ink3"
 
 // A thing that needs a human: red only on its ✕ and its status word.
 component NowNeedRow

@@ -83,7 +83,9 @@ export const ciWord = (ci: string) => (ci === 'gha' ? 'GitHub Actions' : 'Roadru
 
 // ---- deep links (server data only) ----
 export type Link = { id: string; label: string; url: string };
-const L = (id: string, label: string, url: string | undefined): Link[] => (url ? [{ id, label, url }] : []);
+/** A link's word, the Yard's way: lowercase and short ("roadrunner", "commit", "pr #12", "app"). */
+const word = (s: string) => { const t = s.toLowerCase().replace(/^open in /, '').replace(/^open /, ''); return t === 'github actions' ? 'github' : t; };
+const L = (id: string, label: string, url: string | undefined): Link[] => (url ? [{ id, label: word(label), url }] : []);
 const gh = (w: World, repo: string) => (w.repos.get(repo) as Repo | undefined)?.links?.github ?? '';
 export function commitUrl(w: World, repo: string, sha: string): string { const g = gh(w, repo); return g && sha ? `${g}/commit/${sha}` : ''; }
 export function branchUrl(w: World, repo: string, branch: string): string { const g = gh(w, repo); return g && branch ? `${g}/tree/${encodeURI(branch)}` : ''; }
@@ -218,7 +220,7 @@ function whereOf(j: FlowJob): string {
   return `roadrunner · ${m.label.toLowerCase()}${m.slot ? ` · slot ${m.slot}` : ''}`;
 }
 
-const CHAIN_STEPS = 5;
+const CHAIN_STEPS = 4;
 const trimTo = (t: string, n: number) => (t.length <= n ? t : `${t.slice(0, n - 1)}…`);
 function stepSt(state: string): string {
   return state === 'success' ? 'ok' : state === 'failure' || state === 'error' ? 'bad' : state === 'running' ? 'active' : state === 'skipped' || state === 'canceled' ? 'skip' : 'idle';
@@ -254,7 +256,6 @@ function chainOf(w: World, j: FlowJob, now: number): Chip[] {
       add(`s${i}`, trimTo(x.name, 16) + (x.cached ? ' ⟳' : ''), stepSt(x.state), i === lo && lo === 0, x.state === 'running');
     }
     if (hi < steps.length) add('more', `+${steps.length - hi}`, 'idle', false);
-    if (wfs.length > 1) add('wf', `${wfs.filter((x) => x.state === 'success').length}/${wfs.length} workflows`, 'skip', false);
   }
   return out;
 }
@@ -304,7 +305,8 @@ function noteOf(w: World, j: FlowJob, now: number): string {
   const steps = wf?.steps ?? [];
   const done = steps.filter((x) => x.state === 'success').length;
   const el = now - (j.started ?? j.created);
-  const parts = [steps.length ? `${done} of ${steps.length} steps` : ''];
+  const parts = [steps.length ? `${done} of ${steps.length} steps${wf?.name && (p?.workflows?.length ?? 0) > 1 ? ` in ${wf.name}` : ''}` : ''];
+  if ((p?.workflows?.length ?? 0) > 1) parts.push(`${p!.workflows!.filter((x) => x.state === 'success').length} of ${p!.workflows!.length} workflows done`);
   if (j.expectedMs) parts.push(`typical ${dur(j.expectedMs)}`);
   if (j.expectedMs && el > j.expectedMs * 1.5) parts.push(`${dur(el - j.expectedMs)} over`);
   return parts.filter(Boolean).join(' · ');

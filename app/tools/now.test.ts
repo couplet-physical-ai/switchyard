@@ -75,18 +75,18 @@ eq(fit('short', 20), 'short', 'fit keeps what fits');
   eq([f.running, f.queued, f.now.length, f.idle], [1, 1, 1, false], 'status line: 1 running, 1 queued, one event in flight');
   const b = f.now[0];
   eq([b.kind, b.repo, b.branch, b.sha, b.title, b.who], ['push', 'a', 'main', 's1', 'add the widget', 'dev-a'], 'event line: kind, repo, branch, sha, message, author');
-  eq(b.links.map((l) => [l.label, l.url]), [['Commit', `${GH}/o/a/commit/s1`]], 'event link: the commit on GitHub (Pipeline/Commit links)');
+  eq(b.links.map((l) => [l.label, l.url]), [['commit', `${GH}/o/a/commit/s1`]], 'event link: the commit on GitHub (Pipeline/Commit links)');
   eq(b.jobs.map((j) => [j.state, j.glyph, j.tone, j.last]), [['running', '●', 'run', false], ['queued', '○', 'wait', true]], 'jobs: running then queued; tree ends at the last');
   const r = b.jobs[0];
   eq([r.where, r.step, r.timer, r.usual, r.hasPct, Math.round(r.pct * 100)], ['roadrunner · vm 153 · slot 1', '2/2 test', '3:00', '/ ~6:00', true, 50], 'running job: where (CI · machine · slot), step, timer vs usual, progress');
-  eq(r.links.map((l) => [l.label, l.url]), [['Roadrunner', `${CICD}/pipelines/1/9001?tab=steps&step=2`]], 'running job links to its running step in Roadrunner');
+  eq(r.links.map((l) => [l.label, l.url]), [['roadrunner', `${CICD}/pipelines/1/9001?tab=steps&step=2`]], 'running job links to its running step in Roadrunner');
   eq([b.jobs[1].where, b.jobs[1].step], ['github actions', 'waiting for a slot'], 'queued GHA job');
   eq(f.machines.map((m) => [m.label, m.text, m.cells.filter((c) => c.on).length, m.url]), [['vm 153', '1/3', 1, `${CICD}/engine`], ['github actions', '0', 0, '']], 'machines: busy/slots (its agents\' slots) cells, links from Engine.url; GitHub counts running runs');
   // detail: the job's steps, its links, the log asks
   const p = panelAnswer(deps(w), ['job:wp:o/a:9001', 1]);
   eq([p.ok, p.kind, p.logStep, p.logWorkflow, p.logLive, p.logFail], [true, 'job', 'test', 'ci', true, false], 'detail: the running step is the log to tail, live');
   eq(p.steps.map((s) => `${s.depth}${s.glyph}${s.name}`), ['0●ci · VM 153', '1✓clone', '1●test'], 'detail: workflow then its steps');
-  eq(p.links.map((l) => l.label), ['Open in Roadrunner', 'Step', 'VM 153', 'Commit'], 'detail links: run, step, machine, commit');
+  eq(p.links.map((l) => l.label), ['roadrunner', 'step', 'vm 153', 'commit'], 'detail links: run, step, machine, commit');
   const m = panelAnswer(deps(w), ['machine:m:VM 153', 1]);
   eq([m.kind, m.title, m.runs.length, m.runs[0]?.repo], ['machine', 'VM 153', 1, 'a'], 'machine detail: what runs there');
 }
@@ -107,7 +107,7 @@ eq(fit('short', 20), 'short', 'fit keeps what fits');
   ok(/^Nothing running right now\. Last event \d+m ago\.$/.test(f.idleText), `idle says so and when the last event was: "${f.idleText}"`);
   const j = f.just[0];
   eq([j.glyph, j.chain.map((c) => [c.text, c.app, c.health])], ['✓', [['deploy', 'app-a', 'up']]], 'deploy result: → app → health');
-  eq(j.links.map((l) => l.label), ['Commit', 'Roadrunner', 'Open app'], 'done row links: commit, the run, the app');
+  eq(j.links.map((l) => l.label), ['commit', 'roadrunner', 'app'], 'done row links: commit, the run, the app');
   const e = f.earlier[0];
   eq([e.glyph, e.tone, e.result], ['✕', 'fail', 'failed at test'], 'failure: red ✕ and the failing step');
   eq(e.links.find((l) => l.id === 'ci')?.[ 'url' as 'url'], `${CICD}/pipelines/2/7?tab=steps&step=9`, 'a failure links straight to the failing step');
@@ -136,7 +136,7 @@ eq(fit('short', 20), 'short', 'fit keeps what fits');
   eq(f.needs.map((n) => [n.kind, n.what, n.word]), [
     ['app', 'app-a', 'down'], ['deploy', 'app-a', 'deploy failed'], ['stuck', 'a ci', 'stuck'], ['queue', 'Roadrunner queue', 'stuck'], ['machine', 'VM 154', 'offline'], ['main', 'b', 'main failing'],
   ], 'needs, most urgent first: app down, failed deploy, stuck job, stuck queue, machine offline, failing main');
-  eq(f.needs.map((n) => n.links.map((l) => l.label)), [['Open app', 'Status'], ['Roadrunner', 'Open app', 'Status'], ['Roadrunner'], ['Queue'], ['Machine'], ['Commit', 'Roadrunner']], 'every need has its deep links');
+  eq(f.needs.map((n) => n.links.map((l) => l.label)), [['app', 'status'], ['roadrunner', 'app', 'status'], ['roadrunner'], ['queue'], ['machine'], ['commit', 'roadrunner']], 'every need has its deep links');
   eq([f.needsN, f.needsMore], [6, '3 more: 1 stuck queues · 1 machines offline · 1 failing mains'], 'the first three show; the rest is counted by kind');
   const fb = feed(w, NOW, ['o/b', '', '']);
   eq(fb.needs.map((n) => n.kind), ['main'], 'a repo filter keeps only that repo’s needs (no fleet-wide queue/machines)');
