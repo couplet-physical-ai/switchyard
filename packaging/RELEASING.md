@@ -62,9 +62,9 @@ If GitHub's macOS runners are down or cannot build Exact:
 scripts/release/release-mac-mini.sh 0.1.0
 ```
 
-It copies `HEAD` to the mini (`mini-user@192.0.2.1`,
-`/Volumes/Farm/farm-exowatt/switchyard-release`, which holds the Exact checkout and its own
-`CARGO_HOME`/`RUSTUP_HOME`), builds and packages there, verifies the checksums here, publishes
+It refuses to start when `/Volumes/Farm` (shared) has under 20 GB free, then copies `HEAD` to the mini (`mini-user@192.0.2.1`,
+`/Volumes/Farm/farm-exowatt/switchyard-release`: one Exact checkout `exact/`, one working tree
+`src/` whose `app/target` is kept between releases, and its own `CARGO_HOME`/`RUSTUP_HOME`; ~15 GB), builds and packages there, verifies the checksums here, publishes
 the release with `gh`, and dispatches the tap bump.
 
 ## Signing

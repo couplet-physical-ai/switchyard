@@ -19,9 +19,16 @@ SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 "$MINI")
 cd "$(dirname "$0")/../.."
 sha=$(git rev-parse HEAD)
 pin=$(cat app/exact.pin 2>/dev/null || cat packaging/exact.pin)
-src=$MINI_DIR/src-$V
+src=$MINI_DIR/src   # one working tree; app/target survives between releases (warm builds)
 echo "mini: building $V ($MODE) from ${sha::7}, exact ${pin::12}"
-timeout 60 "${SSH[@]}" "rm -rf '$src' && mkdir -p '$src'"
+# The Farm volume is shared with other builds: refuse to start under 20 GB free.
+free_kb=$(timeout 30 "${SSH[@]}" "df -k /Volumes/Farm | awk 'NR==2 {print \$4}'")
+if [[ -z "$free_kb" || "$free_kb" -lt $((20 * 1024 * 1024)) ]]; then
+  echo "mini: /Volumes/Farm has $(( ${free_kb:-0} / 1024 / 1024 )) GB free (< 20 GB): not starting a build; free space first (df -h /Volumes/Farm)" >&2
+  exit 3
+fi
+# Replace the sources, keep app/target (and nothing else) from the previous release.
+timeout 300 "${SSH[@]}" "mkdir -p '$src' && find '$src' -mindepth 1 -maxdepth 1 ! -name app -exec rm -rf {} + && { [ ! -d '$src/app' ] || find '$src/app' -mindepth 1 -maxdepth 1 ! -name target -exec rm -rf {} +; }"
 git archive --format=tar HEAD | timeout 300 "${SSH[@]}" "tar -C '$src' -xf - && printf '%s' '$sha' > '$src/.sha'"
 timeout 7200 "${SSH[@]}" "set -e
   export CARGO_HOME='$MINI_DIR/cargo' RUSTUP_HOME='$MINI_DIR/rustup' XDG_CACHE_HOME='$MINI_DIR/cache'
