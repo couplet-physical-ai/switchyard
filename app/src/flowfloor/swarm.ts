@@ -17,18 +17,21 @@ export type Hit = { kind: string; id: string; x: number; y: number; w: number; h
 export const WINDOWS: [string, number][] = [['10m', 600_000], ['30m', 1_800_000], ['1h', 3_600_000], ['2h', 7_200_000]];
 
 /** The design space, and the box the camera frames (the stations, their labels, the pit's head). */
-export const D = { x0: 0, y0: 58, x1: 1440, y1: 668 };
+export const D = { x0: 0, y0: 64, x1: 1440, y1: 770 };
 
 /** The spine's height: the line every station sits on. */
-const Y = 300;
-const SRC = { x: 28, s: 52, ys: [196, 300, 404] };
-const IN = { x: 150, y: 224, cols: 6, rows: 6, cell: 22, gap: 4 };
-const ENG = { x: 352, w: 404, plate: 66, pitch: 54, bay: 46, rows: [176, 300, 424], h: 108 };
-const GATE = { x: 800, w: 52, y0: 228, y1: 372 };
-const PIT = { x0: 640, x1: 1012, y0: 540, y1: 620 };
-const YARD = { x0: 900, x1: 1138, y0: 152, row: 19, rows: 18 };
-const PRESS = { x: 1172, w: 66, y0: 238, y1: 362 };
-const SKY = { x0: 1272, x1: 1434, base: 478, top: 112 };
+const Y = 350;
+const SRC = { x: 24, s: 56, ys: [222, 350, 478] };
+const IN = { x: 150, y: 274, cols: 6, rows: 6, cell: 22, gap: 4 };
+const ENG = { x: 350, w: 444, plate: 70, pitch: 61, bay: 54, rows: [190, 350, 510], h: 136 };
+const GATE = { x: 830, w: 52, y0: 270, y1: 430 };
+const PIT = { x0: 650, x1: 1030, y0: 652, y1: 732 };
+const YARD = { x0: 928, x1: 1152, y0: 172, row: 21, rows: 19 };
+const PRESS = { x: 1186, w: 64, y0: 288, y1: 412 };
+const SKY = { x0: 1280, x1: 1436, base: 546, top: 112 };
+/** where the lanes turn: between sources and intake, intake and engines, engines and the gate,
+ *  the gate and the yard, the yard and the press, the press and the apps */
+const TURN = { src: 112, eng: 330, out: 812, yard: 906, press: 1168, apps: 1264 };
 
 const AMBER = C.packet, GREEN = C.green, RED = C.red;
 const BODY = '#161617', TOPB = '#1F1F21', SHADE = '#0A0A0B', WELL = '#0C0C0D', TRACK = '#141416';
@@ -118,21 +121,21 @@ function lanes(S: Stages): Lane[] {
   const out: Lane[] = [];
   const feed = [S.sources.push, S.sources.pr, S.sources.cron + S.sources.other];
   const bunch = 1 + Math.min(2.2, S.intake.waiting / 4);
-  SRC.ys.forEach((ey, k) => out.push(lane(`src${k}`, [[SRC.x + SRC.s, ey], [118, ey], [118, Y], [IN.x - 2, Y]], feed[k], AMBER, 70, bunch)));
+  SRC.ys.forEach((ey, k) => out.push(lane(`src${k}`, [[SRC.x + SRC.s, ey], [TURN.src, ey], [TURN.src, Y], [IN.x - 2, Y]], feed[k], AMBER, 70, bunch)));
   // intake → each engine, by its share of the running work
   const busy = S.engines.machines.slice(0, 3).map((m) => m.busy);
   const tot = busy.reduce((a, b) => a + b, 0) || 1;
   ENG.rows.forEach((ry, r) => {
     const share = (busy[r] ?? 0) / tot;
-    out.push(lane(`in${r}`, [[IN.x + 156, Y], [328, Y], [328, ry], [ENG.x - 2, ry]], S.flow.engines * share, AMBER, 76));
-    out.push(lane(`out${r}`, [[ENG.x + ENG.w + 2, ry], [778, ry], [778, Y], [GATE.x - 2, Y]], S.flow.tests * share, AMBER, 80));
+    out.push(lane(`in${r}`, [[IN.x + 156, Y], [TURN.eng, Y], [TURN.eng, ry], [ENG.x - 2, ry]], S.flow.engines * share, AMBER, 76, (busy[r] ?? 0) >= (S.engines.machines[r]?.slots || 99) ? 2.2 : 1));
+    out.push(lane(`out${r}`, [[ENG.x + ENG.w + 2, ry], [TURN.out, ry], [TURN.out, Y], [GATE.x - 2, Y]], S.flow.tests * share, AMBER, 80));
   });
   // past the gate: passed work (green) into the main-line yard, three rows at a time
   const passed = Math.max(0, S.flow.mains);
   const g0 = Math.min(YARD.rows - 3, S.mains.red.length);
-  [g0, g0 + 1, g0 + 2].forEach((row, k) => out.push(lane(`yard${k}`, [[GATE.x + GATE.w + 2, Y], [882, Y], [882, yardRowY(row)], [YARD.x0 - 2, yardRowY(row)]], passed / 3, GREEN, 72)));
-  out.push(lane('press', [[YARD.x1 + 2, yardRowY(5)], [1154, yardRowY(5)], [1154, Y], [PRESS.x - 2, Y]], S.flow.deploy, GREEN, 66));
-  out.push(lane('apps', [[PRESS.x + PRESS.w + 2, Y], [1256, Y], [1256, SKY.base + 12], [SKY.x0 + 30, SKY.base + 12]], S.flow.deploy, GREEN, 66));
+  [g0, g0 + 1, g0 + 2].forEach((row, k) => out.push(lane(`yard${k}`, [[GATE.x + GATE.w + 2, Y], [TURN.yard, Y], [TURN.yard, yardRowY(row)], [YARD.x0 - 2, yardRowY(row)]], passed / 3, GREEN, 72)));
+  out.push(lane('press', [[YARD.x1 + 2, yardRowY(8)], [TURN.press, yardRowY(8)], [TURN.press, Y], [PRESS.x - 2, Y]], S.flow.deploy, GREEN, 66));
+  out.push(lane('apps', [[PRESS.x + PRESS.w + 2, Y], [TURN.apps, Y], [TURN.apps, SKY.base + 12], [SKY.x0 + 30, SKY.base + 12]], S.flow.deploy, GREEN, 66));
   // the reject chute: failures fall straight down into the slag pit
   // through the gate: a run crosses the light curtain amber and leaves it green (scanned)
   const scan = lane('scan', [[GATE.x - 2, Y], [GATE.x + GATE.w + 2, Y]], S.flow.tests, AMBER, 40);
@@ -161,7 +164,9 @@ function drawSwarm(g: Gfx, ls: Lane[], t: number): number {
     const count = Math.max(2, Math.min(18, Math.round(l.rate / 2.5)));
     for (let i = 0; i < count; i++) {
       const j = rnd(l.id, i);
-      let p = ((t / 1000) * l.speed / l.len + i / count + j * 0.4 / count) % 1;
+      // each cube keeps its own phase whatever the count (golden-ratio spacing): a rate change
+      // adds or drops cubes, it never makes the others jump
+      let p = ((t / 1000) * l.speed * (0.85 + 0.3 * j) / l.len + i * 0.6180339887) % 1;
       if (l.bunch > 1) p = 1 - Math.pow(1 - p, l.bunch); // slows toward the end: a queue
       if (l.fall) p = p * p; // gravity
       const [x, y, dx, dy] = at(l, p);
@@ -203,6 +208,11 @@ function drawIntake(g: Gfx, S: Stages, o: SwarmOpts, hits: Hit[], now: number): 
   const w = IN.cols * (IN.cell + IN.gap) - IN.gap, h = IN.rows * (IN.cell + IN.gap) - IN.gap;
   block(g, IN.x - 6, IN.y - 6, w + 12, h + 12);
   const items = S.intake.items;
+  // the oldest wait under the grid: who, how long
+  const old0 = items[0];
+  if (old0) g.text(g.fit(`oldest ${old0.name} · ${ago(now - old0.at)}`, 10, w + 10), IN.x - 4, IN.y + h + 24, now - old0.at > 3_600_000 ? C.redText : C.amberText, 10);
+  // a waiting cube breathes (it is not moving yet)
+  const breathe = 0.55 + 0.15 * Math.sin(o.t / 600);
   const cap = IN.cols * IN.rows;
   for (let i = 0; i < cap; i++) {
     const c = i % IN.cols, r = Math.floor(i / IN.cols);
@@ -212,7 +222,7 @@ function drawIntake(g: Gfx, S: Stages, o: SwarmOpts, hits: Hit[], now: number): 
     if (!it) continue;
     if (i === cap - 1 && items.length > cap) { g.text(`+${items.length - cap + 1}`, x + IN.cell / 2, y + 15, C.amberText, 10, true, 'center'); continue; }
     const stuck = now - it.at > 3_600_000;
-    cube(g, x + IN.cell / 2, y + IN.cell / 2, 14, stuck ? RED : C.packetDock, 0.6);
+    cube(g, x + IN.cell / 2, y + IN.cell / 2, 14, stuck ? RED : C.packetDock, breathe);
     if (o.selected === it.id) brackets(g, x - 2, y - 2, IN.cell + 4, IN.cell + 4);
     hits.push({ kind: 'wait', id: it.id, x, y, w: IN.cell, h: IN.cell, url: it.url, label: `${it.name} #${it.number}` });
   }
@@ -232,13 +242,15 @@ function drawEngines(g: Gfx, S: Stages, o: SwarmOpts, hits: Hit[]): void {
     g.text(m.online ? `${m.busy}/${m.slots || m.bays.length}` : 'offline', x + 10, ry + 12, C.ink3, 10.5);
     if (m.url) hits.push({ kind: 'machine', id: m.id, x, y, w: ENG.plate - 4, h: ENG.h, url: m.url, label: m.label });
     m.bays.slice(0, 6).forEach((b, i) => {
-      const bx = x + ENG.plate + i * ENG.pitch, by = ry - 32;
+      const bx = x + ENG.plate + i * ENG.pitch, by = ry - ENG.bay / 2 - 8;
       g.fillRect(bx, by, ENG.bay, ENG.bay, WELL);
       g.fillRect(bx, by + ENG.bay - 4, ENG.bay, 4, '#151517'); // the bay's floor plate
       const it = b.item;
       if (!it) { arm(g, bx, by, t, r * 6 + i, false); return; }
-      const cx = bx + 29, cy = by + 30;
-      cube(g, cx, cy, 18, AMBER, 1);
+      g.alpha(0.08 + 0.04 * Math.sin(t / 400 + i + r)); g.fillRect(bx, by, ENG.bay, ENG.bay, AMBER); g.alpha(1);
+      const q = ENG.bay / 46;
+      const cx = bx + 29 * q, cy = by + 30 * q;
+      cube(g, cx, cy, 18 * q, AMBER, 1);
       arm(g, bx, by, t, r * 6 + i, true);
       // its progress under the bay, its repo under that
       g.fillRect(bx, by + ENG.bay + 4, ENG.bay, 3, '#232325');
@@ -254,8 +266,12 @@ function drawEngines(g: Gfx, S: Stages, o: SwarmOpts, hits: Hit[]): void {
  *  crane): its base on the bay floor at the left, a shoulder, an elbow over the work, a tool
  *  that dips onto the cube. Working, it moves (each arm its own phase) and its tool sparks;
  *  idle, it is parked upright and dim. */
-function arm(g: Gfx, bx: number, by: number, t: number, k: number, working: boolean): void {
+function arm(g: Gfx, bx0: number, by0: number, t: number, k: number, working: boolean): void {
   const c = g.ctx;
+  c.save();
+  c.translate(bx0, by0);
+  c.scale(ENG.bay / 46, ENG.bay / 46);
+  const bx = 0, by = 0;
   const ph = t / 1000 * (1.3 + (k % 3) * 0.17) + k * 1.7;
   // an industrial arm: a short pedestal, the upper arm up and over, the elbow high, the
   // forearm down onto the work (an elbow-up pose, never a jib); parked, it folds back on itself
@@ -274,6 +290,7 @@ function arm(g: Gfx, bx: number, by: number, t: number, k: number, working: bool
   g.fillRect(sh[0] - 3, sh[1] - 3, 6, 6, working ? '#B4B4B8' : '#48484B'); // shoulder
   g.fillRect(el[0] - 2.5, el[1] - 2.5, 5, 5, working ? '#B4B4B8' : '#48484B'); // elbow
   if (working && Math.sin(ph * 2.1) > 0.35) { g.fillRect(tip[0] - 1.5, tip[1] + 1, 3, 3, '#FFF1D6'); }
+  c.restore();
 }
 
 function drawGate(g: Gfx, S: Stages, t: number): void {
@@ -372,7 +389,8 @@ function drawYard(g: Gfx, S: Stages, hits: Hit[], t: number): void {
       const bxx = bx1 - (bs.length - j) * bp;
       const col = bs[j] === 'fail' ? RED : bs[j] === 'run' ? AMBER : '#4E6B57';
       const newest = j === bs.length - 1;
-      if (newest && bs[j] !== 'pass') cube(g, bxx + bead / 2, y, bead, col, 0.9);
+      if (newest && bs[j] === 'run') { g.alpha(0.55 + 0.45 * Math.sin(t / 260 + i)); g.fillRect(bxx, y - bead / 2, bead, bead, col); g.alpha(1); }
+      else if (newest && bs[j] !== 'pass') cube(g, bxx + bead / 2, y, bead, col, 0.9);
       else g.fillRect(bxx, y - bead / 2, bead, bead, col);
     }
     hits.push({ kind: 'main', id: r.repo, x: YARD.x0, y: y - YARD.row / 2, w: YARD.x1 - YARD.x0, h: YARD.row, url: r.url, label: r.name });
