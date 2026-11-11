@@ -144,3 +144,99 @@ lens layers do not step with it). A pre-merge run minutes earlier (p5) already r
 at 56 FPS on the same build that read 9–11 ms in p4, so part of it may be the machine; the merged
 build's own estimate says most of it is not. Next: put the lens layers on the ladder (and cache
 their static parts on the floor layer), then re-measure.
+
+### Factory B, wave B (fab-w7): 60 fps at full quality on the mini
+
+Measured 2026-11-11 06:00–07:45Z on `sy/fab-w7` (merged with main `c1116e3`, W3's lenses in).
+"Before" is `c1116e3` itself. 1× is the recorded server on each host's `127.0.0.1:8090` (394
+repos, 239 apps); 10× is stress mode. The mini: 1440×900, Metal (Vello), load average 2.1–3.1,
+no other worker on it, `/tmp/sy-fab-w7-run2.sh` (a perf drive: connect by taps, 14 s from the
+intro on, HUD on, 3 × `perf frames live 6000`, 10× on, 3 more). Web: `tools/perf-web.mjs`,
+8 s windows.
+
+| Host | Tree | Fleet | HUD | FPS (mean of the window) | Frame time median | Work median (late) | Rung |
+|---|---|---|---|---|---|---|---|
+| macOS Metal | before (`1b5ca6b`, W3 not in) | 1× | off / on | 54.4–56.6 | — | 24–48 ms (246 of 265 late) | q4 |
+| macOS Metal | before (`c1116e3`, the overseer's run) | 1× / 10× | on | 55–56 / ~53 | — | — | q4 / q4 |
+| macOS Metal | **after (`3aa1dd0`)** | 1× | on | **58.3–59.7** (t8 59.2–59.7, t9 58.3–59.0) | **16.5–17.0 ms** | 10.5–11.0 ms (0–2 late) | **q0** |
+| macOS Metal | after | 10× | on | **59.0–60.0** | 16.5–17.0 ms | 11.5–12.5 ms (0 late) | q4 |
+| web | before (`c1116e3`) | 1× | off / on | 59.9 / 59.9 | 16.7 ms | JS 1.87 / 6.92 ms a frame | — |
+| web | before | 10× | off / on | 59.9 / 59.9 | 16.7 ms | JS 6.53 / 7.32 ms | — |
+| web | **after** | 1× | off / on | 59.9 / 59.9 | 16.7 ms | JS 2.14 / 2.73 ms | q0 |
+| web | **after** | 10× | off / on | 59.8 / 59.9 | 16.7 ms | JS 3.49 / 3.66 ms | q4 |
+
+On the mini, the remaining 1–10 missed slots per 360 come with no late work of ours (work ends
+5–6 ms before the deadline). Every run's first window (connect + intro + load) reads 58.2–58.8.
+
+**Where the native frame went.** Two causes, found with `EXACT_CANVAS_STATS=1` and
+`factory-bench --real` (Exact's own recorder):
+
+1. **The live canvas never reached the GPU.** The stats read `0.0 gpu/s · 56 recorded/s`: Core
+   Animation recorded and replayed the whole live list on the main thread every frame. The macOS
+   host gives a canvas to the Vello module only when its first draw after a fresh bitmap (mount,
+   resize) asks for another frame. A calm floor's first draw didn't ask. Fix: `gpuClaim` in
+   `factory.ts` (both canvases ask once after mount or resize). After the fix the stats read
+   `56–104 gpu/s, 0.0 recorded/s`. Draw estimate 5.97 → 4.69 ms, 54–56 → 56–58 fps.
+2. **The cost is the list's bytes, not its calls.** On native, the data module (Hermes) runs
+   Exact's JS recorder, which serializes every call into a byte list and base64s it for the host:
+   about 0.05 ms per KB, with a cliff near 130 KB a frame. The merged live frame was ~146 KB: under
+   (the lenses' glows, smoke, beacons) 59 K, labels 31 K (14.5 K of them `font`), floor 18 K, top
+   10 K, strip 8 K, HUD 7 K.
+
+**What each fix bought** (`bun tools/factory-bench.ts <src> --hud --real --hermes`, live KB a
+drawn frame; the mini column is the drive right after the fix):
+
+| Fix | demo 1× q0 | fixtures 1× q0 | demo 10× (auto rung) | Mini 1× |
+|---|---|---|---|---|
+| before (`c1116e3`) | 142.0 KB | 127.8 KB | 144.7 KB at q4 (1,091 KB at q0) | 55–56 fps, q4 |
+| GPU claim (both canvases) | — | — | — | 56–58 fps, work 24–48 → 18–19 ms |
+| top canvas: words and chrome retained (`cache.ts`) | 87 KB + ~1 KB top | | | 59.7–59.8 fps, q0 |
+| the ladder no longer learns from the intro | | | | holds q0 (it had settled at q4) |
+| circles as 3/2 cubics (`fastArcs`) | 69.7 KB | 51.7 KB | 74.4 KB at q4 (203 KB at q0) | work 16–16.5 → 13.5–14 ms, late 67 → 3 of 360 |
+| the floor's ladder judges misses by its own share (`FacBudget`) | | | | no more q0 ↔ q2 flapping: q0 for the whole drive |
+
+- **cache.ts `Retained`**: groups, labels, the journey, tags, drawer, hover, legend, strip,
+  controls, `lens.top` and the HUD now draw into a plain-JS recording (state, path hash and
+  device box per item). Its `flush` diffs the item hashes between frames and repaints only the
+  dirty boxes on a new `factoryTop` canvas (pointer-events none, over `factory-live`). A frame
+  where nothing changed sends nothing. It falls back to a whole repaint after a size change, a
+  clip, or more than 50 % dirty. While a lens other than the pipeline lens is open, its veil
+  composites over everything, so the words go back to the live canvas. Partial vs whole repaints
+  of 7 driven states (load, hover, zoom, lens): 0 pixels differ outside the HUD's own numbers.
+  The top canvas sends 0–13 KB a frame (mean 1.5 KB).
+- **`fastArcs`**: Exact's recorder draws a full circle as a line to its start plus four cubics
+  (248 B). A full circle or ellipse is now 3 cubics, or 2 under 10 device px (worst radial error
+  0.15 % / 1.8 %, under 0.1 px at those sizes), and skips the line when the path is already at
+  the start: 168 / 112 B. Partial arcs still go to the recorder.
+- **The ladder.** The coffee check's intro (`introHolds`: its 10 s, a replay, or at most 12 s
+  waiting for a digest) no longer counts toward the ladder, which restarts from q0 when the intro
+  ends. On the mini the load's misses had settled it at q4 for good. `FacBudget` counts a missed
+  frame against the floor only while the floor's estimate is over 4.5 ms (¾ of the budget). At
+  q0 the floor is ~2.3 ms, and the host's few misses a minute had been stepping it down. Every
+  rung change is logged (`factory: quality qA → qB at … · est … (live N ops, top M ops) …`).
+- **Calm frames.** `tools/factory-perf.mjs` (new) compares calm (the frozen fixtures: only the
+  belts and the 125 ms pulse) with loud (the demo): live canvas calls a second, **calm 13,140 vs
+  loud 124,380 = 10.6 %** (≤ 15 %). The calm floor draws 80 of 600 frames. The script exits 1
+  when the ratio goes over 15 %.
+
+| Window | Live frames drawn | Live calls/s | Top calls/s | Live KB per drawn frame | Rung |
+|---|---|---|---|---|---|
+| calm 1× (fixtures) | 80 / 600 | 13,140 | 300 | ~45 | q0 |
+| loud 1× (demo) | 580 / 600 | 124,380 | 1,140 | 69.6 | q0 |
+| calm 10× | 596 / 600 | 221,580 | 840 | 96.5 | q0 (Bun: Hermes q4) |
+| loud 10× | 580 / 600 | 233,880 | 1,140 | 108.7 | q0 (Bun: Hermes q4) |
+
+**Motion (§G).** Slats are now `#252529`, OKLab lightness +0.083 over the belt (was +0.10).
+Belt speed stays `6 + 10·log2(1 + rate/60)` px/s (`motion.ts beltSpeedPx`). Above 24 crates in
+flight, crates ride as trains with a ×N badge on any rung (`crates.ts TRAINS_OVER`; before, only
+q3+). Overlapping badges keep the biggest. One 1 Hz beat and the arrival ripples are unchanged
+(`motion.ts`).
+
+**Turns** (`bun tools/turns.ts … --max 4`): demo 422 turns, longest 1.75 ms; fixtures 152 turns,
+longest 1.86 ms.
+
+**On the integrated tree** (main `ad8bc31` merged: W1 lanes, W6 engine, W5 city; drive `m1`, 07:54Z):
+mini 1× q0 56.5 / 57.2 / 57.7 / 59.5 fps (draw ~1.6 ms, 755 ops, 0 texts on the live canvas),
+10× q4 58.5 / 59.0 / 59.2 fps (draw ~3.3 ms). The misses at 1× follow the static floor's repaints
+(`floor1/s ~44 ms` on Hermes; the window with `floor0/s` reads 59.5): a floor key that churns
+about once a second on a calm fleet. That is the next fix (see below).
