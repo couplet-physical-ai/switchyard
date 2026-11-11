@@ -376,7 +376,8 @@ type Insights = { at: number, groups: Group[],
 
 type Changes = {                         // GET /api/v1/changes?since=<ms>[&until=<ms>]
   since: number, until: number,
-  complete: boolean,                     // false when `since` is older than the retained 24 h (clamped)
+  complete: boolean,                     // false when `since` predates what the server has seen (its
+                                         // retained history, ≤ 24 h); `since` is clamped to 24 h
   counts: { red: number, recovered: number, still_red: number, pipelines: number,
             failed: number, deploys: number, deploys_failed: number, clusters_new: number,
             flakes: number, prs_merged: number, apps_down: number, apps_recovered: number },

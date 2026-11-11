@@ -608,8 +608,9 @@ impl Sanitizer {
                 }
             }
             "cluster" => {
-                // A log line from a private repo may name private things: keep only
-                // step + class there (the id is a hash and stays, so Step.cluster joins).
+                // A log line from a private repo may name private things: its words are
+                // replaced like a private title (the id is a hash and stays, so
+                // Step.cluster still joins).
                 let repos: Vec<String> = v
                     .get("repos")
                     .and_then(Value::as_array)
@@ -619,10 +620,15 @@ impl Sanitizer {
                             .collect()
                     })
                     .unwrap_or_default();
-                if repos.iter().any(|r| !self.is_public(r)) {
-                    if let Some(o) = v.as_object_mut() {
-                        o.remove("line");
-                    }
+                if let Some(private) = repos.iter().find(|r| !self.is_public(r)).cloned()
+                    && let Some(line) = v.get("line").and_then(Value::as_str).map(str::to_string)
+                {
+                    let mut stand_in = self.title(&line, &private);
+                    let cut = (0..=stand_in.len().min(160))
+                        .rev()
+                        .find(|i| stand_in.is_char_boundary(*i))
+                        .unwrap_or(0);
+                    stand_in.truncate(cut);
                     let step = v
                         .get("step")
                         .and_then(Value::as_str)
@@ -633,7 +639,8 @@ impl Sanitizer {
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string();
-                    v["signature"] = Value::from(format!("{step} · {class}"));
+                    v["signature"] = Value::from(format!("{step} · {class} · {stand_in}"));
+                    v["line"] = Value::from(stand_in);
                 }
                 v["repos"] = Value::from(repos.iter().map(|r| self.repo(r)).collect::<Vec<_>>());
                 if let Some(items) = v.get_mut("examples").and_then(Value::as_array_mut) {
@@ -1028,5 +1035,39 @@ mod tests {
         }
         assert!(check_clean(b"https://ci.dev.example.com/x").is_err());
         assert!(check_clean(neutral_hosts("https://ci.dev.example.com/x").as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn clusters_and_flakes_hide_private_repos_and_lines() {
+        let mut s = Sanitizer::new(["acme/open".to_string()].into_iter().collect());
+        let mut c = serde_json::json!({
+            "id": "f:0123456789ab", "step": "rust", "class": "compile",
+            "line": "error: could not compile `secret-billing-engine` (lib)",
+            "signature": "rust · compile · error: could not compile `secret-billing-engine` (lib)",
+            "repos": ["acme/secret-billing", "acme/open"],
+            "examples": ["wp:acme/secret-billing:7"]
+        });
+        s.entity("cluster", &mut c);
+        let txt = c.to_string();
+        assert!(!txt.contains("secret"), "{txt}");
+        assert_eq!(c["id"], "f:0123456789ab", "the id joins Step.cluster");
+        assert!(c["line"].as_str().unwrap().starts_with("error: "));
+        assert_eq!(c["repos"][1], "acme/open");
+        let line = c["line"].as_str().unwrap().to_string();
+        assert!(c["signature"].as_str().unwrap().ends_with(&line));
+        // Public-only clusters keep their line.
+        let mut p = serde_json::json!({"id": "f:1", "step": "lint", "class": "lint",
+            "line": "error: unused import", "repos": ["acme/open"], "examples": []});
+        s.entity("cluster", &mut p);
+        assert_eq!(p["line"], "error: unused import");
+        let mut f =
+            serde_json::json!({"id": "acme/secret-billing|ci/test", "repo": "acme/secret-billing"});
+        s.entity("flake", &mut f);
+        assert!(!f.to_string().contains("secret"));
+        assert_eq!(f["id"], format!("{}|ci/test", f["repo"].as_str().unwrap()));
+        assert_eq!(
+            s.rekey("flake", "acme/secret-billing|ci/test"),
+            f["id"].as_str().unwrap()
+        );
     }
 }

@@ -118,6 +118,41 @@ async fn main() {
     }
     let seq = s["seq"].as_u64().unwrap_or(0);
 
+    // Factory Floor (0.5): every repo in a group, and the queries answer.
+    if s["protocol"].as_str().is_some_and(|p| p >= "0.5") {
+        let ungrouped = s["repos"]
+            .as_array()
+            .map(|a| a.iter().filter(|r| r["group"].as_str().is_none()).count())
+            .unwrap_or(0);
+        let i: serde_json::Value = get("/api/v1/insights")
+            .await
+            .unwrap_or_else(|e| fail(format!("insights: {e}")))
+            .json()
+            .await
+            .unwrap_or_else(|e| fail(format!("insights json: {e}")));
+        let since = s["at"].as_i64().unwrap_or(0) - 3_600_000;
+        let c: serde_json::Value = get(&format!("/api/v1/changes?since={since}"))
+            .await
+            .unwrap_or_else(|e| fail(format!("changes: {e}")))
+            .json()
+            .await
+            .unwrap_or_else(|e| fail(format!("changes json: {e}")));
+        let m = |v: &serde_json::Value, k: &str| v[k].as_array().map(Vec::len).unwrap_or(0);
+        println!(
+            "floor        groups {} clusters {} flakes {} trends {}  changes(1h) {}",
+            m(&i, "groups"),
+            m(&i, "clusters"),
+            m(&i, "flakes"),
+            m(&i, "trends"),
+            c["counts"]
+        );
+        if ungrouped > 0 || m(&i, "groups") == 0 || m(&i, "trends") == 0 || c["counts"].is_null() {
+            fail(format!(
+                "factory floor incomplete ({ungrouped} repos without a group)"
+            ));
+        }
+    }
+
     let ws_url = format!(
         "{}/api/v1/stream?since={seq}",
         base.replacen("http", "ws", 1)
