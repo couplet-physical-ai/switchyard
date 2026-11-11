@@ -13,7 +13,7 @@
 import type { Upstream } from '../api.ts';
 import type { World } from '../world.ts';
 import type { App } from '../wire.ts';
-import { flowJob, flowMachine, flowOf, type FlowEvent, type FlowFilter, type FlowJob, type FlowMachine, type FlowState, type FlowView } from './model.ts';
+import { decisiveIndex, flowJob, flowMachine, flowOf, type FlowEvent, type FlowFilter, type FlowJob, type FlowMachine, type FlowState, type FlowView } from './model.ts';
 
 // ---- geometry (views/flow.contract writes the same numbers) ----------------------------------
 /** Column widths, CSS px: EVENT · fan · HANDLED BY · hop · RESULT (the rest, ≥ RESULT_MIN). */
@@ -508,12 +508,41 @@ function logCapable(up: Upstream | null): boolean {
   return caps.cap;
 }
 
-/** `pin`: changes with each fetch, so the view's scroller goes back to the tail's end. */
-export type Log = { ok: boolean; step: string; lines: string[]; note: string; pin: number };
-const NO_LOG: Log = { ok: false, step: '', lines: [], note: '', pin: 0 };
+/** One tail line; `hot` the decisive one (the failure's line, ruled red in the view). */
+export type LogRow = { id: string; text: string; hot: boolean };
+/** `rows`: the tail, oldest first (the view's list opens at its end and follows it).
+ *  `decisive`: the failure's line in it (the server's `decisive` index, else matched to the
+ *  cluster's normalized line), -1 if none; `raw` its text. `jump`: that row's key when it sits
+ *  too far above the end to show there (the view scrolls to it once), else "". */
+export type Log = { ok: boolean; step: string; rows: LogRow[]; note: string; pin: number; decisive: number; raw: string; jump: string };
+const NO_LOG: Log = { ok: false, step: '', rows: [], note: '', pin: 0, decisive: -1, raw: '', jump: '' };
 let fetches = 0;
 const LOG_LINES = 200, LOG_COLS = 400, LOG_BYTES = 192 << 10;
+/** Lines that show at the tail's end in its 500 px port (16 px a line, some wrap). */
+const LOG_NEAR_END = 18;
 let held: { key: string; tick: number; v: Log; p: Promise<Log> | null } | null = null;
+
+/** The failed step's cluster line (normalized), from the World: what the tail is matched to. */
+function clusterLineOf(w: World, id: string, step: string, workflow: string): string {
+  const p = w.pipelines.get(id);
+  if (!p) return '';
+  for (const wf of p.workflows ?? []) {
+    if (workflow && wf.name !== workflow) continue;
+    for (const s of wf.steps ?? []) {
+      if (s.name !== step || !s.cluster) continue;
+      const line = w.clusters.get(s.cluster)?.line;
+      if (line) return line;
+    }
+  }
+  return '';
+}
+
+/** The tail's rows with its decisive line found and marked (pure: tested in tools/flow.test.ts). */
+export function logRows(lines: readonly string[], clusterLine: string, decisive?: number): Pick<Log, 'rows' | 'decisive' | 'raw' | 'jump'> {
+  const k = clusterLine || decisive != null ? decisiveIndex(lines, clusterLine, decisive) : -1;
+  const rows = lines.map((text, i) => ({ id: `l${i}`, text, hot: i === k }));
+  return { rows, decisive: k, raw: k >= 0 ? lines[k] : '', jump: k >= 0 && lines.length - 1 - k > LOG_NEAR_END ? `l${k}` : '' };
+}
 type LogArgs = [string, string, string, number, boolean];
 
 export function logAnswer(d: FlowDeps, [id, step, workflow, tick, cap]: LogArgs): Log | Promise<Log> {
@@ -533,13 +562,16 @@ export function logAnswer(d: FlowDeps, [id, step, workflow, tick, cap]: LogArgs)
   held = slot;
   slot.p = fetch(u.base + path, { headers, exactTimeout: 10000, exactIndependentHttp: { maxResponseBytes: LOG_BYTES } } as RequestInit)
     .then(async (r): Promise<Log> => {
-      if (!r.ok) return { ok: false, step, lines: [], note: 'log unavailable', pin: 0 };
-      const j = (await r.json()) as { lines?: unknown; truncated?: boolean; state?: string };
+      if (!r.ok) return { ...NO_LOG, step, note: 'log unavailable' };
+      const j = (await r.json()) as { lines?: unknown; truncated?: boolean; state?: string; decisive?: number };
       const lines = (Array.isArray(j.lines) ? j.lines : []).slice(-LOG_LINES).map((l) => String(l).slice(0, LOG_COLS));
       let note = j.truncated ? `showing last ${lines.length} lines · truncated` : `${lines.length} ${lines.length === 1 ? 'line' : 'lines'}`;
       if (!lines.length) note = gha && j.state === 'running' ? 'GitHub publishes the log when the job ends' : j.state === 'running' ? 'no output yet' : 'no output';
-      return { ok: true, step, lines, note, pin: 1_000_000 + (++fetches % 1000) };
-    }, (): Log => ({ ok: false, step, lines: [], note: 'log unavailable', pin: 0 }))
+      // the failure's line: the server's index when it sends one, else matched to the cluster's
+      const cl = j.state === 'running' ? '' : clusterLineOf(d.world(), id, step, workflow);
+      const dec = typeof j.decisive === 'number' ? j.decisive - Math.max(0, (Array.isArray(j.lines) ? j.lines.length : 0) - lines.length) : undefined;
+      return { ok: true, step, note, pin: 1_000_000 + (++fetches % 1000), ...logRows(lines, cl, dec) };
+    }, (): Log => ({ ...NO_LOG, step, note: 'log unavailable' }))
     .then((v) => { if (held === slot) { slot.v = v; slot.p = null; } return v; });
   return slot.p;
 }

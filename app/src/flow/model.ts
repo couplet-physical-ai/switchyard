@@ -826,3 +826,51 @@ export function flowMachine(w: World, engineId: string, now: number): { machine:
   running.sort(jobOrder);
   return { machine: hostMachine(h), running: running.slice(0, RUN_CAP) };
 }
+
+// ---- the decisive line in a log tail --------------------------------------------------------
+// A failure Cluster's `line` is the server's NORMALIZED decisive line (signature.rs `normalize`:
+// hex/sha runs → …, numbers → N, durations, timestamps, absolute paths shortened, line:col
+// collapsed, ≤ 160 chars with a trailing …). The log tail carries the RAW lines. Until the server
+// sends `decisive` (an index into `lines`), find it here: mask both sides the same coarse way
+// (every digit run → N, so what the server kept, an exit code or an E0308, no longer matters) and
+// pick the LAST tail line whose masked form equals or contains the masked cluster line (or its
+// first 60 characters).
+
+const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
+const TRACE = /\[traceparent:[^\]]*\]/g;
+const ISO = /\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?/g;
+const UUID = /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/g;
+const HEX0X = /\b0[xX][0-9a-fA-F]+\b/g;
+const HEXRUN = /\b(?=[0-9a-fA-F]*[0-9])(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]{7,}\b/g;
+/** A path (or a URL's path): only its last component counts (the server keeps the last two). */
+const PATH = /[^\s"'`(\[{<=,]*\/(?=[^\s\/]*)/g;
+const QUERY = /\?[^\s"'`)]*/g;
+const DIGITS = /\d+/g;
+const DURATION = /N(?:ns|us|µs|ms|s|m|h|d)(?:N(?:ns|us|µs|ms|s|m|h))*(?![A-Za-z])/g;
+
+/** The coarse mask both a raw log line and a normalized cluster line go through. */
+export function maskLine(s: string): string {
+  let t = String(s ?? '').replace(ANSI, '').replace(TRACE, '');
+  t = t.trimEnd();
+  if (t.endsWith('…')) t = t.slice(0, -1);
+  t = t.replace(/<time>/g, 'T').replace(ISO, 'T').replace(UUID, 'H').replace(HEX0X, 'H').replace(HEXRUN, 'H').replace(/…/g, 'H');
+  t = t.replace(PATH, '').replace(QUERY, '');
+  t = t.replace(DIGITS, 'N').replace(DURATION, 'N');
+  while (t.includes(':N:N')) t = t.replace(/:N:N/g, ':N');
+  return t.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/** The index of the decisive line in a log tail: the server's when it sent one, else the last
+ *  line matching the cluster's normalized line; -1 when none does. Bounded: ≤ 400 lines looked at. */
+export function decisiveIndex(lines: readonly string[], clusterLine: string | undefined, decisive?: number): number {
+  if (decisive != null && Number.isInteger(decisive) && decisive >= 0 && decisive < lines.length) return decisive;
+  const want = maskLine(clusterLine ?? '');
+  if (want.length < 8) return -1;
+  const head = want.slice(0, 60);
+  const lo = Math.max(0, lines.length - 400);
+  for (let i = lines.length - 1; i >= lo; i--) {
+    const m = maskLine(lines[i]);
+    if (m === want || m.includes(want) || (head.length >= 20 && m.includes(head))) return i;
+  }
+  return -1;
+}

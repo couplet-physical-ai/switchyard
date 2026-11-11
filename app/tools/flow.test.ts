@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { World } from '../src/world.ts';
 import {
   EARLIER_CAP, EARLIER_MS, JOBS_CAP, JUST_CAP, JUST_MS, NOW_CAP, WAIT_MS,
-  flowJob, flowMachine, flowOf, flowState, hostOfName, jobName, kindOf, nameKind,
+  decisiveIndex, flowJob, flowMachine, flowOf, maskLine, flowState, hostOfName, jobName, kindOf, nameKind,
   type FlowEvent, type FlowView,
 } from '../src/flow/model.ts';
 
@@ -395,6 +395,36 @@ eq(['success', 'failure', 'error', 'canceled', 'skipped', 'running', 'pending', 
   const pct = (q: number) => times[Math.min(times.length - 1, Math.floor(times.length * q))];
   ok(pct(0.5) < 0.5 && pct(0.99) < 2, `hour: flowOf after each of ${ticks} frames: p50 ${pct(0.5).toFixed(3)} ms, p99 ${pct(0.99).toFixed(2)} ms (< 2), max ${times.at(-1)!.toFixed(2)} ms (GC included)`);
   console.log(`  (hour: re-runs back to now ${flips}, waiting rows seen: ${sawWait})`);
+}
+
+// ───────────────────────── the decisive line in a log tail ─────────────────────────
+{
+  // lf-3: a failed backend step whose cluster line is a SeaweedFS master's log line, normalized
+  const cl = 'I1111 N:N.N master_grpc_server_assign.go:N assign count:N expected_data_size:N {"replication":{},"ttl":{"Count":N,"Unit":N},"version":N}: failed to find writab…';
+  const assign = (t: string) => `I1111 ${t} master_grpc_server_assign.go:227 assign count:1 expected_data_size:349342 {"replication":{},"ttl":{"Count":0,"Unit":0},"version":3}: failed to find writable volumes for collection: replication:000 ttl: error: no writable volumes`;
+  const tail = [
+    'I1111 17:43:48.263728 node.go:221 topo failed to pick 1 from  0 node candidates',
+    assign('17:43:49.002593'),
+    'I1111 17:43:49.002663 master_grpc_server_volume.go:143 volume grow &{Option:{"replication":{}} Count:0 Force:false Reason:grpc assign}',
+    assign('17:43:59.499068'),
+    'I1111 17:44:00.749306 filer_notify.go:285 metadata log write failed /topics/.system/log/2026-11-11/17-36.2d296923: AssignVolume: rpc error',
+    ...Array.from({ length: 150 }, (_, i) => ` + pkg${i}==1.${i}.0`),
+    'INFO  [alembic.runtime.migration] Running upgrade 0034_access_requests -> 0035_private_groups, Audit pending narrow bindings.',
+    'Installed 1 package in 0.55ms',
+  ];
+  eq(maskLine(assign('17:43:59.499068')).startsWith(maskLine(cl)), true, 'decisive: the raw lf-3 line masks to the normalized cluster line (a prefix)');
+  eq(decisiveIndex(tail, cl), 3, 'decisive: the LAST tail line matching the lf-3 cluster line (index 3, not 1)');
+  eq(decisiveIndex(tail, cl, 1), 1, 'decisive: the server\'s index wins when it sends one');
+  eq(decisiveIndex(tail, cl, 999), 3, 'decisive: an out-of-range server index falls back to the matcher');
+  eq(decisiveIndex(tail, 'error: something else entirely happened here'), -1, 'decisive: no line matches → -1');
+  eq(decisiveIndex(tail, undefined), -1, 'decisive: no cluster line → -1');
+  eq(maskLine('took [19m54s] and 100ms at /usr/local/cargo/registry/src/x/y/z.rs:12:5'), maskLine('took [N] and N at …/y/z.rs:N'), 'decisive: durations, paths and line:col mask alike on both sides');
+  eq(maskLine('commit 0123456789abcdef0123456789abcdef01234567 bad at 2026-01-02T03:04:05.678Z'), maskLine('commit … bad at <time>'), 'decisive: shas and timestamps mask alike');
+  eq(decisiveIndex(['\x1b[31merror[E0308]: mismatched types\x1b[0m', 'noise'], 'error[E0308]: mismatched types'), 0, 'decisive: ANSI colours are ignored');
+  const t0 = performance.now();
+  for (let i = 0; i < 20; i++) decisiveIndex(tail, 'nothing like this line appears in the tail at all, ever');
+  const per = (performance.now() - t0) / 20;
+  ok(per < 2, `decisive: a full miss over ${tail.length} lines takes ${per.toFixed(3)} ms (< 2)`);
 }
 
 if (fails) { console.log(`FAIL ${fails}`); process.exit(1); }
