@@ -5,7 +5,7 @@
 import { BOTS_HUE, OTHER_HUE, bindInsights, insights, oklchHex } from '../src/insights.ts';
 import { Timeline } from '../src/timeline.ts';
 import { createSim } from '../server/sim.ts';
-import { Groups, BOTS_LANE, OTHER_LANE } from '../src/factory/groups.ts';
+import { Groups, BOTS_LANE, OTHER_LANE, groupLabel } from '../src/factory/groups.ts';
 import { POLARITY, curb, ember, failuresOf, ghost, mergeTrends, metricOf, notch, severity, threshold, typical, withDir } from '../src/factory/trendmarks.ts';
 import { Baseline, RING_H, baseline, dequant, quant } from '../src/factory/agg/baseline.ts';
 import { clusterOrder } from '../src/factory/clusters.ts';
@@ -55,7 +55,9 @@ const fixture = await Bun.file(new URL('../../contract/fixtures/snapshot.json', 
   eq([G.hex(BOTS_LANE), G.hex(OTHER_LANE)], [BOTS_HUE.hex, OTHER_HUE.hex], 'fixtures: bots and other teams are the neutral hues');
   let minAdj = 9;
   for (let i = 1; i < lanes.length; i++) minAdj = Math.min(minAdj, dE(hexes[i - 1]!, hexes[i]!));
-  ok(minAdj >= 0.07, `fixtures: adjacent lanes ΔE_ok ≥ 0.07 (min ${minAdj.toFixed(3)})`);
+  ok(minAdj >= 0.10, `fixtures: adjacent lanes ΔE_ok ≥ 0.10 (min ${minAdj.toFixed(3)})`); // fx-lanes: 0.07 → 0.10
+  // fx-lanes: teams keep the bare name; an org-fallback group carries the ◇ mark
+  eq(lanes.map(groupLabel), ['software', 'controls', 'hardware', 'optics', 'other teams', '◇ labs', '◇ forge', '◇ ems', '◇ couplet', '◇ copper', 'bots'], 'fixtures: the floor\'s names (◇ = an org: its repos have no app team)');
   // stable: the same order again, and after a new team appears (it folds; nobody moves)
   const again = G.lanes().map((l) => l.id);
   eq(again, lanes.map((l) => l.id), 'fixtures: lane order stable across calls');
@@ -130,6 +132,9 @@ const fixture = await Bun.file(new URL('../../contract/fixtures/snapshot.json', 
   const lanes = G.lanes();
   const hexes = lanes.map((l) => G.hex(l.id));
   ok(lanes.length >= 3 && lanes.length <= 11 && lanes[lanes.length - 1]!.id === BOTS_LANE && new Set(hexes).size === hexes.length, `demo: ${lanes.length} lanes, bots last, hues distinct (${lanes.map((l) => l.short).join(', ')})`);
+  // fx-lanes: the demo has a team and an org both called "ems": the names say which
+  const ems = lanes.filter((l) => l.bare === 'ems').map(groupLabel);
+  eq(ems.length === 2 ? ems : [], ['ems', '◇ ems'], 'demo: "ems" the team and "◇ ems" the org (one name, the kind marked)');
   G.settle();
   const down = sim.cast!.down;
   const lane = G.laneOfGroup(down);
