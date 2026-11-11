@@ -5,7 +5,7 @@
 // The points are the recorded fleet's (contract/fixtures, frozen) at 1440×900: the floor's
 // fitted camera puts VM 154's busy bay (Northwind-EMS/ember-vector #37) at 870,315 and the labs
 // rail's newest car at 724,328 (the app logs both: `factory: busy bay …`, `factory: newest car …`).
-// What the canvases drew is read after `clock … real`: under the agent's virtual clock the macOS
+// What the canvases drew (and the overview after a press) is read after `clock … real`: under the agent's virtual clock the macOS
 // host draws a canvas only as real frames pass.
 
 size 1440x900
@@ -81,6 +81,7 @@ test "a press on a busy bay opens its lens, Escape walks back"
   tap "factory-live" drag 1 0 from 870 315 mouse
   clock settle
   clock +300
+  clock +500 real
   expect state ov.facLens == 1
   type "factory-live" key "Escape"
   clock data
@@ -100,6 +101,7 @@ test "a press on a car on a main line opens its lens, Backspace walks back"
   tap "factory-live" drag 1 0 from 653 461 mouse
   clock settle
   clock +300
+  clock +500 real
   expect state ov.facLens == 1
   type "factory-live" key "Backspace"
   clock data
