@@ -94,8 +94,12 @@ agent drives are not a frame-rate measure; `perf-web.mjs` runs outside it.
   demo failed to start there.
 - Memory: one world (`Timeline.world`). The packet pool is typed arrays allocated once at start,
   sized for stress (12,288 packets, route and template arenas, spatial cells): about 4 MB of the
-  64 MiB heap, and no allocation per frame. Stress mode adds a few kilobytes (repo states, app
+  data module's Hermes heap, and no allocation per frame. Stress mode adds a few kilobytes (repo states, app
   health, slot occupancy), never copies of entities.
+- Heap cap (macOS): the data module's Hermes heap is capped at 512 MiB, not Exact's default
+  64 MiB (`scripts/exact-patches/0001-heap-512m.patch`, README "Exact patches"); a GC OOM there
+  is still fatal (`hermes_fatal`, no recoverable path in the prebuilt Hermes), so the cap is a
+  stopgap, not a budget: the live set should stay far under it.
 
 ## Factory (the default view; DESIGN.md "Factory")
 

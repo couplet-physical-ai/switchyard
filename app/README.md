@@ -34,6 +34,26 @@ The server serves the web build from the same origin (`switchyard-server --stati
 and a token (kept in a file only you can read, "Security" below) in the connection sheet, or takes a
 `switchyard://connect?server=…&token=…` link.
 
+### Exact patches
+
+Our native builds use a patched Exact. `scripts/exact-patches/*.patch` (applied in name order
+to the checkout at `exact.pin`) is the whole set; today it is one:
+
+- `0001-heap-512m.patch`: `exact_js::DEFAULT_MAX_HEAP` (`js/src/lib.rs`) 64 MiB → 512 MiB, the
+  Hermes heap ceiling of the data module (app.ts). Exact has no app-level setting for it (only
+  a host crate's `Module::set_max_heap`, and ours is generated), and Hermes's out-of-memory
+  is fatal (`hermes_fatal`), so the 0.1.3/0.1.4 macOS app died at 64 MiB.
+
+`scripts/patch-exact.sh <exact dir>` applies them to a checkout's working tree (HEAD stays at
+the pin). `scripts/fetch-exact.sh` calls it after checkout and before setup, into
+`exact-<pin>-p<patches hash>`, so a patched checkout never shares a directory with the plain
+pin; the release paths (GitHub Actions and the mini fallback, `scripts/release/`) call it right
+after their own checkout. With an `$EXACT2` of your own, run it once yourself. The web build is
+unaffected (the browser runs its own JS). Applying is idempotent and loud: a patch that is
+already in is skipped, one that neither applies nor is in exits 1. After
+an `exact.pin` bump, refresh each patch against the new pin (`git -C $EXACT2 diff > …`).
+To undo one in a checkout: `git -C $EXACT2 apply -R app/scripts/exact-patches/<patch>`.
+
 ### Without a server
 
 **Watch the demo** (on the setup screen or in the connection sheet) runs a seeded
