@@ -13,7 +13,7 @@ members App
   state prPy = -1
   state prKick = 0
   resource prData = prs(here == "prs" ? clockMs : 0, prOrg, prFilter, prQ, here == "prs" ? searchParam(top(nav), "repo") : "") as shape Prs else empty(open=0, ready=0, blocked=0, bots=0, total=0, tick=0, top="", atEnd=false, summary="", repo="")
-  resource prDet = prDetail(server, tok.token, here == "pr" ? `${top(nav).params.owner}/${top(nav).params.name}` : "", here == "pr" ? top(nav).params.number : "", here == "pr" ? clockMs : 0) as shape PrDetail else empty(ok=false, row=none, commits=[], pipelines=[], timeline=[])
+  resource prDet = prDetail(server, tok.token, here == "pr" ? `${top(nav).params.owner}/${top(nav).params.name}` : "", here == "pr" ? top(nav).params.number : "", here == "pr" ? clockMs : 0) as shape PrDetail else empty(ok=false, row=none, commits=[], pipelines=[], timeline=[], meta="", blocked="", checkList=[], passed=0, landsName="", landsState="", landsWords="", landsNote="", lands=[], deploys=[], note="", links=[])
   mutation prHit as shape Hit then prAfterHit
   mutation prNav as shape Hit then prAfterNav
   derive prHitNow = match prHit { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }
@@ -134,45 +134,110 @@ component PrView
     open: action
   view
     scroll flex=1 min-height=0 testId="pr-detail"
-      column padding="18px 24px" gap=18
-        match d.row
-          case some(r)
-            column gap=8
-              text `${r.repo} #${r.number}` color="sy.ink3" font-size=12
-              text r.title role="heading" aria-level=2 font-weight=700 font-size=20 testId="pr-title"
-              row gap=12 align-items="center"
-                text (r.bot ? `${r.author} · bot` : r.author) font-size=12 color="sy.ink2"
-                text r.phaseText font-size=12 color=(r.bad ? "sy.red-text" : "sy.amber-text") testId="pr-phase"
-                link href=r.url
-                  text "github ↗" font-size=12 color="sy.ink3"
-              Track(row=r)
-              Checks(row=r)
-          case none
-            text (d.ok ? "" : "Loading the pull request…") color="sy.ink3" font-size=13
-        if d.timeline.length > 0
-          column gap=6
-            text "TIMELINE" font-size=12 letter-spacing="0.08em" color="sy.ink3"
-            for t, i in d.timeline key=i
-              row gap=12
-                text t.ago width=110 font-size=12 color="sy.ink4"
-                text t.phase font-size=12 color="sy.ink2"
-                text t.note font-size=12 color="sy.ink3"
-        if d.commits.length > 0
-          column gap=6
-            text "COMMITS" font-size=12 letter-spacing="0.08em" color="sy.ink3"
-            for c in d.commits key=c.sha
-              button press=open(`/commit/${c.repo}/${c.sha}`) testId=`pr-commit-${c.short}` appearance="none" width="100%" align-items="stretch" text-align="left" padding="6px 8px" border-radius=6
-                row gap=12 align-items="center"
-                  column width=8 height=8 border-radius=4 background-color=(c.ci == "failure" or c.ci == "error" ? "sy.red" : (c.ci == "running" or c.ci == "pending" ? "sy.amber" : "sy.ink2"))
-                  text c.short font-size=12 color="sy.ink3" width=64
-                  text c.title font-size=12 color="sy.ink2" flex=1 white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
-                  text c.ago font-size=11 color="sy.ink4"
-        if d.pipelines.length > 0
-          column gap=6
-            text "PIPELINES" font-size=12 letter-spacing="0.08em" color="sy.ink3"
-            for p, i in d.pipelines key=i
-              row gap=12
-                text `#${p.number}` width=70 font-size=12 color="sy.ink2"
-                text p.lane width=90 font-size=12 color="sy.ink3"
-                text p.state width=80 font-size=12 color=(p.state == "failure" ? "sy.red-text" : (p.state == "running" ? "sy.amber-text" : "sy.ink3"))
-                text `${p.dur} · ${p.sha} · ${p.ago}` font-size=12 color="sy.ink4"
+      row padding="20px 24px 28px" gap=40 align-items="flex-start" flex-wrap="wrap"
+        // left: what the PR is, where it stands, what holds it
+        column gap=22 flex="1 1 560px" min-width=0
+          match d.row
+            case some(r)
+              column gap=10
+                text `${r.repo} #${r.number}` color="sy.ink3" font-size=12
+                text r.title role="heading" aria-level=2 font-weight=700 font-size=22 line-height=1.25 testId="pr-title"
+                text d.meta font-size=12 color="sy.ink3" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+              column gap=12
+                BigTrack(row=r)
+                if d.blocked != "" or r.bad
+                  row gap=10 align-items="baseline"
+                    text r.phaseText font-size=13 font-weight=700 color=(r.bad ? "sy.red-text" : (r.phase == "merged" or r.phase == "deployed" or r.phase == "mergeable" ? "sy.green" : "sy.amber-text")) testId="pr-phase"
+                    if d.blocked != ""
+                      text d.blocked font-size=12 color="sy.ink2" flex=1 min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis" testId="pr-blocked"
+                row gap=14
+                  for l, i in d.links key=i
+                    link href=l.url
+                      text l.label font-size=12 color="sy.ink3"
+            case none
+              text (d.ok ? "" : "Loading the pull request…") color="sy.ink3" font-size=13
+          if d.checkList.length > 0 or d.passed > 0
+            column gap=4 max-width=720 testId="pr-checks"
+              row gap=10 align-items="baseline" padding-bottom=4
+                text "CHECKS" font-size=11 letter-spacing="0.08em" color="sy.ink3"
+                if d.passed > 0
+                  text `✓ ${d.passed} passed` font-size=11 color="sy.ink3"
+              for c, i in d.checkList key=i
+                row gap=10 align-items="center" height=22
+                  column width=8 height=8 border-radius=4 flex-shrink=0
+                    background-color=(c.state == "failure" or c.state == "error" ? "sy.red" : (c.state == "running" or c.state == "pending" ? "sy.amber" : (c.state == "success" ? "sy.ink2" : "sy.ink4")))
+                  text c.name font-size=12 color=(c.state == "failure" or c.state == "error" ? "sy.ink" : "sy.ink2") flex=1 min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+                  if c.required
+                    text "required" font-size=11 color="sy.ink4"
+                  text c.state font-size=11 width=64 text-align="right" color=(c.state == "failure" or c.state == "error" ? "sy.red-text" : (c.state == "running" or c.state == "pending" ? "sy.amber-text" : "sy.ink4"))
+          if d.commits.length > 0
+            column gap=4 max-width=720
+              text "COMMITS" font-size=11 letter-spacing="0.08em" color="sy.ink3" padding-bottom=4
+              for c in d.commits key=c.sha
+                button press=open(`/commit/${c.repo}/${c.sha}`) testId=`pr-commit-${c.short}` appearance="none" width="100%" align-items="stretch" text-align="left" padding="5px 8px" margin-left=-8 border-radius=6
+                  row gap=12 align-items="center"
+                    column width=8 height=8 border-radius=4 background-color=(c.ci == "failure" or c.ci == "error" ? "sy.red" : (c.ci == "running" or c.ci == "pending" ? "sy.amber" : "sy.ink2"))
+                    text c.short font-size=12 color="sy.ink3" width=64
+                    text c.title font-size=12 color="sy.ink2" flex=1 white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+                    text c.ago font-size=11 color="sy.ink4"
+          if d.pipelines.length > 0
+            column gap=4 max-width=720
+              text "PIPELINES" font-size=11 letter-spacing="0.08em" color="sy.ink3" padding-bottom=4
+              for p, i in d.pipelines key=i
+                row gap=12 height=22 align-items="center"
+                  text `#${p.number}` width=110 font-size=12 color="sy.ink2" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+                  text p.lane width=90 font-size=12 color="sy.ink3"
+                  text p.state width=80 font-size=12 color=(p.state == "failure" ? "sy.red-text" : (p.state == "running" ? "sy.amber-text" : "sy.ink3"))
+                  text `${p.dur} · ${p.sha} · ${p.ago}` font-size=12 color="sy.ink4"
+          if d.note != ""
+            text d.note font-size=12 color="sy.ink4"
+        // right: where it lands, and what happened
+        column gap=22 flex="0 1 420px" min-width=300
+          if d.landsName != ""
+            column gap=10 testId="pr-lands"
+              text "WHERE IT LANDS" font-size=11 letter-spacing="0.08em" color="sy.ink3"
+              row gap=10 align-items="baseline"
+                text d.landsName font-size=13 font-weight=700 color="sy.ink"
+                text d.landsWords font-size=12 color=(d.landsState == "red" ? "sy.red-text" : (d.landsState == "building" ? "sy.amber-text" : "sy.ink3"))
+              row gap=6 align-items="center" height=16
+                column flex=1 height=1 background-color="sy.rule"
+                for x, i in d.lands key=i
+                  column width=10 height=10 border-radius=5 flex-shrink=0 aria-label=`${x.sha} ${x.state}: ${x.title}`
+                    background-color=(x.state == "failure" or x.state == "error" ? "sy.red" : (x.state == "running" or x.state == "pending" ? "sy.amber" : (x.state == "success" ? "sy.ink2" : "sy.ink4")))
+              text "each dot is a commit on it, newest right" font-size=11 color="sy.ink4"
+              if d.landsNote != ""
+                text d.landsNote font-size=11 color="sy.amber-text"
+          if d.deploys.length > 0
+            column gap=4
+              text "DEPLOYS" font-size=11 letter-spacing="0.08em" color="sy.ink3" padding-bottom=4
+              for x, i in d.deploys key=i
+                row gap=10 height=20 align-items="center"
+                  text x.app font-size=12 color="sy.ink2" flex=1 min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+                  text x.state font-size=11 color=(x.state == "failure" ? "sy.red-text" : "sy.ink3")
+                  text `${x.via} · ${x.ago}` font-size=11 color="sy.ink4"
+          if d.timeline.length > 0
+            column gap=4
+              text "TIMELINE" font-size=11 letter-spacing="0.08em" color="sy.ink3" padding-bottom=4
+              for t, i in d.timeline key=i
+                row gap=12 height=20 align-items="center"
+                  text t.ago width=96 font-size=12 color="sy.ink4"
+                  text t.phase font-size=12 color="sy.ink2" width=110
+                  text t.note font-size=12 color="sy.ink3" flex=1 min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+
+component BigTrack
+  props
+    row: PrRow
+  view
+    row align-items="center" gap=0 aria-label=`phase: ${row.phaseText}` testId="pr-track"
+      for i in (row.draft ? [0, 1, 2, 3, 4, 5] : [1, 2, 3, 4, 5]) key=i
+        row align-items="center" gap=0
+          if i > (row.draft ? 0 : 1)
+            column width=28 height=0 border-top-width=1 border-top-style=(i <= row.phaseIdx ? "solid" : "dashed") border-top-color=(i <= row.phaseIdx ? "sy.green-edge" : "sy.chip-edge")
+          column padding="7px 14px" border-radius=6 position="relative" border-width=1
+            border-style=(i == row.badIdx or i == row.phaseIdx ? "solid" : (i < row.phaseIdx ? "solid" : "dashed"))
+            border-color=(i == row.badIdx ? "sy.red-edge" : (i == row.phaseIdx ? "sy.machine" : (i < row.phaseIdx ? "sy.green-edge" : "sy.chip-edge")))
+            background-color=(i == row.badIdx ? "sy.red-fill" : (i < row.phaseIdx ? "sy.green-fill" : "transparent"))
+            text (i == row.badIdx ? (row.phase == "conflict" ? "conflict" : (row.phase == "changes_requested" ? "changes" : "failing")) : phaseLabel(i)) font-size=13
+              color=(i == row.badIdx ? "sy.red-text" : (i == row.phaseIdx ? "sy.ink" : (i < row.phaseIdx ? "sy.green-ink" : "sy.ink4")))
+            if i == row.phaseIdx and row.badIdx < 0 and row.phase != "merged" and row.phase != "deployed"
+              column position="absolute" top=-9 left="50%" margin-left=-8 width=16 height=9 border-radius=2 background-color="sy.amber"
