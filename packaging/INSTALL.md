@@ -28,12 +28,33 @@ cask is marked `auto_updates`, so plain `brew upgrade` leaves it alone and
 `brew upgrade --cask --greedy switchyard` forces it. Remove: `brew uninstall --cask switchyard`
 (add `--zap` to also remove its settings and caches).
 
+## Already have the early test build (v0.0.3)?
+
+v0.0.3 has no in-app updater, so move it to the current release with Homebrew once; from then
+on the app updates itself:
+
+```sh
+brew update && brew upgrade --cask --greedy switchyard && open -a Switchyard
+```
+
+If that says it is already up to date, or anything looks off, reinstall:
+
+```sh
+brew uninstall --cask switchyard; brew update && brew install --cask switchyard && open -a Switchyard
+```
+
+Check the installed version with
+`defaults read /Applications/Switchyard.app/Contents/Info CFBundleShortVersionString`.
+(`brew info` keeps showing the version brew installed; the app's own updates don't change it.)
+
 ## First run: connect the app
 
-The app needs a **device token** (your own, revocable). Mint it in the browser, signed in
-with your Exowatt Google account:
+The app needs a **device token** (your own, revocable). On first launch it offers
+**Sign in on the web…** (opens the page below), **Use a token…** and **Watch the demo**. In the
+browser, signed in with your Exowatt Google account:
 
-1. Open <https://switchyard.apps.example.com/connect> and click **Create device token**.
+1. Open <https://switchyard.apps.example.com/connect> (or click **Sign in on the web…**) and
+   click **Create device token**.
 2. Click **Open in Switchyard**. macOS opens the app (a `switchyard://connect` link) on
    *Connect to this server?*.
 3. Click **Connect**. The token goes into the macOS Keychain only now, after you confirm.
