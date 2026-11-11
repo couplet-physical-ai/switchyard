@@ -11,7 +11,8 @@ import { C } from '../yard/theme.ts';
 import { D, WINDOWS, drawSwarmFloor, type Hit } from './swarm.ts';
 import { failedIn, stagesOf } from './stages.ts';
 
-export const INSPECTOR_W = 420;
+/** the inspector panel beside the floor: 420 wide + its 18 px padding each side + its 1 px rule */
+export const INSPECTOR_W = 458;
 export const windowMs = (w: string): number => (WINDOWS.find(([k]) => k === w) ?? WINDOWS[1])[1];
 
 export type FloorArgs = { win: string; sel: string; mode: string; reduced: boolean };
