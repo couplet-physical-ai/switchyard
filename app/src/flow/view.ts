@@ -297,7 +297,8 @@ function options(v: FlowView, groupName: (id: string) => string): { repos: Opt[]
   }
   const top = (m: Map<string, number>) => [...m.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, OPT_CAP).map(([k]) => k).sort();
   return {
-    repos: top(repos).map((r) => ({ value: r, label: r })),
+    // the select shows its label in ~20 columns: the repo's name, its owner only when two share it
+    repos: top(repos).map((r) => ({ value: r, label: [...repos.keys()].filter((x) => repoName(x) === repoName(r)).length > 1 ? r : repoName(r) })).sort((a, b) => (a.label < b.label ? -1 : 1)),
     teams: top(teams).map((g) => ({ value: g, label: groupName(g) })),
     branches: top(branches).map((b) => ({ value: b, label: fit(b, 40) })),
   };
@@ -354,7 +355,7 @@ function flowRows(w: World, now: number, off: number, all: FlowView, v: FlowView
   const groupName = (id: string) => w.groups.get(id)?.name ?? id.replace(/^(team|org):/, '');
   const opts = options(all, groupName);
   // keep a chosen value among the options even when it has gone quiet
-  if (repo && !opts.repos.some((o) => o.value === repo)) opts.repos.unshift({ value: repo, label: repo });
+  if (repo && !opts.repos.some((o) => o.value === repo)) opts.repos.unshift({ value: repo, label: repoName(repo) });
   if (team && !opts.teams.some((o) => o.value === team)) opts.teams.unshift({ value: team, label: groupName(team) });
   if (branch && !opts.branches.some((o) => o.value === branch)) opts.branches.unshift({ value: branch, label: fit(branch, 40) });
   const now_: EvRow[] = [], just: EvRow[] = [], earlier: EvRow[] = [];
