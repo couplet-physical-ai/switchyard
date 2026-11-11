@@ -25,13 +25,13 @@ import { STAGES } from './grammar.ts';
 import { floorGroups } from './groups.ts';
 import { ago, stackH } from './floor.ts';
 import { insights } from '../insights.ts';
-import { LANE_U, LANE_V0, PLAN, VIA_WORDS } from './layout.ts';
+import { LANE_U, LANE_V0, PLAN, VIA_WORDS, WALL_Z } from './layout.ts';
 import { MONO, SMALL, TITLE, dur, runningStep } from './prims.ts';
 import type { Bay, Block, HitBox, Label, Layer, LiveFrame } from './types.ts';
 
 const {
   DOCK_U0, ROW_U, GATE_U, RAIL_U0, RAIL_U1, INTAKE_U0, YARD_U0,
-  ENG_U0, ENG_V0, ENG_STEP, ENG_DV, ENG_H, SCAN_U, TRACK_V, CITY_U0, CITY_V0, VIAS,
+  ENG_U0, ENG_U1, ENG_V0, ENG_STEP, ENG_DV, ENG_H, SCAN_U, TRACK_V, CITY_U0, CITY_V0, VIAS,
 } = PLAN;
 
 /** Each stage title's anchor (u, v, z) and where a click flies (u, v, zoom). */
@@ -45,6 +45,11 @@ const STAGE_AT: Record<string, { at: [number, number, number]; fly: string }> = 
   '07': { at: [SCAN_U, 30, 56], fly: `${SCAN_U},330,2.4` },
   '08': { at: [SCAN_U + 40, TRACK_V[0] - 6, 0], fly: '1165,330,2.6' },
   '09': { at: [CITY_U0 + 20, CITY_V0, 6], fly: '1360,320,2' },
+};
+/** fab-w1: with the lanes on, the titles stand on the back wall over their boards (floor.ts). */
+const WALL_AT: Record<string, [number, number, number]> = {
+  '01': [DOCK_U0 + 4, 0, WALL_Z], '02': [YARD_U0 + 6, 0, WALL_Z], '04': [RAIL_U0 - 8, 0, WALL_Z], '06': [ENG_U0 - 100, 0, WALL_Z],
+  '07': [ENG_U1 + 18, 0, WALL_Z], '08': [SCAN_U + 18, 0, WALL_Z], '09': [CITY_U0 + 6, 0, WALL_Z],
 };
 /** The fleet trend metric a stage's hover sparkline reads. */
 const STAGE_SPARK: Record<string, 'pushes' | 'prs_open' | 'red' | 'intake_ms' | 'pipelines' | 'failures' | 'deploys' | ''> = {
@@ -117,9 +122,16 @@ export class Labels implements Layer {
     }
   }
 
+  /** Where a click on a stage (its title, its board) flies: 'u,v,zoom'. */
+  stageFly(n: string): string { return STAGE_AT[n]?.fly ?? ''; }
+
   /** A stage's 24 h sparkline (the fleet trend's), for the hover card's chart; null: none. */
   stageSpark(id: string): (number | null)[] | null {
     const n = STAGES.find((s) => s.n === id || s.title === id)?.n ?? '';
+    // fab-w1: the back wall's own board (the day, an hour a value), else the fleet trend's
+    const W = this.f.floor.on ? this.f.floor.data.last.wall : null;
+    const ser = !W ? null : n === '01' ? W.pushes : n === '02' ? W.opened : n === '03' || n === '04' ? W.landed : n === '05' || n === '06' ? W.runs : n === '07' ? W.runsRed : n === '08' ? W.deploys : null;
+    if (ser && ser.some((x) => x > 0)) return Array.from(ser);
     const k = STAGE_SPARK[n];
     if (!k) return null;
     const t = insights().trend('fleet') as unknown as Record<string, { spark?: (number | null)[] } | undefined> | null;
@@ -186,7 +198,7 @@ export class Labels implements Layer {
     // the semantic zoom: fleet (titles, group names, the callout), group (a lane open, or z ≥ 1.4:
     // stat lines and names), repo (z ≥ 2.4: sub-rows and apps); the ladder thins the words (q1
     // fewer job names, q2 no counts, q3 no names): titles and failures always stay
-    const level = Math.max(fl.level, fl.focusId ? 1 : 0);
+    const level = fl.level;
     const detail = level >= 1;
     const q = f.budget.quality;
     const jobsPer = !detail ? 0 : q === 0 ? 3 : q === 1 ? 2 : 0;
@@ -194,7 +206,7 @@ export class Labels implements Layer {
     // their stat lines once zoomed in; anchored at each stage's back edge, lifted into the band
     for (const st of STAGES) {
       const A = STAGE_AT[st.n]!;
-      const [u, v, z] = A.at;
+      const [u, v, z] = (fl.on ? WALL_AT[st.n] : null) ?? A.at;
       const ax = cam.x(u, v), ay = cam.y(u, v, z);
       const tw = g.width(st.title, TITLE, true);
       const x = Math.round(ax - 3);
@@ -233,9 +245,10 @@ export class Labels implements Layer {
       const name = fc.repo.split('/')[1] ?? fc.repo;
       this.leader(g, ax, ay, 40, [[`${name} broke main`, C.redText, true]], SMALL);
     }
+    // an open lane names its cells, posts and age axis (a lens pins one at the fleet zoom too)
+    if (detail || fl.focusId) this.lanes(g, level, q);
     if (!detail) return;
     this.machines(g, now, jobsPer);
-    this.lanes(g, level, q);
     this.places(g, q);
   }
 

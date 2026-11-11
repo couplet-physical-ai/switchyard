@@ -96,7 +96,8 @@ test "a press on a car on a main line opens its lens, Backspace walks back"
   clock data
   clock +1000
   clock +1500 real
-  tap "factory-live" drag 1 0 from 724 328 mouse
+  // fab-w1: the first org's lane rail's newest car ("factory: newest car … at" on the fixtures)
+  tap "factory-live" drag 1 0 from 653 461 mouse
   clock data
   clock +300
   expect state ov.facLens == 1

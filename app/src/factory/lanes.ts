@@ -36,9 +36,26 @@ export type LaneInfo = {
   /** merges in the last 24 h, newest last (the gate lintel's ticks) */
   merges24: number;
   repos: LaneRepo[];
+  /** the approach road: its repos' pushes per hour over 24 h (oldest first) and main-line runs
+   *  that failed per hour */
+  push24: Int16Array; fail24: Int16Array;
 };
 
-export type LaneCount = { lanes: Map<string, LaneInfo>; pallets: Pallet[]; at: number; ver: number };
+/** The back wall's boards: the fleet's last 24 h per hour (oldest first), one series per stage. */
+export type Wall = {
+  /** 01 pushes (commits) */ pushes: Int16Array;
+  /** 02 PRs opened, and of them CI failing now */ opened: Int16Array; openedRed: Int16Array;
+  /** 03–04 main-line commits landed, and of them failed */ landed: Int16Array; landedRed: Int16Array;
+  /** 05–06 runs finished, and of them failed (07) */ runs: Int16Array; runsRed: Int16Array;
+  /** 08 deploys, and of them failed */ deploys: Int16Array; deploysRed: Int16Array;
+};
+
+export type LaneCount = { lanes: Map<string, LaneInfo>; pallets: Pallet[]; wall: Wall; at: number; ver: number };
+
+const h24 = (): Int16Array => new Int16Array(24);
+function wall(): Wall { return { pushes: h24(), opened: h24(), openedRed: h24(), landed: h24(), landedRed: h24(), runs: h24(), runsRed: h24(), deploys: h24(), deploysRed: h24() }; }
+/** The hour slot (0 = 24 h ago … 23 = this hour) of a time, -1 outside the day. */
+const slotOf = (now: number, t: number): number => (t > now || t <= now - DAY ? -1 : 23 - Math.min(23, Math.floor((now - t) / HOUR)));
 
 /** Entities one slice reads. */
 const SLICE = 180;
@@ -63,7 +80,7 @@ function postOf(r: Repo): Post {
 
 export class LaneData {
   private job: Generator<void, LaneCount, void> | null = null;
-  private done: LaneCount = { lanes: new Map(), pallets: [], at: 0, ver: 0 };
+  private done: LaneCount = { lanes: new Map(), pallets: [], wall: wall(), at: 0, ver: 0 };
   private jobVer = -1;
   private jobAt = -1e15;
   private jobWorld: World | null = null;
@@ -101,12 +118,13 @@ export class LaneData {
     const out = new Map<string, LaneInfo>();
     const info = (id: string): LaneInfo => {
       let l = out.get(id);
-      if (!l) out.set(id, (l = { id, cells: [cell(), cell(), cell(), cell()], posts: [], red: 0, cars: [], merges1h: 0, merges24: 0, repos: [] }));
+      if (!l) out.set(id, (l = { id, cells: [cell(), cell(), cell(), cell()], posts: [], red: 0, cars: [], merges1h: 0, merges24: 0, repos: [], push24: h24(), fail24: h24() }));
       return l;
     };
     for (const l of lanes) info(l.id);
     const repoAt = new Map<string, LaneRepo>();
     const laneOfRepo = new Map<string, string>();
+    const W = wall();
     let n = 0;
     // repos: posts, cars, the sub-rows' rows
     for (const r of w.repos.values()) {
@@ -124,6 +142,8 @@ export class LaneData {
       for (const d of recent) {
         if (d.at > now || d.at < now - DAY) continue;
         dayCars++;
+        const k = slotOf(now, d.at);
+        if (k >= 0) { W.landed[k]++; if (d.state === 'failure' || d.state === 'error') { W.landedRed[k]++; L.fail24[k]++; } }
         L.cars.push({ sha: d.sha, repo: r.id, at: d.at, state: d.state, culprit: !!d.culprit, title: d.title });
       }
       const lr: LaneRepo = { repo: r.id, name: r.name, score: (post.st === 0 ? 1000 : 0) + dayCars * 3 + (r.open_prs ?? 0) + (activeAt >= now - DAY ? 2 : 0), prs: [0, 0, 0, 0], red: 0, post, dots: recent.slice(-12).map((d) => ({ state: d.state, culprit: !!d.culprit })) };
@@ -134,6 +154,8 @@ export class LaneData {
     const bots = new Map<string, Pallet & { set: Set<string> }>();
     for (const p of w.prs.values() as IterableIterator<Pr>) {
       if (++n % SLICE === 0) yield;
+      const ko = slotOf(now, p.created);
+      if (ko >= 0) { W.opened[ko]++; if (p.ci === 'failure' || p.ci === 'error') W.openedRed[ko]++; }
       if (p.merged_at && p.merged_at <= now && p.merged_at > now - DAY) {
         const L = info(laneOfRepo.get(p.repo) ?? G.laneOfRepo(p.repo));
         L.merges24++;
@@ -168,6 +190,29 @@ export class LaneData {
       const lr = repoAt.get(p.repo);
       if (lr) { lr.prs[row]++; if (red) lr.red++; }
     }
+    // the day's pushes (per lane: its approach road), runs and deploys (the back wall)
+    for (const c of w.commits.values()) {
+      if (++n % SLICE === 0) yield;
+      const k = slotOf(now, c.at);
+      if (k < 0) continue;
+      W.pushes[k]++;
+      const lid = laneOfRepo.get(c.repo);
+      if (lid) info(lid).push24[k]++;
+    }
+    for (const p of w.pipelines.values()) {
+      if (++n % SLICE === 0) yield;
+      const k = p.finished ? slotOf(now, p.finished) : -1;
+      if (k < 0) continue;
+      W.runs[k]++;
+      if (p.state === 'failure' || p.state === 'error') W.runsRed[k]++;
+    }
+    for (const d of w.deploys.values()) {
+      if (++n % SLICE === 0) yield;
+      const k = slotOf(now, d.started);
+      if (k < 0) continue;
+      W.deploys[k]++;
+      if (d.state === 'failure') W.deploysRed[k]++;
+    }
     yield;
     // order: posts red first (newest red first), then running, ok, unknown by recency; cars by
     // time (the newest 18); repos by activity
@@ -178,6 +223,6 @@ export class LaneData {
       L.repos.sort((a, b) => b.score - a.score || (a.name < b.name ? -1 : 1));
     }
     const pallets = [...bots.values()].sort((a, b) => b.n - a.n).slice(0, 4).map(({ set, ...p }) => ({ ...p, repos: set.size }));
-    return { lanes: out, pallets, at: now, ver: 0 };
+    return { lanes: out, pallets, wall: W, at: now, ver: 0 };
   }
 }

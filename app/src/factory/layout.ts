@@ -47,6 +47,9 @@ export const VIA_WORDS: Record<string, string> = { roadrunner: 'roadrunner', gha
 
 // ── the lanes (§C) ────────────────────────────────────────────────────────────────────────────
 
+/** The approach roads (fab-w1, floor.ts): each lane runs on off the slab to u = -ROAD_DU, its
+ *  last 24 h along it. The back wall along v = 0 (its boards: each stage's day) is WALL_Z high. */
+export const ROAD_DU = 112, WALL_Z = 64;
 /** The lanes' zone (v): the back lane starts here, the bots siding ends here. */
 export const LANE_V0 = 22, LANE_V1 = 616;
 /** A lane's least depth (§C). */

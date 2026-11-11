@@ -24,6 +24,7 @@ import { BOTS } from '../world.ts';
 import { insights } from '../insights.ts';
 import { normTeam } from '../../server/floor.ts';
 import { floorGroups, type Lane, type LaneStats } from './groups.ts';
+import { ROAD_DU } from './layout.ts'; // fab-w1
 import { curb, ember, emberAt, ghost, metricOf, notch, severity, typical, withDir, type MetricKey } from './trendmarks.ts';
 import { baseline } from './agg/baseline.ts';
 
@@ -71,8 +72,8 @@ export class GroupFloor {
     for (const L of fl.lanesNow) {
       const lane = lanes.find((l) => l.id === L.id);
       if (!lane) continue;
-      const d = L.v1 - L.v0, inset = Math.min(4, d * 0.12);
-      this.geo.push({ lane, v: (L.v0 + L.v1) / 2, v0: L.v0 + inset, v1: L.v1 - inset, hex: L.hex });
+      const d = L.b1 - L.b0, inset = Math.min(4, d * 0.12); // the base band: docks are the index the accordion never moves
+      this.geo.push({ lane, v: (L.b0 + L.b1) / 2, v0: L.b0 + inset, v1: L.b1 - inset, hex: L.hex });
     }
     this.byLane = new Map(this.geo.map((g) => [g.lane.id, g]));
     return this.geo;
@@ -262,9 +263,11 @@ export class GroupFloor {
       else if (team) fx.hit(hx, hy, Math.max(...xs) - hx, Math.max(...ys) - hy, 'district', team.team, `${team.team} ${team.apps.length}`);
       const name = gg.lane.short;
       if (kind === 'bots' && f.floor.level === 0 && !f.floor.focusId) continue; // fab-w1: the hatch names the bots (text budget)
-      const x = cam.x(P.DOCK_U0, gg.v1) - 5, y = cam.y(P.DOCK_U0, gg.v1) + 1;
       const wv = g.width(name, 12);
-      const at = fx.placeAt(x - wv, y, wv, 12, 0, false);
+      // fab-w1: at the far end of its approach road (floor.ts ROAD_DU), else at its dock
+      const xr = cam.x(-ROAD_DU, gg.v1) - 5, yr = cam.y(-ROAD_DU, gg.v1) + 1;
+      const x = cam.x(P.DOCK_U0, gg.v1) - 5, y = cam.y(P.DOCK_U0, gg.v1) + 1;
+      const at = (f.floor.on ? fx.placeAt(xr - wv, yr, wv, 12, 0, false) : null) ?? fx.placeAt(x - wv, y, wv, 12, 0, false);
       if (at) g.text(name, at[0], at[1], kind === 'bots' || kind === 'other' ? C.ink3 : C.ink2, 12);
     }
   }
