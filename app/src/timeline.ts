@@ -5,18 +5,54 @@
 //   live    every frame is applied as it arrives; the playhead is the server's now.
 //   paused  frames are kept, not applied (bounded); the world stands still.
 //   behind  the kept frames are applied as the playhead (1× or ¼×) passes them.
-//   replay  the world is replaced by history's base and history's frames play at 60×;
-//           live frames are dropped, so going live again refetches the snapshot.
+//   replay  the world is replaced by history's base and history's frames play at the replay's
+//           speed (60×: the last hour; DAY_SPEED: the day); live frames are dropped, so going
+//           live again refetches the snapshot. Paused, a replay stays one: play resumes it.
 //
 // The built-in demo needs no buffer: it generates frames up to the playhead on demand.
+//
+// A replay streams (app.ts `fetchChunk`): its frames arrive in chunks of server time, asked a
+// lookahead ahead of the playhead; both scale with the speed (`replaySizing`), so the 24 h at
+// 720× asks ~3 s of real time ahead in chunks of up to 30 min. Where the frames are too dense to
+// stream at that speed (a server's boot burst), the replay jumps the stretch with a snapshot
+// (`rebaseReplay`), taken when the playhead gets there. The playhead never passes what is
+// loaded: it waits (`waiting`; counted in `stalls`/`stallMs`), and the strip says so.
+//
+// A replay keeps NOW's groups: a server's past fleet may carry none (`/snapshot?at=` and the
+// frames from before its v0.5 groups existed: the live server's before 04:41 UTC, 2026-11-11), and
+// without them the floor loses its lanes, hues, docks and districts. The live world's groups and
+// each repo's group are kept when a replay starts and given to every replayed world (and every
+// repo a replayed frame brings) that has none (`carryGroups`).
 
-import type { Frame as WireFrame, History, Snapshot } from './wire.ts';
+import type { Frame as WireFrame, Group, History, Snapshot } from './wire.ts';
 import { World, type Listener } from './world.ts';
 
 export type Mode = 'live' | 'paused' | 'behind' | 'replay';
 
 /** Paused or behind for longer than this many frames: drop them and refetch on resume. */
 const MAX_KEPT = 20_000;
+
+/** A streaming replay's sizes at `speed` (server ms per real ms), all server ms:
+ *  - `lookahead`: how far ahead of the playhead the next chunk is asked: ~3 s of real time (≥ 1 min);
+ *  - `max`: the longest chunk: 6 s of real time, 6 min (60×) to 30 min (720×);
+ *  - `min`: the shortest worth streaming: under it a chunk covers less than the playhead plays
+ *    between two asks (a source asks every 250 ms), so the stream cannot keep up: jump instead;
+ *  - `skip`: how far such a jump goes (2.5 s of real time, ≥ `min`, ≤ `max`);
+ *  - `start`: the first chunk (the window grows by half on quiet chunks and halves on big ones). */
+export function replaySizing(speed: number): { lookahead: number; max: number; min: number; skip: number; start: number } {
+  const s = Math.max(1, speed);
+  const max = Math.min(30 * 60_000, Math.max(6 * 60_000, s * 6_000));
+  const min = Math.min(max / 4, Math.max(5_000, s * 250));
+  return { lookahead: Math.max(60_000, s * 3_000), max, min, skip: Math.min(max, Math.max(min, s * 2_500)), start: Math.max(min, Math.min(60_000 * Math.max(1, s / 60), max / 3)) };
+}
+
+/** The next chunk's window after one of `ms` came back with `bytes` (`ceiling` the reply limit):
+ *  half again on a quiet chunk (under a quarter of the ceiling), halved on a big one (over half). */
+export function nextChunkMs(ms: number, bytes: number, ceiling: number, z: { max: number; min: number }): number {
+  if (bytes < ceiling / 4) return Math.min(z.max, Math.round(ms * 1.5));
+  if (bytes > ceiling / 2) return Math.floor(ms / 2);
+  return Math.min(z.max, ms);
+}
 
 export class Timeline {
   world = new World();
@@ -43,6 +79,29 @@ export class Timeline {
   densityVer = 0;
   /** The replay's frames are loaded up to here (it streams in chunks; the playhead waits). */
   replayLoadedTo = 0;
+  /** The speed the replay was started at (60× the hour, DAY_SPEED the day): a seek keeps it. */
+  replaySpeed = 60;
+  /** The playhead is held at `replayLoadedTo`, waiting for the next chunk (the strip says so). */
+  waiting = false;
+  /** This replay's waits after its first frames: how many, and their real ms in all; and the real
+   *  ms before its first frames played (the base and the first chunk). */
+  stalls = 0;
+  stallMs = 0;
+  startMs = 0;
+  /** The module clock when the playhead reached the replay's end (0 before). */
+  endClock = 0;
+  private played = false;
+  /** The world to jump the replay to once the playhead reaches `jumpFrom`, the end of what was
+   *  loaded before the jump (`rebaseReplay`); chunks after the jump load meanwhile. */
+  private pendingBase: World | null = null;
+  private jumpFrom = 0;
+  /** Paused from a replay (the frames are kept; play resumes it) and its speed then. */
+  private pausedReplay = false;
+  private pausedSpeed = 60;
+  /** The live world's groups and each repo's, as the last replay started (`keepGroups`). */
+  private liveGroups: { groups: Map<string, Group>; of: Map<string, string> } | null = null;
+  /** The replayed world was given the live groups: repos its frames bring get theirs too. */
+  private carried = false;
   /** The world no longer follows the server (replay, or too much kept): refetch to go live. */
   stale = false;
   /** Bumps when the world is replaced or jumps: the motion system re-syncs. */
@@ -62,6 +121,9 @@ export class Timeline {
     this.lastAtClock = clock;
     this.clearKept();
     this.replay = [];
+    this.pendingBase = null;
+    this.pausedReplay = false;
+    this.waiting = false;
     this.stale = false;
     this.mode = 'live';
     this.speed = 1;
@@ -127,11 +189,26 @@ export class Timeline {
         break;
       }
       case 'replay': {
-        this.playhead = Math.min(this.playhead + dt * this.speed, Math.max(this.replayLoadedTo, this.replayFrom));
+        let want = this.playhead + dt * this.speed;
+        // a jump, taken when the playhead has played what was loaded before it
+        const pb = this.pendingBase;
+        if (pb && want >= this.jumpFrom) { want = pb.at + (want - this.jumpFrom); this.rebaseNow(pb); }
+        const cap = this.pendingBase ? this.jumpFrom : Math.max(this.replayLoadedTo, this.replayFrom);
+        this.playhead = Math.min(want, cap);
         while (this.replayIdx < this.replay.length && atOf(this.replay[this.replayIdx]) <= this.playhead) {
-          this.world.apply(this.replay[this.replayIdx++], this.listener);
+          this.applyReplayed(this.replay[this.replayIdx++], true);
         }
-        if (this.playhead >= this.replayTo) this.playhead = this.replayTo;
+        if (this.playhead >= this.replayTo) { this.playhead = this.replayTo; if (!this.endClock) this.endClock = clock; }
+        // held at what is loaded, short of the end: waiting for the stream
+        // (a second draw of the same frame moves nothing: it says nothing new)
+        if (dt > 0) {
+          const held = want > cap && cap < this.replayTo && this.speed > 0;
+          if (held) {
+            if (!this.played) this.startMs += dt;
+            else { if (!this.waiting) this.stalls++; this.stallMs += Math.min(dt, (want - cap) / this.speed); }
+          } else this.played = true;
+          this.waiting = held;
+        }
         break;
       }
     }
@@ -148,12 +225,28 @@ export class Timeline {
       this.playhead = this.liveNow();
       this.clearKept();
     }
+    // a replay paused stays one (its frames kept, the stream idle): play resumes it
+    this.pausedReplay = this.mode === 'replay';
+    if (this.pausedReplay) this.pausedSpeed = this.speed;
+    this.waiting = false;
     this.mode = 'paused';
   }
 
-  /** Plays at `speed` from where the playhead is (behind live), or stays live at 1×. */
+  /** Paused from a replay: play goes on with it. */
+  get replayPaused(): boolean { return this.mode === 'paused' && this.pausedReplay; }
+
+  /** Resumes a paused replay at the speed it had (true), else plays at 1× behind live. */
+  resume(): boolean {
+    if (this.replayPaused) { this.mode = 'replay'; this.speed = this.pausedSpeed; this.pausedReplay = false; return true; }
+    this.play(1);
+    return false;
+  }
+
+  /** Plays at `speed` from where the playhead is (behind live), or stays live at 1×. A paused
+   *  replay goes on at `speed`. */
   play(speed: number): void {
     this.speed = speed;
+    if (this.replayPaused) { this.mode = 'replay'; this.pausedReplay = false; return; }
     if (this.mode === 'replay') return;
     if (this.mode === 'live') {
       if (speed >= 1) return;
@@ -163,12 +256,14 @@ export class Timeline {
     this.mode = 'behind';
   }
 
-  /** Replaces the world with history's base and plays its frames at 60×, through `to` (later
+  /** Replaces the world with history's base and plays its frames at `speed`, through `to` (later
    *  chunks arrive by `appendReplay`; by default the window is `h` alone). */
-  startReplay(h: History, to = h.to): boolean {
+  startReplay(h: History, to = h.to, speed = 60): boolean {
     if (!h.base) return false;
+    this.keepGroups();
     const w = new World();
     w.load(h.base);
+    this.carried = this.carryGroups(w);
     this.world = w;
     const frames: WireFrame[] = [];
     for (const f of h.frames ?? []) {
@@ -177,10 +272,12 @@ export class Timeline {
         // A server restart inside the window: what came before it no longer applies.
         frames.length = 0;
         w.load(f.v);
+        this.carried = this.carryGroups(w);
       }
     }
     frames.sort((a, b) => atOf(a) - atOf(b));
     this.density.fill(0); this.fails.fill(0);
+    to = Math.floor(to); // (whole ms, as the server's windows are asked and answered)
     this.replayFrom = h.from; this.replayTo = to;
     for (const f of frames) this.countFrame(f);
     this.replay = frames;
@@ -191,38 +288,73 @@ export class Timeline {
     // History may start later than asked (a young server): the replay starts where it does.
     this.replayLoadedTo = Math.max(h.to, this.playhead);
     // Frames before `from` only fast-forward the base (no motion for them).
-    while (this.replayIdx < frames.length && atOf(frames[this.replayIdx]) <= this.playhead) w.apply(frames[this.replayIdx++]);
+    while (this.replayIdx < frames.length && atOf(frames[this.replayIdx]) <= this.playhead) this.applyReplayed(frames[this.replayIdx++], false);
     this.clearKept();
     this.stale = true;
-    this.mode = 'replay';
-    this.speed = 60;
-    this.epoch++;
+    this.beginReplay(speed);
     return true;
   }
 
-  /** A replay chunk too big to load even at its shortest: jump the world to the fleet as it
-   *  was at `s.at` and go on from there (what happened inside the gap is skipped, not wrong). */
+  /** The replay's own state: its speed, its waits counted afresh. */
+  private beginReplay(speed: number): void {
+    this.mode = 'replay';
+    this.speed = speed;
+    this.replaySpeed = speed;
+    this.pausedReplay = false;
+    this.pendingBase = null;
+    this.waiting = false;
+    this.played = false;
+    this.stalls = 0; this.stallMs = 0; this.startMs = 0; this.endClock = 0;
+    this.epoch++;
+  }
+
+  /** A stretch too dense to stream at this speed: jump the world to the fleet as it was at
+   *  `s.at` and go on from there (what happened inside the gap is skipped, not wrong). The jump
+   *  waits until the playhead has played the frames loaded before it. */
   rebaseReplay(s: Snapshot): void {
-    if (this.mode !== 'replay') return;
+    if ((this.mode !== 'replay' && !this.replayPaused) || this.pendingBase) return;
     const w = new World();
     w.load(s);
+    if (this.carryGroups(w)) this.carried = true;
+    // (loaded here, in the answer's turn: the swap in a draw's tick is a pointer). Chunks go on
+    // from the jump's far side while the playhead plays up to its near one.
+    const near = Math.max(this.replayLoadedTo, this.replayFrom);
+    if (this.playhead < near && w.at > near) {
+      this.pendingBase = w;
+      this.jumpFrom = near;
+      this.replayLoadedTo = w.at;
+      return;
+    }
+    this.rebaseNow(w);
+  }
+
+  /** A jump is waiting for the playhead. */
+  get rebasing(): boolean { return this.pendingBase !== null; }
+
+  private rebaseNow(w: World): void {
+    this.pendingBase = null;
     this.world = w;
-    this.replay = [];
-    this.replayIdx = 0;
-    this.replayLoadedTo = Math.max(this.replayLoadedTo, s.at);
-    this.playhead = Math.max(this.playhead, s.at);
+    // what was loaded beyond the jump stays (it was fetched after it); the rest is the gap's
+    if (this.replayIdx > 0) { this.replay = this.replay.slice(this.replayIdx); this.replayIdx = 0; }
+    let k = 0;
+    while (k < this.replay.length && atOf(this.replay[k]) <= w.at) k++;
+    if (k) this.replay = this.replay.slice(k);
+    this.replayLoadedTo = Math.max(this.replayLoadedTo, w.at);
+    this.playhead = Math.max(this.playhead, w.at);
     this.stale = true;
     this.epoch++;
   }
 
   /** The next chunk of a streaming replay: its frames after what is loaded. */
   appendReplay(h: History): void {
-    if (this.mode !== 'replay') return;
+    if (this.mode !== 'replay' && !this.replayPaused) return;
     if (this.replayIdx > 0) { this.replay = this.replay.slice(this.replayIdx); this.replayIdx = 0; }
     for (const f of h.frames ?? []) {
       if (f.t === 'delta' && f.at > this.replayLoadedTo - 1) { this.replay.push(f); this.countFrame(f); }
       else if (f.t === 'snapshot' && f.at > this.replayLoadedTo) this.replay.push({ t: 'delta', seq: f.seq, at: f.at, ops: [] }); // a restart: nothing to animate
     }
+    // (a window asked up to the end comes back ending at the server's now when that is earlier: the
+    // end is loaded)
     this.replayLoadedTo = Math.max(this.replayLoadedTo, h.to);
   }
 
@@ -239,11 +371,53 @@ export class Timeline {
     this.densityVer++;
   }
 
-  /** Where the next replay chunk starts, or 0 when none is needed yet (or ever). */
+  /** A replayed frame, applied; a repo it brings without a group gets its live one. */
+  private applyReplayed(f: WireFrame, animate: boolean): void {
+    this.world.apply(f, animate ? this.listener : undefined);
+    const g = this.liveGroups;
+    if (!this.carried || !g || f.t !== 'delta') return;
+    for (const o of f.ops) {
+      if (o.op !== 'upsert' || o.kind !== 'repo') continue;
+      const r = this.world.repos.get(o.id);
+      if (r && !r.group) { const id = g.of.get(o.id); if (id) r.group = id; }
+    }
+  }
+
+  /** Keeps the live world's groups (v0.5: its tables and each repo's) for the replays: taken from
+   *  a world that follows the server, never from a replayed one (a seek keeps the last). */
+  private keepGroups(): void {
+    const w = this.world;
+    if (this.mode === 'replay' || this.pausedReplay || this.stale || !w.loaded || !w.groups.size) return;
+    const of = new Map<string, string>();
+    for (const r of w.repos.values()) if (r.group) of.set(r.id, r.group);
+    this.liveGroups = { groups: new Map(w.groups), of };
+  }
+
+  /** Gives a replayed world without groups the live ones (true when it did). */
+  private carryGroups(w: World): boolean {
+    const g = this.liveGroups;
+    if (!g || w.groups.size) return false;
+    w.groups = new Map(g.groups);
+    for (const r of w.repos.values()) if (!r.group) { const id = g.of.get(r.id); if (id) r.group = id; }
+    w.kv.group++;
+    w.ver++;
+    return true;
+  }
+
+  /** Where the next replay chunk starts, or 0 when none is needed yet (or ever). The lookahead is
+   *  at least `lookaheadMs` and ~3 s of real time at the playing speed (`replaySizing`), past a
+   *  jump waiting for the playhead (its far side loads meanwhile). */
   replayWants(lookaheadMs: number): number {
     if (this.mode !== 'replay' || this.replayLoadedTo >= this.replayTo) return 0;
-    return this.playhead + lookaheadMs >= this.replayLoadedTo ? this.replayLoadedTo : 0;
+    const ahead = Math.max(lookaheadMs, replaySizing(this.speed).lookahead);
+    // what is left to play before the loaded end (a waiting jump's gap takes no time)
+    const pb = this.pendingBase;
+    const left = pb ? this.jumpFrom - this.playhead + this.replayLoadedTo - pb.at : this.replayLoadedTo - this.playhead;
+    return left <= ahead ? this.replayLoadedTo : 0;
   }
+
+  /** Unplayed replay frames held (the played ones are sliced off as chunks arrive). */
+  get replayHeld(): number { return this.replay.length - this.replayIdx; }
 
   /** A frame the demo made for the playhead (behind or rewinding): applied at once. */
   applyNow(f: WireFrame): void {
@@ -251,9 +425,9 @@ export class Timeline {
     this.world.apply(f, this.listener);
   }
 
-  /** The demo's rewind: the world (already loaded at `from`) plays forward to `to` at 60×,
+  /** The demo's rewind: the world (already loaded at `from`) plays forward to `to` at `speed`,
    *  pulled by the playhead; nothing is stale, the world it ends on is the live one. */
-  beginPlayback(from: number, to: number): void {
+  beginPlayback(from: number, to: number, speed = 60): void {
     this.replay = [];
     this.replayIdx = 0;
     this.replayFrom = from;
@@ -262,14 +436,15 @@ export class Timeline {
     this.playhead = from;
     this.clearKept();
     this.stale = false;
-    this.mode = 'replay';
-    this.speed = 60;
-    this.epoch++;
+    this.beginReplay(speed);
   }
 
   /** The demo's playback reached now (or the person asked for live): live from here. */
   resumeLive(): void {
     this.replay = [];
+    this.pendingBase = null;
+    this.pausedReplay = false;
+    this.waiting = false;
     this.clearKept();
     this.stale = false;
     this.mode = 'live';
@@ -287,6 +462,9 @@ export class Timeline {
 
   private toLive(jump: boolean): boolean {
     this.replay = [];
+    this.pendingBase = null;
+    this.pausedReplay = false;
+    this.waiting = false;
     if (this.stale || this.mode === 'replay') {
       this.mode = 'live';
       this.speed = 1;
