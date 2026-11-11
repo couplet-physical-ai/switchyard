@@ -133,6 +133,38 @@ pub fn facts_from_catalog(c: &Catalog, now: Ms) -> Vec<Fact> {
     out
 }
 
+/// What to do with one catalog response.
+#[derive(Debug, PartialEq)]
+pub enum Verdict {
+    /// Fresh: ingest, adapter ok.
+    Fresh,
+    /// The catalog lost its upstream and serves its last-known-good rows: ingest
+    /// (the rows are real, a little old), adapter degraded.
+    Stale,
+    /// No rows: never real (the catalog lost its upstream with nothing cached, or a
+    /// glitch). Ingesting it would remove every app (and every team group): keep the
+    /// last list.
+    Empty,
+}
+
+pub fn verdict(c: &Catalog) -> Verdict {
+    if c.rows.iter().all(|r| r.name.is_empty()) {
+        Verdict::Empty
+    } else if c.error.as_ref().is_some_and(|e| !e.is_null()) {
+        Verdict::Stale
+    } else {
+        Verdict::Fresh
+    }
+}
+
+/// The catalog's own words for a stale / failed response (generic text, no hosts).
+fn catalog_error(c: &Catalog) -> String {
+    match c.error.as_ref() {
+        Some(serde_json::Value::String(s)) => format!("catalog: {s}"),
+        _ => "catalog reports a stale snapshot".into(),
+    }
+}
+
 pub async fn run(
     url: String,
     http: reqwest::Client,
@@ -161,6 +193,14 @@ pub async fn run(
         match r {
             Ok(c) => {
                 let now = clock();
+                let v = verdict(&c);
+                if v == Verdict::Empty {
+                    adapters.error(
+                        NAME,
+                        format!("{} (no apps; kept the last list)", catalog_error(&c)),
+                    );
+                    continue;
+                }
                 let facts = facts_from_catalog(&c, now);
                 let _ = tx
                     .send(Ingest {
@@ -169,8 +209,8 @@ pub async fn run(
                     })
                     .await;
                 first = false;
-                if c.error.as_ref().is_some_and(|e| !e.is_null()) {
-                    adapters.degraded(NAME, "catalog reports a stale snapshot".into());
+                if v == Verdict::Stale {
+                    adapters.degraded(NAME, catalog_error(&c));
                 } else {
                     adapters.ok(NAME, now, None);
                 }
@@ -186,6 +226,46 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_catalog_is_never_ingested() {
+        let row = |n: &str| -> CatalogRow {
+            serde_json::from_value(
+                serde_json::json!({"name": n, "kind": "lxc", "url": "https://x", "health": "up"}),
+            )
+            .unwrap()
+        };
+        let c = |rows: Vec<CatalogRow>, e: serde_json::Value| Catalog {
+            rows,
+            error: Some(e),
+        };
+        assert_eq!(
+            verdict(&c(vec![row("a")], serde_json::Value::Null)),
+            Verdict::Fresh
+        );
+        let stale = c(
+            vec![row("a")],
+            "Provisioning API unavailable — serving last-known-good data".into(),
+        );
+        assert_eq!(verdict(&stale), Verdict::Stale);
+        assert!(catalog_error(&stale).starts_with("catalog: Provisioning API unavailable"));
+        assert_eq!(
+            verdict(&c(
+                vec![],
+                "Provisioning API unavailable — try again shortly.".into()
+            )),
+            Verdict::Empty
+        );
+        assert_eq!(
+            verdict(&c(vec![], serde_json::Value::Null)),
+            Verdict::Empty,
+            "even without an error"
+        );
+        assert_eq!(
+            verdict(&c(vec![row("")], serde_json::Value::Null)),
+            Verdict::Empty
+        );
+    }
 
     #[test]
     fn parses_times() {
