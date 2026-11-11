@@ -73,6 +73,10 @@ export interface FlowEvent {
   finished?: number;
   /** (extra) Jobs beyond the per-event cap (JOBS_CAP), not in `jobs`. */
   more?: number;
+  /** (extra, `earlier` only) A cron that fired many times on one sha is ONE earlier row (id
+   *  `${repo}@${sha}#cron~`): `folded` firings (this row shows the newest), `foldedFail` failed. */
+  folded?: number;
+  foldedFail?: number;
 }
 export interface FlowFilter { repo?: string; group?: string; branch?: string; author?: string }
 export interface FlowView {
@@ -122,25 +126,48 @@ const doneRank = (s: FlowState) => (s === 'fail' ? 0 : s === 'cancelled' ? 1 : s
 
 // ---- classification ----
 
-const RE_DEPLOY = /deploy|publish|rollout|ship|promote|provision/i;
-const RE_RELEASE = /release|tag|package|homebrew|cask|dist\b/i;
-const RE_LINT = /lint|fmt|format|clippy|eslint|ruff|prettier|style|gitleaks|security|scan|audit|osv|typecheck|tsc/i;
-const RE_TEST = /test|e2e|spec|smoke|qa|check|verify|validate|contract/i;
-const RE_BUILD = /build|compile|image|docker|bundle|wheel|cargo|ml\b|docs?\b|site/i;
+// Name keywords (no lookbehind: Hermes). A name is classified by its LAST keyword ("release-lint" lints, "lint-fix" too);
+// a deploy keyword anywhere wins ("Deploy Docs" deploys).
+const RE_DEPLOY = /deploy|rollout|promote|provision|failsafe/i;
+const KEYWORDS: [RegExp, FlowKind][] = [
+  [/release|(?:^|[^a-z])tag(?![a-z])|package|homebrew|(?:^|[^a-z])cask|(?:^|[^a-z])dist(?![a-z])|installer|publish|notari[sz]e/gi, 'release'],
+  [/lint|fmt|format|clippy|eslint|ruff|prettier|gitleaks|security|scan|audit|osv|typecheck|(?:^|[^a-z])tsc(?![a-z])/gi, 'lint'],
+  [/test|e2e|spec(?![a-z])|smoke|(?:^|[^a-z])qa(?![a-z])|check|verify|validate|contract|compat/gi, 'test'],
+  [/build|compile|image|docker|bundle|wheel|cargo|(?:^|[^a-z])ml(?![a-z])|(?:^|[^a-z])docs?(?![a-z])|site/gi, 'build'],
+];
+const GENERIC = /^(ci|main|pipeline|default|workflow)$/i;
+
+/** One workflow name's kind (or null: no keyword). */
+export function nameKind(name: string): FlowKind | null {
+  if (RE_DEPLOY.test(name)) return 'deploy';
+  let best: FlowKind | null = null, at = -1;
+  for (const [re, kind] of KEYWORDS) {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(name))) { if (m.index >= at) { at = m.index; best = kind; } if (!m[0]) re.lastIndex++; }
+  }
+  return best;
+}
 
 /** The pipeline's kind: a tag is a release; a deploy pipeline (or a deploy workflow) a deploy;
- *  else the first match over the workflow names (release, lint, test, build), else `ci`. */
+ *  a release workflow a release; a plain `ci` workflow stays `ci`; else test > lint > build over
+ *  the workflow names; else `ci`. */
 export function kindOf(p: Pipeline): FlowKind {
   if (p.event === 'tag') return 'release';
-  const names = wfNames(p);
   if (p.deploy || p.event === 'deployment') return 'deploy';
-  if (names.some((n) => RE_DEPLOY.test(n))) return 'deploy';
-  if (names.some((n) => RE_RELEASE.test(n))) return 'release';
-  const lint = names.some((n) => RE_LINT.test(n));
-  const test = names.some((n) => RE_TEST.test(n));
-  const build = names.some((n) => RE_BUILD.test(n));
-  // A plain `ci` workflow builds and tests: keep `ci` unless every name says something narrower.
-  const generic = names.length === 0 || names.some((n) => /^ci$|^main$|^pipeline$|^default$/i.test(n.trim()));
+  const names = wfNames(p);
+  let rel = false, test = false, lint = false, build = false, generic = names.length === 0;
+  for (const n of names) {
+    const k = nameKind(n);
+    if (k === 'deploy') return 'deploy';
+    if (k === 'release') rel = true;
+    else if (k === 'test') test = true;
+    else if (k === 'lint') lint = true;
+    else if (k === 'build') build = true;
+    if (GENERIC.test(n.trim())) generic = true;
+  }
+  if (rel) return 'release';
+  // A plain `ci` workflow builds and tests: it stays `ci`.
   if (generic) return 'ci';
   if (test) return 'test';
   if (lint) return 'lint';
@@ -158,6 +185,13 @@ export function jobName(p: Pipeline): string {
   if (!names.length) return p.lane === 'gha' ? 'GitHub Actions' : `#${p.number ?? ''}`;
   const uniq: string[] = [];
   for (const n of names) if (!uniq.includes(n)) uniq.push(n);
+  return uniq.length <= 3 ? uniq.join(' · ') : `${uniq.slice(0, 3).join(' · ')} +${uniq.length - 3}`;
+}
+
+/** Distinct non-empty names, ≤ 3 then "+N". */
+function short(names: string[]): string {
+  const uniq: string[] = [];
+  for (const n of names) if (n && !uniq.includes(n)) uniq.push(n);
   return uniq.length <= 3 ? uniq.join(' · ') : `${uniq.slice(0, 3).join(' · ')} +${uniq.length - 3}`;
 }
 
@@ -183,7 +217,6 @@ type EngIndex = {
   byName: Map<string, Engine>;        // id and label → engine
   hosts: Map<string, HostAgg>;        // host → aggregate
   slotOf: Map<string, { host: string; slot: number; agent: string }>; // pipeline id → its slot
-  ghaBusy: number;
 };
 const engCache = new WeakMap<World, EngIndex>();
 
@@ -239,7 +272,7 @@ function engIndex(w: World): EngIndex {
       base += Math.max(e.slots ?? 0, e.running?.length ?? 0);
     }
   }
-  const idx: EngIndex = { ver, byName, hosts, slotOf, ghaBusy: 0 };
+  const idx: EngIndex = { ver, byName, hosts, slotOf };
   engCache.set(w, idx);
   return idx;
 }
@@ -259,7 +292,17 @@ function engineName(p: Pipeline): string | undefined {
   return undefined;
 }
 
+/** Where a job runs (host, slot, the host's load now) or, finished, where it ran (host + agent). */
 function machineOf(w: World, p: Pipeline, idx: EngIndex, ghaBusy: number, engine?: string): FlowMachine | undefined {
+  const m = machineNow(p, idx, ghaBusy, engine);
+  if (!m || live(flowState(p.state))) return m;
+  const out: FlowMachine = { id: m.id, label: m.label };
+  if (m.host) out.host = m.host;
+  if (m.agent) out.agent = m.agent;
+  void w;
+  return out;
+}
+function machineNow(p: Pipeline, idx: EngIndex, ghaBusy: number, engine?: string): FlowMachine | undefined {
   if (p.lane === 'gha') return { id: GHA_ID, label: 'GitHub runner', busy: ghaBusy };
   const name = engine ?? engineName(p);
   const pid = p.id ?? '';
@@ -331,7 +374,26 @@ function flowDeployOf(w: World, repo: string, sha: string): FlowDeploy | undefin
   return out;
 }
 
-function jobOf(w: World, p: Pipeline, idx: EngIndex, ghaBusy: number, now: number): FlowJob {
+/** A job per pipeline object (the World replaces a pipeline on every change, so the object is
+ *  its version), re-derived when what else it reads moved: engines, clusters, deploys, apps, and
+ *  for GHA the runner count. Jobs are shared between views: treat them as read-only. */
+const jobCache = new WeakMap<Pipeline, { key: string; job: FlowJob }>();
+
+function jobOf(w: World, p: Pipeline, idx: EngIndex, ghaBusy: number): FlowJob {
+  // A finished job's machine is only where it ran (no slot, no load), so it does not move with
+  // every engine change: it re-derives only when the set of engines changes (World.shapeVer).
+  const done = !live(flowState(p.state));
+  const key = done
+    ? `d${w.shapeVer}|${w.kv.cluster}|${w.kv.deploy}|${w.kv.app}`
+    : `${idx.ver}|${w.kv.cluster}|${w.kv.deploy}|${w.kv.app}|${p.lane === 'gha' ? ghaBusy : 0}`;
+  const hit = jobCache.get(p);
+  if (hit && hit.key === key) return hit.job;
+  const job = makeJob(w, p, idx, ghaBusy);
+  jobCache.set(p, { key, job });
+  return job;
+}
+
+function makeJob(w: World, p: Pipeline, idx: EngIndex, ghaBusy: number): FlowJob {
   const state = flowState(p.state);
   const kind = kindOf(p);
   const result: FlowResult = { state };
@@ -342,7 +404,16 @@ function jobOf(w: World, p: Pipeline, idx: EngIndex, ghaBusy: number, now: numbe
       result.failWorkflow = f.wf.name;
       const line = f.step.cluster ? w.clusters.get(f.step.cluster)?.line : undefined;
       if (line) result.errorLine = line;
+    } else if (!(p.workflows ?? []).length) {
+      // Woodpecker errors before any workflow exists (a config error): say so, name no step.
+      result.errorLine = 'pipeline error before any step ran';
     }
+  }
+  // The deploy result: on the pipeline that ran it (Deploy.pipeline), else on a deploy job.
+  const d = w.deploys.get(`${p.repo}@${p.sha}`);
+  if (d && (d.pipeline === p.id || (kind === 'deploy' && (!d.pipeline || !w.pipelines.has(d.pipeline))))) {
+    const dep = flowDeployOf(w, p.repo, p.sha);
+    if (dep) result.deploy = dep;
   }
   if (p.finished != null) result.durationMs = Math.max(0, p.finished - (p.started ?? p.created));
   const job: FlowJob = {
@@ -356,7 +427,6 @@ function jobOf(w: World, p: Pipeline, idx: EngIndex, ghaBusy: number, now: numbe
   const m = machineOf(w, p, idx, ghaBusy);
   if (m) job.machine = m;
   if (state === 'running') { const s = runningStep(p); if (s) job.step = s; }
-  void now;
   return job;
 }
 
@@ -392,12 +462,15 @@ type Draft = {
 };
 
 /** All event rows of the world (unfiltered, unbanded), keyed and cached per w.ver. */
-type Built = { ver: number; drafts: Draft[] };
+type Built = { key: string; drafts: Draft[]; shas: Set<string>; pushed: Commit[] };
 const buildCache = new WeakMap<World, Built>();
 
-function drafts(w: World): Draft[] {
+function drafts(w: World): Built {
+  // Rows read pipelines, commits (author, title, pr) and repos (default branch): rebuilt only when
+  // one of those changed, not on every frame.
+  const key = `${w.kv.pipeline}|${w.kv.commit}|${w.kv.repo}`;
   const hit = buildCache.get(w);
-  if (hit && hit.ver === w.ver) return hit.drafts;
+  if (hit && hit.key === key) return hit;
   // repo + sha + raw event → pipelines
   const groups = new Map<string, Pipeline[]>();
   for (const p of w.pipelines.values()) {
@@ -436,18 +509,27 @@ function drafts(w: World): Draft[] {
     }
     runs.forEach((r, i) => { r.id = i === anchor ? base : `${base}@${r.t0}`; out.push(r); });
   }
-  buildCache.set(w, { ver: w.ver, drafts: out });
-  return out;
+  const shas = new Set<string>();
+  for (const d of out) shas.add(`${d.repo}@${d.sha}`);
+  // commits still at `pushed` (the waiting rows' candidates), newest first, bounded
+  const pushed: Commit[] = [];
+  for (const c of w.commits.values()) if (c.stage === 'pushed' && !shas.has(`${c.repo}@${c.sha}`)) pushed.push(c);
+  pushed.sort((a, b) => b.at - a.at);
+  if (pushed.length > NOW_CAP * 2) pushed.length = NOW_CAP * 2;
+  const built: Built = { key, drafts: out, shas, pushed };
+  buildCache.set(w, built);
+  return built;
 }
 
 /** Pushes with no pipeline yet: a commit at stage `pushed`, or a recent `push` event. */
-function waitingDrafts(w: World, now: number, seen: Set<string>): Draft[] {
+function waitingDrafts(w: World, now: number, b: Built): Draft[] {
   const out: Draft[] = [];
+  const seen = new Set<string>();
   const since = now - WAIT_MS;
   const add = (repo: string, sha: string, at: number, c: Commit | undefined) => {
     if (!repo || !sha || at < since || at > now + 60_000) return;
     const key = `${repo}@${sha}`;
-    if (seen.has(key)) return;
+    if (seen.has(key) || b.shas.has(key)) return;
     seen.add(key);
     const def = w.repos.get(repo)?.default_branch;
     const kind: FlowEventKind = c?.pr != null && def != null && c.branch === def ? 'merge' : 'push';
@@ -460,8 +542,8 @@ function waitingDrafts(w: World, now: number, seen: Set<string>): Draft[] {
     if (e.at < since) break;
     if (e.k === 'push') add(e.repo, e.sha, e.at, w.commits.get(`${e.repo}@${e.sha}`) ?? ({ repo: e.repo, sha: e.sha, branch: e.branch, title: e.title, author: e.author, bot: e.bot, at: e.at, stage: 'pushed', ci: 'none', pipelines: [] } as Commit));
   }
-  for (const c of w.commits.values()) {
-    if (c.stage !== 'pushed' || c.at < since) continue;
+  for (const c of b.pushed) {
+    if (c.at < since) break;
     add(c.repo, c.sha, c.at, c);
   }
   return out;
@@ -471,15 +553,8 @@ function eventOf(w: World, d: Draft, idx: EngIndex, ghaBusy: number, now: number
   const c = d.commit;
   const p0 = d.pipes[0];
   const repo = w.repos.get(d.repo);
-  let jobs = d.pipes.map((p) => jobOf(w, p, idx, ghaBusy, now));
-  jobs.sort(jobOrder);
-  // The deploy result: the job that ran it (Deploy.pipeline), else the first deploy job.
-  const dep = flowDeployOf(w, d.repo, d.sha);
-  if (dep && jobs.length) {
-    const dd = w.deploys.get(`${d.repo}@${d.sha}`);
-    const j = jobs.find((x) => x.id === dd?.pipeline) ?? jobs.find((x) => x.kind === 'deploy');
-    if (j) j.result.deploy = dep;
-  }
+  let jobs = d.pipes.map((p) => jobOf(w, p, idx, ghaBusy));
+  if (jobs.length > 1) jobs.sort(jobOrder);
   let more: number | undefined;
   if (jobs.length > JOBS_CAP) { more = jobs.length - JOBS_CAP; jobs = jobs.slice(0, JOBS_CAP); }
   // the event's state: anything live wins; else the worst finish
@@ -496,8 +571,17 @@ function eventOf(w: World, d: Draft, idx: EngIndex, ghaBusy: number, now: number
   // The event time: the push (the commit's time) when it is the run's trigger, else the first run.
   let at = d.t0;
   if (!fire && c?.at != null && c.at <= d.t0 && d.t0 - c.at <= RERUN_GAP_MS) at = c.at;
-  const title = (!fire && c?.title) || d.pipes.find((p) => p.lane !== 'gha' && p.title)?.title || c?.title || (ghaTitle ? p0?.title : '') || '';
-  const author = c?.author ?? d.pipes.find((p) => p.author)?.author ?? '';
+  // Title and author. A cron firing: its cron names (the pipelines' titles), else its jobs; no
+  // author (the scheduler fired it: the commit's author did not, and "mine" must not match it).
+  // A manual run: who ran it. Else the commit.
+  let title: string, author: string;
+  if (d.kind === 'cron') {
+    title = short(d.pipes.map((p) => p.title ?? '')) || short(d.pipes.map(jobName)) || c?.title || '';
+    author = d.pipes.find((p) => p.author)?.author ?? '';
+  } else {
+    title = (!fire && c?.title) || d.pipes.find((p) => p.lane !== 'gha' && p.title)?.title || c?.title || (ghaTitle ? p0?.title : '') || '';
+    author = (fire ? d.pipes.find((p) => p.author)?.author : undefined) ?? c?.author ?? d.pipes.find((p) => p.author)?.author ?? '';
+  }
   const branch = d.pipes.find((p) => p.event === 'pull_request')?.branch ?? p0?.branch ?? c?.branch ?? '';
   const pr = d.pipes.find((p) => p.pr != null)?.pr ?? c?.pr;
   const ev: FlowEvent = {
@@ -533,7 +617,8 @@ function matches(w: World, d: Draft, f: FlowFilter | undefined): boolean {
 
 function filterKey(f?: FlowFilter): string {
   if (!f) return '';
-  return `${f.repo ?? ''}\u0001${f.group ?? ''}\u0001${f.branch ?? ''}\u0001${(f.author ?? '').trim().replace(/^@/, '').toLowerCase()}`;
+  const k = `${f.repo ?? ''}\u0001${f.group ?? ''}\u0001${f.branch ?? ''}\u0001${(f.author ?? '').trim().replace(/^@/, '').toLowerCase()}`;
+  return k === '\u0001\u0001\u0001' ? '' : k;
 }
 
 /** The fleet's machines: one per host (agents summed), then GitHub runners. */
@@ -545,9 +630,13 @@ function machinesOf(idx: EngIndex, ghaBusy: number): FlowMachine[] {
   return out;
 }
 
+const ghaCache = new WeakMap<World, { ver: number; n: number }>();
 function ghaRunning(w: World): number {
+  const hit = ghaCache.get(w);
+  if (hit && hit.ver === w.kv.pipeline) return hit.n;
   let n = 0;
   for (const p of w.pipelines.values()) if (p.lane === 'gha' && p.state === 'running') n++;
+  ghaCache.set(w, { ver: w.kv.pipeline, n });
   return n;
 }
 
@@ -572,10 +661,9 @@ export function flowOf(w: World, now: number, filter?: FlowFilter): FlowView {
 function build(w: World, now: number, filter?: FlowFilter): FlowView {
   const idx = engIndex(w);
   const gha = ghaRunning(w);
-  const all = drafts(w);
-  const seen = new Set<string>();
-  for (const d of all) seen.add(`${d.repo}@${d.sha}`);
-  const waiting = waitingDrafts(w, now, seen);
+  const built = drafts(w);
+  const all = built.drafts;
+  const waiting = waitingDrafts(w, now, built);
   const nowEv: FlowEvent[] = [];
   const just: FlowEvent[] = [];
   const earlier: FlowEvent[] = [];
@@ -612,8 +700,10 @@ function build(w: World, now: number, filter?: FlowFilter): FlowView {
   for (const d of waiting) consider(d);
   // now: the newest trigger first; just: the newest finish first; earlier: newest first
   nowEv.sort((a, b) => lastTrigger(b) - lastTrigger(a) || cmp(a.id, b.id));
+  // just and earlier both by the newest finish: a row sliding from just into earlier keeps its place
   just.sort((a, b) => (b.finished ?? b.at) - (a.finished ?? a.at) || cmp(a.id, b.id));
-  earlier.sort((a, b) => b.at - a.at || cmp(a.id, b.id));
+  earlier.sort((a, b) => (b.finished ?? b.at) - (a.finished ?? a.at) || cmp(a.id, b.id));
+  foldCrons(earlier);
   const events = [
     ...nowEv.slice(0, NOW_CAP),
     ...just.slice(0, JUST_CAP),
@@ -625,6 +715,32 @@ function build(w: World, now: number, filter?: FlowFilter): FlowView {
   };
   if (lastEventAt != null) view.lastEventAt = lastEventAt;
   return view;
+}
+
+/** Earlier cron firings on the same repo + sha fold into one row (the newest, which `earlier`
+ *  lists first), so a 5-minute cron does not push every other event out of the band. In place. */
+function foldCrons(earlier: FlowEvent[]): void {
+  let fold: Map<string, FlowEvent> | null = null;
+  let w = 0;
+  for (let i = 0; i < earlier.length; i++) {
+    const e = earlier[i];
+    if (e.kind !== 'cron') { earlier[w++] = e; continue; }
+    const k = `${e.repo}@${e.sha}#cron~`;
+    const head = (fold ??= new Map()).get(k);
+    if (!head) {
+      fold.set(k, e);
+      earlier[w++] = e;
+      continue;
+    }
+    if (!head.folded) { head.folded = 1; head.foldedFail = head.state === 'fail' ? 1 : 0; head.id = k; }
+    head.folded++;
+    if (e.state === 'fail') head.foldedFail = (head.foldedFail ?? 0) + 1;
+    if (e.title) {
+      const names = head.title ? head.title.split(' · ') : [];
+      if (!names.includes(e.title) && !/ \+\d+$/.test(head.title)) head.title = short([...names, ...e.title.split(' · ')]);
+    }
+  }
+  earlier.length = w;
 }
 
 /** A `now` row's newest trigger: its latest-created job (a re-run moves it up), else its time. */
@@ -642,9 +758,7 @@ export function flowJob(w: World, pipelineId: string, now: number): FlowJobDetai
   if (!p) return null;
   const idx = engIndex(w);
   const gha = ghaRunning(w);
-  const job = jobOf(w, p, idx, gha, now);
-  const dep = flowDeployOf(w, p.repo, p.sha);
-  if (dep && (w.deploys.get(`${p.repo}@${p.sha}`)?.pipeline === p.id || job.kind === 'deploy')) job.result.deploy = dep;
+  const job = jobOf(w, p, idx, gha);
   const c = w.commits.get(`${p.repo}@${p.sha}`);
   const workflows: FlowWorkflowDetail[] = (p.workflows ?? []).slice(0, WORKFLOWS_CAP).map((wf) => {
     const out: FlowWorkflowDetail = { name: wf.name, state: flowState(wf.state), steps: [] };
@@ -676,7 +790,7 @@ export function flowMachine(w: World, engineId: string, now: number): { machine:
   if (engineId === GHA_ID || engineId === 'gha' || engineId === 'GitHub runner') {
     const running: FlowJob[] = [];
     for (const p of w.pipelines.values()) {
-      if (p.lane === 'gha' && p.state === 'running') running.push(jobOf(w, p, idx, gha, now));
+      if (p.lane === 'gha' && p.state === 'running') running.push(jobOf(w, p, idx, gha));
     }
     running.sort(jobOrder);
     return { machine: { id: GHA_ID, label: 'GitHub runner', busy: gha }, running: running.slice(0, RUN_CAP) };
@@ -701,7 +815,7 @@ export function flowMachine(w: World, engineId: string, now: number): { machine:
   const running: FlowJob[] = [];
   for (const id of ids) {
     const p = w.pipelines.get(id);
-    if (p) running.push(jobOf(w, p, idx, gha, now));
+    if (p) running.push(jobOf(w, p, idx, gha));
   }
   running.sort(jobOrder);
   return { machine: hostMachine(h), running: running.slice(0, RUN_CAP) };
