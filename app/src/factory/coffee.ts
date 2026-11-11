@@ -629,7 +629,7 @@ export class Coffee {
       } else if (h.kind === 'red') { const sp = repoSpot(h.id); if (sp) at = [sp[0], sp[1], 6]; }
       else if (h.kind === 'jam') at = [(P.INTAKE_U0 + P.INTAKE_U1) / 2, 291, 10];
       else if (h.kind === 'down') { const bl = f.blockAt.get(h.id); if (bl) at = [bl.u + bl.d / 2, bl.v + bl.d / 2, bl.h + 2]; }
-      else if (fl.on && G.laneOfGroup(h.id) === h.id && fl.laneIndex(h.id) >= 0) at = [P.DOCK_U0 + 27, fl.dockV(h.id), 18]; // w2-glance2: the group's own dock (its lane)
+      else if (fl.on && G.laneOfGroup(h.id) === h.id && fl.laneIndex(h.id) >= 0) at = [P.DOCK_U1, fl.dockV(h.id), 4]; // w2-glance2: the group's own dock's right edge (its lane; the callout sits beside it)
       else { const s = this.groupSpot(h.id); if (s) at = [s[0], s[1], s[3]]; }
       this.hotXY.push(at ? cam.x(at[0], at[1]) : -1, at ? cam.y(at[0], at[1], at[2]) : -1);
     }

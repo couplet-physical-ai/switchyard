@@ -348,7 +348,10 @@ export class Glance {
         const tw = g.width(h.lead, SMALL, true) + g.width(rest, SMALL);
         const w = tw + (h.tri ? 13 : 0);
         const pin = calloutPin(ax, ay, vis);
-        const at = calloutAt(ax, ay, w, vis, keep, edge);
+        // a group's callout: beside its dock, a short leader from the dock's right edge (the anchor)
+        const near: [number, number][] = [];
+        if (h.kind === 'group') for (const dy of [5, -9, 19]) for (let dx = 30; dx <= 102; dx += 12) near.push([ax + dx, ay + dy]);
+        const at = calloutAt(ax, ay, w, vis, keep, edge, near);
         if (!at) return;
         // the callout's own box joins what the next ones keep clear of
         keep.push({ x: at[0] - 5, y: at[1] - 13, w: w + 10, h: 18, m: 8 });
@@ -471,9 +474,19 @@ const VOID_R = 0.4, VOID_T = 0.62;
  *  the glance) or the LOWER-LEFT VOID (rows up from the strip, left of 40 % of the width), the
  *  candidate nearest its anchor whose box keeps clear of every `keep` box by its margin and of
  *  the anchor itself by 24 px, and stays EDGE px inside the visible area; null when none is free. */
-export function calloutAt(ax: number, ay: number, w: number, v: Vis, keep: readonly Keep[] = [], edge: readonly [number, number, number, number] | null = null): [number, number] | null {
+export function calloutAt(ax: number, ay: number, w: number, v: Vis, keep: readonly Keep[] = [], edge: readonly [number, number, number, number] | null = null, near: readonly (readonly [number, number])[] = []): [number, number] | null {
   const x0 = v.l + EDGE + 5, x1 = v.r - EDGE - 5 - w, y0 = v.t + EDGE + 13, y1 = v.b - EDGE - 5;
   if (x1 < x0 || y1 < y0) return null;
+  // w2-glance2 (overseer): places beside the anchor first (a group's: right of its dock), in order,
+  // each kept clear as the rest are; the first free one wins
+  for (const [nx, ny] of near) {
+    const x = Math.round(nx), y = Math.round(ny);
+    if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+    const bl = x - 5, bt = y - 13, br = x + w + 5, bb = y + 5;
+    if (ax > bl - KEEP && ax < br + KEEP && ay > bt - KEEP && ay < bb + KEEP) continue;
+    if (keep.some((k) => bl < k.x + k.w + k.m && br > k.x - k.m && bt < k.y + k.h + k.m && bb > k.y - k.m)) continue;
+    return [x, y];
+  }
   let best: [number, number] | null = null, bd = Infinity;
   const consider = (x: number, y: number) => {
     x = Math.round(clamp(x, x0, x1)); y = Math.round(clamp(y, y0, y1));

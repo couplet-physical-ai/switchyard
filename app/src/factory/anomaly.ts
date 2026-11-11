@@ -81,8 +81,8 @@ export function age(ms: number): string {
   if (!(ms >= 60_000)) return 'now';
   const m = Math.floor(ms / 60_000);
   if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  return h < 48 ? `${h}h` : `${Math.floor(h / 24)}d`;
+  const h = Math.round(m / 60); // 13.97 h reads 14h, as the server's 14.0 does
+  return h < 48 ? `${h}h` : `${Math.round(h / 24)}d`;
 }
 
 /** "3h", "12m", "2d": how long ago. */
