@@ -1,4 +1,5 @@
-// Switchyard wire contract v0.2 (contract/CONTRACT.md), as TypeScript. The server owns the
+// Switchyard wire contract v0.5 (contract/CONTRACT.md), as TypeScript; a v0.4 server is still read
+// (World.v05 is false there, and src/insights.ts approximates the 0.5 tables). The server owns the
 // contract; this file mirrors it. Unknown fields are ignored and unknown kinds skipped.
 // The built-in demo (server/sim.ts) speaks the same shapes, with two old habits the client
 // tolerates: snapshot collections as id-keyed maps (v0.2 sends arrays) and entities without
@@ -21,13 +22,19 @@ export type Repo = {
   app?: string; main: MainState; heat: number; open_prs: number; last_activity?: number;
   links: { github: string; woodpecker?: string; cicd?: string };
   p50_build_ms?: number;
+  /** v0.5: Group id (team from the apps catalog, else the org). */
+  group?: string;
 };
 export type DeployRef = { id: string; state: DeployState };
 export type Commit = {
   id?: string; repo: string; sha: string; branch: string; title: string; author: string; bot?: boolean; at: number;
   pr?: number; stage: Stage; ci: CiState; pipelines: string[]; deploy?: DeployRef;
 };
-export type Step = { name: string; state: CiState; started?: number; finished?: number; exit_code?: number; cached?: boolean };
+export type Step = {
+  name: string; state: CiState; started?: number; finished?: number; exit_code?: number; cached?: boolean;
+  /** v0.5: failed steps: the failure Cluster id. */
+  cluster?: string;
+};
 export type Workflow = { name: string; state: CiState; started?: number; finished?: number; engine?: string; steps: Step[] };
 export type Pipeline = {
   /** "wp:<owner/name>:<number>" | "gha:<run_id>" (the demo leaves it to the key; the client sets it). */
@@ -37,6 +44,8 @@ export type Pipeline = {
   state: CiState; created: number; started?: number; finished?: number; queue_pos?: number;
   engine?: string; title?: string; author?: string; pr?: number; deploy?: boolean;
   workflows: Workflow[]; url: string; expected_ms?: number;
+  /** v0.5: failed, but every failed step passed on the same sha within 6 h. */
+  flaky?: boolean;
 };
 export type Pr = {
   id?: string; repo: string; number: number; title: string; author: string; bot?: boolean; draft: boolean;
@@ -72,7 +81,46 @@ export type Stats = {
   deploys_24h: number; apps_up: number; apps_down: number; prs_open: number; running?: number; pending?: number;
 };
 
-export type Kind = 'org' | 'repo' | 'commit' | 'pipeline' | 'pr' | 'deploy' | 'app' | 'engine' | 'queue' | 'lane' | 'watcher' | 'stats';
+// ---- Factory Floor (contract v0.5): groups, failure clusters, flakes, trends ----
+
+/** id = "team:<slug>" | "org:<Owner>". */
+export type Group = { id: string; name: string; kind: 'team' | 'org'; repos: number; apps: number; red: number };
+export type FailClass = 'compile' | 'test' | 'lint' | 'typecheck' | 'deps' | 'build' | 'deploy' | 'security' | 'oom' | 'timeout' | 'network' | 'infra' | 'exit';
+/** id = "f:" + 12 hex of the signature's hash; failures of the last 24 h. */
+export type Cluster = {
+  id: string; signature: string; step: string; class: FailClass; line?: string; exit_code?: number;
+  count: number; count_1h: number; repos: string[]; repo_count: number; groups: string[];
+  first_seen: number; last_seen: number; examples: string[]; open: number; flaky?: number;
+};
+/** id = "<owner/name>|<workflow>/<step>"; present while flips_24h >= 1. */
+export type Flake = { id: string; repo: string; workflow: string; step: string; flips_24h: number; failures_24h: number; last_at: number; shas: string[] };
+export type Metric = { h1: number | null; h24: number | null; d7: number | null; dir: -1 | 0 | 1; bad?: boolean; spark: (number | null)[] };
+/** id = "fleet" | a Group id. */
+export type Trend = {
+  id: string; at: number; intake_ms: Metric; run_ms: Metric; pass_rate: Metric; pipelines: Metric; deploys: Metric;
+  pr_age_ms: Metric; red: Metric; hours_7d: number;
+};
+/** GET /api/v1/insights. */
+export type Insights = { at: number; groups: Group[]; clusters: Cluster[]; flakes: Flake[]; trends: Trend[] };
+export type ChangeCounts = {
+  red: number; recovered: number; still_red: number; pipelines: number; failed: number; deploys: number; deploys_failed: number;
+  clusters_new: number; flakes: number; prs_merged: number; apps_down: number; apps_recovered: number;
+};
+/** GET /api/v1/changes?since=<ms>[&until=<ms>]: "since your last visit". `complete` is false when
+ *  `since` was older than the retained window (24 h) and was clamped to it. */
+export type Changes = {
+  since: number; until: number; complete: boolean; counts: ChangeCounts;
+  red: { repo: string; group?: string; at: number; culprit?: string; cluster?: string }[];
+  recovered: { repo: string; group?: string; at: number; red_ms: number }[];
+  still_red: { repo: string; group?: string; since: number }[];
+  clusters: { id: string; count: number; new: boolean }[];
+  deploys: { app: string; sha: string; state: string; at: number }[];
+  apps: { app: string; from: string; to: string; at: number }[];
+  groups: { id: string; failed: number; red: number }[];
+};
+
+export type Kind = 'org' | 'repo' | 'commit' | 'pipeline' | 'pr' | 'deploy' | 'app' | 'engine' | 'queue' | 'lane' | 'watcher' | 'stats'
+  | 'group' | 'cluster' | 'flake' | 'trend';
 /** v0.2 sends arrays sorted by id; the demo sends id-keyed maps. */
 type Coll<T> = T[] | Record<string, T>;
 export type Snapshot = {
@@ -80,6 +128,8 @@ export type Snapshot = {
   orgs: Coll<Org>; repos: Coll<Repo>; commits: Coll<Commit>; pipelines: Coll<Pipeline>; prs: Coll<Pr>;
   deploys: Coll<Deploy>; apps: Coll<App>; engines: Coll<Engine>; queues: Coll<Queue>; lanes: Coll<Lane>;
   watcher: Watcher | null; stats: Stats | null;
+  /** v0.5 (absent from a v0.4 server). */
+  groups?: Coll<Group>; clusters?: Coll<Cluster>; flakes?: Coll<Flake>; trends?: Coll<Trend>;
 };
 
 export type Event =
@@ -147,4 +197,6 @@ export type DemoSnapshot = {
   pipelines: Record<string, Pipeline>; prs: Record<string, Pr>; deploys: Record<string, Deploy>;
   apps: Record<string, App>; engines: Record<string, Engine>; queues: Record<string, Queue>;
   lanes: Record<string, Lane>; watcher: Watcher; stats: Stats;
+  /** v0.5: the Factory Floor tables (server/floor.ts keeps them). */
+  groups: Record<string, Group>; clusters: Record<string, Cluster>; flakes: Record<string, Flake>; trends: Record<string, Trend>;
 };

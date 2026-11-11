@@ -1,17 +1,22 @@
 #!/usr/bin/env bun
-// Switchyard mock server (API v0). All I/O and wall-clock live here; the simulation
-// (server/sim.ts) is pure. Usage:
-//   bun server/mock.ts [--port N] [--frozen] [--rate N] [--burst] [--fixtures DIR]
+// Switchyard mock server (contract v0.5). All I/O and wall-clock live here; the simulation
+// (server/sim.ts) is pure. Both sources serve the v0.5 Factory Floor (server/floor.ts):
+// the simulation keeps it as it runs, and the fixtures (v0.4 recordings) get it derived
+// deterministically and kept as their frames loop (extra ops appended to each frame).
+// Usage:
+//   bun server/mock.ts [--port N] [--frozen] [--rate N] [--burst] [--fixtures DIR [--v04]]
 // --fixtures DIR serves DIR/snapshot.json and loops DIR/hour.jsonl (contract/fixtures, read at
 // run time); with --frozen nothing moves, which is how the tests run it (app.json's
 // `commands.server`: `bun exact.mjs test` starts it at src/api.ts's FIXTURES address).
 // Env: PORT, SEED (default 7), EPOCH (ms; default now rounded down to the minute),
 //      SWITCHYARD_TOKEN (require bearer/?token= on /api/v1/*), HISTORY_HOURS (default 3).
 
-import type { Frame, Journey, PrDetail, SearchResults, DemoSnapshot as Snapshot } from '../src/wire.ts';
+import type { Changes, Frame, Insights, Journey, Op, PrDetail, SearchResults, DemoSnapshot as Snapshot } from '../src/wire.ts';
+import { Floor, type FloorKind, seedRecorded } from './floor.ts';
 import { FrameLog, historyJson } from './history.ts';
 import { applyFrame } from './reduce.ts';
 import { createSim, PROTOCOL } from './sim.ts';
+import { makeRng } from './util.ts';
 import { journeyOf, prDetailOf, searchFleet } from './views.ts';
 
 /** The surface the HTTP layer needs; the Sim and the fixture replayer both provide it. */
@@ -25,6 +30,10 @@ type Source = {
   journey(repo: string, sha: string): Journey | null;
   prDetail(repo: string, number: number): PrDetail | null;
   search(q: string): SearchResults;
+  insights(): Insights;
+  changes(since: number, until?: number): Changes;
+  /** A v0.4 recording served as recorded: no /insights or /changes (404, as a v0.4 server). */
+  v04?: boolean;
   burst?(n: number): number;
   orgs(): string[];
 };
@@ -39,6 +48,8 @@ const frozen = flag('--frozen');
 const rate = Number(opt('--rate') ?? 1);
 const burst = flag('--burst');
 const fixtures = opt('--fixtures');
+/** --fixtures only: serve the recording as recorded (contract v0.4: no Factory Floor). */
+const v04 = flag('--v04');
 const seed = Number(process.env.SEED ?? 7);
 const epoch = process.env.EPOCH ? Number(process.env.EPOCH) : Math.floor(Date.now() / 60000) * 60000;
 const token = process.env.SWITCHYARD_TOKEN || undefined;
@@ -82,6 +93,35 @@ async function fixtureSource(dir: string, start: number): Promise<Source> {
   const state = base;
   state.seq = 0;
   state.at = start;
+  // v0.5: the Factory Floor, derived from the recording (its marks become extra ops per frame).
+  // `--v04` serves the recording as it is (protocol 0.4, no Floor): the client's approximations.
+  const marks = new Map<string, [FloorKind, string]>();
+  const floor = new Floor({ state, mark: (k, id) => { if (!v04) marks.set(`${k}\u0000${id}`, [k, id]); } });
+  if (!v04) {
+    seedRecorded(floor, start, makeRng(0xf1a7));
+    state.protocol = PROTOCOL;
+  } else {
+    for (const k of ['groups', 'clusters', 'flakes', 'trends'] as const) delete (state as Partial<Snapshot>)[k];
+  }
+  marks.clear();
+  /** The ops for what the Floor changed since the last call. */
+  const floorOps = (): Op[] => {
+    const out: Op[] = [];
+    for (const [k, id] of marks.values()) {
+      if (k === 'pipeline') {
+        const p = state.pipelines[id];
+        if (p) out.push({ op: 'patch', kind: 'pipeline', id, v: { workflows: p.workflows, ...(p.flaky ? { flaky: true } : {}) } });
+      } else if (k === 'repo') {
+        const r = state.repos[id];
+        if (r) out.push({ op: 'patch', kind: 'repo', id, v: { group: r.group ?? null } });
+      } else {
+        const v = (state[`${k}s` as 'groups'] as Record<string, unknown>)[id];
+        out.push(v === undefined ? { op: 'remove', kind: k, id } : { op: 'upsert', kind: k, id, v });
+      }
+    }
+    marks.clear();
+    return out;
+  };
   const log = new FrameLog(historyMs, 20000);
   log.checkpoint(0, start, JSON.stringify(state));
   let seq = 0, now = start, next = 0, loop = 0, lastCk = start;
@@ -100,9 +140,27 @@ async function fixtureSource(dir: string, start: number): Promise<Source> {
         if (++next === frames.length) { next = 0; loop++; }
       }
       now = ms;
-      if (!ops.length) return 0;
+      const tickDue = !v04 && ms - floor.lastTick >= 5 * 60_000;
+      if (!ops.length && !tickDue) return 0;
+      // a recorded repo upsert carries no group: the Floor's goes in before it lands
+      if (!v04) for (const op of ops as Op[]) if (op.op === 'upsert' && op.kind === 'repo' && op.v && typeof op.v === 'object') (op.v as { group?: string }).group = floor.groupOf(op.id);
       const frame = { t: 'delta', seq: ++seq, at: ms, ops } as Frame;
       applyFrame(state, frame);
+      if (v04) { log.push(seq, ms, JSON.stringify(frame)); if (ms - lastCk >= 600000) { log.checkpoint(seq, ms, JSON.stringify(state)); lastCk = ms; } return 1; }
+      // v0.5: what the frame changed, read by the Floor (failed steps cluster, flips, rollups,
+      // red/green, deploys, health), its own changes appended as ops of the same frame
+      const touched = new Set<string>();
+      let appsChanged = false;
+      for (const op of ops as Op[]) {
+        if (op.op === 'event') floor.onEvent(op.e);
+        else if ((op.op === 'upsert' || op.op === 'patch') && op.kind === 'pipeline') touched.add(op.id);
+        else if ((op.op === 'upsert' || op.op === 'patch' || op.op === 'remove') && (op.kind === 'app' || op.kind === 'repo') && (op.op !== 'patch' || 'team' in (op.v as object) || op.kind === 'repo' && 'app' in (op.v as object))) appsChanged = true;
+      }
+      for (const id of touched) { const p = state.pipelines[id]; if (p) floor.observe(id, p, ms); }
+      if (appsChanged) floor.catalog();
+      if (tickDue) { floor.tick(ms); floor.tickTrends(ms); }
+      const extra = floorOps();
+      if (extra.length) (frame as { ops: Op[] }).ops.push(...extra); // (already in `state`: the Floor changed it in place)
       log.push(seq, ms, JSON.stringify(frame));
       if (ms - lastCk >= 600000) { log.checkpoint(seq, ms, JSON.stringify(state)); lastCk = ms; }
       return 1;
@@ -113,12 +171,15 @@ async function fixtureSource(dir: string, start: number): Promise<Source> {
     journey: (repo, sha) => journeyOf({ state }, repo, sha),
     prDetail: (repo, n) => prDetailOf({ state }, repo, n),
     search: (q) => searchFleet({ state }, q),
+    insights: () => floor.insights(now),
+    changes: (since, until) => floor.changes(since, until, now),
+    v04,
     orgs: () => Object.keys(state.orgs),
   };
   return src;
 }
 
-const COLLECTIONS = ['orgs', 'repos', 'commits', 'pipelines', 'prs', 'deploys', 'apps', 'engines', 'queues', 'lanes'] as const;
+const COLLECTIONS = ['orgs', 'repos', 'commits', 'pipelines', 'prs', 'deploys', 'apps', 'engines', 'queues', 'lanes', 'groups', 'clusters', 'flakes', 'trends'] as const;
 
 /** A snapshot's array collections as id-keyed maps (a map stays a map). */
 function toMaps(s: Record<string, unknown>): Record<string, unknown> {
@@ -136,7 +197,8 @@ function toMaps(s: Record<string, unknown>): Record<string, unknown> {
 function toArrays(s: Snapshot): Record<string, unknown> {
   const out: Record<string, unknown> = { ...s };
   for (const k of COLLECTIONS) {
-    const m = (s as unknown as Record<string, Record<string, unknown>>)[k] ?? {};
+    const m = (s as unknown as Record<string, Record<string, unknown> | undefined>)[k];
+    if (m === undefined) continue; // (--v04: no Factory Floor tables at all)
     out[k] = Object.keys(m).sort().map((id) => m[id]);
   }
   return out;
@@ -232,7 +294,7 @@ const ADAPTERS = ['woodpecker', 'github', 'cicd', 'apps'];
 function meta(): object {
   const now = frozen ? src.now : Date.now();
   return {
-    protocol: PROTOCOL, version: 'mock', git_sha: 'mock',
+    protocol: src.v04 ? '0.4' : PROTOCOL, version: 'mock', git_sha: 'mock',
     adapters: ADAPTERS.map((name, i) => ({ name, state: 'ok', last_ok: now - 1000 * (i + 1), lag_ms: 200 + 150 * i })),
     orgs: src.orgs(),
   };
@@ -278,6 +340,14 @@ const server = Bun.serve<WsData>({
         return d ? json(req, d) : err(req, 404, `unknown pr ${parts[1]}/${parts[2]}#${parts[3]}`);
       }
       case 'search': return json(req, src.search(url.searchParams.get('q') ?? ''));
+      case 'insights': return src.v04 ? err(req, 404, 'not found') : json(req, src.insights());
+      case 'changes': {
+        if (src.v04) return err(req, 404, 'not found');
+        const untilRaw = url.searchParams.get('until');
+        const until = untilRaw === null || untilRaw === '' ? undefined : Number(untilRaw);
+        if (since === undefined || !Number.isFinite(since) || (until !== undefined && !Number.isFinite(until))) return err(req, 400, 'use /api/v1/changes?since=<ms>[&until=<ms>]');
+        return json(req, src.changes(since, until));
+      }
       case 'stream': {
         if (parts[1] === 'sse') {
           let ctl: ReadableStreamDefaultController<Uint8Array>;
