@@ -26,8 +26,7 @@
 //
 //   fleet zoom   (fx-city, review #11) below the group zoom the city is calm unless something is
 //                wrong: each district a skyline in its lane's hue (idle grey, down red, degraded
-//                amber on the beat), named once at its front edge (≤ 10, through the placer, within
-//                the fleet's 40-run text budget); ghost storeys only from 3 commits behind (1–2: a
+//                amber on the beat), named once at its front edge (≤ 10, through the placer); ghost storeys only from 3 commits behind (1–2: a
 //                roof tick); no green "up" lights and no past-incident rings. Every app up (held a
 //                minute): the city packs compact, its districts start ~30 % of the plot further
 //                from the ladder, and the spurs take that ground: each district's band, its spur
@@ -49,7 +48,6 @@ import type { Factory } from './factory.ts';
 import { BOTS_LANE, OTHER_LANE, floorGroups, type Lane } from './groups.ts';
 import { UX, UY, VX, VY } from './iso.ts';
 import { GROUP_Z_IN, PLAN } from './layout.ts';
-import { TEXT_BUDGET } from './grammar.ts';
 import { R_RING, breathe, flash } from './motion.ts';
 import { F, flushLights, poly, quad } from './prims.ts';
 import type { Block, DistrictBox, FloorPass, Layer, Lens, LiveFrame, Pt } from './types.ts';
@@ -86,8 +84,12 @@ const RING_ORDER = ['#38383C', '#6A6A6A', '#6FA27C', RING_DEG, RING_DOWN];
  *  district's skyline in the lane's hue; ghost storeys only from this many commits behind (fewer:
  *  a thin roof tick); no green "up" lights and no past-incident rings (red is for down now). */
 export const FLEET_GHOSTS = 3;
-/** The district names the fleet zoom shows (one each, at the front edge), at most. */
-export const NAMES_MAX = 10;
+/** The district names the fleet zoom shows (one each, at the front edge), at most; the first
+ *  DISTRICT_NAMES_SURE (trouble first, then the biggest) may step aside to find room, the tail
+ *  only takes its own corner, so the placer drops it first when space (or the text budget) is
+ *  tight. */
+export const DISTRICT_NAMES_MAX = 10;
+export const DISTRICT_NAMES_SURE = 4;
 /** A calm city (every app up, held CALM_MS): its districts start this much of the plot's width
  *  further from the ladder, and the deploy spurs (the groups' deploy rates) take that ground. */
 export const CALM_SHIFT = 0.3;
@@ -934,8 +936,7 @@ export class City implements Layer {
     if (top?.kind === 'app' && top.id !== hb?.id) { const b = this.blockAt.get(top.id); if (b?.behind) this.tether(g, b, 0.85); }
     // fx-city: the fleet zoom names each district once, at its front edge (the group zoom's
     // labels.ts names take over from there)
-    if (fleet && this.f.floor.level === 0 && q < 3 && !this.f.census.skeleton) this.drawNames(g, t);
-    else this.namesDrawn = 0;
+    if (fleet && this.f.floor.level === 0 && q < 3 && !this.f.census.skeleton) this.drawNames(g);
     // zoomed in, the "+N" past the ghost storeys' cap
     if (cam.zoom >= 2 && q < 3) {
       for (const b of this.blocks) {
@@ -951,35 +952,30 @@ export class City implements Layer {
     return moving;
   }
 
-  /** fx-city: the districts the fleet zoom names (≤ `cap` ≤ NAMES_MAX): those with an app down
-   *  or degraded first, then the biggest; drawn back to front. */
-  fleetNames(cap = NAMES_MAX): CityDistrict[] {
+  /** fx-city: the districts the fleet zoom names (≤ DISTRICT_NAMES_MAX), in placing order:
+   *  those with an app down or degraded first, then the biggest (the placer is greedy: the
+   *  first placed wins its spot). */
+  fleetNames(): CityDistrict[] {
     const trouble = new Set<number>();
     for (const b of this.troubleBlocks()) trouble.add(b.district);
     const order = this.districtBox.map((d, i) => ({ d, i })).sort((a, b) => (trouble.has(b.i) ? 1 : 0) - (trouble.has(a.i) ? 1 : 0) || b.d.n - a.d.n || a.i - b.i);
-    return order.slice(0, Math.min(cap, NAMES_MAX)).sort((a, b) => a.i - b.i).map((x) => x.d);
+    return order.slice(0, DISTRICT_NAMES_MAX).map((x) => x.d);
   }
 
   /** Each named district's name, in its lane's light hue, just outside its front-left corner
-   *  (right-aligned to it), through the shared placer; when that spot is taken it steps out along
-   *  the front edge's line with a hairline back to the corner. Clicking it flies to the district. */
-  private drawNames(g: Gfx, t: number): void {
+   *  (right-aligned to it), through the shared placer; when that spot is taken one of the first
+   *  DISTRICT_NAMES_SURE steps aside (a staggered second column, a hairline back to the corner),
+   *  the tail is dropped. Clicking a name flies to the district. */
+  private drawNames(g: Gfx): void {
     const cam = this.f.cam, PX = 12, H = 13;
-    // the fleet's text budget (≤ TEXT_BUDGET runs a frame): the names take what the rest of the
-    // last frame left, re-read once a second while the floor rests (a hover card, the drawer or a
-    // lens never takes them away), the least of them first
-    const rest = !this.f.hoverId && !this.f.selected && !this.f.lens.topLens;
-    if (rest && (t - this.capAt >= 1000 || t < this.capAt)) {
-      this.capAt = t;
-      this.nameCap = clamp(TEXT_BUDGET - (this.f.budget.texts - this.namesDrawn), 0, NAMES_MAX);
-    }
-    const t0 = g.texts;
-    for (const d of this.fleetNames(this.nameCap)) {
+    const names = this.fleetNames();
+    for (let k = 0; k < names.length; k++) {
+      const d = names[k]!;
       const ax = cam.x(d.u0 - 2, d.v1), ay = cam.y(d.u0 - 2, d.v1);
       if (ax < 60 || ax > cam.W - 4 || ay < 60 || ay > cam.H - 60) continue;
       const wv = g.width(d.team, PX);
       let at: [number, number] | null = null;
-      for (const [dx, dy] of NAME_SPOTS) {
+      for (const [dx, dy] of k < DISTRICT_NAMES_SURE ? NAME_SPOTS : NAME_SPOTS.slice(0, 1)) {
         // at the corner, nudged; else one column further out (a staggered second column)
         at = this.f.placeAt(Math.round(ax - 6 - wv - (dx ? dx + wv : 0)), Math.round(ay + 5 + dy), wv, H, 0, false);
         if (at) break;
@@ -994,11 +990,7 @@ export class City implements Layer {
       g.text(d.team, x, y, sky.ink, PX);
       this.f.hit(x - 2, y - 10, wv + 4, H, 'district', `${(d.u0 + d.u1) / 2},${(d.v0 + d.v1) / 2},3.2`, d.team);
     }
-    this.namesDrawn = g.texts - t0;
   }
-  private nameCap = NAMES_MAX;
-  private capAt = -1e12;
-  private namesDrawn = 0;
 
   /** For drivers (tools/factory-shots.mjs, as lens.ts logs its anchors): at the fit zoom, once
    *  per layout, a building of each story (the most ghost storeys, the tallest, a down, a

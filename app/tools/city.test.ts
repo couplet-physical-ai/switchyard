@@ -6,7 +6,7 @@ import { bindInsights } from '../src/insights.ts';
 import { Timeline } from '../src/timeline.ts';
 import { Factory } from '../src/factory/factory.ts';
 import { BOTS_LANE, floorGroups, lanes } from '../src/factory/groups.ts';
-import { BASE, CALM_SHIFT, DIST_U0, FLEET_GHOSTS, GHOST_CAP, LADDER_U, NAMES_MAX, STOREY, STOREY_CAP, type CityBlock, type CityDistrict } from '../src/factory/city.ts';
+import { BASE, CALM_SHIFT, DIST_U0, FLEET_GHOSTS, GHOST_CAP, LADDER_U, DISTRICT_NAMES_MAX, STOREY, STOREY_CAP, type CityBlock, type CityDistrict } from '../src/factory/city.ts';
 import { PLAN } from '../src/factory/layout.ts';
 import type { AppHistoryResult } from '../src/insights.ts';
 
@@ -78,7 +78,7 @@ ok(area / plotOf(DIST_U0) < 0.8, `calm: the footprint shrank (${(100 * area / pl
   ok(!city.calm && city.cityU0 === DIST_U0 && city.districtBox.every((d) => d.u0 === DIST_U0), 'an app down → loud at once: the city takes the whole plot');
   ok(city.sig !== s0, 'city.sig changed with the layout');
   const names = city.fleetNames();
-  ok(names.some((d) => d.lane === city.blockAt.get(id)!.lane) && names.length === Math.min(NAMES_MAX, city.districtBox.length), `fleet names: every district (${names.map((d) => d.team).join(', ')}), the down app's included`);
+  ok(names.some((d) => d.lane === city.blockAt.get(id)!.lane) && names.length === Math.min(DISTRICT_NAMES_MAX, city.districtBox.length), `fleet names: every district (${names.map((d) => d.team).join(', ')}), the down app's included`);
   w.apps.set(id, { ...a0 }); w.kv.app++;
   census();
   ok(!city.calm, 'back up: still loud (no flapping re-pack)');
@@ -86,7 +86,7 @@ ok(area / plotOf(DIST_U0) < 0.8, `calm: the footprint shrank (${(100 * area / pl
   census();
   ok(city.calm && city.cityU0 > DIST_U0, 'up for a minute: calm again');
 }
-// ≤ NAMES_MAX names however many districts (14 here: copies of the real ones)
+// ≤ DISTRICT_NAMES_MAX names however many districts (14 here: copies of the real ones)
 {
   const real = city.districtBox.slice();
   for (let k = 0; city.districtBox.length < 14; k++) city.districtBox.push({ ...real[k % real.length]!, team: `x${k}`, n: 500 + k } as CityDistrict);
@@ -97,7 +97,8 @@ ok(area / plotOf(DIST_U0) < 0.8, `calm: the footprint shrank (${(100 * area / pl
   w.apps.set(id, { ...a0 }); w.kv.app++;
   const di = city.blockAt.get(id)!.district;
   ok(n.includes(city.districtBox[di]!), `the down app's district (${city.districtBox[di]!.team}, ${city.districtBox[di]!.n} apps) is among the names, before bigger ones`);
-  ok(n.length === NAMES_MAX && n.every((d, i) => i === 0 || city.districtBox.indexOf(d) > city.districtBox.indexOf(n[i - 1]!)), `district names ≤ ${NAMES_MAX} (14 districts → ${n.length}), back to front`);
+  ok(n.length === DISTRICT_NAMES_MAX, `district names ≤ ${DISTRICT_NAMES_MAX} (14 districts → ${n.length})`);
+  ok(n[0] === city.districtBox[di] && n.slice(1).every((d, i) => i === 0 || d.n <= n[i]!.n), `placing order: trouble first, then by size (${n.slice(0, 4).map((d) => `${d.team} ${d.n}`).join(', ')}, …)`);
   city.districtBox.length = 0; city.districtBox.push(...real);
 }
 
