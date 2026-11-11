@@ -1,0 +1,634 @@
+// LIVE flow: the primary tracking view (Felipe, 2026-11-11: "show me commits and pushes … →
+// what they are triggering and where → the result", and what is LIVE right now). One row per
+// EVENT, left → right: the event (source change or trigger) · every pipeline it started
+// (HANDLED BY: kind, CI, machine and slot, live step progress) · each one's RESULT. Connectors
+// carry the causality; in-flight ones carry the amber pulse on the one 1 Hz beat.
+//
+// src/flow/view.ts builds every row from the model (src/flow/model.ts): the words already cut to
+// their columns at token bounds, the connectors' paths. The column widths below are view.ts's COL
+// and the sub-row heights its SUB_NOW / SUB_JUST: change both together.
+
+keyframes flowBeat
+  from opacity=1 scale=1
+  to opacity=0.35 scale=0.7
+
+keyframes flowMarch
+  from stroke-dashoffset=12
+  to stroke-dashoffset=0
+
+keyframes flowIn
+  from opacity=0 translate="0px -14px"
+  to opacity=1 translate="0px 0px"
+
+keyframes flowFlash
+  from background-color="sy.control-on"
+  to background-color="sy.canvas"
+
+shape FlowOpt
+  value: string
+  label: string
+
+shape FlowMach
+  id: string
+  label: string
+  busy: number
+  slots: number
+  text: string
+  hot: bool
+  full: bool
+  pips: number[]
+
+shape FlowPip
+  id: string
+  state: string
+
+shape FlowJobRow
+  id: string
+  kind: string
+  ci: string
+  name: string
+  state: string
+  where: string
+  machine: string
+  machineId: string
+  step: string
+  timer: string
+  usual: string
+  pct: number
+  over: bool
+  note: string
+  result: string
+  tone: string
+  err: string
+  app: string
+  health: string
+  healthText: string
+  target: string
+  fresh: bool
+  fan: string
+  live: bool
+
+shape FlowRow
+  id: string
+  band: string
+  kind: string
+  kindText: string
+  repo: string
+  name: string
+  group: string
+  branch: string
+  sha: string
+  author: string
+  bot: bool
+  title: string
+  ref: string
+  who: string
+  ago: string
+  at: string
+  url: string
+  route: string
+  state: string
+  jobs: FlowJobRow[]
+  more: number
+  moreText: string
+  moreFan: string
+  h: number
+  fresh: bool
+  pips: FlowPip[]
+  pipsMore: string
+  summary: string
+  result: string
+  tone: string
+
+shape Flow
+  ok: bool
+  running: number
+  queued: number
+  idle: bool
+  idleTitle: string
+  idleSub: string
+  machines: FlowMach[]
+  now: FlowRow[]
+  just: FlowRow[]
+  earlier: FlowRow[]
+  repos: FlowOpt[]
+  teams: FlowOpt[]
+  branches: FlowOpt[]
+  filtered: bool
+  summary: string
+  tick: number
+
+shape FlowFact
+  k: string
+  v: string
+  tone: string
+
+shape FlowStepRow
+  id: string
+  name: string
+  depth: number
+  state: string
+  dur: string
+  cached: bool
+  err: string
+  where: string
+
+shape FlowMini
+  id: string
+  repo: string
+  name: string
+  step: string
+  timer: string
+  state: string
+
+shape FlowPanel
+  ok: bool
+  kind: string
+  id: string
+  title: string
+  sub: string
+  state: string
+  tone: string
+  facts: FlowFact[]
+  steps: FlowStepRow[]
+  failStep: string
+  errorLine: string
+  url: string
+  urlLabel: string
+  route: string
+  routeLabel: string
+  jobs: FlowMini[]
+  logCap: bool
+  logStep: string
+  logLive: bool
+  empty: string
+
+shape FlowLog
+  ok: bool
+  step: string
+  lines: string[]
+  note: string
+
+members App
+  state flowRepo = ""
+  state flowTeam = ""
+  state flowBranch = ""
+  state flowMine = false
+  // Settings' "your GitHub handle": what "mine" filters on. Empty by default (the repo is public:
+  // no handle is ever written into it).
+  state myHandle = "" persist
+  state draftHandle = ""
+  // The side panel: a pipeline ("job"), a machine or an app; "" closed.
+  state flowKind = ""
+  state flowId = ""
+  // The model ticks once a second (its timers, its progress); the progress bars glide between ticks.
+  derive flowSec = floor(clockMs / 1000)
+  derive flowAuthor = (flowMine and myHandle != "") ? myHandle : ""
+  resource flowData = flow(here == "live" ? flowSec : 0, flowRepo, flowTeam, flowBranch, flowAuthor) as shape Flow else empty()
+  resource flowPanelData = flowPanel(flowKind, flowId, (here == "live" and flowId != "") ? flowSec : 0) as shape FlowPanel else empty()
+  // The log tail: only with the server's capability, refreshed every 10 s while its step runs,
+  // dropped when the panel closes (an empty id).
+  resource flowLogData = flowLog(flowId, flowKind == "job" ? flowPanelData.logStep : "", flowPanelData.logLive ? floor(clockMs / 10000) : 0, flowKind == "job" and flowPanelData.logCap) as shape FlowLog else empty()
+  action flowPickRepo(v: string)
+    flowRepo = v
+  action flowPickTeam(v: string)
+    flowTeam = v
+  action flowPickBranch(v: string)
+    flowBranch = v
+  action flowToggleMine
+    if myHandle == ""
+      openSettings()
+    else
+      flowMine = not flowMine
+  action flowClear
+    flowRepo = ""
+    flowTeam = ""
+    flowBranch = ""
+    flowMine = false
+  action flowOpen(kind: string, id: string)
+    if id == "" or (kind == flowKind and id == flowId)
+      flowKind = ""
+      flowId = ""
+    else
+      flowKind = kind
+      flowId = id
+  action flowClose
+    flowKind = ""
+    flowId = ""
+  action flowKey(k: string)
+    if k == "Escape" and flowId != ""
+      preventDefault()
+      flowClose()
+  action flowFollow(route: string)
+    flowKind = ""
+    flowId = ""
+    nav = go(nav, route)
+  action editHandle(v: string)
+    draftHandle = v
+
+fn toneInk(t: string): string = t == "run" ? "sy.amber-text" : (t == "fail" ? "sy.red-text" : (t == "pass" ? "sy.green-ink" : "sy.ink3"))
+fn toneMark(t: string): string = t == "run" ? "sy.amber" : (t == "fail" ? "sy.red" : (t == "pass" ? "sy.up" : "sy.ink4"))
+fn toneWire(t: string): string = t == "run" ? "sy.amber" : (t == "fail" ? "sy.red-edge" : (t == "pass" ? "sy.green-edge" : "sy.chip-edge"))
+fn healthMark(h: string): string = h == "up" ? "sy.green" : (h == "down" ? "sy.red" : (h == "degraded" ? "sy.red-edge" : "sy.ink4"))
+fn healthInk(h: string): string = h == "up" ? "sy.green-ink" : (h == "down" ? "sy.red-text" : "sy.ink3")
+fn stateWord(s: string): string = s == "pass" ? "passed" : (s == "fail" ? "failed" : s)
+
+// One pipeline's kind ("test", "deploy") as a small outlined chip: dashed while it waits.
+component KindChip
+  props
+    word: string
+    tone: string
+  view
+    text word font-size=12 color=(tone == "run" ? "sy.amber-text" : "sy.ink2") padding="0px 5px" border-radius=3 border-width=1
+      border-style=(tone == "wait" ? "dashed" : "solid") border-color=(tone == "run" ? "sy.amber" : "sy.chip-edge") white-space="nowrap" flex-shrink=0 line-height="16px"
+
+// The top strip: LIVE (the 1 Hz beat), what runs and waits, the machines, the filters.
+component FlowStrip
+  props
+    f: Flow
+    mode: string
+    reduced: bool
+    repo: string
+    team: string
+    branch: string
+    mine: bool
+    handle: string
+    pickRepo: action
+    pickTeam: action
+    pickBranch: action
+    toggleMine: action
+    clear: action
+    open: action
+  view
+    row height=44 flex-shrink=0 padding="0 16px" gap=18 align-items="center" border-bottom="1px solid sy.rule" testId="flow-strip"
+      row gap=8 align-items="center" testId="flow-live" aria-label=(mode == "live" ? "Live" : mode)
+        column width=9 height=9 border-radius=5 background-color=(mode == "live" ? "sy.green" : "sy.ink3")
+          animation=((mode == "live" and not reduced) ? "flowBeat 1s ease-in-out infinite alternate" : "none")
+        text (mode == "live" ? "LIVE" : (mode == "replay" ? "REPLAY" : (mode == "paused" ? "PAUSED" : "BEHIND"))) font-size=13 font-weight=700 letter-spacing="0.08em" color=(mode == "live" ? "sy.green" : "sy.ink2")
+      row gap=6 align-items="baseline" flex-shrink=0 white-space="nowrap" testId="flow-counts"
+        text `${f.running} running` font-size=13 font-weight=700 color=(f.running > 0 ? "sy.amber-text" : "sy.ink3") font-variant-numeric="tabular-nums"
+        text "·" font-size=12 color="sy.ink4"
+        text `${f.queued} queued` font-size=13 color=(f.queued > 0 ? "sy.ink" : "sy.ink3") font-variant-numeric="tabular-nums"
+      row gap=2 align-items="center" flex=1 min-width=0 overflow="hidden" testId="flow-machines"
+        for m in f.machines key=m.id
+          button appearance="none" press=open("machine", m.id) testId=`flow-mach-${m.label}` aria-label=`${m.label}: ${m.text} busy` padding="3px 8px" border-radius=6 flex-shrink=0
+            :hover
+              background-color="sy.control"
+            row gap=6 align-items="center"
+              text m.label font-size=12 color=(m.hot ? "sy.ink" : "sy.ink3") white-space="nowrap"
+              if m.pips.length > 0
+                row gap=2 align-items="center"
+                  for p, pi in m.pips key=pi
+                    column width=6 height=6 border-radius=1 background-color=(p == 1 ? "sy.amber" : "transparent") border=(p == 1 ? "1px solid sy.amber" : "1px solid sy.chip-edge")
+              text m.text font-size=12 color=(m.full ? "sy.amber-text" : (m.hot ? "sy.ink2" : "sy.ink3")) font-variant-numeric="tabular-nums" white-space="nowrap"
+      row gap=6 align-items="center" flex-shrink=0 testId="flow-filters"
+        select value=repo change=pickRepo aria-label="Repository" testId="flow-repo" font-size=12 color=(repo != "" ? "sy.ink" : "sy.ink3") background-color="sy.control" border="1px solid sy.edge" height=26 border-radius=6 padding="0px 6px" max-width=150
+          option "all repos" value=""
+          for o in f.repos key=o.value
+            option o.label value=o.value
+        select value=team change=pickTeam aria-label="Team" testId="flow-team" font-size=12 color=(team != "" ? "sy.ink" : "sy.ink3") background-color="sy.control" border="1px solid sy.edge" height=26 border-radius=6 padding="0px 6px" max-width=140
+          option "all teams" value=""
+          for o in f.teams key=o.value
+            option o.label value=o.value
+        select value=branch change=pickBranch aria-label="Branch" testId="flow-branch" font-size=12 color=(branch != "" ? "sy.ink" : "sy.ink3") background-color="sy.control" border="1px solid sy.edge" height=26 border-radius=6 padding="0px 6px" max-width=150
+          option "all branches" value=""
+          for o in f.branches key=o.value
+            option o.label value=o.value
+        button appearance="none" press=toggleMine role="switch" aria-checked=mine testId="flow-mine" padding="3px 10px" border-radius=6
+          aria-label=(handle == "" ? "Mine: set your GitHub handle in Settings" : `Only ${handle}'s events`)
+          border=(mine ? "1px solid sy.ink3" : "1px solid sy.edge") background-color=(mine ? "sy.control-on" : "transparent")
+          text (handle == "" ? "mine…" : (mine ? `mine · ${handle}` : "mine")) font-size=12 color=(mine ? "sy.ink" : "sy.ink3") white-space="nowrap"
+        if f.filtered
+          button appearance="none" press=clear testId="flow-clear" aria-label="Clear the filters" padding="3px 8px" border-radius=6
+            text "clear" font-size=12 color="sy.ink3"
+
+// An event in flight: a lit card, its pipelines fanned out, each one's progress and result.
+component NowRow
+  props
+    r: FlowRow
+    ri: number
+    reduced: bool
+    sel: string
+    open: action
+    follow: action
+  view
+    row min-height=r.h align-items="flex-start" padding="4px 0px" margin-bottom=6 border-radius=8 background-color="sy.raised" border="1px solid sy.rule" testId=`flow-now-${ri}`
+      animation=(reduced ? "none" : "flowIn 380ms ease-out both")
+      // EVENT
+      EventCell(r=r, testKey=`now-${ri}`, lit=true, follow=follow)
+      // the fan: event → each pipeline
+      svg width=40 height=r.h viewBox=`0 0 40 ${r.h}` flex-shrink=0 aria-hidden=true
+        for j in r.jobs key=j.id
+          path d=j.fan fill="none" stroke=toneWire(j.tone) stroke-width=1.5 stroke-dasharray=(j.tone == "wait" ? "3 3" : "1 0") stroke-opacity=(j.live ? 0.4 : 1)
+          if j.live and not reduced
+            path d=j.fan fill="none" stroke="sy.amber" stroke-width=2 stroke-linecap="round" stroke-dasharray="2 10" animation="flowMarch 1s linear infinite"
+        if r.more > 0
+          path d=r.moreFan fill="none" stroke="sy.ink4" stroke-width=1 stroke-dasharray="2 3"
+      // HANDLED BY → RESULT
+      column flex=1 min-width=0
+        for j, ji in r.jobs key=j.id
+          row height=44 align-items="flex-start" testId=`flow-job-now-${ri}-${ji}`
+            column width=480 flex-shrink=0 padding="0px 8px" border-radius=6 background-color=(sel == j.id ? "sy.control" : "transparent")
+              row height=24 gap=8 align-items="center"
+                button appearance="none" press=open("job", j.id) disabled=(j.target == "none") testId=`flow-pipe-now-${ri}-${ji}` aria-label=`${j.kind} pipeline ${j.name}, ${j.state}. Show its steps.`
+                  flex=1 min-width=0 padding=0 border-radius=4 text-align="left"
+                  row gap=8 align-items="center"
+                    KindChip(word=j.kind, tone=j.tone)
+                    text j.name font-size=12 font-weight=700 color=(j.state == "waiting" ? "sy.ink3" : "sy.ink") white-space="nowrap"
+                if j.where != ""
+                  button appearance="none" press=open("machine", j.machineId) disabled=(j.machineId == "") testId=`flow-where-now-${ri}-${ji}` aria-label=`Runs on ${j.where}, ${j.machine}. What else runs there.` padding="1px 4px" border-radius=4
+                    :hover
+                      background-color="sy.control-on"
+                    row gap=6 align-items="center"
+                      text j.where font-size=12 color="sy.ink3" white-space="nowrap"
+                      text j.machine font-size=12 color=(j.state == "running" ? "sy.ink2" : "sy.ink3") white-space="nowrap"
+              row height=18 gap=10 align-items="center"
+                if j.state == "running"
+                  svg width=140 height=4 viewBox="0 0 140 4" flex-shrink=0 aria-hidden=true
+                    path d="M2 2 H138" stroke="sy.control-on" stroke-width=4 stroke-linecap="round" fill="none"
+                    path d=`M2 2 H${2 + round(j.pct * 1360) / 10}` stroke="sy.amber" stroke-width=4 stroke-linecap="round" fill="none" transition=(reduced ? "none" : "d 1000ms linear")
+                  text j.step font-size=12 color="sy.ink2" white-space="nowrap"
+                  row flex=1
+                  text j.timer font-size=12 font-weight=700 color="sy.amber-text" font-variant-numeric="tabular-nums" white-space="nowrap"
+                  text j.usual font-size=12 color=(j.over ? "sy.amber-text" : "sy.ink3") white-space="nowrap" font-variant-numeric="tabular-nums"
+                else
+                  text j.note font-size=12 color="sy.ink3" white-space="nowrap" font-variant-numeric="tabular-nums"
+            // the hop: pipeline → its result
+            svg width=32 height=24 viewBox="0 0 32 24" flex-shrink=0 aria-hidden=true
+              path d="M0 12 H26" fill="none" stroke=(j.tone == "run" or j.tone == "wait" ? "sy.chip-edge" : toneWire(j.tone)) stroke-width=1.5 stroke-dasharray=(j.tone == "run" or j.tone == "wait" ? "3 3" : "1 0")
+              circle cx=28 cy=12 r=2.5 fill=(j.tone == "run" or j.tone == "wait" ? "none" : toneMark(j.tone)) stroke=(j.tone == "run" or j.tone == "wait" ? "sy.chip-edge" : toneMark(j.tone)) stroke-width=1
+            ResultCell(j=j, testKey=`now-${ri}-${ji}`, reduced=reduced, open=open)
+        if r.more > 0
+          row height=24 align-items="center" padding="0px 8px"
+            button appearance="none" press=follow(r.route) testId=`flow-more-now-${ri}` padding="0px 4px" border-radius=4
+              text r.moreText font-size=12 color="sy.ink3"
+
+// The EVENT: what changed or fired (the kind, the repo, the branch and sha, when), who and why
+// (the author and the message's first line). A press opens the commit's journey; github ↗ the
+// commit or the PR on GitHub.
+component EventCell
+  props
+    r: FlowRow
+    testKey: string
+    lit: bool
+    follow: action
+  view
+    column width=400 flex-shrink=0 position="relative"
+      button appearance="none" press=follow(r.route) testId=`flow-ev-${testKey}` aria-label=`${r.kindText} to ${r.repo}, ${r.branch}, ${r.sha} by ${r.author}: ${r.title}. Open its journey.`
+        display="flex" flex-direction="column" align-items="stretch" text-align="left" padding="2px 10px 0px 12px" border-radius=6 width="100%" box-sizing="border-box"
+        :hover
+          background-color="sy.control"
+        row height=20 gap=8 align-items="center"
+          KindChip(word=r.kindText, tone=(r.state == "waiting" ? "wait" : "off"))
+          text r.name font-size=13 font-weight=700 color=(lit ? "sy.ink" : "sy.ink2") white-space="nowrap"
+          text r.ref font-size=12 color="sy.ink3" white-space="nowrap"
+          row flex=1
+          text r.ago font-size=12 color=(lit ? "sy.ink2" : "sy.ink3") white-space="nowrap" font-variant-numeric="tabular-nums"
+        row height=18 gap=8 align-items="center" padding-right=66
+          if r.who != ""
+            text r.who font-size=12 color=(r.bot ? "sy.ink3" : "sy.ink2") white-space="nowrap"
+            text "·" font-size=12 color="sy.ink4"
+          text r.title font-size=12 color=(lit ? "sy.ink2" : "sy.ink3") white-space="nowrap"
+      link href=r.url position="absolute" top=22 right=8 aria-label=`On GitHub: ${r.repo} ${r.sha}` testId=`flow-gh-${testKey}` padding="0px 4px" border-radius=4
+        text "github ↗" font-size=12 color="sy.ink3"
+
+// A pipeline's result: pass, fail (the step and the error line), cancelled; a deploy's app,
+// sha and health. A press opens the app (a deploy) or the pipeline's steps.
+component ResultCell
+  props
+    j: FlowJobRow
+    testKey: string
+    reduced: bool
+    open: action
+  view
+    button appearance="none" press=open(j.target == "app" ? "app" : "job", j.target == "app" ? j.app : j.id) disabled=(j.target == "none" or (j.result == "" and j.target != "app")) testId=`flow-res-${testKey}`
+      aria-label=(j.result == "" ? `${j.name}: no result yet` : `${j.name}: ${j.result}${j.err != "" ? `, ${j.err}` : ""}${j.healthText != "" ? `, ${j.healthText}` : ""}`)
+      flex=1 min-width=0 display="flex" flex-direction="column" align-items="flex-start" text-align="left" padding="2px 8px" border-radius=6
+      animation=((j.fresh and not reduced) ? "flowFlash 1600ms ease-out both" : "none")
+      :hover
+        background-color="sy.control"
+      row height=20 gap=8 align-items="center"
+        if j.result != ""
+          text j.result font-size=12 font-weight=(j.tone == "fail" ? 700 : 400) color=(j.target == "app" and j.tone == "run" ? "sy.ink3" : toneInk(j.tone)) white-space="nowrap"
+        if j.health != ""
+          row gap=5 align-items="center"
+            column width=7 height=7 border-radius=4 background-color=healthMark(j.health)
+            text j.healthText font-size=12 color=healthInk(j.health) white-space="nowrap"
+      if j.err != ""
+        text j.err font-size=12 color="sy.red-text" opacity=0.85 white-space="nowrap" line-height="16px"
+
+// Finished in the last 15 minutes: a flat row, one line per pipeline.
+component JustRow
+  props
+    r: FlowRow
+    ri: number
+    reduced: bool
+    sel: string
+    open: action
+    follow: action
+  view
+    row min-height=r.h align-items="flex-start" padding="4px 0px" border-bottom="1px solid sy.rule" testId=`flow-just-${ri}`
+      animation=((r.fresh and not reduced) ? "flowIn 450ms ease-out both" : "none")
+      EventCell(r=r, testKey=`just-${ri}`, lit=false, follow=follow)
+      svg width=40 height=r.h viewBox=`0 0 40 ${r.h}` flex-shrink=0 aria-hidden=true
+        for j in r.jobs key=j.id
+          path d=j.fan fill="none" stroke=toneWire(j.tone) stroke-width=1.25
+        if r.more > 0
+          path d=r.moreFan fill="none" stroke="sy.ink4" stroke-width=1 stroke-dasharray="2 3"
+      column flex=1 min-width=0
+        for j, ji in r.jobs key=j.id
+          row height=24 align-items="center" testId=`flow-job-just-${ri}-${ji}`
+            row width=480 flex-shrink=0 gap=8 align-items="center" padding="0px 8px" border-radius=6 background-color=(sel == j.id ? "sy.control" : "transparent")
+              button appearance="none" press=open("job", j.id) testId=`flow-pipe-just-${ri}-${ji}` aria-label=`${j.kind} pipeline ${j.name}, ${stateWord(j.state)}. Show its steps.` flex=1 min-width=0 padding=0 text-align="left"
+                row gap=8 align-items="center"
+                  KindChip(word=j.kind, tone="off")
+                  text j.name font-size=12 color="sy.ink2" white-space="nowrap"
+              if j.where != ""
+                button appearance="none" press=open("machine", j.machineId) disabled=(j.machineId == "") testId=`flow-where-just-${ri}-${ji}` padding="1px 4px" border-radius=4
+                  row gap=6 align-items="center"
+                    text j.where font-size=12 color="sy.ink3" white-space="nowrap"
+                    text j.machine font-size=12 color="sy.ink3" white-space="nowrap"
+            svg width=32 height=24 viewBox="0 0 32 24" flex-shrink=0 aria-hidden=true
+              path d="M0 12 H26" fill="none" stroke=toneWire(j.tone) stroke-width=1.25
+              circle cx=28 cy=12 r=2.5 fill=toneMark(j.tone)
+            ResultCell(j=j, testKey=`just-${ri}-${ji}`, reduced=reduced, open=open)
+        if r.more > 0
+          row height=24 align-items="center" padding="0px 8px"
+            button appearance="none" press=follow(r.route) testId=`flow-more-just-${ri}` padding="0px 4px" border-radius=4
+              text r.moreText font-size=12 color="sy.ink3"
+
+// Earlier (the last 2 h): one dim line per event, its pipelines as pips, the result in words.
+component EarlierRow
+  props
+    r: FlowRow
+    ri: number
+    follow: action
+  view
+    button appearance="none" press=follow(r.route) testId=`flow-earlier-${ri}` aria-label=`${r.at}: ${r.kindText} to ${r.repo} by ${r.author}, ${r.summary}, ${r.result}. Open its journey.`
+      display="flex" flex-direction="row" align-items="center" height=24 width="100%" padding=0 text-align="left" border-radius=4 opacity=0.62
+      :hover
+        opacity=1
+        background-color="sy.raised"
+      row width=400 flex-shrink=0 gap=8 align-items="center" padding="0px 10px 0px 12px"
+        text r.at font-size=12 color="sy.ink3" font-variant-numeric="tabular-nums" white-space="nowrap"
+        text r.kindText font-size=12 color="sy.ink3" white-space="nowrap"
+        text r.name font-size=12 color="sy.ink2" white-space="nowrap"
+      row width=40 flex-shrink=0
+      row width=480 flex-shrink=0 gap=8 align-items="center" padding="0px 8px"
+        row gap=3 align-items="center"
+          for p in r.pips key=p.id
+            column width=7 height=7 border-radius=1 background-color=(p.state == "fail" ? "sy.red" : (p.state == "pass" ? "sy.up" : "transparent")) border=(p.state == "fail" ? "1px solid sy.red" : (p.state == "pass" ? "1px solid sy.up" : "1px solid sy.ink4"))
+          if r.pipsMore != ""
+            text r.pipsMore font-size=12 color="sy.ink3"
+        text r.summary font-size=12 color="sy.ink3" white-space="nowrap"
+      row width=32 flex-shrink=0
+      text r.result font-size=12 color=toneInk(r.tone) white-space="nowrap" padding="0px 8px"
+
+// A band's heading: what it holds, in words.
+component BandHead
+  props
+    label: string
+    note: string
+    lit: bool
+  view
+    row gap=10 align-items="baseline" padding="14px 12px 6px"
+      text label font-size=12 font-weight=700 letter-spacing="0.08em" color=(lit ? "sy.ink" : "sy.ink3")
+      text note font-size=12 color="sy.ink3"
+
+// The side panel: a pipeline's workflows and steps (the error line, the CI page, the log tail
+// when the server offers it), a machine's runs, or an app's health and live sha.
+component FlowSide
+  props
+    p: FlowPanel
+    log: FlowLog
+    open: action
+    close: action
+    follow: action
+  view
+    column position="absolute" top=0 right=0 bottom=0 width=460 background-color="sy.raised" border-left="1px solid sy.edge" box-shadow="-12px 0px 32px rgba(0, 0, 0, 0.45)" testId="flow-panel"
+      row padding="12px 12px 10px 16px" gap=10 align-items="flex-start" border-bottom="1px solid sy.rule"
+        column flex=1 min-width=0 gap=3
+          row gap=8 align-items="center"
+            column width=8 height=8 border-radius=(p.kind == "job" ? 2 : 4) background-color=toneMark(p.tone) flex-shrink=0
+            text p.title role="heading" aria-level=2 font-size=15 font-weight=700 color="sy.ink" white-space="nowrap" testId="flow-panel-title"
+          text p.sub font-size=12 color="sy.ink3" white-space="nowrap"
+        button appearance="none" press=close testId="flow-panel-close" aria-label="Close" aria-keyshortcuts="Escape" padding="2px 8px" border-radius=5
+          :hover
+            background-color="sy.control-on"
+          text "close" font-size=12 color="sy.ink3"
+      scroll flex=1 min-height=0
+        column padding="10px 16px 20px" gap=14
+          if p.empty != ""
+            text p.empty font-size=12 color="sy.ink3" testId="flow-panel-empty"
+          if p.facts.length > 0
+            column gap=3
+              for f in p.facts key=f.k
+                row gap=10 align-items="baseline"
+                  text f.k width=64 flex-shrink=0 font-size=12 color="sy.ink3"
+                  text f.v font-size=12 color=(f.tone == "off" ? "sy.ink2" : toneInk(f.tone)) white-space="nowrap" font-variant-numeric="tabular-nums"
+          if p.errorLine != "" or p.failStep != ""
+            column gap=4 padding="8px 10px" border-radius=6 background-color="sy.red-fill" border="1px solid sy.red-edge" testId="flow-panel-error"
+              text (p.failStep != "" ? `failed at ${p.failStep}` : "failed") font-size=12 font-weight=700 color="sy.red-text"
+              if p.errorLine != ""
+                text p.errorLine font-size=12 color="sy.ink" line-height="17px" overflow-wrap="anywhere"
+          if p.steps.length > 0
+            column gap=1 testId="flow-panel-steps"
+              text "WORKFLOWS AND STEPS" font-size=12 letter-spacing="0.08em" color="sy.ink3" padding-bottom=4
+              for s in p.steps key=s.id
+                column gap=1
+                  row height=20 gap=8 align-items="center" padding-left=(s.depth * 14)
+                    column width=7 height=7 border-radius=(s.depth == 0 ? 1 : 4) flex-shrink=0 background-color=(s.cached ? "transparent" : toneMark(s.state == "running" ? "run" : (s.state == "fail" ? "fail" : (s.state == "pass" ? "pass" : "off"))))
+                      border=(s.cached ? "1px dashed sy.ink3" : "none")
+                    text s.name font-size=12 font-weight=(s.depth == 0 ? 700 : 400) color=(s.state == "fail" ? "sy.red-text" : (s.state == "running" ? "sy.amber-text" : (s.depth == 0 ? "sy.ink" : "sy.ink2"))) white-space="nowrap"
+                    row flex=1
+                    if s.where != ""
+                      text s.where font-size=12 color="sy.ink3" white-space="nowrap"
+                    text (s.cached ? `${s.dur} cached` : (s.dur != "" ? s.dur : stateWord(s.state))) font-size=12 color=(s.state == "running" ? "sy.amber-text" : "sy.ink3") white-space="nowrap" font-variant-numeric="tabular-nums"
+                  if s.err != ""
+                    text s.err font-size=12 color="sy.red-text" padding-left=(s.depth * 14 + 15) line-height="16px" overflow-wrap="anywhere"
+          if p.jobs.length > 0
+            column gap=2 testId="flow-panel-runs"
+              text "RUNNING HERE" font-size=12 letter-spacing="0.08em" color="sy.ink3" padding-bottom=4
+              for m, mi in p.jobs key=m.id
+                button appearance="none" press=open("job", m.id) testId=`flow-panel-run-${mi}` padding="3px 6px" border-radius=5 text-align="left" width="100%"
+                  :hover
+                    background-color="sy.control"
+                  row gap=8 align-items="center"
+                    column width=7 height=7 border-radius=4 flex-shrink=0 background-color=(m.state == "running" ? "sy.amber" : "sy.ink4")
+                    text m.repo font-size=12 font-weight=700 color="sy.ink" white-space="nowrap"
+                    text m.name font-size=12 color="sy.ink2" white-space="nowrap"
+                    row flex=1
+                    text m.step font-size=12 color="sy.ink3" white-space="nowrap"
+                    text m.timer font-size=12 color="sy.amber-text" white-space="nowrap" font-variant-numeric="tabular-nums"
+          // The log tail: only when the server offers it (meta caps `pipeline_log`)
+          if p.logCap and p.logStep != ""
+            column gap=4 testId="flow-panel-log"
+              row gap=8 align-items="baseline"
+                text "LOG TAIL" font-size=12 letter-spacing="0.08em" color="sy.ink3"
+                text p.logStep font-size=12 color="sy.ink2" white-space="nowrap"
+                row flex=1
+                text log.note font-size=12 color="sy.ink3" white-space="nowrap"
+              column padding="6px 8px" border-radius=6 background-color="sy.canvas" border="1px solid sy.rule" gap=0
+                for l, li in log.lines key=li
+                  text l font-size=12 color="sy.ink2" line-height="16px" white-space="pre-wrap" overflow-wrap="anywhere"
+          row gap=10 flex-wrap="wrap"
+            if p.url != ""
+              link href=p.url testId="flow-panel-url" padding="5px 10px" border-radius=6 border="1px solid sy.edge"
+                text `${p.urlLabel} ↗` font-size=12 color="sy.ink2"
+            if p.route != ""
+              button appearance="none" press=follow(p.route) testId="flow-panel-route" padding="5px 10px" border-radius=6 border="1px solid sy.edge"
+                text `${p.routeLabel} →` font-size=12 color="sy.ink2"
+
+component LiveFlowView
+  props
+    f: Flow
+    p: FlowPanel
+    log: FlowLog
+    mode: string
+    reduced: bool
+    repo: string
+    team: string
+    branch: string
+    mine: bool
+    handle: string
+    sel: string
+    pickRepo: action
+    pickTeam: action
+    pickBranch: action
+    toggleMine: action
+    clear: action
+    open: action
+    close: action
+    follow: action
+    key: action
+  view
+    column flex=1 min-height=0 position="relative" testId="live" key=key
+      FlowStrip(f=f, mode=mode, reduced=reduced, repo=repo, team=team, branch=branch, mine=mine, handle=handle, pickRepo=pickRepo, pickTeam=pickTeam, pickBranch=pickBranch, toggleMine=toggleMine, clear=clear, open=open)
+      // the three causal columns
+      row height=26 flex-shrink=0 align-items="center" padding="0px 16px" border-bottom="1px solid sy.rule" aria-hidden=true
+        text "EVENT" width=440 padding-left=12 font-size=12 letter-spacing="0.08em" color="sy.ink3"
+        text "HANDLED BY · what it started, where" width=512 padding-left=8 font-size=12 letter-spacing="0.04em" color="sy.ink3" white-space="nowrap"
+        text "RESULT" padding-left=8 font-size=12 letter-spacing="0.08em" color="sy.ink3"
+      scroll flex=1 min-height=0 testId="flow-scroll"
+        column padding="0px 16px 28px" role="feed" aria-label=f.summary
+          BandHead(label="NOW", note=(f.idle ? "" : `${f.now.length} ${f.now.length == 1 ? "event" : "events"} in flight · ${f.running} running · ${f.queued} queued`), lit=(not f.idle))
+          if f.idle
+            column gap=6 padding="18px 20px" border-radius=8 border="1px dashed sy.edge" testId="flow-idle"
+              text f.idleTitle font-size=15 font-weight=700 color="sy.ink2" testId="flow-idle-title"
+              text f.idleSub font-size=12 color="sy.ink3" testId="flow-idle-sub"
+              if f.filtered
+                button appearance="none" press=clear testId="flow-idle-clear" padding="3px 0px" text-align="left"
+                  text "clear the filters" font-size=12 color="sy.ink2" text-decoration="underline"
+          for r, ri in f.now key=r.id
+            NowRow(r=r, ri=ri, reduced=reduced, sel=sel, open=open, follow=follow)
+          BandHead(label="JUST FINISHED", note=(f.just.length > 0 ? `last 15 min · ${f.just.length} ${f.just.length == 1 ? "event" : "events"}` : "nothing finished in the last 15 min"), lit=false)
+          column testId="flow-just"
+            for r, ri in f.just key=r.id
+              JustRow(r=r, ri=ri, reduced=reduced, sel=sel, open=open, follow=follow)
+          if f.earlier.length > 0
+            BandHead(label="EARLIER", note=`last 2 h · ${f.earlier.length} ${f.earlier.length == 1 ? "event" : "events"}`, lit=false)
+            column testId="flow-earlier"
+              for r, ri in f.earlier key=r.id
+                EarlierRow(r=r, ri=ri, follow=follow)
+      if p.ok
+        FlowSide(p=p, log=log, open=open, close=close, follow=follow)
