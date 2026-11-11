@@ -24,6 +24,7 @@ export function buildLayers(f: Factory) {
     city, //      city.ts: districts, blocks, health lights, trouble breathing
     reactions, // crates.ts: rings, beams and doors where crates arrive
     tracks, //    plant.ts: deploys in flight on the deploy tracks
+    { name: 'packets', live: (g, fr) => f.plant.packets.live(g, fr) }, // w2-engine2 packets.ts: light packets along each lane's real route, every 4th beat
     crates, //    crates.ts: crates in motion, trains, stress crates
     { name: 'groups', live: (g, fr) => { f.w2.over(g, fr.t); return false; } }, // fab-w2 groupfloor.ts: bay stripes, group dock names and hits
     words, //     labels.ts: stage titles, names and counts (the greedy placer)

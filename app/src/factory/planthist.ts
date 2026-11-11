@@ -206,6 +206,70 @@ export class PlantHist {
   clear(): void { this.tides.clear(); this.asked.clear(); this.busy.clear(); this.gen++; this.ver++; }
 }
 
+// ── w2-engine2 (REVIEW-iter3 #3): a slot's own recent past ──
+//
+// The server reports a machine's busy/slots, never which slot ran what; the floor's bays are its
+// slots. So the last hour's runs on a machine are dealt to its slots as a pool would: in start
+// order, each to the slot that has been free the longest (an idle machine's slots then show its
+// last few jobs side by side, newest to oldest, rather than all in its first).
+// A slot then knows its LAST job (the afterimage: its lane hue fading over AFTER_MS) and every job
+// it ran in the last TICKS_MS (a hue tick each on its lip, at its start time).
+
+/** The afterimage fades out over this long after the slot's last job ended. */
+export const AFTER_MS = 30 * 60_000;
+/** A slot's lip carries a tick for every job that started in this window. */
+export const TICKS_MS = 60 * 60_000;
+
+export type SlotRun = { pid: string; lane: string; start: number; end: number; running: boolean; red: boolean };
+export type SlotPast = { last: SlotRun | null; runs: SlotRun[] };
+
+/** Deals `runs` (one machine's, any order) to `slots` slots: each run to the slot free the longest
+ *  at its start, else the slot that frees first. Returns per slot its last ended run and the runs that
+ *  started within TICKS_MS of `now`, oldest first. */
+export function dealSlots(runs: readonly SlotRun[], slots: number, now: number): SlotPast[] {
+  const n = Math.max(1, slots | 0);
+  const out: SlotPast[] = Array.from({ length: n }, () => ({ last: null, runs: [] }));
+  const free = new Float64Array(n).fill(-Infinity);
+  const sorted = runs.slice().sort((a, b) => a.start - b.start || (a.pid < b.pid ? -1 : 1));
+  for (const r of sorted) {
+    // the slot free the longest (a pool hands work round its idle slots), else the one that frees first
+    let k = -1;
+    for (let i = 0; i < n; i++) if (free[i]! <= r.start && (k < 0 || free[i]! < free[k]!)) k = i;
+    if (k < 0) { k = 0; for (let i = 1; i < n; i++) if (free[i]! < free[k]!) k = i; }
+    free[k] = r.running ? Infinity : r.end;
+    const s = out[k]!;
+    if (!r.running && (!s.last || r.end >= s.last.end)) s.last = r;
+    if (r.start >= now - TICKS_MS && r.start <= now) s.runs.push(r);
+  }
+  return out;
+}
+
+/** The afterimage's strength (0..1) of a slot whose last job ended `age` ms ago: linear to 0 over
+ *  AFTER_MS, in sixths (the static floor repaints at most every 5 minutes for it). */
+export function afterK(age: number): number {
+  if (!(age >= 0) || age >= AFTER_MS) return 0;
+  return Math.ceil(6 * (1 - age / AFTER_MS)) / 6;
+}
+
+/** The holding yard's heat (layout.ts APRON): per lane, the runs that arrived in each of the last 24
+ *  hours (oldest first), summed over the lane's groups' trend sparks (`spark(groupId)`: 24 hourly
+ *  counts, null where unknown). Returns the rows and the busiest cell. */
+export function laneArrivals(lanes: readonly { id: string; members: readonly string[] }[], spark: (groupId: string) => readonly (number | null)[] | null | undefined): { rows: Float32Array[]; max: number } {
+  let max = 0;
+  const rows = lanes.map((l) => {
+    const r = new Float32Array(24);
+    for (const m of l.members) {
+      const s = spark(m);
+      if (!s) continue;
+      const off = 24 - s.length;
+      for (let i = 0; i < s.length; i++) { const v = s[i]; if (v !== null && v !== undefined && v > 0 && i + off >= 0) r[i + off] = r[i + off]! + v; }
+    }
+    for (let i = 0; i < 24; i++) if (r[i]! > max) max = r[i]!;
+    return r;
+  });
+  return { rows, max };
+}
+
 /** What the wall would paint, as a short key (a quantized copy of the series). */
 function sigOf(t: Tide): string {
   let s = `${t.source}|${t.to}|`;

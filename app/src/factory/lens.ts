@@ -507,7 +507,8 @@ export class Lenses {
         const q = g.hosted ? c.gha.length : c.rr.length;
         return [g.name, `${g.running.length}/${g.slots} busy${g.cpu >= 0 ? ` · cpu ${Math.round(pct(g.cpu))}%` : ''}${g.mem >= 0 ? ` · mem ${Math.round(pct(g.mem))}%` : ''}`, `${q} queued · its 24 h busy, below`, 'click: its wall, cpu and mem'];
       }
-      case 'intake': return ['intake', `${c.waiting} queued${c.oldestWait > 0 ? ` · oldest ${ago(c.oldestWait)}` : ''}`, 'click: each wait'];
+      case 'intake': if (h.id.startsWith('yard:')) return h.label.split('\n'); // w2-engine2: the holding yard's lane × 4 h
+        return ['intake', `${c.waiting} queued${c.oldestWait > 0 ? ` · oldest ${ago(c.oldestWait)}` : ''}`, 'click: each wait'];
       case 'gate': return ['merge gate', `${c.flow.merges} merged/h`, 'click: what landed today, by lane'];
       case 'scanner': case 'return': {
         const f1 = c.flow;
@@ -2250,6 +2251,34 @@ export class Lenses {
         if (top3.length) line([['served ', C.ink3], [top3.map((r) => `${repoName(r.repo)} ${r.runs}`).join(' · '), C.ink2]]);
         const q = gr?.hosted ? c.gha.length : c.rr.length;
         line([[`${gr?.running.length ?? 0}/${gr?.slots ?? 0}`, C.amberText, true], [' busy · ', C.ink3], [`${q} queued`, q ? C.ink : C.ink3, true], [c.oldestWait > 0 && q ? ` · oldest ${ago(c.oldestWait)}` : '', C.ink3]]);
+        // w2-engine2 (#3): what its slots' afterimages and lip ticks are: the last job, the last
+        // hour's jobs by lane in their hues
+        const past = f.plant.past[st.gi ?? 0] ?? [];
+        let last: { pid: string; end: number } | null = null;
+        const byLane = new Map<string, number>();
+        for (const s of past) {
+          if (s.last && (!last || s.last.end > last.end)) last = s.last;
+          for (const r of s.runs) byLane.set(r.lane, (byLane.get(r.lane) ?? 0) + 1);
+        }
+        const lp = last ? w.pipelines.get(last.pid) : undefined;
+        if (last && lp && !(gr?.running.length)) line([['last job ', C.ink3], [repoName(lp.repo), C.ink2], [` · ${ago(now - last.end)} ago`, C.ink3], [lp.state === 'failure' || lp.state === 'error' ? ' · failed' : '', C.redText]]);
+        const lanes = [...byLane].sort((a, b) => b[1] - a[1]);
+        if (lanes.length) {
+          if (paint) {
+            const G = floorGroups();
+            let gx = x;
+            g.text('last hour', gx, y + h + 14, C.ink3, SMALL);
+            gx += g.width('last hour', SMALL) + 10;
+            for (const [id, n] of lanes) {
+              const L = G.lane(id), name = `${L ? L.short : id} ${n}`, ww = g.width(name, SMALL) + 14;
+              if (gx + ww > x + W) break;
+              g.fillRect(gx, y + h + 6, 9, 9, G.hex(id));
+              g.text(name, gx + 13, y + h + 14, C.ink2, SMALL);
+              gx += ww + 6;
+            }
+          }
+          h += 18;
+        }
         break;
       }
       case 'queue': {
@@ -2263,12 +2292,39 @@ export class Lenses {
           }
           h += 16;
         }
-        if (!items.length) line([['nothing waits', C.ink3]]);
-        // fx-lens: the slowest tenth of each hour's waits, 24 h
-        const wh = st.hours ?? [];
-        if (wh.some((v) => v > 0)) {
-          line([['waits today ', C.ink3], ['p90 per hour', C.ink2], [` · worst ${ago(Math.max(...wh))}`, C.ink3]]);
-          h += this.hourBars(g, wh, [], x, y + h + 2, W, paint, withAlpha(C.packet, 0.75)) + 2;
+        // w2-engine2 (REVIEW-iter3 #3): idle, the intake says what fed it: the last hour's arrivals
+        // per lane in their hues (the holding yard's newest column), then the 24 h of waits
+        if (!items.length) {
+          const yd = f.plant.yard;
+          const arr = yd ? yd.lanes.map((l, i) => [l, yd.arrived1h[i] ?? 0] as const).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]) : [];
+          const tot = arr.reduce((a, [, n]) => a + n, 0);
+          line([['nothing waits', C.ink2, true], [tot ? ` · ${tot} arrived in the last hour` : ' · nothing arrived in the last hour', C.ink3]]);
+          const mx = Math.max(1, ...arr.map(([, n]) => n));
+          for (const [l, n] of arr.slice(0, 5)) {
+            if (paint) {
+              g.fillRect(x, y + h + 6, 9, 9, l.hex);
+              g.text(g.fit(l.short, SMALL, 104), x + 14, y + h + 14, C.ink2, SMALL);
+              g.fillRect(x + 124, y + h + 6, Math.max(2, ((W - 160) * n) / mx), 8, withAlpha(l.hex, 0.85));
+              g.text(String(n), x + W, y + h + 14, C.ink3, SMALL, false, 'right');
+            }
+            h += 16;
+          }
+          if (arr.length > 5) line([[`+${arr.length - 5} more lanes, on the yard`, C.ink3]]);
+        }
+        // the waits of the last 24 h: the server's median an hour (its trend), else the held runs' p90
+        const sp = insights().trend('fleet')?.intake_ms?.spark ?? [];
+        const ws = sp.map((v) => (v !== null && v > 0 ? v : 0));
+        if (ws.length === 24 && ws.some((v) => v > 0)) {
+          const nowW = sp[23] ?? null;
+          line([['wait ', C.ink3], ['p50 per hour', C.ink2], [`${nowW !== null ? ` · now ${ago(nowW)}` : ''} · worst ${ago(Math.max(...ws))}`, C.ink3]]);
+          h += this.hourBars(g, ws, [], x, y + h + 2, W, paint, withAlpha(C.packet, 0.75)) + 2;
+        } else {
+          // fx-lens: the slowest tenth of each hour's waits, 24 h
+          const wh = st.hours ?? [];
+          if (wh.some((v) => v > 0)) {
+            line([['waits today ', C.ink3], ['p90 per hour', C.ink2], [` · worst ${ago(Math.max(...wh))}`, C.ink3]]);
+            h += this.hourBars(g, wh, [], x, y + h + 2, W, paint, withAlpha(C.packet, 0.75)) + 2;
+          }
         }
         break;
       }

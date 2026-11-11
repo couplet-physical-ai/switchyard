@@ -82,7 +82,44 @@ export type Heap = {
   ids: string[];
   flaky: Set<string>;
   newest: string;
+  /** w2-engine2 (REVIEW-iter3 #6): the cluster is FLAKY (`flakyCluster`): its heap is drawn hatched
+   *  in gray-red, never solid red. */
+  flakyCl: boolean;
 };
+
+/** w2-engine2 (REVIEW-iter3 #6): a failure cluster is FLAKY, not broken, when at least a quarter of
+ *  its 24 h failures (and two) passed again on the same sha (the server's `Cluster.flaky`), or, with
+ *  no cluster record, when at least half of the failures parked on its heap (and one) are flaky.
+ *  One rule for the floor (the hatched heap) and the words (a callout says "flaky"). */
+export function flakyCluster(cl: { count: number; flaky?: number } | null | undefined, parked?: { n: number; flaky: number }, flake?: { flips: number; failures: number } | null): boolean {
+  if (cl && (cl.flaky ?? 0) > 0 && (cl.flaky ?? 0) >= Math.max(2, 0.25 * cl.count)) return true;
+  // the flakes table (repo | workflow/step): the same step flipped on one sha all day (a cron)
+  if (flake && flake.flips >= Math.max(2, 0.25 * flake.failures)) return true;
+  if (cl && (cl.flaky ?? 0) > 0) return false;
+  return !!parked && parked.flaky >= 1 && parked.flaky * 2 >= parked.n;
+}
+
+/** How flaky a heap's step has been today across its repos (flaky runs and failures in 24 h), or
+ *  null: the flakes table (repo | workflow/step flips on one sha), and the sibling clusters of the
+ *  same step on the same repos (the server splits a step's failures by their error line: a cron's
+ *  cluster opened again today keeps the flakiness its step showed all day). */
+export function flakeOf(step: string, repos: readonly string[]): { flips: number; failures: number } | null {
+  const R = new Set(repos), ins = insights();
+  let best: { flips: number; failures: number } | null = null;
+  const take = (flips: number, failures: number) => { if (!best || flips / Math.max(1, failures) > best.flips / Math.max(1, best.failures)) best = { flips, failures }; };
+  for (const f of ins.flakes()) {
+    if (!R.has(f.repo) || !(f.step === step || step.includes(f.step) || f.step.includes(step))) continue;
+    take(f.flips_24h, f.failures_24h);
+  }
+  for (const c of ins.clusters()) {
+    if (!(c.flaky ?? 0) || c.step !== step || !c.repos?.some((r) => R.has(r))) continue;
+    take(c.flaky ?? 0, c.count);
+  }
+  return best;
+}
+
+/** The heap is drawn hatched (a flaky cluster's). */
+export function flakyHeap(h: Heap): boolean { return h.flakyCl; }
 
 /** Heap width: a crate for one repo, a step wider for each more (world u), at most HEAP_W1. */
 export const HEAP_W0 = 8, HEAP_WR = 6, HEAP_W1 = 74;
@@ -131,9 +168,10 @@ export function heapUp(parked: Parked[], groups: ParkGroup[], u1: number, uMin: 
     for (const x of xs) x.u = mid;
     pg.u0 = Math.min(mid, a + 4); pg.u1 = Math.max(mid, b - 4);
     uR = a - HEAP_GAP;
+    const flaky = new Set(xs.filter((x) => x.flaky).map((x) => x.id));
     heaps.push({
       k, cl: pg.cl, step: pg.step, u0: a, u1: b, h: xs.length * unit, unit, n: xs.length, repos, repoList,
-      ids: xs.map((x) => x.id), flaky: new Set(xs.filter((x) => x.flaky).map((x) => x.id)), newest: pg.newest || xs[0]!.id,
+      ids: xs.map((x) => x.id), flaky, newest: pg.newest || xs[0]!.id, flakyCl: flakyCluster(cl, { n: xs.length, flaky: flaky.size }, flakeOf(cl?.step ?? pg.step, repoList)),
     });
   });
   heapCache.set(parked, heaps);

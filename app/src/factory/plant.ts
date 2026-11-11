@@ -45,15 +45,16 @@ import type { Group } from './census.ts';
 import type { Factory } from './factory.ts';
 import { UX, UY, VX } from './iso.ts';
 import { floorGroups } from './groups.ts';
-import { PLAN } from './layout.ts';
+import { APRON, PLAN } from './layout.ts';
 import { R_BEAM, R_DOOR, R_RING, beltSpeedPx, breathe } from './motion.ts';
-import { DAY_MS, PlantHist, dataRuns, historyIds, type Tide } from './planthist.ts';
-import { F, SMALL, box, dur, pipeWords, poly, quad, ring } from './prims.ts';
+import { AFTER_MS, DAY_MS, PlantHist, TICKS_MS, afterK, dataRuns, dealSlots, historyIds, laneArrivals, type SlotPast, type SlotRun, type Tide } from './planthist.ts';
+import { F, SMALL, box, dur, hash, pipeWords, poly, quad, ring } from './prims.ts';
 import type { Bay, FloorPass, Layer, LiveFrame, Pt } from './types.ts';
-import { heapsOf, tallest, type Heap } from './clusters.ts';
+import { flakyHeap, heapsOf, tallest, type Heap } from './clusters.ts';
 import { beat } from './motion.ts';
 import { HALO_D, emberPass, metricOf, typical as typicalOf, type EmberAsk, type MetricKey } from './trendmarks.ts';
 import { insights } from '../insights.ts';
+import { Packets } from './packets.ts';
 
 const {
   DOCK_U1, RAIL_U1, INTAKE_U0, INTAKE_U1, LANE_V, DIST_U, ENG_U0, ENG_U1, ENG_V0, ENG_STEP, ENG_DV, ENG_H,
@@ -104,6 +105,17 @@ export function typical(t: Tide): number {
   return m;
 }
 const STEP_OK = '#5E7363';
+/** w2-engine2 (#6): a flaky cluster's heap: gray-red faces (never solid red), a red hatch over them. */
+const FLAKY_TOP = '#6E5250', FLAKY_SIDE = '#4A3634', FLAKY_FRONT = '#563F3D', FLAKY_EDGE = '#7A4F4C', FLAKY_TEXT = '#B4908C';
+/** w2-engine2: a holding-yard cell's heat level (0 none, 1..7 ∝ √(runs / the busiest cell)). */
+export function heatLevel(v: number, max: number): number {
+  return v > 0 && max > 0 ? 1 + Math.min(6, Math.floor(6 * Math.sqrt(v / max))) : 0;
+}
+/** The yard's paint: a bay's floor in its lane hue (15 %), a level's alpha over it, the outline. */
+const YARD_BAY = 0.09, YARD_LVL = [0, 0.18, 0.25, 0.32, 0.4, 0.48, 0.57, 0.66], YARD_EDGE = '#3A3A3F';
+/** A slot's afterimage at full strength (the lane hue over the idle bay), its lip ticks' strip
+ *  (v past the bay's front) and the inner wall's tide strip (v past the machine's back). */
+const AFTER_A = 0.18, TICK_V0 = 11, TICK_V1 = 19, TIDE_V0 = WALL_V + 1.5, TIDE_V1 = 14;
 
 /** The lit look of a bay for a group hue: the recess floor (the hue over the machine) and the rim. */
 function lit(hex: string): { floor: string; rim: string } {
@@ -139,8 +151,10 @@ export class Plant implements Layer {
   private epoch = -1;
   /** The job zoom's subject this frame ('' none), for tests and the HUD. */
   job = '';
+  /** w2-engine2 (WOW #1): the light packets (packets.ts), a layer of their own (layers.ts). */
+  readonly packets: Packets;
 
-  constructor(readonly f: Factory) {}
+  constructor(readonly f: Factory) { this.packets = new Packets(f); }
 
   /** The hosted edge's length (world u, quantized: a 48th of the span) and the jobs it stands for
    *  (fx-engine #5), laid with the bays. */
@@ -153,7 +167,7 @@ export class Plant implements Layer {
 
   /** The static floor's key part: the walls' histories, the hosted edge's length, the embers'
    *  gate (each changes on a stage emptying or filling, a machine idling; never per tick). */
-  get sig(): string { return `h${this.hist.ver}|e${Math.round(this.edgeDu)}|${this.emberBits}`; }
+  get sig(): string { return `h${this.hist.ver}|e${Math.round(this.edgeDu)}|${this.emberBits}|${this.pastSig}|${this.yardSig}`; }
 
   /** The machine's footprint on the floor (u0, v0, du, dv): the hosted edge is one bay deep and as
    *  long as its share of the jobs (fx-engine; lens.ts hits it). */
@@ -182,7 +196,99 @@ export class Plant implements Layer {
 
   census(w: World): void {
     this.layoutBays(w);
+    this.refreshPast(w);
     emberPass.begin(); // the floor pass (if one follows) asks for its embers; `floor` paints them
+  }
+
+  // ---- w2-engine2 (REVIEW-iter3 #3, #11): the engine's and the intake's recent past ----
+  /** Per machine (census group), per slot: its last job and the last hour's (planthist.ts
+   *  dealSlots); each slot's afterimage strength and lip ticks, as the static floor paints them. */
+  past: SlotPast[][] = [];
+  /** Per machine, per slot: [lane hue, afterimage 0..1] and its ticks [hue, 0..1 along the lip]. */
+  private slotPaint: { after: [string, number][]; ticks: [string, number][][] }[] = [];
+  private pastSig = '';
+  private pastAt = -1e15;
+  /** The holding yard (layout.ts APRON): its rows (lanes), the 24 h arrivals per lane, its box. */
+  yard: { lanes: { id: string; hex: string; short: string }[]; rows: Float32Array[]; max: number; u0: number; u1: number; v0: number; v1: number; row: number; p90: number; arrived1h: number[] } | null = null;
+  private yardSig = '';
+
+  /** Recounts the slots' and the yard's past (at most every 5 s of fleet time; a rewind at once). The
+   *  static floor's key changes only when what it paints does: a job ending (its afterimage), a
+   *  tick a minute older, an afterimage a sixth fainter (5 min), an hour's arrivals. */
+  private refreshPast(w: World): void {
+    const c = this.f.census, now = c.now;
+    if (c.skeleton || !w.loaded || !now) return;
+    if (now - this.pastAt < 5000 && now >= this.pastAt) return;
+    this.pastAt = now;
+    const G = this.f.w2.on ? floorGroups() : null;
+    const laneOf = (p: Pipeline) => (G ? G.laneOfPipeline(p) : w.orgOf(p.repo));
+    const hexOf = (id: string) => (G ? G.hex(id) : '#8A7146');
+    // the machines' runs over the last ~2 h, by engine id
+    const byEngine = new Map<string, number>();
+    // a run names its engine by id or by label (the agent's name): both, and its Dagger host's
+    c.groups.forEach((g, gi) => { if (!g.hosted) for (const id of g.engines) byEngine.set(id, gi); });
+    for (const e of w.engines.values()) {
+      const gi = byEngine.get(e.id) ?? c.groups.findIndex((g) => !g.hosted && g.id === (e.host ?? e.label ?? e.id));
+      if (gi === undefined || gi < 0) continue;
+      byEngine.set(e.id, gi);
+      if (e.label) byEngine.set(e.label, gi);
+    }
+    const runs: SlotRun[][] = c.groups.map(() => []);
+    const from = now - Math.max(AFTER_MS, TICKS_MS) - 3_600_000;
+    const waits: number[] = [];
+    for (const p of w.pipelines.values()) {
+      const st = p.started;
+      if (st && st >= now - DAY_MS && st <= now) waits.push(Math.max(0, st - p.created));
+      if (!p.engine || !st || st > now) continue;
+      const gi = byEngine.get(p.engine);
+      if (gi === undefined) continue;
+      const fin = p.finished && p.finished <= now ? p.finished : 0;
+      if ((fin || now) < from) continue;
+      runs[gi]!.push({ pid: p.id ?? '', lane: laneOf(p), start: st, end: fin || now, running: !fin, red: p.state === 'failure' || p.state === 'error' });
+    }
+    let sig = '';
+    this.past = [];
+    this.slotPaint = [];
+    c.groups.forEach((g, gi) => {
+      const n = this.bays.filter((b) => b.group === gi).length;
+      const past = g.hosted ? [] : dealSlots(runs[gi]!, n, now);
+      this.past.push(past);
+      const after: [string, number][] = [], ticks: [string, number][][] = [];
+      for (const s of past) {
+        const k = s.last ? afterK(now - s.last.end) : 0;
+        after.push([k ? hexOf(s.last!.lane) : '', k]);
+        const tk: [string, number][] = s.runs.map((r) => [hexOf(r.lane), Math.round(60 * clamp(1 - (now - r.start) / TICKS_MS, 0, 1)) / 60]);
+        ticks.push(tk);
+        sig += `${k ? `${s.last!.lane}${Math.round(k * 6)}` : '-'}:${tk.map((x) => `${x[0]}${Math.round(x[1] * 60)}`).join(',')};`;
+      }
+      this.slotPaint.push({ after, ticks });
+      sig += '|';
+    });
+    this.pastSig = `s${hash(sig)}`;
+    // the holding yard: below the frontmost machine (or the intake), a row per lane (bots ride their
+    // repo's lane), 24 columns of the lanes' arrivals an hour (the groups' trend sparks)
+    if (!G) { this.yard = null; this.yardSig = ''; return; }
+    const lanes = G.lanes().filter((l) => l.members.length);
+    const ins = insights();
+    const { rows, max } = laneArrivals(lanes, (id) => ins.trend(id)?.pipelines?.spark);
+    let bottom = APRON.V0 - APRON.GAP;
+    c.groups.forEach((_g, gi) => { const [, v, , dv] = this.shell(gi); bottom = Math.max(bottom, v + dv); });
+    const v1 = APRON.V1, v0 = bottom + APRON.GAP;
+    const row = lanes.length ? Math.min(APRON.ROW_MAX, (v1 - v0) / lanes.length) : 0;
+    if (row < APRON.ROW_MIN) { this.yard = null; this.yardSig = ''; return; }
+    waits.sort((a, b) => a - b);
+    const p90 = waits.length >= 5 ? waits[Math.min(waits.length - 1, Math.floor(waits.length * 0.9))]! : Math.max(60_000, 2 * (w.stats.p50_queue_ms || 0));
+    const arrived1h = lanes.map(() => 0);
+    const li = new Map(lanes.map((l, i) => [l.id, i]));
+    for (const p of w.pipelines.values()) {
+      if (p.created < now - 3_600_000 || p.created > now) continue;
+      const i = li.get(G.laneOfRepo(p.repo));
+      if (i !== undefined) arrived1h[i]!++;
+    }
+    this.yard = { lanes: lanes.map((l) => ({ id: l.id, hex: G.hex(l.id), short: l.short })), rows, max, u0: APRON.U0, u1: APRON.U1, v0: v1 - row * lanes.length, v1, row, p90, arrived1h };
+    let ys = `${lanes.length}|${Math.round(v0)}|`;
+    for (const r of rows) for (let i = 0; i < 24; i++) ys += heatLevel(r[i]!, max);
+    this.yardSig = `y${hash(ys + lanes.map((l) => G.hex(l.id)).join(''))}`;
   }
 
   // ---- events: a run queues at the intake, starts in its bay, finishes through the scanner
@@ -367,6 +473,8 @@ export class Plant implements Layer {
       box(cam, g, GATE_U - 1, 276, 3, 3, 10, '#232326', '#19191B', '#151517');
       box(cam, g, GATE_U - 1, 303, 3, 3, 10, '#232326', '#19191B', '#151517');
     }, GATE_U + 2, 306, 10);
+    // w2-engine2 (#11): the holding yard on the apron (flat, under everything extruded)
+    if (!fp.idle) this.yardFloor(g, lo);
     // the consumption engine: one machine per host, its wall on its back
     this.f.census.groups.forEach((gr, gi) => {
       const v0 = ENG_V0 + gi * ENG_STEP;
@@ -467,7 +575,96 @@ export class Plant implements Layer {
     const rec = this.f.bA;
     for (const b of this.bays) if (b.group === gi) rec.add(b.u, b.v, b.du, b.dv, 0, ENG_H);
     rec.flushQuads(g, cam, IDLE_BAY);
+    this.slotPast(g, gi, v0, lo);
     this.wall(g, gr, v0, lo);
+  }
+
+  /** w2-engine2 (REVIEW-iter3 #3): an idle machine is never two black boxes. Each slot keeps its
+   *  LAST job as an afterimage (the bay's floor in that job's lane hue at 18 %, fading to nothing
+   *  over 30 min, in sixths), and its lip a 1-px tick in the lane hue for every job that started
+   *  in the last hour (at its start: the lip is the hour, now at its right end). Along the
+   *  machine's back, under the wall, the INNER WALL's tide: the 24 h busy share as a heat strip
+   *  (half-hour cells, amber ∝ busy/slots; gaps stay bare), so a quiet machine still has its
+   *  day. All on the static floor (`sig`: the dealt slots, a minute's tick, a sixth's fade). */
+  private slotPast(g: Gfx, gi: number, v0: number, lo: boolean): void {
+    const cam = this.f.cam, sp = this.slotPaint[gi];
+    const bays = this.bays.filter((b) => b.group === gi).sort((a, b) => a.slot - b.slot);
+    if (sp) {
+      const by = new Map<string, BoxBatch>();
+      bays.forEach((b, k) => {
+        const a = sp.after[k];
+        if (!a || !a[1]) return;
+        const col = withAlpha(a[0], AFTER_A * a[1]);
+        let B = by.get(col);
+        if (!B) by.set(col, (B = new BoxBatch()));
+        B.add(b.u, b.v, b.du, b.dv, 0, ENG_H);
+      });
+      for (const [col, B] of by) B.flushQuads(g, cam, col);
+      // the lip: a faint hour axis under each slot, then the ticks, one path per hue
+      const axis = Math.max(1, g.hair);
+      g.begin_();
+      for (const b of bays) { const va = b.v + b.dv + TICK_V1; g.move(cam.x(b.u, va), cam.y(b.u, va, ENG_H)); g.line(cam.x(b.u + b.du, va), cam.y(b.u + b.du, va, ENG_H)); }
+      g.stroke('#2C2C30', axis);
+      const ticks = new Map<string, number[]>();
+      bays.forEach((b, k) => {
+        for (const [hex, x] of sp.ticks[k] ?? []) {
+          let L = ticks.get(hex);
+          if (!L) ticks.set(hex, (L = []));
+          L.push(b.u + 0.6 + (b.du - 1.2) * x, b.v + b.dv);
+        }
+      });
+      for (const [hex, L] of ticks) {
+        g.begin_();
+        for (let i = 0; i < L.length; i += 2) { const u = L[i]!, vb = L[i + 1]!; g.move(cam.x(u, vb + TICK_V0), cam.y(u, vb + TICK_V0, ENG_H)); g.line(cam.x(u, vb + TICK_V1), cam.y(u, vb + TICK_V1, ENG_H)); }
+        g.stroke(hex, Math.max(1, g.hair * 1.2));
+      }
+    }
+    // the inner wall's tide: 48 half-hour cells along the wall's own time axis
+    const t = this.hist.tide(this.f.census.groups[gi]?.id ?? '');
+    if (!t || lo) return;
+    const ua = ENG_U0 + 3, ub = ENG_U1 - 3, n = 48, per = t.n / n;
+    const lv: BoxBatch[] = [];
+    for (let i = 0; i < n; i++) {
+      let s = 0, k = 0;
+      for (let j = Math.floor(i * per); j < Math.floor((i + 1) * per); j++) { const x = t.busy[j]!; if (x === x) { s += x; k++; } }
+      if (!k) continue;
+      const level = Math.min(5, Math.round((s / k) * 5));
+      (lv[level] ??= new BoxBatch()).add(ua + ((ub - ua) * i) / n + 0.3, v0 + TIDE_V0, (ub - ua) / n - 0.6, TIDE_V1 - TIDE_V0, 0, ENG_H);
+    }
+    lv.forEach((B, level) => B?.flushQuads(g, cam, withAlpha(C.packet, 0.07 + 0.13 * level)));
+  }
+
+  /** w2-engine2 (REVIEW-iter3 #11): the apron in front of the intake and the engine is the intake's
+   *  HOLDING YARD: a floor bay per lane (row, the docks' order) and hour of the last 24 h (column,
+   *  now at the right), its lane's hue at 9 % with the hour's ARRIVALS over it (the lane's groups'
+   *  runs that hour, √-scaled to the busiest cell): when the engine is idle the yard still says
+   *  which teams fed it and when. Waiting jobs stand on it live (`yardLive`). */
+  private yardFloor(g: Gfx, lo: boolean): void {
+    const y = this.yard, cam = this.f.cam;
+    if (!y) return;
+    const cw = (y.u1 - y.u0) / 24, inset = Math.min(1.4, cw * 0.1), rin = Math.min(1.4, y.row * 0.12);
+    const B = this.f.bA;
+    y.lanes.forEach((l, r) => {
+      const va = y.v0 + r * y.row + rin, vb = y.v0 + (r + 1) * y.row - rin, row = y.rows[r]!;
+      // the empty bays (the hour had nothing), one fill per lane
+      for (let i = 0; i < 24; i++) if (!heatLevel(row[i]!, y.max)) B.add(y.u0 + i * cw + inset, va, cw - 2 * inset, vb - va, 0, 0.2);
+      B.flushQuads(g, cam, withAlpha(l.hex, YARD_BAY));
+      // the low-detail floor: the hours with arrivals in one tone (one fill per lane, not seven)
+      if (lo) {
+        for (let i = 0; i < 24; i++) if (heatLevel(row[i]!, y.max)) B.add(y.u0 + i * cw + inset, va, cw - 2 * inset, vb - va, 0, 0.2);
+        B.flushQuads(g, cam, withAlpha(l.hex, YARD_LVL[3]!));
+        return;
+      }
+      for (let lvl = 1; lvl <= 7; lvl++) {
+        for (let i = 0; i < 24; i++) if (heatLevel(row[i]!, y.max) === lvl) B.add(y.u0 + i * cw + inset, va, cw - 2 * inset, vb - va, 0, 0.2);
+        B.flushQuads(g, cam, withAlpha(l.hex, YARD_LVL[lvl]!));
+      }
+    });
+    // the yard's outline (the p90 ring runs along it live) and the hour marks every 6 h
+    g.begin_(); quad(cam, g, y.u0 - 1, y.v0 - 1, y.u1 + 1, y.v1 + 1, 0.2); g.stroke(YARD_EDGE, Math.max(1, g.hair));
+    g.begin_();
+    for (let h = 6; h < 24; h += 6) { const u = y.u0 + h * cw; g.move(cam.x(u, y.v1 + 1), cam.y(u, y.v1 + 1, 0.2)); g.line(cam.x(u, y.v1 + 4), cam.y(u, y.v1 + 4, 0.2)); }
+    g.stroke(YARD_EDGE, Math.max(1, g.hair));
   }
 
   /** The machine's wall: a slab on its back edge, its face the last 24 h (planthist.ts); `ue`
@@ -601,6 +798,7 @@ export class Plant implements Layer {
         this.f.hit(x0, Math.min(y0, y1), x1 - x0, Math.abs(y1 - y0), 'machine', String(gi), `${gr.name} · 24 h`);
       }
     });
+    this.yardHits();
     this.emberHits();
   }
 
@@ -779,20 +977,51 @@ export class Plant implements Layer {
   private heapMarks(g: Gfx, fr: LiveFrame): void {
     const f = this.f, cam = f.cam;
     const heaps = heapsOf(f.lens.parked);
-    if (!heaps?.length || f.lens.topLens || f.census.skeleton) return;
-    const top = tallest(heaps);
+    if (!heaps?.length || f.census.skeleton) return;
+    this.flakyHeaps(g, heaps);
+    if (f.lens.topLens) return;
+    // w2-engine2 (#6): a flaky heap is named only when no broken one is on the belt, as flaky
+    const solid = heaps.filter((h) => !h.flakyCl);
+    const top = tallest(solid.length ? solid : heaps);
     if (!top) return;
+    const fl = top.flakyCl;
     const mid = (top.u0 + top.u1) / 2;
     const hx = cam.x(mid, RETURN_V - 4), hy = cam.y(mid, RETURN_V - 4, 1.2 + top.h);
     if (fr.q < 4) this.arcs(g, top, hx, hy, fr.t);
-    const name = `${shortStep(top.step)} · ${top.repos} repo${top.repos === 1 ? '' : 's'}`;
+    const name = fl ? `${shortStep(top.step)} · flaky` : `${shortStep(top.step)} · ${top.repos} repo${top.repos === 1 ? '' : 's'}`;
     const wv = g.width(name, SMALL);
     const at = f.placeAt(Math.round(hx - wv / 2), Math.round(hy - 7), wv, 13, 4, true);
     if (!at) return;
     const [x, y] = at;
-    if (y < hy - 22 || Math.abs(x + wv / 2 - hx) > wv / 2 + 6) { g.begin_(); g.move(hx, hy - 2); g.line(Math.min(Math.max(hx, x + 2), x + wv - 2), y + 3); g.stroke(withAlpha(C.red, 0.6), 1); }
+    if (y < hy - 22 || Math.abs(x + wv / 2 - hx) > wv / 2 + 6) { g.begin_(); g.move(hx, hy - 2); g.line(Math.min(Math.max(hx, x + 2), x + wv - 2), y + 3); g.stroke(withAlpha(fl ? FLAKY_EDGE : C.red, 0.6), 1); }
     g.fillRect(x - 3, y - 11, wv + 6, 15, withAlpha(C.canvas, 0.82));
-    g.text(name, x, y, C.redText, SMALL);
+    g.text(name, x, y, fl ? FLAKY_TEXT : C.redText, SMALL);
+  }
+
+  /** w2-engine2 (REVIEW-iter3 #6): a FLAKY cluster's heap (clusters.ts flakyCluster) is not a broken
+   *  thing: it is painted over the conveyor's solid red heap (lens.ts drawParked, earlier in the
+   *  frame) in gray-red with a red 45° hatch across its front and side, never solid red. */
+  private flakyHeaps(g: Gfx, heaps: readonly Heap[]): void {
+    const cam = this.f.cam, V = RETURN_V, v0 = V - 4, v1 = V + 4, z0 = 1.2;
+    const b = this.f.bD;
+    let any = 0;
+    for (const h of heaps) if (h.flakyCl) { b.add(h.u0, v0, h.u1 - h.u0, v1 - v0, h.h, z0); any++; }
+    if (!any) return;
+    b.flush(g, cam, FLAKY_TOP, FLAKY_SIDE, FLAKY_FRONT, FLAKY_EDGE, Math.max(1.2, g.hair * 1.6), 3);
+    // the hatch: 45° strokes across the front face (u, z) and the side face (v, z), clipped by hand
+    const step = Math.max(2.6, 4 / Math.max(0.4, cam.s));
+    g.begin_();
+    for (const h of heaps) {
+      if (!h.flakyCl) continue;
+      const za = z0, zb = z0 + h.h, du = h.u1 - h.u0;
+      for (let d = -h.h; d < du; d += step) {
+        // the front face: u = u0 + d + (z - za); keep inside [u0, u1] × [za, zb]
+        const s0 = Math.max(0, -d), s1 = Math.min(h.h, du - d);
+        if (s1 <= s0) continue;
+        g.move(cam.x(h.u0 + d + s0, v1), cam.y(h.u0 + d + s0, v1, za + s0)); g.line(cam.x(h.u0 + d + s1, v1), cam.y(h.u0 + d + s1, v1, za + s1));
+      }
+    }
+    g.stroke(withAlpha(C.red, 0.75), Math.max(1, g.hair * 1.2));
   }
 
   /** The biggest heap's arcs: one per group dock its repos belong to, from the heap's top to the
@@ -822,16 +1051,17 @@ export class Plant implements Layer {
       const qy = (1 - s0) * ((1 - s1) * y0 + s1 * cy) + s0 * ((1 - s1) * cy + s1 * y1);
       g.move(ax, ay); g.ctx.quadraticCurveTo(qx, qy, bx, by); g.ops++;
     };
+    const arcCol = h.flakyCl ? FLAKY_EDGE : C.red; // w2-engine2 (#6): a flaky heap's arcs are gray-red
     g.begin_();
     for (let i = 0; i < E.length; i += 2) path(E[i]!, E[i + 1]!, 0, 1);
-    g.stroke(withAlpha(C.red, f.reduced ? 0.34 : 0.18), 1);
+    g.stroke(withAlpha(arcCol, f.reduced ? 0.34 : 0.18), 1);
     if (f.reduced) return;
     const b = beat(t);
     if (b >= 0.6) return;
     const k = b / 0.6, e1 = 1 - (1 - k) * (1 - k), e0 = Math.max(0, e1 - 0.3);
     g.begin_();
     for (let i = 0; i < E.length; i += 2) path(E[i]!, E[i + 1]!, e0, e1);
-    g.stroke(withAlpha(C.red, 0.9 - 0.45 * k), 1.4);
+    g.stroke(withAlpha(arcCol, 0.9 - 0.45 * k), 1.4);
   }
 
   /** The intake: a ribbon per lane under its queued crates (one per waiting run, the oldest at
@@ -873,6 +1103,81 @@ export class Plant implements Layer {
     const shut = slots > 0 && busy >= slots && c.rr.length + extra > 0;
     if (shut) box(cam, g, GATE_U - 0.6, 278, 1.8, 26, 8, '#C99A52', '#8E6E3E', '#B48C4E', '#E5B567', g.hair);
     else { g.begin_(); quad(cam, g, GATE_U - 0.6, 279, GATE_U + 1.2, 303, 0.6); g.fill('#2E2E32'); }
+    this.yardLive(g, fr);
+  }
+
+  /** w2-engine2 (#11): what waits now stands in the holding yard: a crate per waiting run in its
+   *  lane's row, in the lane's hue, from the "now" column leftwards (the oldest at the front right,
+   *  a pile past 12), and the p90 RING: the yard's outline traced from its front-right corner as
+   *  the oldest wait nears the usual worst (the last 24 h's p90); past it the whole ring and the
+   *  oldest crate's rim turn amber. Nothing waits: nothing live here (the floor's 24 h stays). */
+  private yardLive(g: Gfx, fr: LiveFrame): void {
+    const y = this.yard, c = this.f.census, w = this.f.world, cam = this.f.cam;
+    if (!y || c.waiting <= 0 || !this.f.w2.on) return;
+    const G = floorGroups(), cw = (y.u1 - y.u0) / 24;
+    const per = new Map<number, number>();
+    const tiles = this.f.bB;
+    let oldest: [number, number, number] | null = null, oldAge = -1;
+    const byHue = new Map<string, number[]>();
+    for (const id of [...c.rr, ...c.gha]) {
+      const p = w.pipelines.get(id);
+      if (!p) continue;
+      const r = y.lanes.findIndex((l) => l.id === G.laneOfRepo(p.repo));
+      if (r < 0) continue;
+      const k = per.get(r) ?? 0;
+      per.set(r, k + 1);
+      if (k >= 12) continue;
+      const u = y.u1 - cw * (k + 0.5), v = y.v0 + (r + 0.5) * y.row, d = Math.min(cw, y.row) * 0.62;
+      const hex = y.lanes[r]!.hex;
+      let L = byHue.get(hex);
+      if (!L) byHue.set(hex, (L = []));
+      L.push(u, v, d);
+      const age = Math.max(0, fr.now - p.created);
+      if (age > oldAge) { oldAge = age; oldest = [u, v, d]; }
+      this.f.hit(cam.x(u, v) - 6, cam.y(u, v, 4) - 6, 12, 12, 'pipeline', id, pipeWords(p));
+    }
+    for (const [hex, L] of byHue) {
+      for (let i = 0; i < L.length; i += 3) tiles.crate(L[i]!, L[i + 1]!, L[i + 2]!, 0.4);
+      tiles.flush(g, cam, hex, mix(hex, '#101012', 0.55), mix(hex, '#101012', 0.7), '', 1, 2);
+    }
+    // the p90 ring: the outline from the front-right corner, clockwise round the yard
+    const k = y.p90 > 0 ? clamp(c.oldestWait / y.p90, 0, 1) : 0;
+    const over = c.oldestWait >= y.p90;
+    const P: Pt[] = [[y.u1 + 1, y.v1 + 1], [y.u0 - 1, y.v1 + 1], [y.u0 - 1, y.v0 - 1], [y.u1 + 1, y.v0 - 1], [y.u1 + 1, y.v1 + 1]];
+    let total = 0;
+    for (let i = 1; i < P.length; i++) total += Math.abs(P[i]![0] - P[i - 1]![0]) + Math.abs(P[i]![1] - P[i - 1]![1]);
+    let left = total * k;
+    g.begin_();
+    g.move(cam.x(P[0]![0], P[0]![1]), cam.y(P[0]![0], P[0]![1], 0.3));
+    for (let i = 1; i < P.length && left > 0; i++) {
+      const [a, b] = [P[i - 1]!, P[i]!], seg = Math.abs(b[0] - a[0]) + Math.abs(b[1] - a[1]), t = Math.min(1, left / seg);
+      const u = a[0] + (b[0] - a[0]) * t, v = a[1] + (b[1] - a[1]) * t;
+      g.line(cam.x(u, v), cam.y(u, v, 0.3));
+      left -= seg;
+    }
+    g.stroke(over ? C.packet : withAlpha(C.amberText, 0.55), Math.max(1, g.hair * (over ? 2 : 1.4)));
+    if (over && oldest) { g.begin_(); quad(cam, g, oldest[0] - oldest[2] / 2 - 1, oldest[1] - oldest[2] / 2 - 1, oldest[0] + oldest[2] / 2 + 1, oldest[1] + oldest[2] / 2 + 1, 0.4 + oldest[2] * 0.8); g.stroke(C.packet, Math.max(1, g.hair * 2)); }
+  }
+
+  /** w2-engine2 (#11): the yard's hover: a box per lane and 4 hours (the arrivals in them, the lane's
+   *  last hour, its waiting runs); a click opens the intake's lens. */
+  private yardHits(): void {
+    const y = this.yard, cam = this.f.cam, c = this.f.census;
+    if (!y || !this.f.w2.on) return;
+    const cw = (y.u1 - y.u0) / 24, now = c.now, off = this.f.offsetMin;
+    const hh = (ms: number) => String(new Date(ms + off * 60_000).getUTCHours()).padStart(2, '0');
+    y.lanes.forEach((l, r) => {
+      const va = y.v0 + r * y.row, vb = va + y.row;
+      for (let b = 0; b < 6; b++) {
+        const ua = y.u0 + b * 4 * cw, ub = ua + 4 * cw;
+        const xs = [cam.x(ua, vb), cam.x(ub, va)], yt = cam.y(ua, va, 0), yb = cam.y(ub, vb, 0);
+        const x0 = Math.min(...xs) + (vb - va) * 0.36 * cam.s * 0.5, w0 = Math.abs(xs[1]! - xs[0]!) - (vb - va) * 0.36 * cam.s;
+        let n = 0;
+        for (let i = b * 4; i < b * 4 + 4; i++) n += y.rows[r]![i]!;
+        const t0 = now - (24 - b * 4) * 3_600_000;
+        this.f.hit(x0, yt, Math.max(4, w0), Math.max(4, yb - yt), 'intake', `yard:${l.id}:${b}`, `${l.short} \u00b7 runs arriving\n${hh(t0)}:00\u2013${hh(t0 + 4 * 3_600_000)}:00 \u00b7 ${Math.round(n)} arrived\nthis hour ${y.arrived1h[r] ?? 0} \u00b7 click: the intake`);
+      }
+    });
   }
 
   /** cpu and mem fill each machine's two towers (gray; a red cap over 90 %); no reading: the
