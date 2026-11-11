@@ -27,3 +27,16 @@ theme
   sy.chip-edge = #3E3E40  scheme=fixed
   sy.brand = #FF7212  scheme=fixed
   sy.up = #5A6E5F  scheme=fixed
+  // Live view (ZERO.md): neutral surfaces; colour only for state (running, failed), both schemes
+  zr.bg = light-dark(#FFFFFF, #0B0B0C)
+  zr.raise = light-dark(#F3F4F6, #141416)
+  zr.rule = light-dark(#E2E4E9, #222226)
+  zr.rule2 = light-dark(#CDD0D5, #303035)
+  zr.ink = light-dark(#150101, #F2F2F0)  pair=zr.bg
+  zr.ink2 = light-dark(#4A505C, #ADADB2)  pair=zr.bg
+  zr.ink3 = light-dark(#646A78, #85858B)  pair=zr.bg
+  zr.ink4 = light-dark(#A0A6B1, #4E4E54)
+  zr.run = light-dark(#B93F08, #FF7A1F)  pair=zr.bg
+  zr.fail = light-dark(#C41010, #FF5C5C)  pair=zr.bg
+  zr.track = light-dark(#E6E8EC, #26262B)
+  zr.fill = light-dark(#6B7180, #9A9AA0)

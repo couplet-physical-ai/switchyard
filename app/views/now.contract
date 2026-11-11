@@ -1,60 +1,568 @@
-// NOW: the primary view (ZERO.md). STUB — owned by sy-zero (src/now/view.ts builds the shapes).
-// One vertical, time-ordered feed: what is happening right now on top, then what just
-// finished, then earlier; each event a line with the jobs it started under it and their result.
+// LIVE: the primary view (ZERO.md; Felipe picked concept A, 2026-11-11). One vertical,
+// time-ordered feed that reads as a sentence: an EVENT (push, PR, tag, cron, manual) → every job
+// it started, WHERE (CI, machine, slot), its live step and timer → HOW IT ENDED (passed, failed at
+// a step with the error line, a deploy → the app → its health). On top: what needs a human. Then
+// what runs right now, then what just finished (15 min), then earlier (2 h), dimmer.
+//
+// Look (Felipe's hard rule): neutral surfaces and grey 1-px hairlines; no coloured borders, rails
+// or tinted boxes. Colour is state only, on the small glyph and the status word or timer:
+// orange = running, red = failed / broken. Typography and alignment do the rest.
+// src/now/view.ts builds every line (words already cut at token bounds, links from server data).
+
+keyframes nowBeat
+  from opacity=1
+  to opacity=0.3
+
+shape NowLink
+  id: string
+  label: string
+  url: string
+
+shape NowCell
+  id: string
+  on: bool
+
+shape NowMach
+  id: string
+  label: string
+  text: string
+  cells: NowCell[]
+  busy: number
+  slots: number
+  offline: bool
+  url: string
+
+shape NowJob
+  id: string
+  sel: string
+  state: string
+  tone: string
+  glyph: string
+  last: bool
+  kind: string
+  name: string
+  where: string
+  machine: string
+  machineSel: string
+  step: string
+  pct: number
+  hasPct: bool
+  over: bool
+  timer: string
+  usual: string
+  result: string
+  err: string
+  app: string
+  health: string
+  dur: string
+  links: NowLink[]
+
+shape NowChain
+  id: string
+  glyph: string
+  tone: string
+  text: string
+  app: string
+  health: string
+
+shape NowEvent
+  id: string
+  sel: string
+  band: string
+  state: string
+  tone: string
+  glyph: string
+  time: string
+  ago: string
+  kind: string
+  repo: string
+  repoFull: string
+  branch: string
+  sha: string
+  title: string
+  who: string
+  bot: bool
+  jobs: NowJob[]
+  more: string
+  chain: NowChain[]
+  chainMore: string
+  result: string
+  links: NowLink[]
+
+shape NowNeed
+  id: string
+  kind: string
+  what: string
+  word: string
+  detail: string
+  ago: string
+  links: NowLink[]
 
 shape NowFeed
   ok: bool
   tick: number
+  clock: string
+  running: number
+  queued: number
+  waiting: number
+  busy: number
+  slots: number
+  machines: NowMach[]
+  needs: NowNeed[]
+  needsN: number
+  needsMore: string
+  now: NowEvent[]
+  just: NowEvent[]
+  earlier: NowEvent[]
+  idle: bool
+  idleText: string
+  filtered: bool
+  filterText: string
+  summary: string
+
+shape NowStep
+  id: string
+  glyph: string
+  tone: string
+  name: string
+  dur: string
+  depth: number
+  err: string
+  url: string
+  cached: bool
+
+shape NowRun
+  id: string
+  sel: string
+  glyph: string
+  tone: string
+  repo: string
+  kind: string
+  step: string
+  timer: string
+  url: string
 
 shape NowPanel
   ok: bool
+  kind: string
   id: string
+  title: string
+  sub: string
+  links: NowLink[]
+  steps: NowStep[]
+  runs: NowRun[]
+  empty: string
+  logCap: bool
+  logStep: string
+  logWorkflow: string
+  logLive: bool
+  logFail: bool
+
+shape NowLogRow
+  id: string
+  n: string
+  text: string
+  hot: bool
 
 shape NowLog
   ok: bool
   step: string
+  rows: NowLogRow[]
+  note: string
+  gap: bool
+
+shape NowVp
+  width: number
 
 members App
-  // the selected item (an event, a job, a machine or an app): "kind:id", "" for none
+  // The selected job or machine ("job:<id>", "machine:<id>"), "" for none: its detail opens
+  // under its line (a machine's under the status line).
   state nowSel = ""
+  // A finished event opened to show its jobs ("ev:<id>"), "" for none.
+  state nowOpen = ""
+  // "Needs a human" shows its first five; this shows them all.
+  state nowMore = false
+  resource nowVp = exactViewport() as shape NowVp else empty(width=1440)
+  derive nowNarrow = nowVp.width > 0 and nowVp.width < 760
   derive nowSec = floor(clockMs / 1000)
-  // filters live in the URL (deep-linkable): /?repo=owner/name, /?app=slug, /?sha=<sha>
+  // filters live in the URL (deep-linkable): /?repo=owner/name, /?app=slug, /?sha=owner/name@sha
   derive nowRepo = searchParam(top(nav), "repo")
   derive nowApp = searchParam(top(nav), "app")
   derive nowSha = searchParam(top(nav), "sha")
   resource nowData = nowFeed(here == "now" ? nowSec : 0, nowRepo, nowApp, nowSha) as shape NowFeed else empty()
   resource nowPanelData = nowPanel(nowSel, (here == "now" and nowSel != "") ? nowSec : 0) as shape NowPanel else empty()
-  resource nowLogData = nowLog(nowSel, nowSec) as shape NowLog else empty()
+  // The log tail: only with the server's capability; every 10 s while its step runs; dropped
+  // (an empty selection) when the detail closes.
+  resource nowLogData = nowLog(nowSel, nowPanelData.logStep, nowPanelData.logWorkflow, nowPanelData.logLive ? floor(clockMs / 10000) : 0, nowSel.startsWith("job:") and nowPanelData.logCap, nowPanelData.logFail) as shape NowLog else empty()
   action nowSelect(id: string)
     nowSel = (id == nowSel) ? "" : id
+  action nowExpand(id: string)
+    nowOpen = (id == nowOpen) ? "" : id
   action nowClose
     nowSel = ""
+  action nowToggleMore
+    nowMore = not nowMore
   action nowFilter(kind: string, v: string)
+    nowSel = ""
+    nowOpen = ""
     nav = go(nav, v == "" ? "/" : `/?${kind}=${encodeURIComponent(v)}`)
   action nowClear
     nav = go(nav, "/")
   action nowKey(k: string)
-    if k == "Escape" and nowSel != ""
+    if k == "Escape" and (nowSel != "" or nowOpen != "")
       preventDefault()
-      nowClose()
+      nowSel = ""
+      nowOpen = ""
 
+fn toneInk(t: string): string = t == "run" ? "zr.run" : (t == "fail" ? "zr.fail" : (t == "wait" ? "zr.ink3" : (t == "pass" ? "zr.ink2" : "zr.ink3")))
+fn healthInk(h: string): string = (h == "down" or h == "degraded") ? "zr.fail" : "zr.ink2"
+fn healthGlyph(h: string): string = h == "up" ? "✓" : ((h == "down" or h == "degraded") ? "✕" : "?")
+
+// The primary view.
 component NowView
   props
     d: NowFeed
     p: NowPanel
     log: NowLog
     sel: string
+    open: string
     mode: string
     reduced: bool
-    repo: string
-    app: string
-    sha: string
+    narrow: bool
+    more: bool
     select: action
+    expand: action
     close: action
-    filter: action
+    only: action
     clear: action
     key: action
+    toggleMore: action
     settings: action
   view
-    column flex=1 min-height=0 testId="now"
-      text (d.ok ? "now" : "waiting") testId="now-status"
+    column flex=1 min-height=0 background-color="zr.bg" color="zr.ink" font-family="Inter" testId="now" key=key
+      NowStatus(d=d, mode=mode, reduced=reduced, narrow=narrow, sel=sel, select=select, clear=clear)
+      scroll flex=1 min-height=0 testId="now-scroll"
+        column padding=(narrow ? "4px 14px 40px" : "4px 28px 48px") gap=0
+          if sel.startsWith("machine:")
+            NowDetail(p=p, log=log, narrow=narrow, select=select, close=close)
+          if d.needs.length > 0
+            NowHeading(word="Needs a human", count=`${d.needsN}`, note="", narrow=narrow, testKey="needs")
+            for n, ni in d.needs key=n.id
+              if more or ni < 3
+                NowNeedRow(n=n, narrow=narrow, testKey=`${ni}`)
+            if d.needsMore != ""
+              button appearance="none" press=toggleMore testId="now-needs-more" text-align="start" padding=(narrow ? "8px 0" : "8px 0 8px 80px") border-top="1px solid zr.rule"
+                text (more ? "Show fewer" : d.needsMore) font-size=13 color="zr.ink2"
+          NowHeading(word="Running now", count=(d.idle ? "" : `${d.now.length}`), note=(d.idle ? "" : (d.now.length == 1 ? "event in flight" : "events in flight")), narrow=narrow, testKey="now")
+          if d.idle
+            text d.idleText font-size=15 color="zr.ink2" padding=(narrow ? "14px 0" : "14px 0 14px 80px") border-top="1px solid zr.rule" testId="now-idle"
+          for b, bi in d.now key=b.id
+            NowBlock(b=b, p=p, log=log, sel=sel, narrow=narrow, testKey=`${bi}`, select=select, only=only, close=close)
+          if d.just.length > 0
+            NowHeading(word="Just finished", count="", note="last 15 min", narrow=narrow, testKey="just")
+            for b, bi in d.just key=b.id
+              NowDone(b=b, p=p, log=log, sel=sel, open=open, dim=false, narrow=narrow, testKey=`just-${bi}`, select=select, expand=expand, only=only, close=close)
+          if d.earlier.length > 0
+            NowHeading(word="Earlier", count="", note="last 2 h", narrow=narrow, testKey="earlier")
+            for b, bi in d.earlier key=b.id
+              NowDone(b=b, p=p, log=log, sel=sel, open=open, dim=true, narrow=narrow, testKey=`earlier-${bi}`, select=select, expand=expand, only=only, close=close)
+
+// The status line: LIVE and the clock, what runs and waits, each machine's slots, the filter.
+component NowStatus
+  props
+    d: NowFeed
+    mode: string
+    reduced: bool
+    narrow: bool
+    sel: string
+    select: action
+    clear: action
+  view
+    row flex-shrink=0 flex-wrap="wrap" align-items="center" column-gap=26 row-gap=6 padding=(narrow ? "10px 14px" : "0px 28px") min-height=52 border-bottom="1px solid zr.rule" testId="now-status"
+      row gap=8 align-items="center" testId="now-live"
+        text "●" font-size=11 color=(mode == "live" ? "zr.run" : "zr.ink3") animation=((mode == "live" and not reduced) ? "nowBeat 1s ease-in-out infinite alternate" : "none")
+        text (mode == "live" ? "LIVE" : (mode == "replay" ? "REPLAY" : (mode == "paused" ? "PAUSED" : "BEHIND"))) font-size=13 font-weight=600 letter-spacing="0.06em"
+        if not narrow
+          text d.clock font-family="Commit Mono" font-size=13 color="zr.ink3" font-variant-numeric="tabular-nums" testId="now-clock"
+      row gap=6 align-items="baseline" white-space="nowrap" testId="now-counts"
+        text `${d.running}` font-size=20 font-weight=600 color=(d.running > 0 ? "zr.run" : "zr.ink") testId="now-running"
+        text "running" font-size=17 color="zr.ink"
+        text "·" font-size=17 color="zr.ink3"
+        text `${d.queued}` font-size=20 font-weight=600 testId="now-queued"
+        text "queued" font-size=17 color="zr.ink"
+      row flex-wrap="wrap" align-items="center" column-gap=8 row-gap=4 testId="now-machines"
+        for m, mi in d.machines key=m.id
+          button appearance="none" press=select(`machine:${m.id}`) testId=`now-mach-${mi}` aria-label=`${m.label}: ${m.text} busy. What runs there.` aria-expanded=(sel == `machine:${m.id}`)
+            padding="4px 8px" border-radius=6 background-color=(sel == `machine:${m.id}` ? "zr.raise" : "transparent")
+            :hover
+              background-color="zr.raise"
+            row gap=7 align-items="center"
+              text m.label font-size=14 color=(m.offline ? "zr.fail" : "zr.ink2") white-space="nowrap"
+              if m.cells.length > 0
+                row gap=2 align-items="center" aria-hidden=true
+                  for c in m.cells key=c.id
+                    column width=6 height=13 border-radius=1 background-color=(c.on ? "zr.run" : "zr.rule2")
+              text m.text font-family="Commit Mono" font-size=13 color="zr.ink" font-variant-numeric="tabular-nums"
+      row flex=1
+      if d.filtered
+        row gap=10 align-items="center" testId="now-filter"
+          text "Showing" font-size=13 color="zr.ink3"
+          text d.filterText font-size=13 font-weight=600
+          button appearance="none" press=clear testId="now-filter-clear" padding="3px 10px" border-radius=5 border="1px solid zr.rule2"
+            text "Show everything" font-size=12 color="zr.ink2"
+
+// A section heading: the word, a count, a note; a hairline above the first row.
+component NowHeading
+  props
+    word: string
+    count: string
+    note: string
+    narrow: bool
+    testKey: string
+  view
+    row gap=10 align-items="baseline" padding=(narrow ? "22px 0 8px" : "26px 0 9px 80px") testId=`now-h-${testKey}`
+      text word role="heading" aria-level=2 font-size=12 font-weight=600 letter-spacing="0.08em" text-transform="uppercase" color="zr.ink"
+      if count != ""
+        text count font-size=13 font-weight=600 color="zr.ink2" testId=`now-h-${testKey}-count`
+      if note != ""
+        text note font-size=13 color="zr.ink3"
+
+// One visible link button: a grey hairline, the label, ↗. Opens in a new tab (web) or the browser.
+component NowLinks
+  props
+    links: NowLink[]
+    testKey: string
+  view
+    row gap=6 align-items="center" flex-shrink=0
+      for l in links key=l.id
+        link href=l.url testId=`now-link-${testKey}-${l.id}` aria-label=`${l.label} (opens in a new tab)` padding="2px 8px" border-radius=5 border="1px solid zr.rule2" display="flex" align-items="center" gap=4 white-space="nowrap" text-decoration="none"
+          :hover
+            border-color="zr.ink3"
+          :focus-visible
+            box-shadow="0 0 0 2px #9A9AA0"
+          text l.label font-size=12 font-weight=600 color="zr.ink2"
+          text "↗" font-size=11 color="zr.ink3"
+
+// A thing that needs a human: red only on its ✕ and its status word.
+component NowNeedRow
+  props
+    n: NowNeed
+    narrow: bool
+    testKey: string
+  view
+    row min-height=34 flex-wrap="wrap" align-items="center" column-gap=12 row-gap=4 padding=(narrow ? "5px 0" : "4px 0 4px 80px") border-top="1px solid zr.rule" testId=`now-need-${testKey}`
+      row gap=10 align-items="baseline" min-width=0 flex=(narrow ? "1 1 100%" : "0 1 auto")
+        text "✕" font-size=13 font-weight=700 color="zr.fail" width=14 flex-shrink=0
+        text n.what font-size=14 font-weight=600 white-space="nowrap"
+        text n.word font-size=14 color="zr.fail" white-space="nowrap" testId=`now-need-${testKey}-word`
+        if n.ago != ""
+          text n.ago font-size=13 color="zr.ink3" white-space="nowrap"
+      if not narrow
+        text n.detail font-size=13 color="zr.ink3" flex=1 min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+      NowLinks(links=n.links, testKey=`need-${testKey}`)
+
+// An event in flight: its time, the event line, and every job it started as a tree under it.
+component NowBlock
+  props
+    b: NowEvent
+    p: NowPanel
+    log: NowLog
+    sel: string
+    narrow: bool
+    testKey: string
+    select: action
+    only: action
+    close: action
+  view
+    row align-items="flex-start" gap=16 padding="12px 0 10px" border-top="1px solid zr.rule" testId=`now-ev-${testKey}`
+      if not narrow
+        column width=64 flex-shrink=0 gap=1 padding-top=2
+          text b.time font-family="Commit Mono" font-size=13 font-variant-numeric="tabular-nums"
+          text b.ago font-size=12 color="zr.ink3"
+      column flex=1 min-width=0 gap=2
+        NowEventLine(b=b, narrow=narrow, testKey=testKey, only=only)
+        for j, ji in b.jobs key=j.id
+          NowJobLine(j=j, narrow=narrow, sel=sel, testKey=`${testKey}-${ji}`, select=select)
+          if sel == j.sel
+            NowDetail(p=p, log=log, narrow=narrow, select=select, close=close)
+        if b.more != ""
+          text b.more font-size=13 color="zr.ink3" padding-left=28
+
+// The event: kind, repo (a press shows only that repo), branch, sha, message, who; its link.
+component NowEventLine
+  props
+    b: NowEvent
+    narrow: bool
+    testKey: string
+    only: action
+  view
+    row flex-wrap="wrap" align-items="baseline" column-gap=10 row-gap=2 min-height=26
+      text b.kind font-size=11 font-weight=600 letter-spacing="0.08em" text-transform="uppercase" color="zr.ink3" white-space="nowrap"
+      button appearance="none" press=only("repo", b.repoFull) testId=`now-repo-${testKey}` aria-label=`Show only ${b.repoFull}` padding=0
+        text b.repo font-size=16 font-weight=600 white-space="nowrap"
+      text b.branch font-size=14 color="zr.ink3" white-space="nowrap" max-width=260 overflow="hidden" text-overflow="ellipsis"
+      text b.sha font-family="Commit Mono" font-size=13 color="zr.ink3"
+      text b.title font-size=14 color="zr.ink2" flex=(narrow ? "1 1 100%" : "1 1 0") min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis" order=(narrow ? 5 : 0)
+      if b.who != "" and not narrow
+        text b.who font-size=13 color="zr.ink3" white-space="nowrap"
+      NowLinks(links=b.links, testKey=`ev-${testKey}`)
+
+// One job: tree · state · kind/name (press: its steps and log) · where (press: the machine) ·
+// the live step, progress and timer, or the result · its links.
+component NowJobLine
+  props
+    j: NowJob
+    narrow: bool
+    sel: string
+    testKey: string
+    select: action
+  view
+    column testId=`now-job-${testKey}`
+      row min-height=32 flex-wrap="wrap" align-items="center" column-gap=10 row-gap=2
+        text (j.last ? "└" : "├") font-family="Commit Mono" font-size=13 color="zr.ink4" width=14 flex-shrink=0 aria-hidden=true
+        text j.glyph font-size=12 font-weight=700 color=toneInk(j.tone) width=14 text-align="center" flex-shrink=0 aria-label=j.state
+        button appearance="none" press=select(j.sel) testId=`now-jobpress-${testKey}` aria-expanded=(sel == j.sel) aria-label=`${j.kind} ${j.name}: ${j.state}. Show its steps and log.`
+          padding="2px 6px" margin-left=-6 border-radius=5 background-color=(sel == j.sel ? "zr.raise" : "transparent") width=(narrow ? "auto" : 210) flex-shrink=0 text-align="start"
+          :hover
+            background-color="zr.raise"
+          row gap=8 align-items="baseline" min-width=0
+            text j.kind font-size=14 font-weight=600 white-space="nowrap"
+            if j.app != ""
+              text `→ ${j.app}` font-size=14 color="zr.ink" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+            else
+              text j.name font-size=13 color="zr.ink3" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+        button appearance="none" press=select(j.machineSel) disabled=(j.machineSel == "") testId=`now-where-${testKey}` aria-label=`Runs on ${j.where}. What else runs there.`
+          padding="2px 6px" border-radius=5 width=(narrow ? "auto" : 250) flex-shrink=0 text-align="start"
+          :hover
+            background-color="zr.raise"
+          text j.where font-size=13 color="zr.ink2" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+        if j.state == "running" or j.state == "queued" or j.state == "waiting"
+          text j.step font-size=13 color="zr.ink2" flex="1 1 160px" min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis" testId=`now-step-${testKey}`
+          if j.hasPct and not narrow
+            column width=120 height=3 border-radius=2 background-color="zr.track" flex-shrink=0 overflow="hidden" aria-hidden=true
+              column height=3 width=`${round(j.pct * 1000) / 10}%` background-color="zr.fill" -exact-layout-transition="1000ms linear"
+          row gap=6 align-items="baseline" justify-content="flex-end" width=(narrow ? "auto" : 130) flex-shrink=0
+            text j.timer font-family="Commit Mono" font-size=13 font-weight=700 color=(j.state == "running" ? "zr.run" : "zr.ink3") font-variant-numeric="tabular-nums" testId=`now-timer-${testKey}`
+            if j.usual != ""
+              text j.usual font-family="Commit Mono" font-size=12 color=(j.over ? "zr.ink2" : "zr.ink3") font-variant-numeric="tabular-nums" white-space="nowrap"
+        else
+          row gap=10 align-items="baseline" flex="1 1 160px" min-width=0
+            text j.result font-size=13 color=toneInk(j.tone) white-space="nowrap" testId=`now-result-${testKey}`
+            if j.app != "" and j.health != ""
+              text `${j.app} ${j.health}` font-size=13 color=healthInk(j.health) white-space="nowrap"
+            text j.dur font-family="Commit Mono" font-size=12 color="zr.ink3"
+        NowLinks(links=j.links, testKey=`job-${testKey}`)
+      if j.err != ""
+        text j.err font-family="Commit Mono" font-size=12 color="zr.ink2" padding="0 0 4px 48px" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+
+// A finished event on one line; a press shows its jobs under it.
+component NowDone
+  props
+    b: NowEvent
+    p: NowPanel
+    log: NowLog
+    sel: string
+    open: string
+    dim: bool
+    narrow: bool
+    testKey: string
+    select: action
+    expand: action
+    only: action
+    close: action
+  view
+    column border-top="1px solid zr.rule" opacity=(dim and open != b.sel ? 0.66 : 1) testId=`now-done-${testKey}`
+      row min-height=36 flex-wrap="wrap" align-items="center" column-gap=10 row-gap=2
+        button appearance="none" press=expand(b.sel) testId=`now-donepress-${testKey}` aria-expanded=(open == b.sel) aria-label=`${b.kind} ${b.repo} ${b.branch}: ${b.state}. Show its jobs.`
+          flex=1 min-width=0 padding="4px 6px" margin-left=-6 border-radius=5 text-align="start" background-color=(open == b.sel ? "zr.raise" : "transparent")
+          :hover
+            background-color="zr.raise"
+          row gap=10 align-items="baseline" min-width=0
+            if not narrow
+              text b.time font-family="Commit Mono" font-size=13 color="zr.ink2" width=64 flex-shrink=0 font-variant-numeric="tabular-nums"
+            text b.glyph font-size=12 font-weight=700 color=toneInk(b.tone) width=14 text-align="center" flex-shrink=0 aria-label=b.state
+            text b.kind font-size=11 font-weight=600 letter-spacing="0.08em" text-transform="uppercase" color="zr.ink3" white-space="nowrap"
+            text b.repo font-size=14 font-weight=600 white-space="nowrap"
+            if not narrow
+              text b.branch font-size=13 color="zr.ink3" white-space="nowrap" max-width=200 overflow="hidden" text-overflow="ellipsis"
+            text (b.result != "" ? b.result : b.title) font-size=13 color=(b.result != "" ? toneInk(b.tone) : "zr.ink2") flex=1 min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+            if not narrow
+              row gap=12 align-items="baseline" flex-shrink=0
+                for c in b.chain key=c.id
+                  row gap=4 align-items="baseline"
+                    text c.glyph font-size=11 font-weight=700 color=toneInk(c.tone)
+                    text c.text font-size=13 color="zr.ink2" white-space="nowrap"
+                    if c.app != ""
+                      text `→ ${c.app}` font-size=13 color="zr.ink2" white-space="nowrap"
+                    if c.health != ""
+                      text c.health font-size=13 color=healthInk(c.health) white-space="nowrap"
+                if b.chainMore != ""
+                  text b.chainMore font-size=12 color="zr.ink3"
+            text b.ago font-size=12 color="zr.ink3" white-space="nowrap" width=44 text-align="end" flex-shrink=0
+        NowLinks(links=b.links, testKey=`done-${testKey}`)
+      if open == b.sel
+        column padding=(narrow ? "0 0 10px 0" : "0 0 10px 80px")
+          text b.title font-size=13 color="zr.ink2" padding="0 0 4px 0"
+          for j, ji in b.jobs key=j.id
+            NowJobLine(j=j, narrow=narrow, sel=sel, testKey=`${testKey}-${ji}`, select=select)
+            if sel == j.sel
+              NowDetail(p=p, log=log, narrow=narrow, select=select, close=close)
+
+// The open detail, inline: a job's steps and its log tail (the error line marked), or what runs on
+// a machine. Indented under its line; grey hairlines only.
+component NowDetail
+  props
+    p: NowPanel
+    log: NowLog
+    narrow: bool
+    select: action
+    close: action
+  view
+    column gap=8 padding=(narrow ? "8px 0 12px 0" : "8px 0 14px 48px") testId="now-detail"
+      row flex-wrap="wrap" gap=10 align-items="baseline"
+        text p.title font-size=14 font-weight=600 testId="now-detail-title"
+        text p.sub font-size=13 color="zr.ink3"
+        row flex=1
+        NowLinks(links=p.links, testKey="detail")
+        button appearance="none" press=close testId="now-detail-close" aria-label="Close" padding="2px 8px" border-radius=5
+          text "Close" font-size=12 color="zr.ink3"
+      if p.empty != ""
+        text p.empty font-size=13 color="zr.ink3"
+      if p.steps.length > 0
+        column border-top="1px solid zr.rule" padding-top=4 testId="now-steps"
+          for s in p.steps key=s.id
+            column
+              row min-height=24 gap=8 align-items="baseline" padding-left=(s.depth * 22)
+                text s.glyph font-size=11 font-weight=700 color=toneInk(s.tone) width=14 text-align="center"
+                text s.name font-size=13 font-weight=(s.depth == 0 ? 600 : 400) color=(s.depth == 0 ? "zr.ink" : "zr.ink2")
+                if s.cached
+                  text "cached" font-size=12 color="zr.ink3"
+                text s.dur font-family="Commit Mono" font-size=12 color="zr.ink3"
+                if s.url != ""
+                  link href=s.url font-size=12 color="zr.ink3" aria-label=`Open step ${s.name} in Roadrunner`
+                    text "↗"
+              if s.err != ""
+                text s.err font-family="Commit Mono" font-size=12 color="zr.ink2" padding-left=(s.depth * 22 + 22) white-space="pre-wrap"
+      if p.runs.length > 0
+        column border-top="1px solid zr.rule" padding-top=4 testId="now-runs"
+          for r in p.runs key=r.id
+            row min-height=28 gap=10 align-items="center"
+              text r.glyph font-size=12 font-weight=700 color=toneInk(r.tone) width=14 text-align="center"
+              text r.repo font-size=14 font-weight=600
+              text r.kind font-size=13 color="zr.ink2"
+              text r.step font-size=13 color="zr.ink2" flex=1 min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+              text r.timer font-family="Commit Mono" font-size=13 color="zr.run"
+              link href=r.url padding="2px 8px" border-radius=5 border="1px solid zr.rule2" text-decoration="none"
+                text "Roadrunner ↗" font-size=12 font-weight=600 color="zr.ink2"
+      if p.logCap and p.logStep != ""
+        column gap=4 testId="now-log"
+          row gap=10 align-items="baseline"
+            text `Log · ${p.logStep}` font-size=12 font-weight=600 letter-spacing="0.04em" color="zr.ink2"
+            text log.note font-size=12 color="zr.ink3" testId="now-log-note"
+          if log.rows.length > 0
+            column padding="8px 10px" border="1px solid zr.rule" border-radius=6 max-height=420 overflow-y="auto" font-family="Commit Mono" font-size=12
+              for r in log.rows key=r.id
+                row gap=10 align-items="baseline"
+                  text r.n color="zr.ink4" width=40 text-align="end" flex-shrink=0 font-variant-numeric="tabular-nums"
+                  text (r.hot ? "✕" : " ") color="zr.fail" width=10 flex-shrink=0
+                  text r.text color=(r.hot ? "zr.ink" : "zr.ink2") font-weight=(r.hot ? 700 : 400) white-space="pre-wrap" min-width=0
