@@ -338,10 +338,10 @@ final class SYTokenStore: @unchecked Sendable {
         done(a)
     }
 
-    /// On `keychain`: delete the old item. macOS lets only the build that made an item delete it
-    /// (another identity gets -25244, errSecInvalidOwnerEdit, at once, with no prompt), so an
-    /// older build's item usually stays: that is remembered (`keychain-left`, for Settings) and
-    /// logged once; a delete that works clears it.
+    /// Delete the old item (never a prompt). On the Mac mini a newer ad-hoc build deleted the item
+    /// an older Switchyard build made, but macOS refused one another app made (-25244,
+    /// errSecInvalidOwnerEdit, at once): a refusal is remembered (`keychain-left`, for Settings)
+    /// and logged once; a delete that works clears it.
     private func dropLegacy(_ legacy: SYLegacyToken) {
         let gone = legacy.delete()
         let ok = gone == errSecSuccess || gone == errSecItemNotFound
@@ -349,13 +349,13 @@ final class SYTokenStore: @unchecked Sendable {
         if ok {
             if gone == errSecSuccess || was { log("keychain: deleted the old item (service \"\(service)\", account \"\(syTokenAccount)\")") }
         } else if !was {
-            log("keychain: old item left (owned by an earlier build); not read again (\(SYKeychainStatus.message(gone)); delete \"\(syTokenAccount)\" under \"\(service)\" in Keychain Access)")
+            log("keychain: old item left (macOS refused its delete); not read again (\(SYKeychainStatus.message(gone)); delete \"\(syTokenAccount)\" under \"\(service)\" in Keychain Access)")
         }
     }
 
     /// Keep `token` in the file. Before the old item was dealt with, it goes too (a delete, never
-    /// a read, on `deletes`, so never behind a read that waits on the prompt), and the Keychain is
-    /// not read again. Answers `{ok, keychainLeft}` or `{ok: false, detail}`, after that delete.
+    /// a read), and the Keychain is not read again. Answers `{ok, keychainLeft}` or `{ok: false,
+    /// detail}` once the delete is done or after `deleteWait` (see `afterDelete`).
     func set(_ request: [String: Any], done: @escaping ([String: Any]) -> Void) {
         let token = request["token"] as? String ?? ""
         files.async { [self] in
@@ -366,10 +366,7 @@ final class SYTokenStore: @unchecked Sendable {
             let first = legacy != nil && !file.migrated
             if first { _ = file.markMigrated() }
             guard first, let legacy else { return done(["ok": true, "keychainLeft": file.left]) }
-            deletes.async { [self] in
-                dropLegacy(legacy)
-                done(["ok": true, "keychainLeft": files.sync { file.left }])
-            }
+            afterDelete(legacy) { left in done(["ok": true, "keychainLeft": left]) }
         }
     }
 
@@ -379,14 +376,33 @@ final class SYTokenStore: @unchecked Sendable {
         files.async { [self] in
             let removed = file.remove()
             if legacy != nil { _ = file.markMigrated() }
-            let finish = { [self] in
-                let left = files.sync { file.left }
+            let finish = { (left: Bool) in
                 if case .failure(let why) = removed { return done(["ok": false, "detail": why.reason, "keychainLeft": left]) }
                 done(["ok": true, "keychainLeft": left])
             }
-            guard let legacy else { return finish() }
-            deletes.async { [self] in dropLegacy(legacy); finish() }
+            guard let legacy else { return finish(file.left) }
+            afterDelete(legacy, finish)
         }
+    }
+
+    /// How long a save or a sign-out waits for the old item's delete before it answers anyway.
+    /// A delete takes milliseconds, but while a read waits on macOS's prompt every Keychain call of
+    /// this process waits behind it (the file keychain's API lock, seen on the mini), so the save
+    /// never does: it answers, and the delete goes on after the prompt (`keychain-left` is then
+    /// known at the next read).
+    var deleteWait: TimeInterval = 0.3
+
+    /// Tries the old item's delete on `deletes`, then tells `answer` whether it was left: once,
+    /// when the delete is done or at `deleteWait`, whichever comes first.
+    private func afterDelete(_ legacy: SYLegacyToken, _ answer: @escaping (Bool) -> Void) {
+        let once = NSLock()
+        var told = false
+        let tell = { [self] in
+            let first = once.withLock { () -> Bool in defer { told = true }; return !told }
+            if first { answer(files.sync { file.left }) }
+        }
+        deletes.async { [self] in dropLegacy(legacy); tell() }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + deleteWait) { tell() }
     }
 }
 

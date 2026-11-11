@@ -72,9 +72,12 @@ the app never reads the Keychain again, and later updates never ask. Deny, and t
 **Try again** and **Enter token**. Nothing at boot waits on the token, and the demo and the page's
 own server never do.
 
-The app then deletes the old item, but macOS lets only the build that made an item delete it
-(another build gets `errSecInvalidOwnerEdit` at once, with no prompt), so an older build's item
-usually stays, unread. Switchyard remembers that (`keychain-left`, beside the token), logs it once
+The app then deletes the old item (a delete never asks). On a Mac, a newer ad-hoc build deleted
+the item an older Switchyard build made, but macOS refused the delete of one another app had made
+(`errSecInvalidOwnerEdit`, at once, with no prompt), so the item may stay, unread. (While macOS's
+prompt is up, every Keychain call of the app waits behind it, so the delete runs once the prompt is
+answered or dismissed; a save never waits for it.) When the delete fails, Switchyard remembers
+that (`keychain-left`, beside the token), logs it once
 to `~/Library/Logs/Switchyard/switchyard.log`, and Settings shows, under **Security**:
 
 > An old Switchyard token remains in your login Keychain; remove it in Keychain Access → search

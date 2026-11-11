@@ -511,8 +511,9 @@ export const sources: Sources = {
     const mine = ++connects;
     const c = await connect(server, t, epoch0);
     // A connect with SWITCHYARD_TOKEN_FILE's token, when no newer one started meanwhile (an
-    // older one's answer is let go): how it went, for tokenFileReport to log.
-    if (t && mine === connects) connectedWith(t, server === 'demo' ? '' : resolveBase(server), c.ok, c.error || c.status);
+    // older one's answer is let go): how it went, for tokenFileReport to log. One let go before a
+    // newer one counted itself (a save's afterSave re-asks conn mid-fetch) is not an outcome either.
+    if (t && mine === connects && !(!c.ok && LET_GO.test(c.error || ''))) connectedWith(t, server === 'demo' ? '' : resolveBase(server), c.ok, c.error || c.status);
     return c;
   },
   liveFeed: ([server, _ver, seq, _gen, ok]) => liveFeed(server, needsToken(server) ? token : '', seq, ok),

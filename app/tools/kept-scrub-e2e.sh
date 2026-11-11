@@ -48,7 +48,7 @@ A="$HOME/Library/Application Support/$APPID"
 n=$(grep -rlF "$T" "$A" 2>/dev/null | grep -v "/token$" | grep -c .); [ "$n" = 0 ] && echo "OK: not in Application Support/$APPID (kv/exact.kept, state)" || { echo "FAIL: in $n files under Application Support/$APPID"; fail=1; }
 n=$(grep -rlF "$T" "$HOME/Library/Logs/Switchyard" 2>/dev/null | grep -c .); [ "$n" = 0 ] && echo "OK: not in ~/Library/Logs/Switchyard" || { echo "FAIL: in $n log files"; fail=1; }
 n=$(defaults read "$APPID" 2>/dev/null | grep -cF "$T"); [ "$n" = 0 ] && echo "OK: not in the prefs (defaults read $APPID)" || { echo "FAIL: in the prefs"; fail=1; }
-n=$(grep -rlF "$T" "$HOME/Library/Caches/exact/$APPID" 2>/dev/null | grep -v "/sy-scrub/token$" | grep -c .); [ "$n" = 0 ] && echo "OK: not in the caches other than the drive's token file" || { echo "FAIL: in $n cache files"; fail=1; }
+n=$(grep -rlF "$T" "$HOME/Library/Caches/exact/$APPID" "$HOME/Library/Caches/$APPID" 2>/dev/null | grep -vxF "$held" | grep -c .); [ "$n" = 0 ] && echo "OK: not in the caches other than the drive's token file" || { echo "FAIL: in $n cache files: $(grep -rlF "$T" "$HOME/Library/Caches/exact/$APPID" "$HOME/Library/Caches/$APPID" 2>/dev/null | grep -vxF "$held" | tr '\n' ' ')"; fail=1; }
 echo "== e2e: drive 4 relaunches on the same store"
 timeout 300 bun exact.mjs agent macos --storage sy-scrub --size 1440x900 "clock data" "clock settle" "state tok" "state conn" > /tmp/sy-scrub4.log 2>&1
 grep -q 'status "ready"' /tmp/sy-scrub4.log && grep -q 'has true' /tmp/sy-scrub4.log && echo "OK: the token is read back after a relaunch" || { echo "FAIL: not read back"; fail=1; }

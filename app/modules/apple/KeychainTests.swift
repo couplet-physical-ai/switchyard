@@ -16,13 +16,18 @@ final class SYFakeLegacy: SYLegacyToken, @unchecked Sendable {
     var gate: DispatchSemaphore?
     /// What a delete answers when another build owns the item (errSecInvalidOwnerEdit).
     var deleteRefusal: OSStatus?
+    /// The file keychain's API lock: a read waiting on the prompt holds it, so a delete waits
+    /// behind that read (seen on the Mac mini).
+    var apiLock: NSLock?
     init(_ status: OSStatus, _ value: String? = nil) { self.status = status; self.value = value }
     func read() -> (OSStatus, String?) {
+        apiLock?.lock(); defer { apiLock?.unlock() }
         reads += 1
         gate?.wait()
         return (status, status == errSecSuccess ? value : nil)
     }
     func delete() -> OSStatus {
+        apiLock?.lock(); defer { apiLock?.unlock() }
         deletes += 1
         if let r = deleteRefusal { return r }
         let had = value != nil
@@ -103,8 +108,8 @@ extension SYUpdaterTests {
             check(f.migrated && get(next) == .noToken && legacy.reads == 1, "token: after sign-out, migrated stays and the Keychain is never read")
         }
 
-        // An older build's item: macOS refuses its delete to another identity (-25244, no
-        // prompt, seen on the Mac mini). The token still moves; the item stays, unread, logged.
+        // An item macOS will not let this build delete (-25244, no prompt; seen on the Mac mini
+        // for one another app made). The token still moves; the item stays, unread, logged.
         do {
             let legacy = SYFakeLegacy(errSecSuccess, "syd_OLDitem0123456789")
             legacy.deleteRefusal = errSecInvalidOwnerEdit
@@ -117,7 +122,7 @@ extension SYUpdaterTests {
             check(a?.keychainLeft == true && f.left && mode(f.leftURL.path) == 0o600, "token: the failed delete is remembered (keychain-left, 0600) and answered")
             let said = lock.withLock { lines.joined(separator: "\n") }
             check(contents(f) == "syd_OLDitem0123456789" && legacy.deletes == 1 && f.migrated, "token: its delete is tried once; migrated is marked")
-            check(said.contains("keychain: old item left (owned by an earlier build); not read again") && said.contains("Keychain Access") && said.contains("-25244"), "token: the refused delete is logged, naming Keychain Access", said)
+            check(said.contains("keychain: old item left (macOS refused its delete); not read again") && said.contains("Keychain Access") && said.contains("-25244"), "token: the refused delete is logged, naming Keychain Access", said)
             check(!said.contains("syd_OLD"), "token: no log line holds the token", said)
             let next = SYTokenStore(file: f, legacy: legacy, agent: false)
             var later: [String] = []
@@ -166,22 +171,27 @@ extension SYUpdaterTests {
             check(get(s) == .noToken, "token: after forget → none")
         }
 
-        // A save while the prompt waits wins; the item still goes.
+        // A save while the prompt waits wins; the item still goes. The delete waits behind the read
+        // (the API lock); the save does not: it answers at deleteWait.
         do {
             let legacy = SYFakeLegacy(errSecSuccess, "syd_OLDitem0123456789")
             legacy.gate = DispatchSemaphore(value: 0)
+            legacy.apiLock = NSLock()
             let (s, f) = store(legacy)
             let done = DispatchSemaphore(value: 0)
             var a: SYTokenAnswer?
             s.get([:]) { a = $0; done.signal() }
             usleep(50_000)
+            let t0 = Date()
             let saved = op { s.set(["token": "syd_TYPEDwhileWaiting1"], done: $0) }
-            check(saved?["ok"] as? Bool == true, "token: a save is not held behind a waiting prompt")
+            let waited = Date().timeIntervalSince(t0)
+            check(saved?["ok"] as? Bool == true && waited < 1 && contents(f) == "syd_TYPEDwhileWaiting1", "token: a save is not held behind a waiting prompt (answered in \(Int(waited * 1000)) ms; its delete waits)")
+            check(legacy.deletes == 0, "token: … its delete waits behind the read, as macOS's does")
             legacy.gate?.signal()
             _ = done.wait(timeout: .now() + 5)
             settle()
             check(a == .ready("syd_TYPEDwhileWaiting1", from: "file"), "token: the token saved while the prompt waited wins", "\(String(describing: a))")
-            check(contents(f) == "syd_TYPEDwhileWaiting1" && legacy.deletes >= 1 && f.migrated, "token: the file keeps the saved token; the item is deleted")
+            check(contents(f) == "syd_TYPEDwhileWaiting1" && legacy.deletes == 1 && f.migrated && !f.left, "token: the file keeps the saved token; the item is deleted once the prompt is gone")
         }
 
         // A tokenGet asked again while the first read waits (its asker was let go) joins that
@@ -207,18 +217,20 @@ extension SYUpdaterTests {
             let legacy = SYFakeLegacy(errSecSuccess, "syd_OLDitem0123456789")
             legacy.gate = DispatchSemaphore(value: 0)
             legacy.deleteRefusal = errSecInvalidOwnerEdit
+            legacy.apiLock = NSLock()
             let (s, f) = store(legacy)
             let done = DispatchSemaphore(value: 0)
             var a: SYTokenAnswer?
             s.get([:]) { a = $0; done.signal() }
             usleep(50_000)
             let out = op { s.forget([:], done: $0) }
-            check(out?["ok"] as? Bool == true && out?["keychainLeft"] as? Bool == true && f.migrated, "token: Forget token while the prompt waits: answered at once (delete tried, refused), migrated")
+            check(out?["ok"] as? Bool == true && f.migrated && legacy.deletes == 0, "token: Forget token while the prompt waits: answered (its delete waits behind the read), migrated")
             legacy.gate?.signal()
             _ = done.wait(timeout: .now() + 5)
             settle()
-            check(a?.status == "none" && a?.token == "" && a?.keychainLeft == true, "token: … the read that lands after is dropped (none)", "\(String(describing: a))")
+            check(a?.status == "none" && a?.token == "", "token: … the read that lands after is dropped (none)", "\(String(describing: a))")
             check(!FileManager.default.fileExists(atPath: f.url.path) && f.migrated, "token: … no token file is written back; migrated stays")
+            check(legacy.deletes == 1 && f.left, "token: … the delete ran once the prompt was gone (refused: keychain-left)")
             check(get(s) == SYTokenAnswer(status: "none", keychainLeft: true) && legacy.reads == 1, "token: … and the Keychain is never read again")
         }
 
