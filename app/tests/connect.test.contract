@@ -3,7 +3,7 @@
 
 test "a switchyard:// link asks before it connects"
   clock data
-  tap "setup-demo"
+  tap "now-setup-demo"
   clock data
   type "root" "/connect?u=switchyard%3A%2F%2Fconnect%3Fserver%3Dhttps%253A%252F%252Fswitchyard.example.com%26token%3Dsyd_abc123"
   clock settle
@@ -17,7 +17,7 @@ test "a switchyard:// link asks before it connects"
 
 test "a link with a bad server is refused"
   clock data
-  tap "setup-demo"
+  tap "now-setup-demo"
   clock data
   type "root" "/connect?server=javascript%3Aalert(1)"
   clock settle

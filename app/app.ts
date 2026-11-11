@@ -14,10 +14,9 @@ setDefaultServer(DEFAULT_SERVER);
 import { DEMO_REPLAY, DemoUpstream } from './src/demo.ts';
 import { EngineHistory } from './src/enginehist.ts';
 import { bindInsights } from './src/insights.ts';
-import { drawFleetLoad } from './src/fleetload.ts';
-import { fleet, journeyView, prDetailView, search } from './src/project.ts';
-import { MainlinesModel, stateWords } from './src/table/mainlines.ts';
-import { PrsModel } from './src/table/prs.ts';
+import { search } from './src/project.ts';
+import { nowSources } from './src/now/view.ts';
+import { logHeap } from './src/memlog.ts';
 import { nextChunkMs, replaySizing, Timeline } from './src/timeline.ts';
 import { bindBaselineStore } from './src/factory/agg/baseline.ts';
 import { connectedWith, saveTokenFile, takeTokenFile, tokenFileReport } from './src/hooks.ts';
@@ -174,13 +173,10 @@ factory.hud = yard.hud;
 let stressOn = false;
 function setStress(on: boolean): void { stressOn = on; yard.setStress(on); factory.setStress(on); }
 tl.listener = (e, w) => { yard.pool.onEvent(e, w, clock); factory.onEvent(e, w, clock); };
-/** The canvas tables (src/table/): one per view, alive across visits (scroll and focus kept). */
-const mlTable = new MainlinesModel();
-/** The engines' cpu/mem/load, the last few minutes of it (the Fleet view's sparklines). */
+/** Engine history feeds the Factory Floor's load indicators and insights. */
 const engineHist = new EngineHistory();
 /** The Factory Floor's data seam (src/insights.ts): v0.5 tables, or approximations on v0.4. */
 bindInsights(tl, () => up, engineHist);
-const prTable = new PrsModel();
 
 /** `asking`: called from a source's answer, so it may fetch (a fetch started elsewhere, in
  *  `draw` or a promise's continuation, is never run). */
@@ -469,6 +465,7 @@ function hostLabel(): string {
 
 function overview(): Result<'overview'> {
   const w = tl.world;
+  if (up && w.loaded) logHeap(clock);
   // Never builds the scene here (a source turn has 100 ms on Hermes): the first draw does.
   const S = yard.S;
   // One truth for building and queued: the yard, the status line and the QUEUE band agree.
@@ -492,13 +489,13 @@ function overview(): Result<'overview'> {
 
 function route(kind: string, id: string): string {
   switch (kind) {
-    case 'repo': return `/mainlines?repo=${encodeURIComponent(id)}`;
-    case 'app': return `/fleet?app=${encodeURIComponent(id)}`;
-    case 'pr': { const [repo, n] = id.split('#'); return `/pr/${repo}/${n}`; }
-    case 'commit': { const [repo, sha] = id.split('@'); return `/commit/${repo}/${sha}`; }
+    case 'repo': return `/?repo=${encodeURIComponent(id)}`;
+    case 'app': return `/?app=${encodeURIComponent(id)}`;
+    case 'pr': { const [repo] = id.split('#'); return `/?repo=${encodeURIComponent(repo)}`; }
+    case 'commit': return `/?sha=${encodeURIComponent(id)}`;
     case 'pipeline': {
       const p = tl.world.pipelines.get(id);
-      return p ? `/commit/${p.repo}/${p.sha}` : '/';
+      return p ? `/?sha=${encodeURIComponent(`${p.repo}@${p.sha}`)}` : '/';
     }
     default: return '/';
   }
@@ -558,6 +555,12 @@ function tokenVer(t: string): string {
 let baseBound = false, basePending = '';
 
 export const sources: Sources = {
+  ...nowSources({
+    world: () => tl.world,
+    now: () => tl.playhead,
+    offsetMin: () => yard.offsetMin,
+    upstream: () => up,
+  }) as unknown as Pick<Sources, 'nowFeed' | 'nowPanel' | 'nowLog'>,
   webVersion: () => webVersion(),
   parseLink: ([u, server, token]) => parseLink(u, server, token),
   // SWITCHYARD_TOKEN_FILE (macOS, env only; src/hooks.ts): the token, once, through parseLink.
@@ -708,54 +711,14 @@ export const sources: Sources = {
     if (t > 0) advance(t);
     return safe('search', { hits: [] }, () => ({ hits: search(tl.world, q, tl.playhead).map((h) => ({ kind: h.kind, id: h.id, title: h.title, subtitle: h.subtitle, route: route(h.kind, h.id) })) }));
   },
-  mainlines: ([_t, org, filter, q, focus]) => safe('mainlines', EMPTY_ML, () => mainlinesHeader(org, filter, q, focus)),
-  prs: ([_t, org, filter, q, repo]) => safe('prs', EMPTY_PRS, () => prsHeader(org, filter, q, repo)),
-  tablePick: ([table, x, y]) => safe('tablePick', NO_HIT, () => tablePick(table, x, y)),
   viewOnTop: ([here]) => { topView = String(here ?? ''); return { ok: true, status: topView }; },
-  tableKey: ([table, key]) => safe('tableKey', NO_HIT, () => tableKey(table, key)),
-  fleet: () => safe('fleet', EMPTY_FLEET, () => ({ ...fleet(tl.world, tl.playhead), loadTick: engineHist.ver })),
-  journey: async ([_s, _ver, repo, sha, t]) => {
-    if (t > 0) advance(t);
-    if (!repo || !sha) return journeyView(null, tl.playhead, ' ');
-    try {
-      const j = await cached(`j:${repo}@${sha}`, () => (up ? up.journey(repo, sha) : Promise.resolve(null)));
-      return journeyView(j, tl.playhead, '', yard.offsetMin);
-    } catch (e) {
-      return journeyView(null, tl.playhead, String((e as Error)?.message ?? e));
-    }
-  },
-  prDetail: async ([_s, _ver, repo, number, t]) => {
-    if (t > 0) advance(t);
-    if (!repo) return prDetailView(null, tl.playhead, tl.world);
-    try {
-      const d = await cached(`p:${repo}#${number}`, () => (up ? up.pr(repo, Number(number)) : Promise.resolve(null)));
-      return prDetailView(d, tl.playhead, tl.world);
-    } catch {
-      return prDetailView(null, tl.playhead, tl.world);
-    }
-  },
 };
 
-// ---- the canvas tables' sources --------------------------------------------------------------
-// Contract asks for headers (counts, a tick that changes when the rows or their words do) every
-// 250 ms; the rows themselves are projected once per world change and filter, and painted by
-// the canvas, only those in view.
-
-type Ml = Result<'mainlines'>;
-type Pl = Result<'prs'>;
-const EMPTY_ML: Ml = { total: 0, red: 0, building: 0, shown: 0, tick: 0, top: '', atEnd: false, focusText: '', focusShown: false, summary: 'Main lines' };
-const EMPTY_PRS: Pl = { open: 0, ready: 0, blocked: 0, bots: 0, total: 0, tick: 0, top: '', atEnd: false, summary: 'Pull requests', repo: '' };
-const NO_HIT = { kind: '', id: '', label: '', route: '' };
 const EMPTY_OV: Result<'overview'> = {
   status: 'waiting', mode: 'live', speed: 1, sentence: 'waiting for the fleet', summary: 'The delivery yard, waiting for data.', layoutKey: '', repos: 0,
   building: 0, queued: 0, red: 0, appsUp: 0, appsTotal: 0, appsDown: 0, facHead: '', behind: '', seq: 0, // fx-glance
   tick: 0, host: '', dial: '1 hour, sped up', dialPad: 38, dialFont: 11, dialH: 34, hud: false, stress: false, quality: 0, facKey: '', facDrawer: false, facQ: 0, facStress: false, facCalm: true, facStats: '', facCity: 0, facCars: 0, facBays: 0, facLens: 0, facLensTop: '',
 };
-const EMPTY_FLEET = {
-  apps: [], engines: [], queues: [], stats: [], up: 0, total: 0, down: 0, degraded: 0, attention: [], behindN: 0, never: 0, hasLatency: false, watcher: '', watcherTripped: false,
-  hosts: [], loadRows: 0, loadH: 0, deploysN: '', deploysText: '', deploysVia: '', deployBars: [], deployMax: 0, lanes: [], lanesTotal: 0, lanesNote: '', loadTick: 0,
-};
-
 /** A source that throws answers its empty value instead (and says so once in the log): a sparse
  *  or surprising entity costs a view its rows, never the app. */
 const warned = new Set<string>();
@@ -768,64 +731,8 @@ function safe<T>(name: string, empty: T, f: () => T): T {
   }
 }
 
-/** Changes when the rows change, and each second (their ages): what the canvas redraws on. */
-const tickOf = (seq: number) => seq * 100_000 + (Math.floor(tl.playhead / 1000) % 100_000);
-
-function mainlinesHeader(org: string, filter: string, q: string, focus: string): Ml {
-  const now = tl.playhead;
-  mlTable.project(tl.world, org, filter, q);
-  const c = mlTable.counts;
-  const row = focus ? mlTable.row(focus) : undefined;
-  const focusText = row ? `${row.r.name ?? row.id} · ${stateWords(row, now)}` : '';
-  return {
-    total: c.total, red: c.red, building: c.building, shown: c.shown, tick: tickOf(mlTable.seq), top: mlTable.table.topKey(), atEnd: mlTable.table.atEnd(), focusText,
-    focusShown: !!focus && mlTable.table.visible(focus),
-    summary: `Main lines: ${c.shown} repos, ${c.red} red, ${c.building} building.${focusText ? ` Focused: ${focusText}.` : ''} Arrow keys move, Return opens.`,
-  };
-}
-
-function prsHeader(org: string, filter: string, q: string, repo: string): Pl {
-  prTable.project(tl.world, org, filter, q, repo);
-  const c = prTable.counts;
-  return {
-    ...c, tick: tickOf(prTable.seq), top: prTable.table.topKey(), atEnd: prTable.table.atEnd(), repo,
-    summary: `Pull requests: ${c.total} shown, ${c.open} open, ${c.ready} ready to merge, ${c.blocked} blocked. Arrow keys move, Return opens.`,
-  };
-}
-
-function tableOf(name: string): MainlinesModel | PrsModel {
-  return name === 'prs' ? prTable : mlTable;
-}
-
-/** A press on a table: an open row's own target (a link, a dot), else the row. */
-function tablePick(name: string, x: number, y: number) {
-  const m = tableOf(name);
-  const p = m.table.pick(x, y);
-  if (!p) return NO_HIT;
-  if (p.sub) return { kind: p.sub.kind, id: p.sub.id, label: p.sub.label, route: p.sub.route };
-  return { kind: 'row', id: p.key, label: p.key, route: m.routeOf(p.key) };
-}
-
-/** A key on a table: arrows move the focus, Return opens it, the page keys scroll. */
-function tableKey(name: string, key: string) {
-  const m = tableOf(name);
-  const t = m.table;
-  const focus = (id: string) => ({ kind: 'focus', id, label: id, route: '' });
-  switch (key) {
-    case 'ArrowDown': case 'j': return focus(t.neighbour(1));
-    case 'ArrowUp': case 'k': return focus(t.neighbour(-1));
-    case 'PageDown': case ' ': t.scrollBy(t.H * 0.9); return { ...NO_HIT, kind: 'scroll' };
-    case 'PageUp': t.scrollBy(-t.H * 0.9); return { ...NO_HIT, kind: 'scroll' };
-    case 'Home': t.scrollTo(0); return focus(t.keys[0] ?? '');
-    case 'End': t.scrollTo(Infinity); return focus(t.keys.at(-1) ?? '');
-    case 'Escape': return focus('');
-    case 'Enter': return t.focus ? { kind: 'open', id: t.focus, label: t.focus, route: m.routeOf(t.focus) } : NO_HIT;
-    default: return NO_HIT;
-  }
-}
-
-/** A detail fetched at most every 5 s of the module clock while its view is open (the views
- *  re-ask every 250 ms so their ages tick; the server is asked far less). */
+/** The Factory's selected commit journey is cached briefly: it is fetched in a source answer,
+ *  never while painting a canvas. */
 const details = new Map<string, { at: number; p: Promise<unknown> }>();
 function cached<T>(key: string, get: () => Promise<T>): Promise<T> {
   const hit = details.get(key);
@@ -842,8 +749,8 @@ export const answer: Answer = ((source: keyof Sources, args: unknown, store: Sto
   (sources[source] as (a: unknown, s: Store, st: unknown, n: unknown) => unknown)(args, store, storage, native)) as Answer;
 
 // ---- canvases ------------------------------------------------------------------------------
-/** Surface → its arity (Contract passes that many arguments); the tables' lifetime is 9. */
-export const surfaces: Record<string, number> = { factoryFloor: 3, factoryLive: 4, factoryTop: 4 /* fab-w7 */, yardStatic: 2, yardInfo: 2, yardLive: 3, yardTop: 2, mainlinesTable: 9, prsTable: 9, fleetLoad: 2 };
+/** Surface → its arity (Contract passes that many arguments). */
+export const surfaces: Record<string, number> = { factoryFloor: 3, factoryLive: 4, factoryTop: 4 /* fab-w7 */, yardStatic: 2, yardInfo: 2, yardLive: 3, yardTop: 2 };
 
 /** The route on top (`viewOnTop`). The yard stays mounted under every other view; its live
  *  layer animating there cost 3-4× the ops of the view on top. Covered, it is not drawn (the
@@ -900,30 +807,6 @@ function drawSurface(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
   if (surface === 'yardTop') {
     advance(frame.time, false);
     return yard.drawTop(ctx, frame, clock);
-  }
-  if (surface === 'mainlinesTable') {
-    // (tick, focus, wheel, px, py, org, filter, q, kick)
-    const [, focus, wheel, px, py, org, filter, q] = args as [number, string, number, number, number, string, string, string, number];
-    mlTable.project(tl.world, String(org ?? ''), String(filter ?? ''), String(q ?? ''));
-    const t = mlTable.table;
-    t.syncWheel(Number(wheel) || 0);
-    t.pointer(Number(px), Number(py));
-    t.setFocus(String(focus ?? ''));
-    return mlTable.draw(ctx, frame, tl.playhead, tl.world.loaded);
-  }
-  if (surface === 'fleetLoad') {
-    advance(frame.time, false);
-    return drawFleetLoad(ctx, frame, tl.world, engineHist);
-  }
-  if (surface === 'prsTable') {
-    // (tick, focus, wheel, px, py, filter, q, repo, kick)
-    const [, focus, wheel, px, py, filter, q, repo] = args as [number, string, number, number, number, string, string, string, number];
-    prTable.project(tl.world, '', String(filter ?? ''), String(q ?? ''), String(repo ?? ''));
-    const t = prTable.table;
-    t.syncWheel(Number(wheel) || 0);
-    t.pointer(Number(px), Number(py));
-    t.setFocus(String(focus ?? ''));
-    return prTable.draw(ctx, frame, tl.playhead, tl.world.loaded);
   }
   return false;
 }

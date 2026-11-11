@@ -3,22 +3,22 @@
 // nothing at boot waits on it. The ?keychain=denied route is the agent's test hook: one read
 // answers denied, as macOS's Deny does.
 
-test "the token loads asynchronously and the floor never waits on it"
+test "the token loads asynchronously and Live never waits on it"
   clock data
   clock settle
   expect state tok.status == "none"
   expect state tok.has == false
   expect state tokCard == false
   expect tree missing "tok-card"
-  expect tree has "setup-demo"
-  tap "setup-demo"
+  expect tree has "now-setup-demo"
+  tap "now-setup-demo"
   clock data
   expect state conn.ok == true
   expect state tok.status == "none"
 
 test "a token set in Settings is still there after a reload, and still connects"
   clock data
-  tap "setup-connect"
+  tap "now-setup-connect"
   clock settle
   type "server-field" "fixtures"
   type "token-field" "syd_kcTESTtoken0123456789"
@@ -50,13 +50,13 @@ test "a denied read shows the card; Try again reads again"
   expect text "tok-title" == "Keychain access was denied"
   expect tree has "tok-retry"
   expect tree has "tok-enter"
-  expect tree missing "setup"
+  expect tree missing "now-setup"
   tap "tok-retry"
   clock data
   clock settle
   expect state tok.status == "none"
   expect tree missing "tok-card"
-  expect tree has "setup"
+  expect tree has "now-setup"
 
 test "a denied read's Enter token opens Settings, and a saved token connects"
   clock data
@@ -78,7 +78,7 @@ test "a denied read's Enter token opens Settings, and a saved token connects"
 
 test "Forget token signs out: the token is gone, after a reload too"
   clock data
-  tap "setup-connect"
+  tap "now-setup-connect"
   clock settle
   type "server-field" "fixtures"
   type "token-field" "syd_kcTESTtoken0123456789"
@@ -86,6 +86,8 @@ test "Forget token signs out: the token is gone, after a reload too"
   clock data
   clock settle
   expect state tok.has == true
+  tap "tab-yard"
+  clock settle
   tap "open-settings"
   clock settle
   expect tree has "settings-forget"
@@ -110,7 +112,7 @@ test "an old Keychain item left behind: Settings says how to remove it"
   clock settle
   expect state tok.left == true
   expect state tokCard == false
-  tap "setup-connect"
+  tap "now-setup-connect"
   clock settle
   expect tree has "settings-security"
   expect text "settings-security-note" == "An old Switchyard token remains in your login Keychain; remove it in Keychain Access → search 'switchyard'."

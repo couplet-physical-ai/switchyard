@@ -101,7 +101,7 @@ agent drives are not a frame-rate measure; `perf-web.mjs` runs outside it.
   is still fatal (`hermes_fatal`, no recoverable path in the prebuilt Hermes), so the cap is a
   stopgap, not a budget: the live set should stay far under it.
 
-## Factory (the default view; DESIGN.md "Factory")
+## Factory route (DESIGN.md "Routes and discovery")
 
 Measured 2026-11-11 03:40–04:45Z on `sy/fab-base`. 1× is the live server on each host's
 `127.0.0.1:8090` (394 repos, 239 apps); 10× is stress mode (`src/factory/stress.ts`: census ×10,

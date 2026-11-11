@@ -1,35 +1,35 @@
 # Switchyard client — design
 
-Switchyard shows Exowatt's whole delivery system as one living schematic: every push is a
-packet that travels from its source, through the Roadrunner or GitHub Actions queue, onto
-an engine slot, through the gates, onto its repo's main line, out through a deploy and into
-an app whose health you can see. The look comes from Kit Langton's merge-process animation
-(near-black, one monospace, thin gray wires, rounded machines with port tabs, amber packets,
-progress rings, dot lines, red culprit labels, dashed step chips, `Pause | 1× | ¼×`) and
-carries it to fleet scale: five orgs, ~400 repos, ~60 apps, live.
+Switchyard puts **Live** first: a time-ordered feed of changes, the jobs they trigger, where
+those jobs run, and their results. It answers what is happening now, what just finished, then
+what needs a human. Each row links to ground truth instead of asking people to infer status
+from a diagram. The established Factory and Yard remain separate views.
 
-**Subject.** A CI/CD fleet in motion. **Audience.** Engineers and the people who run the
-delivery system (Felipe first). **Job.** Answer "what is happening in delivery right now, and
-where is it stuck?" in one glance, and let you follow any commit end to end in two clicks.
+**Audience.** Engineers and the people who run delivery. **Job.** Quickly see current activity,
+follow a change through its jobs and deployment, and identify what is broken.
 
 ## Principles
 
-1. **The yard is the thesis.** The first screen is the schematic, not a table of numbers.
-   Everything else (main lines, PRs, journeys, fleet) is one keystroke away.
-2. **Aggregate, then expand.** Never draw 400 tiny boxes. Stations are shared machines
-   (queues, engines, gates, deploy); repos appear only where they carry information: as a
-   packet's label while it travels, as one of the hottest main lines, as a red line.
-   Everything else is a count with a way in (`+404 more · 3 red` → Mainlines).
-3. **Motion means an event happened.** Nothing moves for decoration. A packet moves because
-   a commit moved; a ring grows because a pipeline is running; a dot appears because main
-   got a commit. When nothing happens the yard is still.
-4. **State is form plus text, never colour alone.** A red main is a red dot *and* a
-   `culprit` label *and* `red since 14:02` in words. Green/amber/red keep their meaning
-   everywhere and are never used as decoration.
-5. **Calm density.** Wires are 1 px gray, labels are small, white is reserved for the names
-   that matter right now. Brightness is the hierarchy.
+1. **Current first.** Put running and queued work at the top, recently completed work next,
+   and older history below in time order.
+2. **Show the causal chain.** A change is the parent of the jobs it started; each job names its
+   machine and its outcome. Keep the source, execution and result connected.
+3. **Simplicity over decoration.** Every element answers a tracking question. Motion means
+   something live is changing, not that the interface needs movement.
+4. **State is explicit.** Use restrained state color only with a status glyph, word or timer.
+   Separate sections with neutral hairlines; no colored borders, rails, outlines or tinted callouts.
+5. **Preserve proven views.** Factory and Yard remain available as separate routes; the Yard's
+   layout, behavior and rendering path stay unchanged.
 
-## Layout of the Yard (hero)
+## Live (primary)
+
+The default `/` route is a vertical feed: what is happening now, then what just finished, then
+what happened earlier. Each event carries its jobs and their result, so the reader can follow
+change → execution → outcome without switching to a table or a detail-only page. URL filters
+(`?repo=`, `?app=`, `?sha=`) keep links useful and shareable. Search routes matching items into
+those same Live filters.
+
+## The retained Yard
 
 A map of the whole fleet in one screen, laid out as an L: the flow schematic across the top
 left, the return wire under it, the bands of what is happening now and next below, and a
@@ -38,7 +38,7 @@ full-height column of main lines, the heatmap of every repo, deploy and apps on 
 from, the time controls and the HUD switch.
 
 ```
-┌ switchyard  yard mainlines prs fleet                                  search ⌘K ┐
+┌ switchyard  Live  Factory  Yard                                  search ⌘K ┐
 │ LIVE  24 main lines red · 1 app down   392 repos · 23:58 · last hour 121 builds…  1 hour, sped up ◔│
 │ sources       intake      engines · slots                gates  │ main lines · newest right   │
 │ ▤ labs 47/h ╮ roadrunner  vm 153 · linux · 5/6  tidal-union 20m │ hollow-relay  red 8m  ●●○●◉│
@@ -199,38 +199,24 @@ for words is at least 4.5:1 on `canvas`.
 The Exowatt Fresnel mark (white) sits at the left of the top bar; the brand gradient appears
 only in the app icon. Status colours are never used as series colours.
 
-## Views
+## Routes and discovery
 
-- **Mainlines** — every repo's default branch as a row: name, lane mode, state in words, the
-  last 40 dots (newest right, end cap like the inspiration), `culprit` over the dot that broke
-  it, a small mark over deployed commits, `fixed by a1b2c3` when a later commit turned it green.
-  Sorted red first, then by heat; filtered by org and state; virtualized.
-- **PRs** — every open PR as a dashed step-chip pipeline: `draft → checks → review → mergeable
-  → merged → deployed`, the current phase solid with a packet on it, passed phases green-filled,
-  `conflict` and `changes requested` red. Author badge (`autofix`, `renovate`, a person), checks as
-  a row of small dots (required first), `stale 3d` in amber, `blocked by …`.
-- **Commit journey** — one commit left to right: push → pipelines → workflows → steps as a
-  waterfall on a shared time axis (Dagger spans, cached ones hatched) → deploy → the app's
-  health after. Each segment says its duration.
-- **Fleet** — apps (health, live vs main SHA and how far behind, last deploy and how, lane
-  mode, latency; the ones that need attention listed once, above the rest), engines and
-  runners grouped by host as the Yard groups them (each agent's slots as the Yard's machine,
-  busy/total, cpu/mem), a load canvas (slots busy, cpu, mem, load1 per engine: the last five
-  minutes, sampled client-side on the world's clock, `src/enginehist.ts`), deploys over 24 h
-  (a bar an hour), the lane-mode split as a stacked bar, queue pressure, the outage watcher,
-  and 24-hour figures.
-- **⌘K** — one field; instant matches from the client's own index, then the server's search
-  for commits. Arrow keys move, Return opens, Escape closes.
-- **Settings** — server URL and token (kept in the platform's secret store), connection and
-  adapter status from `/api/v1/meta`. `switchyard://connect?server=…&token=…` fills both.
+- **Live (`/`)** — the current event → jobs → result feed. Repo, app and commit filters are
+  encoded in the URL, so direct links stay on the primary view.
+- **Factory (`/factory`)** — the existing factory floor, including its coffee check, replay,
+  history and canvases.
+- **Yard (`/yard`)** — the existing fleet schematic and replay controls, unchanged.
+- **⌘K** — one field for repo, PR, app, commit and pipeline matches. Results open the relevant
+  Live filter; arrow keys move, Return opens, Escape closes.
+- **Connect (`/connect`)** — a confirmation page for `switchyard://connect?server=…&token=…`.
+- **Settings** — server URL and token (kept in the platform's secret store), plus connection
+  and adapter status from `/api/v1/meta`.
 
 ## Accessibility
 
-The canvas carries a text description of the fleet (`role="img"` and a label that updates
-at 1 Hz: `18 building, 12 queued, 3 main lines red, 2 apps down`), and every fact it shows is
-also in a Contract view a screen reader can read (NOW, QUEUE, Mainlines, Fleet). Keyboard: tabs
-by number keys `1`–`4`, ⌘K, Space for Pause, `L` for LIVE, arrows in lists. Focus rings in
-`brand`. Reduced motion as above.
+The Yard canvas carries a text description of the fleet (`role="img"` and a label that updates
+at 1 Hz), and the Live feed makes events and job results readable as text. Keyboard: tabs by
+number keys `1`–`3`, ⌘K, Space for Pause, and `L` for LIVE. Reduced motion remains respected.
 
 ## Architecture (why it is fast)
 
