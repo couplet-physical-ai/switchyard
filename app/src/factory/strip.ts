@@ -103,6 +103,7 @@ export class Strip {
   draw(g: Gfx, f: Frame, now: number): void {
     const tl = this.f.tl;
     const y0 = f.height - BAR_H, W = f.width;
+    g.ctx.lineCap = 'butt'; // w2-chrome (REVIEW-iter3 #7): flat-topped bars whatever stroked before (never discs)
     g.fillRect(0, y0, W, BAR_H, withAlpha(C.canvas, 0.94));
     g.hline(0, W, g.crisp(y0), '#1F1F21');
     // the replay controls (live is the status line's: one control)
