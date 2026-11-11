@@ -164,7 +164,7 @@ export class Factory {
   pointer(kind: string, x: number, y: number, buttons: number, t: number): HitBox | null {
     if (kind.startsWith('key:')) return this.lens.key(kind.slice(4), t); // fab-lens: Esc/⌫ walk back, ? the key
     this.px = x; this.py = y;
-    if (kind === 'down') { this.drag = { x, y, moved: false }; return null; }
+    if (kind === 'down') { this.drag = { x, y, moved: false }; this.lens.down = true; return null; } // fab-w3: no hover card while pressed
     if (kind === 'move') {
       if (this.drag && (buttons & 1)) {
         const dx = x - this.drag.x, dy = y - this.drag.y;
@@ -182,6 +182,7 @@ export class Factory {
     if (kind === 'up') {
       const d = this.drag;
       this.drag = null;
+      this.lens.down = false; // fab-w3
       if (d?.moved) return null;
       const h = this.hitAt(x, y);
       // fab-lens: a click pushes a lens (shift-click compares; the pointer's buttons carry shift as 256)
