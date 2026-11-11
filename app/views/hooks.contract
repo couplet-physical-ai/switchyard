@@ -1,0 +1,37 @@
+// SWITCHYARD_TOKEN_FILE (README "Test hooks"; macOS, env only). At launch the native module reads
+// a device token from a 0600 file and hands it over once (src/hooks.ts checks it with parseLink,
+// the switchyard:// link's checks). It connects as the link's Connect does, with no confirm
+// sheet: the server goes to the stored `server`, the token to the Keychain (the data module
+// stores it; it never enters this file's values, so no kept answer holds it), and the connect
+// that follows is reported to the module, which logs it. With no file, and on the web, nothing
+// happens: `tfUsed` stays false and `tokenFileReport` is asked once.
+
+use Ack from "./shapes.contract"
+
+shape TokenFile
+  server: string
+  ok: bool
+
+members App
+  state tfUsed = false
+  state tfReported = false
+  // A mutation, not a resource: an answer from the module is never kept for the next launch.
+  mutation tf as shape TokenFile then connectTokenFile
+  derive tfNow = match tf { case some(t) => t, case none => TokenFile(server="", ok=false) }
+  // Asked each tick from the connect until the outcome is reported (a native call from the
+  // connect's own continuation is not one the host takes).
+  resource tfr = tokenFileReport(tfUsed and not tfReported ? clockMs : 0) as shape Ack else empty(ok=false, status="idle")
+  task tfTake mount
+    after(1, takeTokenFile)
+  task tfDone when tfr.ok and not tfReported
+    after(1, tokenFileReported)
+  action takeTokenFile
+    send tf = tokenFile()
+  // SWITCHYARD_SERVER, else the build's default server; neither: the stored one (not the demo).
+  action connectTokenFile
+    if tfNow.ok
+      tfUsed = true
+      server = tfNow.server != "" ? tfNow.server : (server == "demo" ? "" : server)
+      send saved = saveTokenFile()
+  action tokenFileReported
+    tfReported = true

@@ -42,6 +42,7 @@ enum SYUpdaterTests {
         print("== hosts"); hosts()
         print("== the verify chain"); verifyChain()
         print("== the swap"); swapCases()
+        print("== the test hooks (HooksCore.swift)"); hooks()
         try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent("sy-updater-tests-\(getpid())"))
         print(String(format: "%d passed, %d failed (%.1f s)", passes, failures, Date().timeIntervalSince(started)))
         return failures == 0 ? 0 : 1

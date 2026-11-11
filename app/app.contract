@@ -103,6 +103,7 @@ component App
   members "./views/journey.contract"
   members "./views/webreload.contract"
   members "./views/update.contract"
+  members "./views/hooks.contract"
 
   task pulse mount
     every(250, tick)
