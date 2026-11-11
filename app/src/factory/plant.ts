@@ -35,7 +35,7 @@ import { BoxBatch } from './batch.ts';
 import { failingStep } from './census.ts';
 import type { Group } from './census.ts';
 import type { Factory } from './factory.ts';
-import { UX, VX } from './iso.ts';
+import { UX, UY, VX } from './iso.ts';
 import { floorGroups } from './groups.ts';
 import { PLAN } from './layout.ts';
 import { R_BEAM, R_DOOR, R_RING, beltSpeedPx, breathe } from './motion.ts';
@@ -51,6 +51,8 @@ const {
 /** The wall: a slab WALL_V deep on the machine's back edge, WALL_H over its top. Under 23.6 it
  *  never hides the machine behind it (only that one's front face). */
 const WALL_V = 2, WALL_H = 22;
+/** A machine name's box height (px). */
+const NAME_H = 13;
 /** The return riser: beside the docks' doors, between them and the collect belt. */
 export const RISER_U = DOCK_U1 + 7;
 /** The intake's mouth gate (u), at the distributor: W4's jam crates bunch behind it. */
@@ -608,20 +610,57 @@ export class Plant implements Layer {
   }
 
   // ---- the machine's name (labels.ts calls in: one line) ----
-  /** The machine's label: its name only, over its wall's top-left (its numbers are the wall, the
-   *  lit bays and the gauges); red when the host is offline. True: drawn (or no room). */
+  /** The machine's label: its name only (its numbers are the wall, the lit bays and the gauges),
+   *  red when the host is offline, ON ITS OWN SHELL at the left end of its front edge (`nameSpots`).
+   *  The placer may only slide it along that edge; with no free spot there it is dropped, never
+   *  floated. True: handled (drawn or dropped). */
   label(g: Gfx, gr: Group, gi: number): boolean {
-    const cam = this.f.cam, v0 = ENG_V0 + gi * ENG_STEP;
+    const v0 = ENG_V0 + gi * ENG_STEP;
     const name = gr.hosted ? 'GitHub Actions' : gr.name;
-    const z = gr.engines.length ? ENG_H + WALL_H : ENG_H;
-    const x = cam.x(ENG_U0 + 2, v0 + WALL_V), y = cam.y(ENG_U0 + 2, v0 + WALL_V, z) - 5;
     const wv = g.width(name, SMALL, true);
-    const at = this.f.placeAt(Math.round(x), Math.round(y), wv, 13, 2, true);
+    const at = this.nameSpots(gi, wv, NAME_H).find(([x, y]) => this.f.placeAt(x, y, wv, NAME_H, 0, false));
     if (!at) return true;
-    g.fillRect(at[0] - 3, at[1] - 11, wv + 6, 15, withAlpha(C.canvas, 0.82));
-    g.text(name, at[0], at[1], !gr.online ? C.redText : gr.running.length ? C.ink : C.ink2, SMALL, true);
-    this.f.hit(at[0] - 3, at[1] - 11, wv + 6, 15, 'engine', `915,${v0 + ENG_DV / 2},2.4`, name);
+    const [x, y] = at;
+    g.fillRect(x - 3, y - 11, wv + 6, 15, withAlpha(C.canvas, 0.82));
+    g.text(name, x, y, !gr.online ? C.redText : gr.running.length ? C.ink : C.ink2, SMALL, true);
+    this.f.hit(x - 3, y - 11, wv + 6, 15, 'engine', `915,${v0 + ENG_DV / 2},2.4`, name);
     return true;
+  }
+
+  /** Where machine `gi`'s name (a `w` × `h` px box; [x, baseline y] each) may sit, best first:
+   *  the left end of its shell's FRONT edge, in screen space after the projection, then a few
+   *  steps right along that edge. The front FACE when enough of it shows (the bottom-left of the
+   *  face, inside it); else (the next machine's wall rises in front of it: the view's geometry
+   *  hides a walled neighbour's front face at every zoom) the shell's TOP, just inside its front
+   *  edge. Every box stays on the shell and inside the floor's visible area; none: []. */
+  nameSpots(gi: number, w: number, h: number): [number, number][] {
+    const cam = this.f.cam, c = this.f.census;
+    const v0 = ENG_V0 + gi * ENG_STEP, vf = v0 + ENG_DV;
+    const slope = UY / UX; // the front edges fall this much (px per px) to the right
+    const xl = cam.x(ENG_U0, vf), xr = cam.x(ENG_U1, vf);
+    const faceTop = cam.y(ENG_U0, vf, ENG_H);
+    let faceBot = cam.y(ENG_U0, vf, 0);
+    // what stands in front: the next machine's top (and its wall), at our front-left's column
+    const nx = c.groups[gi + 1];
+    if (nx) {
+      const vn = v0 + ENG_STEP, un = ENG_U0 + ((vf - vn) * VX) / UX;
+      faceBot = Math.min(faceBot, cam.y(un, vn, ENG_H + (nx.engines.length ? WALL_H : 0)));
+    }
+    const pad = 3;
+    // the face: a box whose bottom-left sits on the face's lowest visible line and whose top-right
+    // clears the face's top edge (both fall to the right)
+    const onFace = faceBot - faceTop >= h + pad * 2 + slope * (w + 6);
+    const x0 = Math.round(xl + (onFace ? 6 : 0.55 * (h + pad) + 6));
+    const y0 = Math.round(onFace ? faceBot - pad - 1 : faceTop - pad);
+    const top = 72, bottom = cam.H - 58 - 4, right = cam.W - 4; // under the top row, over the time strip
+    const out: [number, number][] = [];
+    for (const dx of [0, 36, 72, 108]) {
+      const x = x0 + dx, y = Math.round(y0 + slope * dx);
+      if (x + w + 3 > xr - 4 || x - 3 < 4 || x + w + 3 > right) continue;
+      if (y - h < top || y + 4 > bottom) continue;
+      out.push([x, y]);
+    }
+    return out;
   }
 
   // ---- the job zoom (FACTORY-SPEC §F "job": z ≥ 4 on the plant) ----
