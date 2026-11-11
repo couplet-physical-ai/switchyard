@@ -106,8 +106,12 @@ if (import.meta.main) {
   });
   const top = [...turns].sort((a, b) => b.ms - a.ms).slice(0, 12);
   for (const t of top) console.log(`${t.ms.toFixed(2).padStart(8)} ms  ${t.at}`);
-  const worst = top[0]?.ms ?? 0;
-  console.log(`${turns.length} turns · longest ${worst.toFixed(2)} ms (Bun)`);
-  if (worst > max) { console.log(`FAIL: a turn over ${max} ms (Bun); on a slow Mac's Hermes that is over its 100 ms budget`); process.exit(1); }
+  // Module evaluation is one turn too, but on macOS Hermes runs precompiled bytecode while Bun
+  // parses and compiles here, so it is held to twice the max (it was the noisiest turn on CI).
+  const IMPORT = 'import → module evaluated';
+  const worst = Math.max(0, ...turns.filter((t) => t.at !== IMPORT).map((t) => t.ms));
+  const imp = turns.find((t) => t.at === IMPORT)?.ms ?? 0;
+  console.log(`${turns.length} turns · longest ${worst.toFixed(2)} ms (Bun) · module evaluation ${imp.toFixed(2)} ms`);
+  if (worst > max || imp > 2 * max) { console.log(`FAIL: a turn over ${max} ms (module evaluation over ${2 * max} ms) in Bun; on a slow Mac's Hermes that nears its 100 ms budget`); process.exit(1); }
   process.exit(0);
 }
