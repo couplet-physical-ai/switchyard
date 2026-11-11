@@ -289,7 +289,7 @@ export class GroupFloor {
       const hex = G.hex(G.laneOfPipeline(p));
       let l = byHex.get(hex);
       if (!l) byHex.set(hex, (l = []));
-      l.push(b.u + 1, b.v + 1, b.u + b.du - 1, b.v + Math.min(4, b.dv * 0.3));
+      l.push(b.u + 1, b.v + 1, b.u + b.du - 1, b.v + Math.min(6, b.dv * 0.35));
     }
     for (const [hex, l] of byHex) {
       g.begin_();
