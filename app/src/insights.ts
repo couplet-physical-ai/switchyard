@@ -42,7 +42,7 @@ export type GroupHue = { l: number; c: number; h: number; hex: string; slot: num
  *  the four biggest teams (by apps) the blues, the five orgs their own. */
 const TEAM_SLOTS: [number, number, number][] = [[0.75, 0.065, 252], [0.60, 0.075, 274], [0.75, 0.055, 205], [0.60, 0.065, 228]];
 const ORG_SLOTS: Record<string, [number, number, number]> = {
-  'Northwind-Labs': [0.62, 0.070, 180], 'Northwind-Forge': [0.75, 0.060, 298], 'Northwind-EMS': [0.60, 0.075, 320],
+  'Northwind-Labs': [0.68, 0.075, 180], 'Northwind-Forge': [0.75, 0.060, 298], 'Northwind-EMS': [0.60, 0.075, 320], // fab-w1: labs L .62→.68, C .070→.075: ΔE ≥ 20 from ok's green-gray (grammar.ts RESERVE)
   'couplet-physical-ai': [0.68, 0.065, 118], 'copper-browser': [0.72, 0.060, 345],
 };
 /** The org slots in lane order (an unknown org takes the first one no known org holds). */

@@ -38,7 +38,7 @@ eq(gs.reduce((n, g) => n + g.red, 0), [...tl4.world.repos.values()].filter((r: a
 // §C hues: the fixture's ten groups get the spec's colours
 const hex = (id: string) => i4.groupHue(id).hex;
 eq(['team:software', 'team:controls', 'team:hardware', 'team:optics'].map(hex), ['#90B1D7', '#727DAD', '#85B9BF', '#55889F'], '§C hues: the four biggest teams (by apps)');
-eq(['org:Northwind-Labs', 'org:Northwind-Forge', 'org:Northwind-EMS', 'org:couplet-physical-ai', 'org:copper-browser'].map(hex), ['#539488', '#B2A6D0', '#94729C', '#949E70', '#C196AD'], '§C hues: each org its own');
+eq(['org:Northwind-Labs', 'org:Northwind-Forge', 'org:Northwind-EMS', 'org:couplet-physical-ai', 'org:copper-browser'].map(hex), ['#61A89A', '#B2A6D0', '#94729C', '#949E70', '#C196AD'], '§C hues: each org its own');
 eq([i4.groupHue('team:power-systems'), i4.groupHue('team:hr')], [OTHER_HUE, OTHER_HUE], '§C hues: teams past the nine slots fold into "other teams"');
 eq([hex('bots'), OTHER_HUE.hex], ['#606468', '#89867E'], '§C hues: the bots siding and other teams');
 const hues = gs.map((g) => i4.groupHue(g.id));

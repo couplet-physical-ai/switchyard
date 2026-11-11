@@ -342,6 +342,7 @@ export class Coffee {
 
   /** Where each repo's newest car (and newest culprit) sits on its rail, and each car by key. */
   carSpots(): { carAt: Map<string, [number, number]>; repoAt: Map<string, [number, number]>; culpritAt: Map<string, [number, number]> } {
+    const lanes = this.f.floor.carSpots(); if (lanes) return lanes; // fab-w1: the lanes' cars and posts (floor.ts)
     const c = this.f.census, P = this.f.plan;
     // perf: the cars move only when the census recounts (≤ 1/s); one Map set per recount, not per frame
     if (this.spotsAt === c.at && this.spots) return this.spots;

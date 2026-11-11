@@ -33,13 +33,14 @@ import type { Gfx } from '../yard/gfx.ts';
 import { C, TAU, clamp, withAlpha } from '../yard/theme.ts';
 import { isRed } from '../yard/select.ts';
 import { AGES, HOUR, PHASES, failingStep, phaseRow, short, teamOf } from './census.ts';
-import { appHistory, beat, beatPhase, groupOf } from './seams.ts';
+import { appHistory, beat, groupOf } from './seams.ts';
 import type { Census } from './census.ts';
 import type { Factory } from './factory.ts';
 import { clusterOf, groupOf as insGroupOf, insights, insightsVer } from '../insights.ts';
 import { Hover } from './hover.ts';
 import { BOTS_LANE, floorGroups } from './groups.ts';
 import { drawCompare } from './compare.ts';
+import { drawLegend } from './legend.ts'; // fab-w1
 import { appHist, appHist7, engineSeries, healthSegs, machineEngines, wantAppHistory, wantEngineHistory } from './lenses.ts';
 import { classGlyph, clusterBody, clusterFacts, groupApps, groupFlow, groupForApps, groupForOrg, groupTrend, parkByCluster, ribbonW, trendRows } from './lenses.ts';
 import type { ClusterFacts, GroupFlow, ParkGroup, Parked } from './lenses.ts';
@@ -734,8 +735,10 @@ export class Lenses {
       if (name) named = true;
       const wv = g.width(n, SMALL, true) + (name ? g.width(name, SMALL) : 0);
       const x0 = Math.round(x - g.width(n, SMALL, true) / 2);
+      if (only >= 0 || f.floor.level > 0 || f.floor.focusId) { // fab-w1: at fleet zoom the bracket's width says it (hover: the count; the text budget)
       g.fillRect(x0 - 3, y - 11, wv + 6, 14, withAlpha(C.canvas, 0.8));
       g.runs([[n, only >= 0 ? C.ink : pg.open ? C.redText : C.ink3, true], [name, C.ink3]], x0, y, SMALL);
+      } // fab-w1
       if (only < 0) this.fx.hit(cam.x(pg.u0 - 4, vb), cam.y(pg.u1, V - 4, 8) - 4, cam.x(pg.u1 + 4, V) - cam.x(pg.u0 - 4, vb), y - cam.y(pg.u1, V - 4, 8) + 8, 'failure', pg.newest, `${pg.step} · ${pg.n} failures`);
     });
   }
@@ -771,13 +774,13 @@ export class Lenses {
     const f = this.f, c = f.census, P = f.plan, fx = this.fx;
     for (const d of fx.districtBox) this.boxHit(d.u0 - 4, d.v0 - 4, d.u1 - d.u0 + 8, d.v1 - d.v0 + 8, 8, 'districtArea', d.team, `${d.team} ${d.n}`);
     if (!f.w2.on) c.docks.forEach((d) => this.boxHit(P.DOCK_U0, fx.dockV(d.org) - 30, P.DOCK_U1 - P.DOCK_U0, 60, 14, 'dock', d.org, `${d.short} dock`)); // fab-w3: W2 hits its group docks
-    c.rails.forEach((r, i) => this.boxHit(P.RAIL_U0, P.RAIL_V[i] - 9, P.RAIL_U1 - P.RAIL_U0, 18, 6, 'rail', r.org, `${r.short} main lines`));
-    for (let r = 0; r < 4; r++) for (let b = 0; b < 6; b++) {
+    if (!f.floor.on) c.rails.forEach((r, i) => this.boxHit(P.RAIL_U0, P.RAIL_V[i] - 9, P.RAIL_U1 - P.RAIL_U0, 18, 6, 'rail', r.org, `${r.short} main lines`));
+    if (!f.floor.on) for (let r = 0; r < 4; r++) for (let b = 0; b < 6; b++) { // fab-w1: the lanes hit their own cells, posts, pallets (floor.ts)
       const s = c.stacks[r][b];
       const layers = Math.min(16, Math.ceil(s.n / 3));
       this.boxHit(P.ROW_U[r] - P.ROW_DU / 2, P.AGE_V[b], P.ROW_DU, P.STACK_DV, 4 + layers * 2.6, 'stack', `${r},${b}`, `${PHASES[r]} ${s.n}`);
     }
-    c.pallets.forEach((p, i) => this.boxHit(P.YARD_U0 + 8 + i * 76, P.PALLET_V - 16, 64, 34, 30, 'pallet', p.bot, `${p.bot} ${p.n}`));
+    if (!f.floor.on) c.pallets.forEach((p, i) => this.boxHit(P.YARD_U0 + 8 + i * 76, P.PALLET_V - 16, 64, 34, 30, 'pallet', p.bot, `${p.bot} ${p.n}`)); // fab-w1
     this.boxHit(P.INTAKE_U0, 258, P.INTAKE_U1 - P.INTAKE_U0, 66, 6, 'intake', 'intake', 'intake');
     this.boxHit(P.GATE_U - 2, P.AISLE_V - 38, 12, 76, 40, 'gate', 'gate', 'merge gate');
     c.groups.forEach((_g, gi) => {
@@ -835,8 +838,9 @@ export class Lenses {
     const seg: Pt[][] = [];
     // fab-w3: from each lit dock (W2's group lanes, else the org docks) to the aisle; then, past
     // the gate, onto each lit org's rail
-    for (const dk of this.litDocks(rel)) seg.push([[P.DOCK_U1, dk.v], [P.COLLECT_U, dk.v], [P.COLLECT_U, P.AISLE_V]]);
-    if (k !== 'stack' && k !== 'pallet') for (const d of c.docks) {
+    if (f.floor.on) for (const id of this.litLanes(rel)) { const lp = f.floor.lanePath(id); if (lp) seg.push(k === 'stack' || k === 'pallet' ? lp[0] : [...lp[0], ...lp[1]]); } // fab-w1: each lit lane's way
+    else for (const dk of this.litDocks(rel)) seg.push([[P.DOCK_U1, dk.v], [P.COLLECT_U, dk.v], [P.COLLECT_U, P.AISLE_V]]);
+    if (k !== 'stack' && k !== 'pallet' && !f.floor.on) for (const d of c.docks) {
       if (!rel.orgs.has(d.org)) continue;
       const ri = c.rails.findIndex((r) => r.org === d.org);
       if (ri >= 0) seg.push([[P.COLLECT_U, P.AISLE_V], [P.YARD_U1, P.AISLE_V], [P.GATE_U + 4, P.AISLE_V], [P.RAIL_U0, P.RAIL_V[ri]], [P.RAIL_U1, P.RAIL_V[ri]], [P.INTAKE_U0, 291]]);
@@ -873,6 +877,14 @@ export class Lenses {
     return out;
   }
 
+  /** fab-w1: the lanes a relation lights (its repos' groups; the bots siding for a bot org). */
+  private litLanes(rel: Rel): Set<string> {
+    const G = floorGroups(), lanes = new Set<string>();
+    for (const r of rel.repos) lanes.add(G.laneOfRepo(r));
+    if (rel.orgs.has(BOTS)) lanes.add(BOTS_LANE);
+    return lanes;
+  }
+
   /** A repo's dock v: its group lane's (W2) when on, else its org's dock. */
   private repoDockV(repo: string): number { return this.f.w2.on ? this.fx.dockV(repo) : this.fx.dockV(this.f.world.orgOf(repo)); }
 
@@ -888,9 +900,10 @@ export class Lenses {
     // the PR yard (fab-w3, overseer note 2): in each stack, the lens's share of its open PRs as a
     // core as tall as that share of the stack, its outline heavier and its top fuller the more PRs
     // it holds, its red slice (CI failing) on the front; the count on top. The card's key says so.
+    if (f.floor.on) f.floor.lit(g, rel.repos, rel.cars, rel.palletN, tint, hw, (s, x, y, red) => this.num(g, s, x + ndx, y, red ? (side ? HUE_B : C.redText) : ncol)); // fab-w1: the relation on the lanes
     let maxN = 1;
     for (let i = 0; i < 24; i++) if (rel.stackN[i] > maxN) maxN = rel.stackN[i];
-    for (let r = 0; r < 4; r++) for (let b = 0; b < 6; b++) {
+    if (!f.floor.on) for (let r = 0; r < 4; r++) for (let b = 0; b < 6; b++) { // fab-w1
       const i = r * 6 + b, n = rel.stackN[i];
       if (!n) continue;
       const all = Math.max(n, c.stacks[r]?.[b]?.n ?? n);
@@ -904,7 +917,7 @@ export class Lenses {
       const x = cam.x(u0 + du / 2, v0 + dv / 2), y = cam.y(u0 + du / 2, v0 + dv / 2, Math.max(z, full)) - 5;
       this.num(g, String(n), x + ndx, y, red ? (side ? HUE_B : C.redText) : ncol);
     }
-    c.pallets.forEach((p, i) => {
+    if (!f.floor.on) c.pallets.forEach((p, i) => { // fab-w1
       const n = rel.palletN.get(p.bot);
       if (!n) return;
       const u0 = P.YARD_U0 + 8 + i * 76, v0 = P.PALLET_V - 16;
@@ -912,7 +925,7 @@ export class Lenses {
       this.num(g, String(n), cam.x(u0 + 32, v0 + 17) + ndx, cam.y(u0 + 32, v0 + 17, 30), ncol);
     });
     // main lines: the lit org's rails, then the lit repos' cars
-    c.rails.forEach((r, i) => {
+    if (!f.floor.on) c.rails.forEach((r, i) => { // fab-w1
       if (!rel.orgs.has(r.org)) return;
       const v = P.RAIL_V[i];
       g.begin_();
@@ -1018,14 +1031,22 @@ export class Lenses {
   /** repo: its main line called out over its newest car, the last 12 runs of main as squares. */
   private repoStory(g: Gfx, l: Lens, st: Story): void {
     const f = this.f, c = f.census, P = f.plan, cam = f.cam;
+    let u = 0, v = 0;
+    if (f.floor.on) { // fab-w1: the repo's car on its lane's rail (else its post)
+      const at = (l.sub ? f.floor.carSpot(`${l.id}@${l.sub}`) : null) ?? f.floor.repoSpot(l.id);
+      if (!at) return;
+      [u, v] = at;
+      this.ring(g, u, v, 7, 5, LIT);
+    } else {
     const ri = c.rails.findIndex((r) => r.org === f.world.orgOf(l.id));
     const rail = c.rails[ri];
     if (!rail) return;
     const n = rail.cars.length;
     let k = -1;
     for (let i = n - 1; i >= 0; i--) if (rail.cars[i].repo === l.id && (k < 0 || rail.cars[i].sha === l.sub)) { k = i; if (!l.sub || rail.cars[i].sha === l.sub) break; }
-    const u = k >= 0 ? P.RAIL_U1 - 12 - (n - 1 - k) * 10 : P.RAIL_U1 - 12, v = P.RAIL_V[ri];
+    u = k >= 0 ? P.RAIL_U1 - 12 - (n - 1 - k) * 10 : P.RAIL_U1 - 12; v = P.RAIL_V[ri];
     if (k >= 0) this.ring(g, u, v, 7, 5, LIT);
+    } // fab-w1
     const dots = st.dots ?? [];
     const name = repoName(l.id);
     const wv = g.width(name, SMALL, true) + 10 + dots.length * 9;
@@ -1055,6 +1076,8 @@ export class Lenses {
     } else {
       const i = c.pallets.findIndex((p) => p.bot === l.id);
       u = P.YARD_U0 + 40 + i * 76; v = P.PALLET_V + 1; z = 30;
+      const pb = f.floor.on ? f.floor.palletBox(l.id) : null; // fab-w1: its pallet on the bots' siding
+      if (pb) { u = pb[0] + pb[2] / 2; v = pb[1] + pb[3] / 2; z = pb[4]; }
     }
     // ahead: the aisle to the merge gate
     g.dash(true, 3, 4);
@@ -1206,7 +1229,8 @@ export class Lenses {
     if (!rel) return;
     const kx = cam.x(P.SCAN_U, 300), ky = cam.y(P.SCAN_U, 300, 56);
     g.begin_();
-    c.rails.forEach((r, i) => {
+    if (f.floor.on) for (const repo of rel.repos) { const at = f.floor.culpritSpot(repo); if (at) this.thread(g, kx, ky, cam.x(at[0], at[1]), cam.y(at[0], at[1], 6)); } // fab-w1: the lanes' culprits
+    if (!f.floor.on) c.rails.forEach((r, i) => { // fab-w1
       const n = r.cars.length;
       r.cars.forEach((car, k) => {
         if (!car.culprit || !rel.repos.has(car.repo)) return;
@@ -1245,7 +1269,9 @@ export class Lenses {
       if (!repo || seen.has(repo)) continue;
       seen.add(repo);
       const it = { label: repoName(repo) };
-      const ri = c.rails.findIndex((r) => r.org === w.orgOf(repo));
+      const cs = f.floor.on ? f.floor.culpritSpot(repo) : null; // fab-w1: its red car (or post) on its lane
+      if (cs) { ends.push([cam.x(cs[0], cs[1]), cam.y(cs[0], cs[1], 6), it.label]); continue; }
+      const ri = f.floor.on ? -1 : c.rails.findIndex((r) => r.org === w.orgOf(repo));
       const rail = c.rails[ri];
       const k = rail ? rail.cars.findIndex((x) => x.repo === repo && x.culprit) : -1;
       if (rail && k >= 0) {
@@ -1303,9 +1329,15 @@ export class Lenses {
     // a stage the group sent nothing through keeps a hairline thread, so the way stays legible
     const thin = 'thin';
     // the dock strand(s): from the group's lane (W2's group docks), else from each org's dock
-    if (f.w2.on) for (const dk of this.litDocks(rel)) segs.push([[[P.DOCK_U1, dk.v], [P.COLLECT_U, dk.v], [P.COLLECT_U, P.AISLE_V]], gf.commits ? ribbonW(share(gf.commits, F_.commits), z) : 1.2, gf.commits ? gf.hue : thin]);
-    if (f.w2.on) segs.push([[[P.COLLECT_U, P.AISLE_V], [P.YARD_U1, P.AISLE_V]], gf.prs ? ribbonW(share(gf.prs, F_.prs), z) : 1.2, gf.prs ? gf.hue : thin]);
-    for (const [org, o] of gf.byOrg) {
+    if (f.floor.on) for (const id of this.litLanes(rel)) { // fab-w1: along each of its lanes: dock → belt → gate (its PRs), gate → rail → intake (its merges)
+      const lp = f.floor.lanePath(id);
+      if (!lp) continue;
+      segs.push([lp[0], gf.prs || gf.commits ? ribbonW(share(gf.prs || gf.commits, gf.prs ? F_.prs : F_.commits), z) : 1.2, gf.prs || gf.commits ? gf.hue : thin]);
+      segs.push([lp[1], gf.merged ? ribbonW(share(gf.merged, F_.merged), z) : 1.2, gf.merged ? gf.hue : thin]);
+    }
+    if (f.w2.on && !f.floor.on) for (const dk of this.litDocks(rel)) segs.push([[[P.DOCK_U1, dk.v], [P.COLLECT_U, dk.v], [P.COLLECT_U, P.AISLE_V]], gf.commits ? ribbonW(share(gf.commits, F_.commits), z) : 1.2, gf.commits ? gf.hue : thin]);
+    if (f.w2.on && !f.floor.on) segs.push([[[P.COLLECT_U, P.AISLE_V], [P.YARD_U1, P.AISLE_V]], gf.prs ? ribbonW(share(gf.prs, F_.prs), z) : 1.2, gf.prs ? gf.hue : thin]);
+    if (!f.floor.on) for (const [org, o] of gf.byOrg) { // fab-w1
       if (!o.commits && !o.prs && !o.merged) continue;
       const dv = fx.dockV(org), ri = c.rails.findIndex((r) => r.org === org);
       if (!f.w2.on) segs.push([[[P.DOCK_U1, dv], [P.COLLECT_U, dv], [P.COLLECT_U, P.AISLE_V]], o.commits ? ribbonW(share(o.commits, F_.commits), z) : 1.2, o.commits ? gf.hue : thin]);
@@ -1382,9 +1414,17 @@ export class Lenses {
     }
     g.dash(false);
     const ri = c.rails.findIndex((r) => r.org === w.orgOf(a.repo ?? ''));
+    let anchor: Pt = [0, 0];
+    if (f.floor.on) { // fab-w1: the live commit's car on its lane (else the repo's newest, else its post)
+      const live = a.live_sha ? f.floor.carSpot(`${a.repo}@${a.live_sha}`) : null;
+      const at = live ?? f.floor.repoSpot(a.repo ?? '');
+      if (!at) return;
+      if (live) this.ring(g, live[0], live[1], 6, 5, OK);
+      anchor = at;
+    } else {
     if (ri < 0) return;
     const rail = c.rails[ri], n = rail.cars.length, v = P.RAIL_V[ri];
-    let anchor: Pt = [P.RAIL_U1 - 6, v];
+    anchor = [P.RAIL_U1 - 6, v];
     rail.cars.forEach((car, k) => {
       if (car.repo !== a.repo) return;
       const u = P.RAIL_U1 - 12 - (n - 1 - k) * 10;
@@ -1392,6 +1432,7 @@ export class Lenses {
       if (car.sha === a.live_sha) this.ring(g, u, v, 6, 5, OK);
       anchor = [u, v];
     });
+    } // fab-w1
     const x0 = cam.x(anchor[0], anchor[1]), y0 = cam.y(anchor[0], anchor[1], 6);
     const x1 = cam.x(cu, cv), y1 = cam.y(cu, cv, b.h + 1 + behind * 3.4);
     g.begin_(); g.move(x0, y0); g.ctx.quadraticCurveTo((x0 + x1) / 2, Math.min(y0, y1) - 70, x1, y1);
@@ -1460,7 +1501,7 @@ export class Lenses {
     g.begin_(); g.rect(kx + 0.5, ky + 0.5, 23, 21); g.stroke(this.legend ? '#5A5A5E' : '#2E2E30', 1);
     g.text('?', kx + 12, ky + 15, this.legend ? C.ink : C.ink2, 12, true, 'center');
     this.fx.hit(kx, ky, 24, 22, 'legend', 'legend', 'the key');
-    if (this.legend) this.legendPanel(g, right - 16, ky + 30, t);
+    if (this.legend) drawLegend(g, this.f, right - 16, ky + 30, t); // fab-w1: the key, from grammar.ts (legend.ts)
     // the strip under the pointer: the moment a click replays from
     const tk = this.tick;
     // since you last looked: a bright bracket on the strip from then to now (§E)
@@ -1889,34 +1930,7 @@ export class Lenses {
     g.text('now', x + W, y + 28, C.ink3, SMALL, false, 'right');
   }
 
-  /** The key: the floor's visual grammar, drawn, with few words. */
-  private legendPanel(g: Gfx, right: number, y: number, t: number): void {
-    const W = 360, x = right - W;
-    const rows = 10;
-    const H = 18 + rows * 26 + 34;
-    g.fillRect(x, y, W, H, withAlpha(CARD, 0.96));
-    g.begin_(); g.rect(x + 0.5, y + 0.5, W - 1, H - 1); g.stroke(CARD_EDGE, 1);
-    this.fx.hit(x, y, W, H, 'legendpanel', '', '');
-    let yy = y + 26;
-    const row = (draw: (cx: number, cy: number) => void, a: string, b: string) => {
-      draw(x + 34, yy - 4);
-      g.runs([[a, C.ink, true], [`  ${b}`, C.ink3]], x + 70, yy, SMALL, W - 80);
-      yy += 26;
-    };
-    // shape = kind
-    row((cx, cy) => { cube(g, cx - 14, cy, 5, '#E5B567', '#B48C4E', '#8E6E3E'); cube(g, cx, cy, 5, '#6E6A62', '#4A4844', '#3E3C38'); cube(g, cx + 14, cy + 1, 4, '#3C3C40', '#28282B', '#202023'); }, 'shape', 'kind: run · commit · app');
-    row((cx, cy) => { g.fillRect(cx - 18, cy - 4, 9, 9, C.packet); g.fillRect(cx - 5, cy - 4, 9, 9, C.red); g.fillRect(cx + 8, cy - 4, 9, 9, '#5A6E5F'); }, 'colour', 'in flight · failing · ok');
-    row((cx, cy) => { const p = beatPhase(t); g.begin_(); g.circle(cx, cy, 3); g.fill(C.ink); g.begin_(); g.circle(cx, cy, 4 + p * 9); g.stroke(withAlpha(C.ink, 0.8 * (1 - p)), 1.2); }, 'pulse', 'new since you last looked');
-    row((cx, cy) => { for (let i = 0; i < 4; i++) { const p = ((t / 3000) + i / 4) % 1; g.begin_(); g.circle(cx + Math.sin(p * 5 + i) * 3, cy + 6 - p * 16, 3 + p * 5); g.fill(withAlpha('#9A9AA0', 0.32 * (1 - p))); } }, 'smoke', 'one failure hits \u2265 3 repos');
-    row((cx, cy) => { g.vline(cx, cy - 10, cy + 6, withAlpha(C.red, 0.7), 2); g.begin_(); g.circle(cx, cy - 10, 3.4 + beat(t) * 1.5); g.fill(C.red); }, 'beacon', 'app down · red < 1 h');
-    row((cx, cy) => { g.fillRect(cx - 12, cy - 2, 6, 8, '#5A5A5E'); g.fillRect(cx - 3, cy - 10, 6, 16, '#5A5A5E'); g.fillRect(cx + 6, cy - 6, 6, 12, '#5A5A5E'); }, 'height', 'volume (or age, in the PR yard)');
-    row((cx, cy) => { cube(g, cx - 7, cy, 5, '#555', '#444', '#3A3A3A'); cube(g, cx + 7, cy, 5, '#E5B567', '#B48C4E', '#8E6E3E'); }, 'gray', 'idle, or outside the lens');
-    row((cx, cy) => { g.begin_(); g.move(cx - 14, cy + 5); g.ctx.quadraticCurveTo(cx, cy - 12, cx + 14, cy + 4); g.stroke(withAlpha(C.red, 0.8), 1); g.begin_(); g.circle(cx - 14, cy + 5, 2.5); g.circle(cx + 14, cy + 4, 2.5); g.fill(C.red); }, 'thread', 'one failure cluster');
-    row((cx, cy) => { for (let i = 0; i < 3; i++) { g.dash(true, 2, 2); g.begin_(); g.rect(cx - 6, cy - 2 - i * 5, 12, 4); g.stroke(withAlpha(C.amberText, 0.75), 1); g.dash(false); } }, 'ghosts', 'commits not yet live');
-    row((cx, cy) => { g.dash(true, 4, 3); g.begin_(); g.move(cx - 16, cy); g.line(cx + 16, cy); g.stroke(withAlpha(LIT, 0.6), 1.5); g.dash(false); }, 'dashes', 'a route, or what is ahead');
-    g.hline(x + 12, x + W - 12, yy - 12, '#232325');
-    g.runs([['click', C.ink2, true], [' a lens · ', C.ink3], ['shift', C.ink2, true], [' compare · ', C.ink3], ['esc', C.ink2, true], [' back', C.ink3]], x + 14, yy + 6, SMALL, W - 28);
-  }
+
 
   // ---- small drawing helpers ----------------------------------------------------------------------
   private ring(g: Gfx, u: number, v: number, r: number, z: number, col: string): void {

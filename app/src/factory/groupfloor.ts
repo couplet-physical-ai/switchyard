@@ -11,7 +11,9 @@
 //   - pushes leave from their repo's group dock and failures ride home to it (`dockV`);
 //   - each stage title carries a notch (▲/▼ vs typical, red when worse) from the fleet trend;
 //   - the worst stage (fleet trend, over its threshold) glows with an ember;
-//   - PR stacks carry a base stripe of their groups' shares; a busy bay a stripe of its job's group.
+//   - a busy bay carries a stripe of its job's group.
+//   (fab-w1: the docks stand on the floor's lane bands, floor.ts/layout.ts, and follow the
+//   accordion; the lanes themselves carry the hue through the PR yard, the gate and the rails.)
 
 import type { Gfx } from '../yard/gfx.ts';
 import type { Pipeline, Trend } from '../wire.ts';
@@ -21,8 +23,7 @@ import { C, withAlpha } from '../yard/theme.ts';
 import { BOTS } from '../world.ts';
 import { insights } from '../insights.ts';
 import { normTeam } from '../../server/floor.ts';
-import { PHASES } from './census.ts';
-import { BOTS_LANE, OTHER_LANE, floorGroups, type Lane, type LaneStats } from './groups.ts';
+import { floorGroups, type Lane, type LaneStats } from './groups.ts';
 import { curb, ember, emberAt, ghost, metricOf, notch, severity, typical, withDir, type MetricKey } from './trendmarks.ts';
 import { baseline } from './agg/baseline.ts';
 
@@ -30,8 +31,7 @@ type Add = (u: number, v: number, fn: () => void, u1: number, v1: number, h: num
 type Geo = { lane: Lane; v: number; v0: number; v1: number; hex: string };
 
 /** The docks' zone (world v) and the collect belt's span (it stays where factory.ts draws it). */
-const ZONE_V0 = 26, ZONE_V1 = 588, COLLECT_V0 = 66, COLLECT_V1 = 546;
-const MIN_DEPTH = 32;
+const COLLECT_V0 = 66, COLLECT_V1 = 546;
 const SIDE = '#18181A', FRONT = '#141416', EDGE = '#3A3A3E', DOOR = '#0F0F10';
 
 /** Stage number → the fleet metric its notch and ember read (none: no notch). */
@@ -60,32 +60,20 @@ export class GroupFloor {
 
   // ── geometry ──
 
-  /** Lanes back → front, depth ∝ √repos (bots: a fixed share), at least MIN_DEPTH, filling the
-   *  docks' zone. Recomputed only when the lanes change. */
+  /** Lanes back → front on the floor's bands (fab-w1: floor.ts `lanes`, layout.ts LaneMap: depth
+   *  ∝ √repos, ≥ 32 u, eased by the accordion). Recomputed when the bands move. */
   layout(): Geo[] {
-    const lanes = floorGroups().lanes();
-    const key = lanes.map((l) => `${l.id}:${l.repos}`).join('|');
+    const fl = this.f.floor, lanes = floorGroups().lanes();
+    const key = `${fl.lanes.ver}|${lanes.length}`;
     if (key === this.geoKey) return this.geo;
     this.geoKey = key;
-    const wt = lanes.map((l) => Math.sqrt(Math.max(4, l.kind === 'bots' ? 30 : l.repos)));
-    const span = ZONE_V1 - ZONE_V0;
-    const depth = new Array<number>(lanes.length).fill(0);
-    let fixed = new Set<number>();
-    for (let pass = 0; pass < 4; pass++) {
-      const free = span - fixed.size * MIN_DEPTH;
-      const sw = wt.reduce((a, w, i) => a + (fixed.has(i) ? 0 : w), 0);
-      const next = new Set(fixed);
-      wt.forEach((w, i) => { if (!fixed.has(i)) { depth[i] = (free * w) / sw; if (depth[i]! < MIN_DEPTH) next.add(i); } else depth[i] = MIN_DEPTH; });
-      if (next.size === fixed.size) break;
-      fixed = next;
+    this.geo = [];
+    for (const L of fl.lanesNow) {
+      const lane = lanes.find((l) => l.id === L.id);
+      if (!lane) continue;
+      const d = L.v1 - L.v0, inset = Math.min(4, d * 0.12);
+      this.geo.push({ lane, v: (L.v0 + L.v1) / 2, v0: L.v0 + inset, v1: L.v1 - inset, hex: L.hex });
     }
-    let v = ZONE_V0;
-    this.geo = lanes.map((l, i) => {
-      const d = depth[i]!;
-      const g: Geo = { lane: l, v: v + d / 2, v0: v + 4, v1: v + d - 4, hex: floorGroups().hex(l.id) };
-      v += d;
-      return g;
-    });
     this.byLane = new Map(this.geo.map((g) => [g.lane.id, g]));
     return this.geo;
   }
@@ -94,10 +82,7 @@ export class GroupFloor {
    *  folds into); -1 when off (factory.ts then uses its own). */
   dockV(key: string): number {
     if (!this.on) return -1;
-    this.layout();
-    const G = floorGroups();
-    const lane = key === BOTS ? BOTS_LANE : key.includes('/') ? G.laneOfRepo(key) : G.laneOfGroup(`org:${key}`);
-    return this.byLane.get(lane)?.v ?? this.byLane.get(OTHER_LANE)?.v ?? -1;
+    return this.f.floor.dockV(key); // fab-w1: the lanes' bands (floor.ts)
   }
 
   /** The dock belts (one per lane, dock → collect belt), and the collect belt's stretch past
@@ -131,7 +116,9 @@ export class GroupFloor {
 
   /** The floor layer's key part: lanes, dock heights, curbs, door lamps, embers, stack shares
    *  (quantized so a count that changes nothing visible repaints nothing). */
-  get sig(): string {
+  get sig(): string { return `${this.sigW2}|${this.f.floor.sig}`; } // fab-w1: the lanes' bands, counts, zoom level
+
+  private get sigW2(): string {
     if (!this.on) return '';
     const G = floorGroups();
     const cnt = G.counts();
@@ -187,22 +174,7 @@ export class GroupFloor {
       const k = severity(metricOf(s?.trend, 'failures'), gg.lane.id, 'failures', cnt.at);
       if (k > 0) emberAt(g, cam, (P.DOCK_U0 + P.DOCK_U1) / 2 + 8, gg.v, Math.max(40, (gg.v1 - gg.v0) * 1.1), k);
     }
-    // each dock belt carries its group's hue down its middle
-    if (!lo) for (const gg of geo) {
-      g.begin_(); g.move(cam.x(P.DOCK_U1, gg.v), cam.y(P.DOCK_U1, gg.v, 0.4)); g.line(cam.x(P.COLLECT_U - 3, gg.v), cam.y(P.COLLECT_U - 3, gg.v, 0.4));
-      g.stroke(withAlpha(gg.hex, 0.55), Math.max(1, g.hair * 2));
-    }
     for (const gg of geo) add(P.DOCK_U0, gg.v0, () => this.dock(g, gg, cnt.lanes.get(gg.lane.id), lo, cnt.at), P.DOCK_U1, gg.v1, 24);
-    // the PR stacks' base stripes: each stack's groups by share, in lane order
-    PHASES.forEach((_ph, r) => {
-      P.AGE_V.forEach((v, b) => {
-        const m = cnt.stacks[r]?.[b];
-        const n = f.census.stacks[r]?.[b]?.n ?? 0;
-        if (!m || !m.size || !n) return;
-        const u0 = P.ROW_U[r]! - P.ROW_DU / 2;
-        add(u0 + 0.02, v + 0.02, () => this.stackStripe(g, u0, v, m, geo), u0 + P.ROW_DU, v + P.STACK_DV, 4);
-      });
-    });
     return true;
   }
 
@@ -211,6 +183,7 @@ export class GroupFloor {
   private dock(g: Gfx, gg: Geo, s: LaneStats | undefined, lo: boolean, at: number): void {
     const f = this.f, P = f.plan, cam = f.cam, fx = this.fx;
     const u0 = P.DOCK_U0, u1 = P.DOCK_U1, v0 = gg.v0, v1 = gg.v1;
+    if (v1 - v0 < 10) { fx.box(g, u0, v0, u1 - u0, Math.max(1, v1 - v0), 2, gg.hex, SIDE, FRONT, EDGE); return; } // fab-w1: an accordion stripe
     const h = this.dockH(s?.pushes1h ?? 0);
     fx.box(g, u0, v0, u1 - u0, v1 - v0, h, gg.hex, SIDE, FRONT, EDGE);
     if (gg.lane.kind === 'bots' && !lo) {
@@ -246,27 +219,6 @@ export class GroupFloor {
     if (ty !== null) {
       const th = this.dockH(ty);
       if (Math.abs(th - h) >= 1.2) ghost(g, cam, u0, v0, u1 - u0, v1 - v0, th);
-    }
-  }
-
-  /** A PR stack's base stripe: its groups' shares along the crates' front face and on the pallet
-   *  in front of them, in lane order. */
-  private stackStripe(g: Gfx, u0: number, v: number, m: Map<string, number>, geo: Geo[]): void {
-    const P = this.f.plan, fx = this.fx;
-    const ua = u0 + 7, ub = u0 + P.ROW_DU - 7, vb = v + P.STACK_DV - 7;
-    let tot = 0;
-    for (const n of m.values()) tot += n;
-    if (!tot) return;
-    let u = ua;
-    for (const gg of geo) {
-      const n = m.get(gg.lane.id);
-      if (!n) continue;
-      const du = ((ub - ua) * n) / tot;
-      g.begin_();
-      fx.poly(g, [u, vb, 2, u + du, vb, 2, u + du, vb, 4.6, u, vb, 4.6]);
-      fx.quad(g, u, vb + 1.2, u + du, vb + 5.2, 2);
-      g.fill(gg.hex);
-      u += du;
     }
   }
 
@@ -309,6 +261,7 @@ export class GroupFloor {
       else if (kind === 'bots') fx.hit(hx, hy, Math.max(...xs) - hx, Math.max(...ys) - hy, 'dock', BOTS, 'bots dock');
       else if (team) fx.hit(hx, hy, Math.max(...xs) - hx, Math.max(...ys) - hy, 'district', team.team, `${team.team} ${team.apps.length}`);
       const name = gg.lane.short;
+      if (kind === 'bots' && f.floor.level === 0 && !f.floor.focusId) continue; // fab-w1: the hatch names the bots (text budget)
       const x = cam.x(P.DOCK_U0, gg.v1) - 5, y = cam.y(P.DOCK_U0, gg.v1) + 1;
       const wv = g.width(name, 12);
       const at = fx.placeAt(x - wv, y, wv, 12, 0, false);
@@ -328,8 +281,8 @@ export class GroupFloor {
 /** A stage's floor zone for its ember (world u0, v0, u1, v1). */
 function stageZone(n: string, P: Factory['plan']): [number, number, number, number] | null {
   switch (n) {
-    case '02': return [P.YARD_U0 - 6, 92, P.YARD_U1 + 4, 600];
-    case '04': return [P.RAIL_U0 - 4, 98, P.RAIL_U1 + 6, 482];
+    case '02': return [P.YARD_U0 - 6, 22, P.YARD_U1 + 4, 616]; // fab-w1: the lanes' yard
+    case '04': return [P.RAIL_U0 - 4, 22, P.RAIL_U1 + 6, 616]; // fab-w1: the lanes' rails
     case '05': return [P.INTAKE_U0 - 8, 252, P.INTAKE_U1 + 6, 330];
     case '06': return [P.ENG_U0 - 8, 22, P.ENG_U1 + 40, 600];
     case '07': return [P.SCAN_U - 22, 26, P.SCAN_U + 10, 610];

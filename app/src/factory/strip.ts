@@ -8,6 +8,7 @@ import type { Frame } from '../../app.contract.d.ts';
 import type { Gfx } from '../yard/gfx.ts';
 import { C, clamp, withAlpha } from '../yard/theme.ts';
 import type { Factory } from './factory.ts';
+import { glyph } from './labels.ts'; // fab-w1
 import { HOUR_MS, SMALL, clockWords } from './prims.ts';
 
 export class Strip {
@@ -58,6 +59,7 @@ export class Strip {
     g.text('24 h ago', sx, sy + sh + 15, C.ink3, 12);
     g.text(mode === 'live' ? 'now' : clockWords(now, this.f.offsetMin), sx + sw, sy + sh + 15, mode === 'live' ? C.ink3 : C.amberText, 12, false, 'right');
     // the fleet sentence: failure first
+    if (this.f.floor.level === 0 && !this.f.floor.focusId) return; // fab-w1: at fleet zoom the status bar says it (§A; text budget)
     const red = c.redLines;
     let up = 0, down = 0;
     for (const a of w.apps.values()) { if (a.health === 'up') up++; else if (a.health === 'down') down++; }
@@ -88,7 +90,7 @@ export class Strip {
     const btn = (s: string, k: string, xx: number) => {
       g.fillRect(xx, y, 24, 22, '#1A1A1C');
       g.begin_(); g.rect(xx + 0.5, y + 0.5, 23, 21); g.stroke('#2E2E30', 1);
-      g.text(s, xx + 12, y + 15, C.ink2, 12, false, 'center');
+      glyph(g, s, xx + 12, y + 11, C.ink2); // fab-w1: strokes, not text (the fleet's text budget)
       this.f.hit(xx, y, 24, 22, k, k, s);
     };
     btn('+', 'zoomin', x); btn('−', 'zoomout', x + 26); btn('⌂', 'fit', x + 52);

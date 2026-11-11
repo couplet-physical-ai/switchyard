@@ -287,7 +287,7 @@ export class Factory {
     st.floorOps = g.ops;
     st.floorMs = this.budget.estimate(g.ops, g.arcs, g.texts, 0);
     if (!this.heavy) this.heavy = 2;
-    return false;
+    return this.floor.animating; // fab-w1: the accordion's 600 ms keeps the floor redrawing
   }
 
   // ---- the live layer ---------------------------------------------------------------------------

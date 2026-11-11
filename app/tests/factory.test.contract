@@ -43,7 +43,8 @@ test "the recorded real fleet fills the floor"
   expect state conn.ok == true
   expect state ov.repos == 394
   expect state ov.facCity == 240
-  expect state ov.facCars == 85
+  // fab-w1: one main-line rail per GROUP lane (10 on the fixtures), each its newest merges (≤ 18)
+  expect state ov.facCars == 151
   expect state ov.facBays == 3
 
 test "the tabs go to the yard and back to the factory; a deep link leaves it"

@@ -43,7 +43,7 @@ export class Plant implements Layer {
         const lane = e.lane === 'gha' ? 1 : 0;
         const q = lane ? this.f.census.gha.length : this.f.census.rr.length;
         const end = Math.max(INTAKE_U0 + 8, INTAKE_U1 - 8 - q * 11);
-        const cr = this.f.crates.spawn(e.pipeline, 'pipeline', [[RAIL_U1 - 10, this.f.railV(org)], [RAIL_U1 + 12, this.f.railV(org)], [INTAKE_U0, LANE_V[lane]], [end, LANE_V[lane]]], t, 1800, false, '', org);
+        const cr = this.f.crates.spawn(e.pipeline, 'pipeline', [[RAIL_U1 - 10, this.f.railV(e.repo)], [RAIL_U1 + 12, this.f.railV(e.repo)], /* fab-w1: its lane's rail */ [INTAKE_U0, LANE_V[lane]], [end, LANE_V[lane]]], t, 1800, false, '', org);
         R.add(R_RING, end, LANE_V[lane], 4, this.f.crates.arrives(cr, 3), false, 900);
         break;
       }
