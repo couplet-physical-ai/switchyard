@@ -132,9 +132,12 @@ export class Yard {
 
   /** Called when the world was replaced or jumped: packets re-seat without travel. */
   sync(t: number): void {
-    if (!this.S) this.ensure(0, 0, 1, t);
-    this.pool.sync(this.world, t);
+    // Deferred to the next live draw: a source's turn (connect, a snapshot) has 100 ms of CPU
+    // on Hermes, and the first scene (aggregates, layout) would push it over.
+    void t;
+    this.needSync = true;
   }
+  private needSync = false;
 
   private pickFocus(w: World, now: number, t: number): Pipeline | null {
     if (t - this.focusAt < 400 && (this.focus || !w.pipelines.size)) return this.focus;
@@ -223,6 +226,7 @@ export class Yard {
     ctx.clearRect(0, 0, f.width, f.height);
     if (S.k !== 1) ctx.setTransform(S.k, 0, 0, S.k, 0, 0);
     const p = this.pool;
+    if (this.needSync) { this.needSync = false; p.sync(w, t); }
     p.reduced = this.reduced;
     p.update(t, w);
     this.pickFocus(w, this.tl.playhead, t);

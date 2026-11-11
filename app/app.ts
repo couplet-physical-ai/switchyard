@@ -186,7 +186,8 @@ function hostLabel(): string {
 
 function overview(): Result<'overview'> {
   const w = tl.world;
-  const S = yard.S ?? yard.ensure(0, 0, 1, clock);
+  // Never builds the scene here (a source turn has 100 ms on Hermes): the first draw does.
+  const S = yard.S;
   // One truth for building and queued: the yard, the status line and the QUEUE band agree.
   const building = buildingIds(w).size;
   const queued = queueTruth(w).waiting;
@@ -198,12 +199,12 @@ function overview(): Result<'overview'> {
     ? `${w.repos.size} repos · ${building} building · ${queued} queued · ${red} main ${red === 1 ? 'line' : 'lines'} red · ${appsUp} of ${w.apps.size} apps up`
     : 'waiting for the fleet';
   const summary = w.loaded ? `The delivery yard: ${building} pipelines building, ${queued} queued, ${red} main ${red === 1 ? 'line' : 'lines'} red, ${appsUp} of ${w.apps.size} apps up.` : 'The delivery yard, waiting for data.';
-  const k = S.k;
+  const k = S?.k ?? 1;
   const dial = tl.mode === 'replay' ? `replaying · ${Math.round(tl.replayProgress() * 60)} of 60 min` : tl.mode === 'paused' ? `paused · 1 hour, sped up` : '1 hour, sped up';
   return {
-    status: w.loaded ? 'ready' : 'waiting', mode: tl.mode, speed: tl.speed, sentence, summary, layoutKey: `${S.key}|${yard.budget.quality >= 3 ? 'lo' : 'hi'}`, repos: w.repos.size,
+    status: w.loaded ? 'ready' : 'waiting', mode: tl.mode, speed: tl.speed, sentence, summary, layoutKey: `${S?.key ?? ''}|${yard.budget.quality >= 3 ? 'lo' : 'hi'}`, repos: w.repos.size,
     building, queued, red, appsUp, appsTotal: w.apps.size, behind, seq: w.seq,
-    tick: Math.floor(clock / 250), host: hostLabel(), dial, dialPad: Math.round((S.m + 22) * k), dialFont: Math.round(11 * k), dialH: Math.round(34 * k),
+    tick: Math.floor(clock / 250), host: hostLabel(), dial, dialPad: Math.round(((S?.m ?? 16) + 22) * k), dialFont: Math.round(11 * k), dialH: Math.round(34 * k),
     hud: yard.hud.on, stress: yard.stress.on, quality: yard.budget.quality,
   };
 }
