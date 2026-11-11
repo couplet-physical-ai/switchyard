@@ -16,6 +16,8 @@ import { EngineHistory } from './src/enginehist.ts';
 import { bindInsights } from './src/insights.ts';
 import { search } from './src/project.ts';
 import { nowSources } from './src/now/view.ts';
+import { FlowFloor } from './src/flowfloor/floor.ts';
+import { detailOf, logOf, NO_DETAIL } from './src/flowfloor/inspect.ts';
 import { logHeap } from './src/memlog.ts';
 import { nextChunkMs, replaySizing, Timeline } from './src/timeline.ts';
 import { bindBaselineStore } from './src/factory/agg/baseline.ts';
@@ -168,6 +170,8 @@ let seenEpoch = -1;
 const yard = new Yard(tl);
 /** The factory floor (src/factory/): the default view, the same world. */
 const factory = new Factory(tl);
+/** The Factory redo (ZERO.md "FACTORY REDO", src/flowfloor/): one fixed, fitted line of work. */
+const flow = new FlowFloor();
 factory.hud = yard.hud;
 /** Stress mode (a 10× synthetic fleet for the renderers): one switch for the yard and the floor. */
 let stressOn = false;
@@ -561,6 +565,13 @@ export const sources: Sources = {
     offsetMin: () => yard.offsetMin,
     upstream: () => up,
   }) as unknown as Pick<Sources, 'nowFeed' | 'nowPanel' | 'nowLog'>,
+  // the Factory redo: a press on the floor, the inspector's run, its log (src/flowfloor/)
+  flowPick: ([x, y]) => {
+    const h = flow.pick(Number(x), Number(y));
+    return { kind: h?.kind ?? '', id: h?.id ?? '', label: h?.label ?? '', route: h?.url ?? '' };
+  },
+  flowDetail: ([id]) => safe('flowDetail', NO_DETAIL, () => detailOf(tl.world, String(id ?? ''), tl.playhead)),
+  flowLog: ([id, step, workflow, tick, failed]) => logOf(up, String(id ?? ''), String(step ?? ''), String(workflow ?? ''), Number(tick) || 0, !!failed),
   webVersion: () => webVersion(),
   parseLink: ([u, server, token]) => parseLink(u, server, token),
   // SWITCHYARD_TOKEN_FILE (macOS, env only; src/hooks.ts): the token, once, through parseLink.
@@ -750,7 +761,7 @@ export const answer: Answer = ((source: keyof Sources, args: unknown, store: Sto
 
 // ---- canvases ------------------------------------------------------------------------------
 /** Surface → its arity (Contract passes that many arguments). */
-export const surfaces: Record<string, number> = { factoryFloor: 3, factoryLive: 4, factoryTop: 4 /* fab-w7 */, yardStatic: 2, yardInfo: 2, yardLive: 3, yardTop: 2 };
+export const surfaces: Record<string, number> = { factoryFloor: 3, factoryLive: 4, factoryTop: 4 /* fab-w7 */, flowFloor: 5, yardStatic: 2, yardInfo: 2, yardLive: 3, yardTop: 2 };
 
 /** The route on top (`viewOnTop`). The yard stays mounted under every other view; its live
  *  layer animating there cost 3-4× the ops of the view on top. Covered, it is not drawn (the
@@ -762,6 +773,7 @@ export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
   // Covered, the floor's live layer sleeps; the 250 ms tick (a surface argument) wakes it when
   // it is on top again.
   if ((surface === 'factoryLive' || surface === 'factoryTop' /* fab-w7 */) && topView !== '' && topView !== 'factory') return false;
+  if (surface === 'flowFloor' && topView !== '' && topView !== 'factory') return false;
   try {
     return drawSurface(surface, args, ctx, frame);
   } catch (e) {
@@ -778,6 +790,10 @@ export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
 }
 
 function drawSurface(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame): boolean {
+  if (surface === 'flowFloor') {
+    advance(frame.time, false);
+    return flow.draw(ctx, frame, tl.world, tl.playhead, { win: String(args[0] ?? '30m'), sel: String(args[1] ?? ''), mode: String(args[2] ?? 'live'), reduced: !!args[3] });
+  }
   if (surface === 'factoryFloor') {
     advance(frame.time, false);
     factory.wheel(Number(args[2]) || 0);
