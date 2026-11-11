@@ -383,33 +383,71 @@ function drawYard(g: Gfx, S: Stages, hits: Hit[], t: number): void {
   g.text(more > 0 ? `+${more} more red · ${S.mains.green} green` : `${S.mains.green} green`, YARD.x0, yb, more > 0 ? C.redText : C.greenInk, 10.5);
 }
 
-function drawPress(g: Gfx, S: Stages, t: number): void {
+/** The deploy press: two posts, a crown, a ram that stamps while deploys run, the die under it;
+ *  the work being deployed sits on the die, glowing. Today's count under it. */
+function drawPress(g: Gfx, S: Stages, t: number, hits: Hit[]): void {
   const { x, w, y0, y1 } = PRESS;
-  block(g, x, y0, w, y1 - y0);
-  const run = S.deploy.running.length > 0;
-  // the ram: a block that strokes down while deploys run
-  const k = run ? 0.5 - 0.5 * Math.cos((t / 900) * Math.PI) : 0;
-  g.fillRect(x + 10, y0 + 10, w - 20, 22 + k * 30, '#2A2A2C');
-  g.fillRect(x + 8, Y + 14, w - 16, 10, '#2A2A2C');
-  if (run) cube(g, x + w / 2, Y + 4, 14, AMBER, 1);
+  block(g, x, y0, 10, y1 - y0);
+  block(g, x + w - 10, y0, 10, y1 - y0);
+  block(g, x - 4, y0 - 14, w + 8, 16);
+  block(g, x + 6, Y + 12, w - 12, y1 - Y - 12, '#1B1B1D');
+  const run = S.deploy.running;
+  // the ram: strokes down onto the die while deploys run, parked high otherwise
+  const k = run.length ? Math.pow(Math.max(0, Math.sin((t / 1000) * Math.PI * 0.9)), 3) : 0;
+  const ramY = y0 + 4 + k * (Y - 26 - y0);
+  g.fillRect(x + w / 2 - 3, y0 + 2, 6, ramY - y0, '#2E2E31');
+  g.fillRect(x + 12, ramY, w - 24, 14, run.length ? '#4A4A4E' : '#2A2A2C');
+  if (run.length) {
+    const it = run[0];
+    cube(g, x + w / 2, Y + 3, 16, AMBER, 1 + k * 0.6);
+    if (k > 0.85) { g.alpha(0.5); g.fillRect(x + 12, Y - 6, w - 24, 2, '#FFF1D6'); g.alpha(1); }
+    g.text(g.fit(it.name, 9.5, w + 30), x + w / 2, y1 + 14, C.amberText, 9.5, false, 'center');
+    hits.push({ kind: 'run', id: it.id, x: x + 10, y: Y - 12, w: w - 20, h: 26, url: it.url, label: `${it.name} #${it.number}` });
+  }
+  g.text(`${S.deploy.today} today`, x + w / 2, y1 + (run.length ? 28 : 14), C.ink3, 10, false, 'center');
 }
 
-const APITCH = 8;
-function appsTop(S: Stages): number {
-  const cols = Math.floor((SKY.x1 - SKY.x0) / APITCH);
-  return SKY.base - Math.ceil(S.apps.cells.length / cols) * APITCH - 8;
+/** The apps: a skyline of rectangular towers, one lit square window per app (green-white = up,
+ *  red = down, amber = degraded, dark = unknown); down apps sit in the lowest windows so they read
+ *  first. A window opens its app's status (or the app). */
+const TOWERS = [0.62, 0.9, 0.48, 1.0, 0.7, 0.82];
+const WIN = 5, WP = 7, TCOLS = 3;
+function towerLayout(n: number): { x: number; rows: number }[] {
+  const tw = TCOLS * WP + 6, gap = (SKY.x1 - SKY.x0 - TOWERS.length * tw) / (TOWERS.length - 1);
+  const sum = TOWERS.reduce((a, b) => a + b, 0);
+  const per = TOWERS.map((h) => Math.max(1, Math.round((n * h) / sum / TCOLS)));
+  // fit the rounding: add rows to the tallest until every app has a window
+  while (per.reduce((a, b) => a + b, 0) * TCOLS < n) per[3]++;
+  return TOWERS.map((_, i) => ({ x: SKY.x0 + i * (tw + gap), rows: per[i] }));
 }
-function drawApps(g: Gfx, S: Stages, hits: Hit[]): void {
-  const cells = S.apps.cells;
-  const pitch = APITCH, cols = Math.floor((SKY.x1 - SKY.x0) / pitch);
-  const rows = Math.ceil(cells.length / cols);
-  const y0 = SKY.base - rows * pitch;
-  block(g, SKY.x0 - 6, y0 - 8, SKY.x1 - SKY.x0 + 12, rows * pitch + 14, '#131314');
-  cells.forEach((c, i) => {
-    const x = SKY.x0 + (i % cols) * pitch, y = y0 + Math.floor(i / cols) * pitch;
-    const col = c.health === 'up' ? '#B8D9C0' : c.health === 'down' ? RED : c.health === 'degraded' ? AMBER : '#2A2A2C';
-    g.alpha(c.health === 'up' ? 0.75 : 1); g.fillRect(x, y, 5, 5, col); g.alpha(1);
-    if (c.health === 'down' || c.health === 'degraded') hits.push({ kind: 'app', id: c.id, x: x - 2, y: y - 2, w: 9, h: 9, url: c.statusUrl || c.url, label: c.id });
+function appsTop(S: Stages): number {
+  const L = towerLayout(S.apps.cells.length);
+  return SKY.base - Math.max(...L.map((t) => t.rows)) * WP - 10;
+}
+function drawApps(g: Gfx, S: Stages, hits: Hit[], t: number): void {
+  const bad = (h: string) => h === 'down' || h === 'degraded';
+  const cells = [...S.apps.cells].sort((a, b) => Number(bad(b.health)) - Number(bad(a.health)));
+  const L = towerLayout(cells.length);
+  const tw = TCOLS * WP + 6;
+  g.fillRect(SKY.x0 - 8, SKY.base + 2, SKY.x1 - SKY.x0 + 16, 3, '#1A1A1C'); // the street
+  let k = 0;
+  L.forEach((tower, ti) => {
+    const h = tower.rows * WP + 8;
+    block(g, tower.x, SKY.base - h, tw, h, '#131314', '#1C1C1E');
+    for (let r = 0; r < tower.rows; r++) for (let c = 0; c < TCOLS; c++) {
+      const cell = cells[k++];
+      const wx = tower.x + 3 + c * WP + 1, wy = SKY.base - 5 - (r + 1) * WP + 1;
+      if (!cell) { g.fillRect(wx, wy, WIN, WIN, '#19191B'); continue; }
+      const hh = cell.health;
+      if (hh === 'up') {
+        // a lit window; a few flicker gently (the city at night)
+        const fl = rnd(cell.id, 3) > 0.93 ? 0.55 + 0.25 * Math.sin(t / 700 + ti * 3 + r) : 0.8;
+        g.alpha(fl); g.fillRect(wx, wy, WIN, WIN, '#C9E2CF'); g.alpha(1);
+      } else if (bad(hh)) {
+        cube(g, wx + WIN / 2, wy + WIN / 2, WIN + 1, hh === 'down' ? RED : AMBER, 0.9);
+      } else g.fillRect(wx, wy, WIN, WIN, '#2A2A2C');
+      hits.push({ kind: 'app', id: cell.id, x: wx - 1, y: wy - 1, w: WP, h: WP, url: cell.statusUrl || cell.url, label: cell.id });
+    }
   });
 }
 
@@ -453,8 +491,8 @@ export function drawSwarmFloor(g: Gfx, S: Stages, now: number, o: SwarmOpts): { 
   drawEngines(g, S, o, hits);
   drawGate(g, S, o.t);
   drawYard(g, S, hits, o.t);
-  drawPress(g, S, o.t);
-  drawApps(g, S, hits);
+  drawPress(g, S, o.t, hits);
+  drawApps(g, S, hits, o.t);
   drawPit(g, o, hits, o.t);
   const cubes = drawSwarm(g, ls, o.t);
   drawHeads(g, S, now);
