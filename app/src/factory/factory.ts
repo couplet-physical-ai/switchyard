@@ -336,6 +336,7 @@ export class Factory {
     // over the layers: the lens on top, the selection's journey, failures named as they ride home
     const selP = this.selPipeline();
     this.lens.draw(g, ctx, f, t); // fab-lens: the lens on top dims the rest and tells its story
+    this.plant.jobLive(g, this.fr); // fab-w6
     if (this.selected) this.drawer.journey(g, ctx, f, selP, t);
     this.crates.tags(g, t, q);
     st.labels = this.labels.length;
