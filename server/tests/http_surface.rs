@@ -212,6 +212,10 @@ async fn web_client_is_served_as_an_spa() {
     std::fs::write(web.path().join("app.js"), "1").unwrap();
     std::fs::write(web.path().join("canvas2d-Lmh-ovnK.js"), "2").unwrap();
     std::fs::write(web.path().join(".exact-build.json"), "{}").unwrap();
+    let sha = "a".repeat(40);
+    let tree = "d415d3f328791cd05a085784f75ae347d18f379d";
+    std::fs::write(web.path().join(".upstream-sha"), format!("{sha}\n")).unwrap();
+    std::fs::write(web.path().join(".upstream-tree"), format!("{tree}\n")).unwrap();
     let s = serve(AuthMode::Open, Some(web.path())).await;
     let get = |p: &str| reqwest::get(format!("{}{p}", s.base));
     for (path, code, ctype, cache) in [
@@ -248,6 +252,10 @@ async fn web_client_is_served_as_an_spa() {
             );
         }
     }
+    // meta says which build `/` serves: its commit and its app/ tree.
+    let m: serde_json::Value = get("/api/v1/meta").await.unwrap().json().await.unwrap();
+    assert_eq!(m["web"]["sha"], sha);
+    assert_eq!(m["web"]["tree"], tree);
     let r = get("/api/nope").await.unwrap();
     assert_eq!(r.status().as_u16(), 404);
     assert!(

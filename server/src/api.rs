@@ -228,7 +228,8 @@ async fn readyz(State(st): State<Arc<AppState>>) -> Response {
 }
 
 /// What `/` serves (so a token holder can check the web client without a browser
-/// session): the build's upstream sha (`.upstream-sha`), file count and the shell's size.
+/// session): the build's upstream sha (`.upstream-sha`) and app/ tree (`.upstream-tree`),
+/// file count and the shell's size.
 fn web_info(dir: Option<&std::path::Path>) -> Value {
     let Some(dir) = dir else { return Value::Null };
     let files = std::fs::read_dir(dir)
@@ -241,6 +242,11 @@ fn web_info(dir: Option<&std::path::Path>) -> Value {
     let size = |f: &str| std::fs::metadata(dir.join(f)).map(|m| m.len()).ok();
     json!({
         "sha": std::fs::read_to_string(dir.join(".upstream-sha")).ok().map(|s| s.trim().to_string()),
+        // The app/ tree the build came from: a server-only deploy moves `sha`, not `tree`.
+        "tree": std::fs::read_to_string(dir.join(".upstream-tree"))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|t| t.len() == 40 && t.bytes().all(|b| b.is_ascii_hexdigit())),
         "files": files,
         "shell_bytes": size("shell.html").or_else(|| size("index.html")),
         "app_js_bytes": size("app.js"),
