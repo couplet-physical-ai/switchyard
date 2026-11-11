@@ -22,12 +22,21 @@
 //   verdict     broken (an app down, the watcher, a main line turned red in the window and still
 //               red) · jammed · slowed (a bad pass-rate / wait / run-time trend, or smoke) ·
 //               flowing; `sev` 0..1 places the dial's needle inside its sector
+//   usual       (fx-glance) the verdict is RELATIVE: the last hour's failures and the red main
+//               lines now against the 7-d same-hour p90 (agg/baseline.ts; the trend's typical ×
+//               1.25 while the ring holds too little): `worse` than usual, `usual`, or '' with no
+//               basis; and the window's failures against the typical for a window that long
 //   hotspots    ≤ 3 callouts: the worst cluster, the worst group, the jam
+//   totals      (fx-glance) red main lines, building, queued, apps down: ONE count, which the
+//               status line (app.ts overview) and the coffee header both show; stress mode's
+//               are the 10× fleet's own (every count × FACTOR, the city's hashed copies' health)
 //
 // A healthy factory is quiet: an all-green world yields no marks at all (tools/coffee.test.ts).
 
 import type { Changes, Cluster, Metric, Trend } from '../wire.ts';
 import type { World } from '../world.ts';
+import { buildingIds, queueTruth } from '../yard/select.ts';
+import { failuresOf, threshold, typical } from './trendmarks.ts';
 
 export const HOUR = 3_600_000;
 export const DAY = 24 * HOUR;
@@ -225,14 +234,94 @@ export type Stage = 'prs' | 'mains' | 'intake' | 'engines' | 'tests' | 'deploy';
 export type Ember = { kind: 'stage' | 'group'; id: string; metrics: string[]; k: number };
 export type Jam = { waiting: number; oldest: number; k: number };
 export type Hotspot = { kind: 'cluster' | 'group' | 'jam'; id: string; lead: string; rest: string; red: boolean };
+/** Against the usual (fx-glance): `rel` worse / usual ('' no basis); the last hour's failures
+ *  and the red main lines now with their thresholds (the 7-d same-hour p90); the window's failures
+ *  typical for its length (null: no basis) and its threshold. */
+export type Usual = {
+  rel: '' | 'worse' | 'usual'; fails1h: number | null; failsThr: number | null; red: number; redThr: number | null;
+  winUsual: number | null; winThr: number | null;
+};
 export type Marks = {
   smoke: Smoke[]; beacons: Beacon[]; cracks: Crack[]; jam: Jam | null; embers: Ember[];
-  verdict: Verdict; why: string; sev: number; hot: Hotspot[];
+  verdict: Verdict; why: string; sev: number; hot: Hotspot[]; usual: Usual;
 };
 
+export function noUsual(): Usual { return { rel: '', fails1h: null, failsThr: null, red: 0, redThr: null, winUsual: null, winThr: null }; }
+
 export function noMarks(): Marks {
-  return { smoke: [], beacons: [], cracks: [], jam: null, embers: [], verdict: 'flowing', why: '', sev: 0.04, hot: [] };
+  return { smoke: [], beacons: [], cracks: [], jam: null, embers: [], verdict: 'flowing', why: '', sev: 0.04, hot: [], usual: noUsual() };
 }
+
+/** How the fleet reads against its usual at `now` (pure; fx-glance): worse when the last hour's
+ *  failures are over their same-hour 7-d p90 or the red main lines are over theirs; usual when
+ *  either has a basis and neither is over; '' when neither has one. `hours`: the window's length
+ *  (its failures' typical = the 7-d hourly typical × hours). */
+export function usualOf(fleet: Trend | null, red: number, now: number, hours: number): Usual {
+  const u = noUsual();
+  u.red = red;
+  if (!fleet) return u;
+  const fm = failuresOf(fleet);
+  u.fails1h = fm.h1;
+  // the 7-d same-hour p90 (or typical × 1.25); a server holding a day but no week yet: the day's
+  // hourly p90; one holding less (a v0.4 server: hours_7d 0, sparks of the 2 h the world holds)
+  // has no usual at all, and says so by saying nothing
+  const day = fleet.hours_7d >= 24;
+  u.failsThr = threshold(fm, 'fleet', 'failures', now) ?? (day ? sparkP90(fm.spark) : null);
+  u.redThr = threshold(fleet.red, 'fleet', 'red', now) ?? (day ? sparkP90(fleet.red.spark) : null);
+  const typ = typical(fm, 'fleet', 'failures') ?? (day ? sparkMean(fm.spark) : null);
+  if (typ !== null && hours > 0) { u.winUsual = Math.round(typ * hours); u.winThr = u.failsThr !== null ? Math.round(u.failsThr * hours) : Math.round(typ * 1.25 * hours); }
+  const fWorse = u.fails1h !== null && u.failsThr !== null && u.fails1h > u.failsThr;
+  const rWorse = u.redThr !== null && red > u.redThr;
+  if (fWorse || rWorse) u.rel = 'worse';
+  else if ((u.fails1h !== null && u.failsThr !== null) || u.redThr !== null) u.rel = 'usual';
+  return u;
+}
+
+/** The 90th percentile of a 24 h spark's hours (≥ 6 of them, the current one left out: it is
+ *  the value compared), else null. */
+function sparkP90(sp: readonly (number | null)[]): number | null {
+  const xs: number[] = [];
+  for (let i = 0; i < sp.length - 1; i++) { const v = sp[i]; if (v !== null && v !== undefined && Number.isFinite(v)) xs.push(v); }
+  if (xs.length < 6) return null;
+  xs.sort((a, b) => a - b);
+  return xs[Math.min(xs.length - 1, Math.round(0.9 * (xs.length - 1)))];
+}
+function sparkMean(sp: readonly (number | null)[]): number | null {
+  let n = 0, s = 0;
+  for (let i = 0; i < sp.length - 1; i++) { const v = sp[i]; if (v !== null && v !== undefined && Number.isFinite(v)) { n++; s += v; } }
+  return n >= 6 ? s / n : null;
+}
+
+// ───────────────────────────── the totals ─────────────────────────────
+
+/** What the status line and the coffee header say about the fleet now (fx-glance): one count. */
+export type Totals = { repos: number; red: number; building: number; queued: number; down: number; up: number; apps: number; factor: number };
+
+export function noTotals(): Totals { return { repos: 0, red: 0, building: 0, queued: 0, down: 0, up: 0, apps: 0, factor: 1 }; }
+
+/** The fleet's totals now: O(repos + pipelines + apps), the same truths the yard and the floor
+ *  count with (select.ts: building, the queue). Stress mode (`factor` > 1) is the 10× fleet the
+ *  floor draws: every count × factor, the apps the city's hashed copies (`copies`: their up and
+ *  down counts and how many) beside the real ones. */
+export function totals(w: World, factor = 1, copies: { up: number; down: number; n: number } | null = null): Totals {
+  const t = noTotals();
+  if (!w.loaded) return t;
+  for (const r of w.repos.values()) if (isRedMain(r.main?.state)) t.red++;
+  for (const a of w.apps.values()) { if (a.health === 'up') t.up++; else if (a.health === 'down') t.down++; }
+  t.repos = w.repos.size; t.apps = w.apps.size;
+  t.building = buildingIds(w).size;
+  t.queued = queueTruth(w).waiting;
+  if (factor > 1) {
+    t.factor = factor;
+    t.repos *= factor; t.red *= factor; t.building *= factor; t.queued *= factor;
+    if (copies && copies.n > 0) { t.apps += copies.n; t.up += copies.up; t.down += copies.down; }
+    else { t.apps *= factor; t.up *= factor; t.down *= factor; }
+  }
+  return t;
+}
+
+/** The header's totals in words (the status line's numbers, the same order every time). */
+export function totalsWords(t: Totals): string { return `${t.red} red · ${t.building} building · ${t.queued} queued · ${t.down} down`; }
 
 /** The queue as the floor counts it (census.ts) plus its growth over the last 5 minutes. */
 export type QueueState = { waiting: number; oldestWait: number; slots: number; busy: number; growing: boolean; p50: number };
@@ -352,6 +441,10 @@ export function marks(inp: MarkInput): Marks {
   } else {
     out.sev = 0.04 + 0.16 * clamp01(fresh.failed.length / 20);
   }
+  // against the usual (fx-glance): the red main lines now, the last hour's failures
+  let redNow = 0;
+  for (const r of w.repos.values()) if (isRedMain(r.main?.state)) redNow++;
+  out.usual = usualOf(fleet, redNow, now, Math.max(0, now - since) / HOUR);
   // hotspots: the worst cluster, the worst group, the jam
   const s0 = out.smoke[0];
   if (s0) out.hot.push({ kind: 'cluster', id: s0.id, lead: s0.step, rest: s0.repoN > 1 ? ` · ${s0.repoN} repos` : ` · ${s0.n1h} failed in 1 h`, red: true });

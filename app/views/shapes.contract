@@ -49,6 +49,9 @@ shape Overview
   red: number
   appsUp: number
   appsTotal: number
+  // fx-glance: apps down, and the coffee header's totals as drawn (tests/factory-coffee)
+  appsDown: number
+  facHead: string
   behind: string
   seq: number
   tick: number

@@ -103,6 +103,8 @@ component App
   mutation baseSave as shape Ack then afterBase
   derive baseNow = match baseSave { case some(v) => v.status, case none => "" }
   derive visitNow = match visit { case some(v) => v.status, case none => "" }
+  // fx-glance: the coffee header's totals (as drawn) are the status line's, word for word
+  derive headAgrees = ov.facHead != "" and ov.facHead == `${ov.red} red · ${ov.building} building · ${ov.queued} queued · ${ov.appsDown} down`
   resource coffee = coffeeOpen(server, visits, conn.seq, conn.ok, ov.tick) as shape Ack else empty(ok=false, status="")
   members "./views/mainlines.contract"
   members "./views/prs.contract"
@@ -318,9 +320,10 @@ component App
               canvas surface=factoryTop(reduced ? "reduced" : "full", facNow.route, facWheel, facPulse) position="absolute" left=0 top=0 width="100%" height="100%" pointer-events="none" aria-hidden=true testId="factory-top"
               // The strip's "replay last hour" (the canvas draws its words) is this button too: its press
               // for tests and keyboards, laid over the drawn words (a fully transparent button is
-              // still a target on every host, an opacity 0 one is not on macOS).
+              // still a target on every host, an opacity 0 one is not on macOS). fx-glance: the strip
+              // starts with it now ("live" is the status line's one control).
               button appearance="none" press=startReplay testId="replay" aria-label="Replay the last hour, sped up" disabled=(ov.mode == "replay" or not conn.ok)
-                position="absolute" bottom=17 left=80 width=120 height=28 background-color="transparent" padding=0
+                position="absolute" bottom=17 left=18 width=140 height=28 background-color="transparent" padding=0
                 text "last hour" color="#00000000" font-size=1
               // Offline or not set up: a card over the floor (the idle floor, or the last fleet
               // it showed, dimmed behind it), never a black void.
@@ -390,7 +393,8 @@ component App
               text (not conn.ok ? (conn.status == "connecting" ? "connecting" : "offline") : ov.mode) font-size=11 color=(not conn.ok ? "sy.red-text" : (ov.mode == "live" ? "sy.green" : "sy.amber-text")) testId="mode-pill"
             button appearance="none" press=openSettings aria-label="Connection" testId="open-settings" padding="2px 6px" border-radius=5
               text (conn.ok ? ov.host : conn.status) font-size=11 color="sy.ink3" testId="conn-status"
-            text ov.sentence color="sy.ink3" font-size=11 flex=1 min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis" testId="sentence"
+            // fx-glance: on the factory the coffee header says the numbers (one place); the other views keep this
+            text (e.name == "factory" ? "" : ov.sentence) color="sy.ink3" font-size=11 flex=1 min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis" testId="sentence"
             if ov.mode != "live"
               button appearance="none" press=goLive testId="go-live" padding="2px 8px" border-radius=5 aria-keyshortcuts="L"
                 text "back to live" color="sy.green" font-size=11

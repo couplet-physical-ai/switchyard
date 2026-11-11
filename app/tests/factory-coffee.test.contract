@@ -67,3 +67,53 @@ test "S replays the window"
   clock data
   expect state facNow.kind == "coffee"
   expect state facNow.id == "replay"
+
+// fx-glance: the coffee header's totals (red main lines, building, queued, apps down; as the
+// glance drew them, `ov.facHead`) are the status line's (`ov.red`, `ov.building`, `ov.queued`,
+// `ov.appsDown`), word for word (`headAgrees`): live, in a replay, and in stress mode (the 10×
+// fleet's own: w7's "260 main lines red" over a footer saying 26 came from the strip counting
+// the census, which stress multiplies, while the status line counted the real fleet).
+test "the coffee header's totals are the status line's, live"
+  clock data
+  tap "setup-demo"
+  clock data
+  clock +12000
+  clock data
+  expect state headAgrees == true
+  tap "pause"
+  clock +1000
+  clock data
+  expect state headAgrees == true
+
+test "the coffee header's totals are the status line's, in a replay"
+  clock data
+  tap "setup-demo"
+  clock data
+  clock +12000
+  tap "replay"
+  clock data
+  clock +3000
+  clock data
+  expect state ov.mode == "replay"
+  // at 60× the replayed fleet moves every frame (the header draws the status line's last count,
+  // a frame later): held on the replayed moment, the two read the same world
+  tap "pause"
+  clock +1000
+  clock data
+  expect state headAgrees == true
+
+test "the coffee header's totals are the status line's, in stress mode"
+  clock data
+  tap "setup-demo"
+  clock data
+  clock +12000
+  tap "open-settings"
+  clock settle
+  tap "settings-stress"
+  clock data
+  tap "settings-cancel"
+  clock settle
+  clock +2000
+  clock data
+  expect state ov.stress == true
+  expect state headAgrees == true

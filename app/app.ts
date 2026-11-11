@@ -256,22 +256,18 @@ function overview(): Result<'overview'> {
   // Never builds the scene here (a source turn has 100 ms on Hermes): the first draw does.
   const S = yard.S;
   // One truth for building and queued: the yard, the status line and the QUEUE band agree.
-  const building = buildingIds(w).size;
-  const queued = queueTruth(w).waiting;
-  let red = 0, appsUp = 0;
-  for (const r of w.repos.values()) if (isRed(r)) red++;
-  for (const a of w.apps.values()) if (a.health === 'up') appsUp++;
+  const { building, queued, red, up: appsUp, down: appsDown, apps: appsTotal, repos } = factory.coffee.status(w, stressOn, clock); // fx-glance: ONE count (buildingIds, queueTruth) for the status line and the coffee header; stress mode: the 10× fleet's own
   const behind = tl.mode === 'live' ? '' : `${fmtDur(tl.behindMs())} behind`;
   const sentence = w.loaded
-    ? `${w.repos.size} repos · ${building} building · ${queued} queued · ${red} main ${red === 1 ? 'line' : 'lines'} red · ${appsUp} of ${w.apps.size} apps up`
+    ? `${repos} repos · ${building} building · ${queued} queued · ${red} main ${red === 1 ? 'line' : 'lines'} red · ${appsUp} of ${appsTotal} apps up` // fx-glance
     : 'waiting for the fleet';
-  const summary = w.loaded ? `The delivery yard: ${building} pipelines building, ${queued} queued, ${red} main ${red === 1 ? 'line' : 'lines'} red, ${appsUp} of ${w.apps.size} apps up.` : 'The delivery yard, waiting for data.';
+  const summary = w.loaded ? `The delivery yard: ${building} pipelines building, ${queued} queued, ${red} main ${red === 1 ? 'line' : 'lines'} red, ${appsUp} of ${appsTotal} apps up.` : 'The delivery yard, waiting for data.'; // fx-glance
   const k = S?.k ?? 1;
   factory.city.pump(clock); // fab-w5: the city's app histories (H7), a few fetches per data turn, never from a draw
   const dial = tl.mode === 'replay' ? `replaying · ${Math.round(tl.replayProgress() * 60)} of 60 min` : tl.mode === 'paused' ? `paused · 1 hour, sped up` : '1 hour, sped up';
   return {
     status: w.loaded ? 'ready' : 'waiting', mode: tl.mode, speed: tl.speed, sentence, summary, layoutKey: `${S?.key ?? ''}|${yard.budget.quality >= 3 ? 'lo' : 'hi'}`, repos: w.repos.size,
-    building, queued, red, appsUp, appsTotal: w.apps.size, behind, seq: w.seq,
+    building, queued, red, appsUp, appsTotal, appsDown, facHead: factory.coffee.glance0.drawn, behind, seq: w.seq, // fx-glance: the coffee header's totals as drawn
     tick: Math.floor(clock / 250), host: hostLabel(), dial, dialPad: Math.round(((S?.m ?? 16) + 22) * k), dialFont: Math.round(11 * k), dialH: Math.round(34 * k),
     hud: yard.hud.on, stress: stressOn, quality: yard.budget.quality, facKey: factory.floorKey,
     facDrawer: factory.selected !== '', facQ: factory.budget.quality, facStress: factory.stress.on, facCalm: factory.calm, facStats: factory.statsLine(), ...factory.counts(),
@@ -532,7 +528,7 @@ const EMPTY_PRS: Pl = { open: 0, ready: 0, blocked: 0, bots: 0, total: 0, tick: 
 const NO_HIT = { kind: '', id: '', label: '', route: '' };
 const EMPTY_OV: Result<'overview'> = {
   status: 'waiting', mode: 'live', speed: 1, sentence: 'waiting for the fleet', summary: 'The delivery yard, waiting for data.', layoutKey: '', repos: 0,
-  building: 0, queued: 0, red: 0, appsUp: 0, appsTotal: 0, behind: '', seq: 0,
+  building: 0, queued: 0, red: 0, appsUp: 0, appsTotal: 0, appsDown: 0, facHead: '', behind: '', seq: 0, // fx-glance
   tick: 0, host: '', dial: '1 hour, sped up', dialPad: 38, dialFont: 11, dialH: 34, hud: false, stress: false, quality: 0, facKey: '', facDrawer: false, facQ: 0, facStress: false, facCalm: true, facStats: '', facCity: 0, facCars: 0, facBays: 0, facLens: 0, facLensTop: '',
 };
 const EMPTY_FLEET = {

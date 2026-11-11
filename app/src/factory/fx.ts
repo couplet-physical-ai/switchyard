@@ -3,13 +3,15 @@
 // of paths from screen-space numbers coffee.ts lays out when the census, the camera or the digest
 // moved: per frame there is arithmetic and path calls only, no Map, no string, no array growth.
 //
-//   smoke    grey puffs rising 8 px/s from a base, density ∝ the cluster's reach (k); puffs are
-//            bucketed by opacity, one fill per bucket for every plume on the floor
+//   smoke    dark, red-tinged wisps ≤ 22 px rising 8 px/s from a base, as many as the cluster hits
+//            repos, never over a word; bucketed by opacity, one stroke per bucket (fx-glance)
 //   beacon   a mast and a lamp; ≤ 3 pulse: on the beat (1 Hz) while < 10 min old, breathing
 //            (0.25 Hz, in phase) while < 1 h; the rest hold steady. All phase-locked to motion.ts
 //   cracks   pale fractures (pre-shaped per spot), one stroke for all
 //   ember    a warm floor glow (three concentric iso ellipses), breathing every 4 beats
 //   rings    an event landing in the replay: a ring growing and fading where it happened
+//   dodge    a beacon's lamp comes down its mast from under a word (fx-glance)
+// Everything beat-driven reads ONE eased waveform (`pulse`, the beat's cosine; fx-glance).
 //
 // Colours come from a table of pre-built rgba strings (33 opacity steps per base colour).
 
@@ -20,8 +22,9 @@ import { beat, breathe } from './motion.ts';
 /** The master beat as a pulse, 1 on the beat (motion.ts `beat` is its phase). */
 export function pulse(t: number): number { return 0.5 + 0.5 * Math.cos(TAU * beat(t)); }
 
-export const K_RED = 0, K_SMOKE = 1, K_SMOKE2 = 2, K_EMBER = 3, K_CRACK = 4, K_OK = 5, K_AMBER = 6, K_INK = 7, K_CARD = 8;
-const BASE = ['#E06464', '#9A9AA0', '#BDBDC3', '#C47A48', '#D9D3CF', '#7FC48F', '#E5B567', '#F2F2F0', '#111112'];
+export const K_RED = 0, K_WISP = 1, K_WISP_RED = 2, K_EMBER = 3, K_CRACK = 4, K_OK = 5, K_AMBER = 6, K_INK = 7, K_CARD = 8;
+// fx-glance: smoke is dark and red-tinged (gray is the ok family), ok is green-gray
+const BASE = ['#E06464', '#3E1D1B', '#8E4038', '#C47A48', '#D9D3CF', '#9DB8A4', '#E5B567', '#F2F2F0', '#111112'];
 const STEPS = 32;
 const LUT: string[][] = BASE.map((hex) => {
   const n = parseInt(hex.slice(1), 16);
@@ -45,38 +48,75 @@ export class Nums {
 }
 
 const SMOKE_BINS = 6;
-/** A puff's opacity at its densest. */
-const SMOKE_A = 0.36;
-const smokeBins: Nums[] = Array.from({ length: SMOKE_BINS * 2 }, () => new Nums());
+/** A wisp's opacity at its densest. */
+const SMOKE_A = 0.62;
+const smokeBins: Nums[] = Array.from({ length: SMOKE_BINS }, () => new Nums());
+/** A wisp's height cap (screen px, any zoom): smoke is a hint over the broken stage, never fog. */
+const WISP_H = 22;
 
-/** Smoke: plumes as [x, y, k, size, puffs, rise, base] septets: (x, y) where it rises from; `base`
- *  > 0 draws a red-tinted haze that many px below it, on the floor (the scanner's: something
- *  burns there). */
-export function smoke(g: Gfx, pl: Nums, t: number, fade = 1): void {
+/** A placed word's box (labels.ts: x, baseline y, width, height). */
+export type LabelBox = { x: number; y: number; w: number; h: number };
+
+/** Whether (x, y) ± (rx, ry) touches a placed word (its box grown by `m`). */
+function onLabel(labels: readonly LabelBox[] | undefined, x: number, y: number, rx: number, ry: number, m: number): boolean {
+  if (!labels) return false;
+  for (let i = 0; i < labels.length; i++) {
+    const l = labels[i];
+    if (x + rx > l.x - m && x - rx < l.x + l.w + m && y + ry > l.y - l.h - m && y - ry < l.y + 3 + m) return true;
+  }
+  return false;
+}
+
+/** Smoke (fx-glance): plumes as [x, y, k, size, wisps, rise, base] septets. Each plume is `wisps`
+ *  (∝ the repos its cluster hits) dark, red-tinged curls ≤ 22 px tall rising 8 px/s from (x, y)
+ *  `rise` px and fading; `base` > 0 lays a dark red smoulder that many px below, on the floor.
+ *  A wisp never draws over a placed word (`labels`, the previous frame's). One stroke per opacity
+ *  bin for every plume on the floor. */
+export function smoke(g: Gfx, pl: Nums, t: number, fade = 1, labels?: readonly LabelBox[]): void {
   if (!pl.n || fade <= 0) return;
   for (const b of smokeBins) b.reset();
   const a = pl.a;
   for (let i = 0; i < pl.n; i += 7) {
-    const x = a[i], y = a[i + 1], k = a[i + 2] * fade, sz = a[i + 3], puffs = a[i + 4], rise = a[i + 5], base = a[i + 6];
-    if (base > 0) { g.begin_(); g.ctx.ellipse(x, y + base, 18 * sz, 8 * sz, 0, 0, TAU); g.ops += 2; g.fill(tint(K_RED, 0.1 + 0.12 * k)); }
-    const period = (rise / 8) * 1000; // 8 px a second at the fitted zoom
-    for (let j = 0; j < puffs; j++) {
-      const p = ((t / period) + j / puffs) % 1;
-      const f = p < 0.12 ? p / 0.12 : 1 - (p - 0.12) / 0.88;
-      const al = SMOKE_A * f * k;
-      if (al < 0.02) continue;
-      const bin = Math.min(SMOKE_BINS - 1, Math.floor((al / SMOKE_A) * SMOKE_BINS)) + (j % 3 ? 0 : SMOKE_BINS);
-      smokeBins[bin].push3(x + (Math.sin(p * 4 + j * 1.7) * 7 + p * 26) * sz, y - (4 + p * rise) * sz, (5 + p * 17 * (rise / 56)) * sz);
+    const x = a[i], y = a[i + 1], k = a[i + 2] * fade, sz = Math.min(1.2, a[i + 3]), n = a[i + 4], rise = a[i + 5], base = a[i + 6];
+    if (base > 0) { g.begin_(); g.ctx.ellipse(x, y + base, Math.min(12, 10 * sz), Math.min(4.5, 4 * sz), 0, 0, TAU); g.ops += 2; g.fill(tint(K_WISP_RED, 0.14 + 0.12 * k)); }
+    const period = (rise / 8) * 1000; // 8 px a second
+    for (let j = 0; j < n; j++) {
+      const p = ((t / period) + j / n + (j * 0.37) % 0.2) % 1;
+      const f = p < 0.18 ? p / 0.18 : 1 - (p - 0.18) / 0.82;
+      const al = f * k;
+      if (al < 0.05) continue;
+      const h = Math.min(WISP_H, (8 + p * 14) * sz);
+      const wx = x + (Math.sin(p * 5 + j * 1.9) * 5 + (j % 3 - 1) * 6) * sz, wy = y - (2 + p * rise) * sz;
+      if (onLabel(labels, wx, wy - h / 2, 5, h / 2, 2)) continue;
+      smokeBins[Math.min(SMOKE_BINS - 1, Math.floor(al * SMOKE_BINS))].push3(wx, wy, h);
     }
   }
-  for (let b = 0; b < SMOKE_BINS * 2; b++) {
+  for (let b = 0; b < SMOKE_BINS; b++) {
     const s = smokeBins[b];
     if (!s.n) continue;
+    const lvl = (b + 0.5) / SMOKE_BINS;
+    // a wisp: an S-curl from its foot up, dark and red-tinged
     g.begin_();
-    for (let i = 0; i < s.n; i += 3) { g.ctx.moveTo(s.a[i] + s.a[i + 2], s.a[i + 1]); g.ctx.arc(s.a[i], s.a[i + 1], s.a[i + 2], 0, TAU); }
-    g.ops += s.n / 3; g.arcs += s.n / 3;
-    const lvl = ((b % SMOKE_BINS) + 0.5) / SMOKE_BINS;
-    g.fill(tint(b < SMOKE_BINS ? K_SMOKE2 : K_SMOKE, SMOKE_A * lvl));
+    for (let i = 0; i < s.n; i += 3) {
+      const x = s.a[i], y = s.a[i + 1], h = s.a[i + 2], d = h * 0.22;
+      g.ctx.moveTo(x, y); g.ctx.quadraticCurveTo(x + d, y - h * 0.3, x, y - h * 0.55); g.ctx.quadraticCurveTo(x - d, y - h * 0.8, x + d * 0.4, y - h);
+    }
+    g.ops += s.n; g.arcs += s.n / 3;
+    g.stroke(tint(K_WISP_RED, SMOKE_A * lvl), 3);
+  }
+}
+
+/** Beacons whose lamp would sit under a placed word (`labels`, the previous frame's; `r` the
+ *  lamp's reach) come down their mast until clear: a word never covers its own beacon. In place,
+ *  on [x, yFloor, yLamp, mode, age] quintets. */
+export function dodge(b: Nums, labels: readonly LabelBox[] | undefined, r: number): void {
+  if (!labels || !labels.length) return;
+  const a = b.a;
+  for (let i = 0; i < b.n; i += 5) {
+    const x = a[i], yf = a[i + 1];
+    let yl = a[i + 2];
+    for (let k = 0; k < 8 && onLabel(labels, x, yl, r, r, 0); k++) yl += (yf - 6 - a[i + 2]) / 8;
+    a[i + 2] = yl;
   }
 }
 
@@ -155,13 +195,13 @@ export function embers(g: Gfx, e: Nums, t: number, fade = 1): void {
   }
 }
 
-/** Replay rings: [x, y, r, age01, colourKind] quintets. */
+/** Replay rings: [x, y, r, age01, colourKind] quintets, eased out (one ring per event). */
 export function rings(g: Gfx, r: Nums): void {
   const a = r.a;
   for (let i = 0; i < r.n; i += 5) {
-    const e = a[i + 3];
-    g.begin_(); g.circle(a[i], a[i + 1], a[i + 2] + e * 18);
-    g.stroke(tint(a[i + 4], 0.85 * (1 - e)), 1.4);
+    const e = a[i + 3], o = 1 - (1 - e) * (1 - e);
+    g.begin_(); g.circle(a[i], a[i + 1], a[i + 2] + o * 18);
+    g.stroke(tint(a[i + 4], 0.85 * (1 - e) * (1 - e * 0.5)), 1.4);
   }
 }
 
@@ -170,7 +210,7 @@ export function chevrons(g: Gfx, c: Nums, k: number, ph: number, sz: number): vo
   if (!c.n) return;
   g.begin_();
   for (let i = 0; i < c.n; i += 2) {
-    const x = c.a[i] + ph * 8 * sz, y = c.a[i + 1];
+    const x = c.a[i] + (0.5 - 0.5 * Math.cos(TAU * ph)) * 8 * sz, y = c.a[i + 1]; // the one eased waveform
     g.move(x - 3 * sz, y - 4 * sz); g.line(x + sz, y); g.line(x - 3 * sz, y + 4 * sz);
   }
   g.stroke(tint(K_AMBER, 0.65 * k), 1.4);

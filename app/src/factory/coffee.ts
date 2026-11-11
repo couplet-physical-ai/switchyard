@@ -36,10 +36,11 @@ import { short } from './census.ts';
 import type { Factory } from './factory.ts';
 import { insights } from '../insights.ts';
 import {
-  DAY, HOUR, WINS, ago, emptyFresh, fingerprint, freshSince, h36, marks, noMarks, packVisit, shortWindow, unpackVisit, windowStart,
-  type Fingerprint, type Fresh, type Marks, type QueueState, type VisitRec, type Win,
+  DAY, HOUR, WINS, ago, emptyFresh, fingerprint, freshSince, h36, isRedMain, marks, noMarks, noTotals, packVisit, shortWindow, totals, totalsWords, unpackVisit, windowStart,
+  type Fingerprint, type Fresh, type Marks, type QueueState, type Totals, type VisitRec, type Win,
 } from './anomaly.ts';
-import { K_AMBER, K_INK, K_OK, K_RED, Nums, beacons, chevrons, crackAt, cracks, embers, rings, smoke, tint } from './fx.ts';
+import { FACTOR } from './stress.ts';
+import { K_AMBER, K_INK, K_OK, K_RED, Nums, beacons, chevrons, crackAt, cracks, dodge, embers, pulse, rings, smoke, tint } from './fx.ts';
 import { Glance, T_DONE, T_SETTLE, T_SWEEP } from './glance.ts';
 import { beatPhase, changesSince } from './seams.ts';
 
@@ -51,7 +52,10 @@ export type Digest = { win: Win; since: number; now: number; fresh: Fresh; marks
 
 const GLOW_MAX = 48;
 const FRESH_MS = 120_000;
-const OK = '#7FC48F';
+/** The one flash of a fixed / recovered / deployed / merged thing (ms). */
+const FLASH_MS = 1400;
+/** Green-gray: ok, recovered (one flash, never a pulse). */
+const OK = '#9DB8A4';
 
 export class Coffee {
   /** The server whose last visit is latched: the baseline holds for the whole session. */
@@ -94,8 +98,42 @@ export class Coffee {
 
   constructor(readonly f: Factory) { this.glance0 = new Glance(this); }
 
-  /** lens.ts draws the strip's bracket when this is false: the window is always bracketed. */
-  get first(): boolean { return false; }
+  /** lens.ts draws the strip's bracket when this is false. fx-glance: true, the strip draws its
+   *  own (strip.ts, a bright since-visit bracket over the butterfly). */
+  get first(): boolean { return true; }
+
+  // ---- the totals (fx-glance): ONE count for the status line and the coffee header ------------
+  /** The fleet's totals as the status line last asked for them (app.ts overview, every 250 ms),
+   *  and when (module clock); the header draws these, never a count of its own. */
+  now: Totals = noTotals();
+  nowN = 0;
+  private nowAt = -1e12;
+  private copiesOf: Uint8Array | null = null;
+  private copies = { up: 0, down: 0, n: 0 };
+
+  /** The status line's numbers (red main lines, building, queued, apps up and down) for the world
+   *  on screen; in stress mode the 10× fleet's own (the floor's census multiplies the same way,
+   *  the city's copies carry their hashed health). The coffee header shows the same object. */
+  status(w: World, stress: boolean, t: number): Totals {
+    const h = this.f.stress.health;
+    if (stress && h.length && h !== this.copiesOf) {
+      this.copiesOf = h;
+      let up = 0, down = 0;
+      for (let i = 0; i < h.length; i++) { if (h[i] === 0) up++; else if (h[i] === 2) down++; }
+      this.copies = { up, down, n: h.length };
+    }
+    this.now = totals(w, stress ? FACTOR : 1, stress && h.length ? this.copies : null);
+    this.nowN++;
+    this.nowAt = t;
+    return this.now;
+  }
+
+  /** The header's totals in words: what the status line says, the same numbers. */
+  headWords(): string { return totalsWords(this.now); }
+
+  /** For a floor no status line asks for (tools, tests): counts when the last count is over 1 s
+   *  old (module clock). */
+  ensureNow(t: number): void { if (t - this.nowAt > 1000 || t < this.nowAt) this.status(this.f.world, this.f.stress.on, t); }
   /** No last visit kept for this server: the "visit" window is the last 24 h. */
   get noVisit(): boolean { return !this.fp; }
   get visitAt(): number { return this.fp?.at ?? 0; }
@@ -159,10 +197,17 @@ export class Coffee {
     }
   }
 
+  /** The verdict in words: "broken · worse than usual", "broken · as usual", "flowing". */
+  verdictWords(): string {
+    const m = this.dg.marks, rel = m.verdict === 'flowing' ? '' : m.usual.rel;
+    return rel ? `${m.verdict} · ${rel === 'worse' ? 'worse than usual' : 'as usual'}` : m.verdict;
+  }
+
   /** The glance in words (the floor's accessible mirror, and tests). */
   words(): string {
     const d = this.dg, m = d.marks, fr = d.fresh;
-    const parts: string[] = [m.why ? `${m.verdict}: ${m.why}` : m.verdict];
+    const v = this.verdictWords();
+    const parts: string[] = [m.why ? `${v}: ${m.why}` : v];
     if (fr.newRed.length && !m.why.includes('newly red')) parts.push(`${fr.newRed.length} newly red`);
     if (fr.fixed.length) parts.push(`${fr.fixed.length} fixed`);
     const nf = Math.max(fr.failed.length, fr.failCount);
@@ -172,6 +217,7 @@ export class Coffee {
     const nm = Math.max(fr.merged.length, fr.mergedCount);
     if (nm > 0) parts.push(`${nm} merged`);
     parts.push(this.windowWords());
+    parts.push(`now ${this.headWords()}`);
     return parts.join(' · ');
   }
 
@@ -207,9 +253,9 @@ export class Coffee {
     if (h?.kind === 'verdict') {
       const m = this.dg.marks, fr = this.dg.fresh, ww = this.windowWords();
       if (m.verdict === 'broken') {
-        const key = fr.newRed.length ? 'red' : 'down';
-        const n = key === 'red' ? fr.newRed.length : fr.down.length;
-        this.f.lens.push({ kind: 'fresh', id: key, name: key === 'red' ? `${n} main lines turned red · ${ww}` : `${n} apps went down · ${ww}`, sub: '' }, t);
+        const key = fr.newRed.length ? 'newRed' : 'down';
+        const n = key === 'newRed' ? fr.newRed.length : this.now.down;
+        this.f.lens.push({ kind: 'fresh', id: key, name: key === 'newRed' ? `${n} main lines turned red · ${ww}` : `${n} ${n === 1 ? 'app' : 'apps'} down`, sub: '' }, t);
       } else if (m.verdict === 'jammed') this.f.lens.push({ kind: 'queue', id: 'intake', name: 'intake', sub: '' }, t);
       else if (m.verdict === 'slowed') this.f.lens.push({ kind: 'scanner', id: 'tests', name: 'tests', sub: '' }, t);
       return true;
@@ -322,10 +368,22 @@ export class Coffee {
   freshSet(k: string): { repos: string[]; apps: string[]; fails: string[] } {
     const d = this.dg.fresh, w = this.f.world;
     switch (k) {
-      case 'red': return { repos: d.newRed, apps: [], fails: [] };
+      case 'red': {
+        // every main line red now, the window's new ones first (the chip: "32 red · 26 new")
+        const fresh = new Set(d.newRed), rest: string[] = [];
+        for (const r of w.repos.values()) if (isRedMain(r.main?.state) && !fresh.has(r.id)) rest.push(r.id);
+        return { repos: [...d.newRed, ...rest], apps: [], fails: [] };
+      }
+      case 'newRed': return { repos: d.newRed, apps: [], fails: [] };
+      case 'down': {
+        // every app down now (the chip: "2 apps down"), the window's first
+        const apps: string[] = [...d.down];
+        for (const a of w.apps.values()) if (a.health === 'down' && !d.down.includes(a.id ?? '')) apps.push(a.id ?? '');
+        return { repos: [], apps, fails: [] };
+      }
       case 'fixed': return { repos: d.fixed, apps: [], fails: [] };
       case 'failed': return { repos: [...new Set(d.failed.map((id) => w.pipelines.get(id)?.repo ?? ''))].filter(Boolean), apps: [], fails: d.failed };
-      case 'down': return { repos: [], apps: [...d.down, ...d.recovered], fails: [] };
+      case 'back': return { repos: [], apps: d.recovered, fails: [] };
       case 'deploys': return { repos: [], apps: d.deployApps, fails: [] };
       case 'merged': return { repos: [...new Set(d.merged.map((k2) => k2.slice(0, k2.indexOf('@'))))], apps: [], fails: [] };
       case 'clusters': {
@@ -378,6 +436,8 @@ export class Coffee {
   private ev = new Nums();       // replay events: x, y, r, fire (intro ms), colour, u (a failure's spot on the return belt, else -1), v
   /** Each hotspot's anchor on screen (glance.ts draws the callouts from them). */
   hotXY: number[] = [];
+  /** Each beacon's lamp on screen (x, y): the callouts keep 24 px clear of them. */
+  beaconXY: number[] = [];
   private sSmoke = new Nums(); private sBeacon = new Nums(); private sEmber = new Nums(); private sRings = new Nums();
   // the fresh glows (rims), as phase 1 had them, gated by time in the replay
   private glowItems: [string, number, number, number, string][] = [];
@@ -404,14 +464,14 @@ export class Coffee {
     const tm = f.reduced ? 0 : t;
     gate(this.mEmber, 5, T, this.sEmber); embers(g, this.sEmber, tm);
     cracks(g, this.mCrack);
-    gate(this.mSmoke, 8, T, this.sSmoke); smoke(g, this.sSmoke, tm);
+    gate(this.mSmoke, 8, T, this.sSmoke); smoke(g, this.sSmoke, tm, 1, f.labels);
     if (this.jamUV.length && T === Infinity) {
       const P = f.plan;
       for (let i = 0; i < this.jamUV.length; i += 3) f.fx.crate(g, this.jamUV[i], this.jamUV[i + 1], 7, false, true, this.jamUV[i + 2]);
       chevrons(g, this.mChev, d.marks.jam?.k ?? 0, f.reduced ? 0 : beatPhase(t), sz);
       void P;
     }
-    gate(this.mBeacon, 6, T, this.sBeacon); beacons(g, this.sBeacon, tm, sz);
+    gate(this.mBeacon, 6, T, this.sBeacon); dodge(this.sBeacon, f.labels, 15 * Math.min(1.6, sz) + 4); beacons(g, this.sBeacon, tm, sz);
     if (f.tl.mode !== 'replay' && !f.lens.topLens) this.freshGlows(g, t, T);
     if (it < T_SETTLE) this.replayEvents(g, it);
   }
@@ -435,16 +495,18 @@ export class Coffee {
       const n = spread.get(i) ?? 0; spread.set(i, n + 1);
       return [P.RAIL_U1 + 6 - (n % 8) * 9, P.RAIL_V[i] - 10];
     };
-    // smoke: ≤ 3 plumes over the scanner, wisps over the docks of the repos each cluster hits
+    // smoke (fx-glance): ≤ 3 plumes of dark, red-tinged wisps over the scanner, as many wisps as
+    // the cluster hits repos; a few over the docks of the repos each cluster hits
     const sm = this.mSmoke; sm.reset();
-    const wisp = new Map<string, number>();
+    const wisp = new Map<string, [number, number]>();
+    const ws = Math.min(1.2, sz);
     m.smoke.forEach((s, i) => {
       const v = 300 + i * 70;
-      const top = cam.y(P.SCAN_U, v, 56);
-      pushN(sm, cam.x(P.SCAN_U, v), top, s.k, sz, i ? 8 : 12, 56, s.fresh ? cam.y(P.SCAN_U, v, 0) - top : 0, s.at);
-      for (const r of s.repos) { const o = w.orgOf(r); wisp.set(o, Math.max(wisp.get(o) ?? 0, s.k * 0.7)); }
+      const top = cam.y(P.SCAN_U, v, 40);
+      pushN(sm, cam.x(P.SCAN_U, v), top, s.k, ws, clamp(2 + s.repoN, 3, 12), 40, s.fresh ? cam.y(P.SCAN_U, v, 0) - top : 0, s.at);
+      for (const r of s.repos) { const o = w.orgOf(r), x = wisp.get(o); wisp.set(o, [Math.max(x?.[0] ?? 0, s.k * 0.7), (x?.[1] ?? 0) + 1]); }
     });
-    for (const [o, kk] of wisp) { const v = fx.dockV(o); pushN(sm, cam.x(P.DOCK_U0 + 20, v), cam.y(P.DOCK_U0 + 20, v, 14), kk, sz, 4, 30, 0, m.smoke[0]?.at ?? d.now); }
+    for (const [o, [kk, n]] of wisp) { const v = fx.dockV(o); pushN(sm, cam.x(P.DOCK_U0 + 20, v), cam.y(P.DOCK_U0 + 20, v, 14), kk, ws, clamp(1 + n, 2, 6), 24, 0, m.smoke[0]?.at ?? d.now); }
     // beacons: ≤ 3 pulse (on the beat while < 10 min old, breathing while < 1 h), the rest steady
     const bc = this.mBeacon; bc.reset();
     m.beacons.forEach((b, i) => {
@@ -460,6 +522,9 @@ export class Coffee {
         pushN(bc, cam.x(u, v), cam.y(u, v, 0), cam.y(u, v, 40), mode, 0, b.at);
       }
     });
+    // the lamps the callouts keep clear of (glance.ts)
+    this.beaconXY = [];
+    for (let i = 0; i < bc.n; i += 6) this.beaconXY.push(bc.a[i], bc.a[i + 2]);
     // cracks: chronic reds fracture their org's rail (more lines, more of them), chronic downs
     // their building's roof, a job past 3× its expected time its bay
     const cr = this.mCrack; cr.reset();
@@ -617,6 +682,10 @@ export class Coffee {
     for (const k of fr.merged) { const s = carAt.get(k); if (s) add(`mrg:${k}`, s[0], s[1], 5, 5, C.ink2, `mrg:${k}`); }
     // perf + calm: at most GLOW_MAX pulse, most important first (new reds, failures, fixes, apps, merges)
     if (items.length > GLOW_MAX) { items.length = GLOW_MAX; at.length = GLOW_MAX; }
+    // their colours (one path per colour and opacity step) and which give one flash (not red)
+    this.glowCols = [...new Set(items.map((it) => it[4]))];
+    this.glowColOf = items.map((it) => this.glowCols.indexOf(it[4]));
+    this.glowFlash = items.map((it) => it[4] !== C.red);
     this.glowN++;
   }
 
@@ -628,12 +697,15 @@ export class Coffee {
     // perf: each item's first-seen time resolved once per layout; per frame only numbers
     if (this.glowSeenFor !== this.glowN) {
       this.glowSeenFor = this.glowN;
-      this.glowSeen = items.map(([key]) => this.seen.get(key) ?? -1);
-      this.glowCols = [...new Set(items.map((it) => it[4]))];
-      this.glowColOf = items.map((it) => this.glowCols.indexOf(it[4]));
+      const seen = this.glowSeen;
+      seen.length = items.length;
+      for (let i = 0; i < items.length; i++) seen[i] = this.seen.get(items[i][0]) ?? -1;
       if (this.seen.size > 4000) this.seen.clear();
     }
-    const ph = this.f.reduced ? 0.5 : beatPhase(t), b = 0.5 + 0.5 * Math.cos(ph * 2 * Math.PI);
+    // fx-glance: ONE eased waveform (the beat's cosine) for everything that pulses, and only red
+    // pulses; the rest (fixed, recovered, deployed, merged) gives ONE flash when first drawn
+    // (eased up and down over FLASH_MS), then a still rim fading over its two minutes
+    const b = this.f.reduced ? 0.5 : pulse(t);
     const nc = this.glowCols.length;
     const buckets = this.glowBuckets;
     for (let i = 0; i < nc * 4; i++) { if (buckets[i]) buckets[i].length = 0; else buckets[i] = []; }
@@ -642,11 +714,16 @@ export class Coffee {
       if (this.glowAt[i] > T) continue;
       // first drawn now: its two minutes start (the replay's late arrivals get theirs too)
       if (this.glowSeen[i] < 0) { this.glowSeen[i] = t; this.seen.set(items[i][0], t); }
-      const a = 1 - (t - this.glowSeen[i]) / FRESH_MS;
-      if (a <= 0) continue;
+      const age = t - this.glowSeen[i], fade = 1 - age / FRESH_MS;
+      if (fade <= 0) continue;
+      const it = items[i], r = it[3];
+      let a: number, rf: number, rr: number;
+      if (!this.glowFlash[i]) { a = fade * (0.45 + 0.55 * b); rf = r * (1.3 + 0.4 * b); rr = r + 3 + 4 * b; }
+      else if (age < FLASH_MS && !this.f.reduced) { const e = age / FLASH_MS, env = Math.sin(Math.PI * e); a = fade * env; rf = r * (1.2 + 0.6 * e); rr = r + 3 + 9 * e; }
+      else { a = 0.3 * fade; rf = 0; rr = r + 3; }
+      if (a < 0.02) continue;
       live++;
-      const it = items[i];
-      buckets[this.glowColOf[i] * 4 + Math.min(3, Math.ceil(a * 4) - 1)].push(it[1], it[2], it[3]);
+      buckets[this.glowColOf[i] * 4 + Math.min(3, Math.max(0, Math.ceil(a * 4) - 1))].push(it[1], it[2], rf, rr);
     }
     if (!live) return;
     for (let ci = 0; ci < nc; ci++) for (let qi = 0; qi < 4; qi++) {
@@ -654,13 +731,15 @@ export class Coffee {
       if (!xy.length) continue;
       const col = this.glowCols[ci], q = (qi + 1) / 4;
       g.begin_();
-      for (let i = 0; i < xy.length; i += 3) { const r = xy[i + 2] * (1.3 + 0.5 * b); g.ctx.moveTo(xy[i] + r, xy[i + 1]); g.ctx.arc(xy[i], xy[i + 1], r, 0, 2 * Math.PI); }
-      g.fill(alphaOf(col, 0.18 * q));
+      let fills = 0;
+      for (let i = 0; i < xy.length; i += 4) { const rf = xy[i + 2]; if (rf <= 0) continue; fills++; g.ctx.moveTo(xy[i] + rf, xy[i + 1]); g.ctx.arc(xy[i], xy[i + 1], rf, 0, 2 * Math.PI); }
+      if (fills) g.fill(alphaOf(col, 0.16 * q));
       g.begin_();
-      for (let i = 0; i < xy.length; i += 3) { const r = xy[i + 2] + 2 + ph * 10; g.ctx.moveTo(xy[i] + r, xy[i + 1]); g.ctx.arc(xy[i], xy[i + 1], r, 0, 2 * Math.PI); }
-      g.stroke(alphaOf(col, 0.7 * q * (1 - ph)), 1.2);
+      for (let i = 0; i < xy.length; i += 4) { const rr = xy[i + 3]; g.ctx.moveTo(xy[i] + rr, xy[i + 1]); g.ctx.arc(xy[i], xy[i + 1], rr, 0, 2 * Math.PI); }
+      g.stroke(alphaOf(col, 0.7 * q), 1.2);
     }
   }
+  private glowFlash: boolean[] = [];
 
   // ---- the glance (glance.ts) --------------------------------------------------------------------
   /** The floor's top row after the zoom readout (lens.ts calls it), the strip's replay playhead,
