@@ -222,14 +222,19 @@ const redSince = (s: Snapshot, from: number) => list(s.repos).filter((r) => (r.m
   ok(worst < 1, `digest: ${slices.length} slices, longest ${worst.toFixed(2)} ms (${slices.map((x) => x.toFixed(2)).join(' / ')}; median of 9, < 1 ms in Bun)`);
   const g = new Gfx();
   g.begin(ctx, 1);
-  let lay = 0, paint = 0;
-  for (let i = 0; i < 20; i++) {
+  // the median of 21 (as the digest's slices): the max of 20 caught a GC pause or a busy host's
+  // preemption (it failed on main under a loaded devbox: 0.51 ms against 0.5), not the code's cost
+  const lays: number[] = [], paints: number[] = [];
+  for (let i = 0; i < 24; i++) {
     (f.cam as unknown as { ver: number }).ver++;
-    const t0 = performance.now(); f.coffee.under(g, 20_000 + i * 16); lay = Math.max(lay, performance.now() - t0);
-    const t1 = performance.now(); f.coffee.under(g, 20_008 + i * 16); paint = Math.max(paint, performance.now() - t1);
+    const t0 = performance.now(); f.coffee.under(g, 20_000 + i * 16); const l = performance.now() - t0;
+    const t1 = performance.now(); f.coffee.under(g, 20_008 + i * 16); const p = performance.now() - t1;
+    if (i >= 3) { lays.push(l); paints.push(p); }
   }
-  ok(lay < 2, `layout (camera moved): ${lay.toFixed(2)} ms`);
-  ok(paint < 0.5, `a frame's coffee painting: ${paint.toFixed(3)} ms`);
+  const med = (xs: number[]) => xs.sort((a, b) => a - b)[xs.length >> 1]!;
+  const lay = med(lays), paint = med(paints);
+  ok(lay < 2, `layout (camera moved): ${lay.toFixed(2)} ms (median of 21)`);
+  ok(paint < 0.5, `a frame's coffee painting: ${paint.toFixed(3)} ms (median of 21)`);
 }
 
 // fab-w6b + fx-glance: a hotspot callout sits in the floor's dark places (the top band under the
