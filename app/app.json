@@ -46,6 +46,7 @@
     }
   ],
   "env": [
-    "SWITCHYARD_DEFAULT_SERVER"
+    "SWITCHYARD_DEFAULT_SERVER",
+    "SWITCHYARD_WEB_SHA"
   ]
 }

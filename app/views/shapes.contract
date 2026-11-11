@@ -257,3 +257,7 @@ shape PrDetail
   commits: PCommit[]
   pipelines: PPipe[]
   timeline: PPhase[]
+
+shape WebVer
+  stale: bool
+  served: string

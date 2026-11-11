@@ -8,6 +8,7 @@ import { HttpUpstream, resolveBase, setDefaultServer, wsUrl, type Upstream } fro
 // A release build bakes the team's server in (app/scripts/build-macos-release.sh sets it);
 // dev and test builds leave it empty and ask on first launch.
 const DEFAULT_SERVER = import.meta.env.SWITCHYARD_DEFAULT_SERVER ?? '';
+const WEB_SHA = import.meta.env.SWITCHYARD_WEB_SHA ?? '';
 setDefaultServer(DEFAULT_SERVER);
 import { DEMO_REPLAY, DemoUpstream } from './src/demo.ts';
 import { fleet, journeyView, prDetailView, search } from './src/project.ts';
@@ -298,7 +299,24 @@ export function parseLink(u: string, server: string, token: string): { server: s
   return okServer && okToken ? { server: sv, token: tk, ok: true } : { server: okServer ? sv : '', token: '', ok: false };
 }
 
+/** Is the page older than the web build the server now serves? Web only (a native app has no
+ *  page origin), and only a build that knows its own commit (app/scripts/build.sh web). */
+async function webVersion(): Promise<{ stale: boolean; served: string }> {
+  const origin = (globalThis as { origin?: unknown }).origin;
+  if (!WEB_SHA || typeof origin !== 'string' || !/^https?:\/\//.test(origin)) return { stale: false, served: '' };
+  try {
+    const r = await fetch(`${origin}/api/v1/meta`, { headers: { accept: 'application/json' } });
+    if (!r.ok) return { stale: false, served: '' };
+    const m = (await r.json()) as { web?: { sha?: string } | null };
+    const served = m.web?.sha ?? '';
+    return { stale: !!served && served !== WEB_SHA, served };
+  } catch {
+    return { stale: false, served: '' };
+  }
+}
+
 export const sources: Sources = {
+  webVersion: () => webVersion(),
   parseLink: ([u, server, token]) => parseLink(u, server, token),
   loadToken: (_a, store: Store) => {
     const t = store.get(TOKEN) ?? '';
