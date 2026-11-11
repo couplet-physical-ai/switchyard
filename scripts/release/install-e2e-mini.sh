@@ -16,7 +16,9 @@ set -euo pipefail
 V=${1:?version}; KEEP=${2:-}
 HOST=${SY_MINI:-mini-user@192.0.2.1}
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST")
-DIR=/Volumes/Farm/farm-exowatt/switchyard-release
+# The token file and the snapshot live under the app user's home: /Volumes/Farm is a removable
+# volume, which macOS privacy (TCC) keeps from apps launched this way ("couldn't be opened").
+DIR=${SY_E2E_DIR:-/Users/${HOST%@*}/.switchyard-e2e}
 B='cd /tmp && sudo -n -Hu felipearce env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 /opt/homebrew/bin/brew'
 # The README's one-liner, with brew run as its owner.
 ONE_LINER="($B tap couplet-physical-ai/tap && $B trust couplet-physical-ai/tap && $B install --cask switchyard)"
@@ -52,7 +54,7 @@ echo "installed: \$v"; [[ "\$v" == "$V" ]]
 xattr -p com.apple.quarantine "\$A" >/dev/null 2>&1 && { echo "FAIL: quarantine flag present" >&2; exit 1; } || echo "quarantine: none"
 codesign --verify --deep --strict "\$A" && echo "signature: ok"
 \$LSR -f "\$A"
-mkdir -p $DIR/shots ~/Library/Logs/Switchyard
+mkdir -p $DIR/shots ~/Library/Logs/Switchyard; rm -f $DIR/shots/install-$V.png
 sudo -n launchctl asuser \$(id -u) sudo -n -u \$(id -un) open ${ENV[*]:-} "\$A"
 sleep 20
 pid=\$(pgrep -f '/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true)
@@ -60,7 +62,6 @@ echo "running: \${pid:-none}"; [[ -n "\$pid" ]]
 [[ -x /tmp/sy-windows ]] && sudo -n launchctl asuser \$(id -u) sudo -n -u \$(id -un) /tmp/sy-windows Switchyard | tail -1
 echo "--- brew info"; ($B info --cask switchyard 2>&1 | head -2)
 echo "--- app log (this launch)"; grep -h "pid \$pid " ~/Library/Logs/Switchyard/*.log 2>/dev/null | grep -v "download: [0-9]*%" | tail -n 12 | cut -c1-240 || true
-ls -la $DIR/shots/install-$V.png 2>/dev/null || true
 TOKF="$TOK_REMOTE"
 if [[ -n "\$TOKF" ]]; then
   # The token must live only in the Keychain: grep its value (read from the file, never argv)
@@ -69,7 +70,14 @@ if [[ -n "\$TOKF" ]]; then
   l=\$(leak); [[ -z "\$l" ]] && echo "token at rest (running): none" || { echo "FAIL: token found in: \$l" >&2; exit 1; }
   pkill -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true; sleep 3
   l=\$(leak); [[ -z "\$l" ]] && echo "token at rest (after quit): none" || { echo "FAIL: token found in: \$l" >&2; exit 1; }
+  # The app's own log is written as it quits: the connect line must be there by now.
+  grep -h "pid \$pid token-file:" ~/Library/Logs/Switchyard/switchyard.log | tail -1
+  grep -q "pid \$pid token-file: connected" ~/Library/Logs/Switchyard/switchyard.log || { echo "FAIL: no 'token-file: connected' for pid \$pid" >&2; exit 1; }
   if [[ "$KEEP" == --keep ]]; then sudo -n launchctl asuser \$(id -u) sudo -n -u \$(id -un) open "\$A"; fi
+fi
+if [[ -n "${SY_SNAPSHOT:-}" ]]; then
+  grep -h "pid \$pid snapshot:" ~/Library/Logs/Switchyard/switchyard.log | tail -1 || true
+  [[ -s $DIR/shots/install-$V.png ]] || { echo "FAIL: no snapshot at $DIR/shots/install-$V.png" >&2; exit 1; }
 fi
 if [[ "$KEEP" != --keep ]]; then pkill -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true; fi
 echo E2E-PASS
