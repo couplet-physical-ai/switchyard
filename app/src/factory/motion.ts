@@ -8,14 +8,18 @@
 //     lands. Under each travelling crate the belt brightens (its wake).
 //   - Belts move at a speed set by their rate, logarithmically: 6 + 10·log₂(1 + rate/min) px/s
 //     at the fitted zoom; a belt with nothing on it stands still.
-//   - Calm frames skip. With nothing travelling, the live layer redraws only when what it shows
-//     moved by a visible step (a slat by a pixel, the beat by an eighth), at most 9 times a second (CALM_MS).
+//   - Calm frames skip. With nothing travelling (no crate, no reaction, no pointer, no flight)
+//     the live layer sleeps; the Contract's `facPulse` wakes it every CALM_MS (8 frames a second
+//     for the belts and the beat), a loud floor draws every frame. (Skipping frames by asking for
+//     the next one and drawing nothing stalls the macOS host's display link: measured 47-49 FPS,
+//     79 of 364 slots missed; sleeping between pulses holds 60.)
 //
 // Reactions live in a fixed ring (no allocation per event or frame).
 
 export const BEAT_MS = 1000;
-/** The calm cadence: a calm frame at most every 110 ms (about 9 a second, ~15 % of a loud 60). */
-export const CALM_MS = 110;
+/** The calm cadence: app.contract's `facBeat` task wakes a sleeping floor this often (8 a second,
+ *  13 % of a loud floor's 60). */
+export const CALM_MS = 125;
 
 /** The master beat's phase at `t` (ms), 0 → 1 once a second. */
 export function beat(t: number): number {
@@ -94,24 +98,4 @@ export class Ripples {
   }
 
   clear(): void { this.dur.fill(0); }
-}
-
-/** Decides whether a calm frame (nothing travelling) needs drawing: only when a slat moved a
- *  pixel or the beat an eighth since the last drawn one, and not more than 9 times a second. */
-export class CalmGate {
-  private lastSig = -1;
-  private lastT = -1e9;
-
-  /** `pxMoved`: how far (screen px) the fastest belt's slats have travelled by `t`. */
-  wants(t: number, pxMoved: number, loud: boolean): boolean {
-    if (loud) { this.lastT = t; this.lastSig = -1; return true; }
-    const sig = Math.floor(pxMoved) * 8 + Math.floor(beat(t) * 8);
-    if (sig === this.lastSig) return false;
-    if (t - this.lastT < CALM_MS) return false;
-    this.lastSig = sig;
-    this.lastT = t;
-    return true;
-  }
-
-  reset(): void { this.lastSig = -1; this.lastT = -1e9; }
 }

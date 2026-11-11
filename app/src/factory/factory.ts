@@ -24,7 +24,7 @@ import { BoxBatch, TrainTable } from './batch.ts';
 import { AGES, AGE_WORDS, Census, PHASES, failingStep, short } from './census.ts';
 import { FacHud } from './hud.ts';
 import { Cam, LU, LV } from './iso.ts';
-import { CalmGate, R_BEAM, R_DOOR, R_RING, Ripples, arrival, beltSpeedPx, blink, breathe, flash } from './motion.ts';
+import { R_BEAM, R_DOOR, R_RING, Ripples, arrival, beltSpeedPx, blink, breathe, flash } from './motion.ts';
 import { FACTOR, FactoryStress } from './stress.ts';
 
 // ---- palette (canvas-only shades of the app's ramp) ------------------------------------------
@@ -113,7 +113,6 @@ export class Factory {
   private crates: Crate[] = [];
   /** Reactions scheduled for when a crate arrives (motion.ts). */
   private ripples = new Ripples();
-  private calm = new CalmGate();
   private bays: Bay[] = [];
   private blocks: Block[] = [];
   private blockAt = new Map<string, Block>();
@@ -137,6 +136,11 @@ export class Factory {
   private pt = new Float32Array(2);
   /** Did the last live frame ask for another (false: it slept, so the next interval is no frame). */
   private awake = false;
+  /** Since the last live frame: 1 the census recounted, 2 the static floor redrew. */
+  private heavy = 0;
+  private lastWheel = 0;
+  /** Asleep between the calm clock's wake-ups (app.contract's `facBeat` runs while this holds). */
+  get calm(): boolean { return !this.awake; }
   /** What the last live frame drew, for the HUD and the bench. */
   readonly stat = { crates: 0, stressCrates: 0, sprites: 0, trains: 0, cars: 0, bays: 0, labels: 0, hits: 0, floorDraws: 0, floorRate: 0, floorMs: 0, floorOps: 0, sec: 0, lod: [0, 0, 0, 0], slept: 0 };
   selected = '';
@@ -157,7 +161,11 @@ export class Factory {
   private loggedCar = '';
   span = 'live';
 
-  constructor(public tl: Timeline) {}
+  constructor(public tl: Timeline) {
+    // The floor's full rung costs ~4.4 ms on Hermes at 1× (its words: ~80 texts at ~22 µs);
+    // 5.2 ms (13 % under the 6 ms budget) lets it climb back there after a hitch.
+    this.budget.upHeadroom = 5.2;
+  }
 
   get world(): World { return this.tl.world; }
 
@@ -183,6 +191,7 @@ export class Factory {
     if (!this.stress.on) this.stress.clear();
     this.census.factor = this.stress.on ? FACTOR : 1;
     this.census.invalidate();
+    this.qCostAt.fill(-1e12);
     this.cityKey = '';
   }
 
@@ -578,6 +587,7 @@ export class Factory {
     this.cam.fit(f.width, f.height, 84, 58);
     const now = this.tl.playhead;
     const counted = this.census.update(this.world, now, t);
+    if (counted) this.heavy = 1;
     this.layoutCity();
     this.layoutBays(this.world);
     return counted;
@@ -726,10 +736,9 @@ export class Factory {
     }, SCAN_U + 4, 598, 56);
     items.sort((a, b) => a.k - b.k);
     for (const it of items) it.f();
-    // the main lines' cars and the engines' gauges: they change at a merge, a run's end or an
-    // engine sample, which redraws this layer (`floorKey`), not every frame
+    // the main lines' cars: they change at a merge or a run's end, which redraws this layer
+    // (`floorKey`), not every frame
     if (!idle) this.drawCars(g, lo);
-    if (!idle) this.drawGauges(g);
     // the city: one block per app, a row (one v) at a time, far to near, batched (DESIGN.md "LOD")
     this.drawCity(g, lo, idle);
     // the key, in the floor's empty front-left corner (a fit, nothing selected)
@@ -738,6 +747,7 @@ export class Factory {
     st.floorDraws++;
     st.floorOps = g.ops;
     st.floorMs = this.budget.estimate(g.ops, g.arcs, g.texts, 0);
+    if (!this.heavy) this.heavy = 2;
     return false;
   }
 
@@ -953,24 +963,25 @@ export class Factory {
   // ---- the live layer ---------------------------------------------------------------------------
   drawLive(ctx: Ctx2D, f: Frame, t: number, wheel: number): boolean {
     this.applyStress();
-    // a frame after a sleep is no frame interval (the canvas held its picture meanwhile)
-    const dt = this.budget.tick(t);
-    const interval = this.awake ? dt : 0;
+    // Only the display's own frames time the budget: a draw woken by an argument (the calm
+    // clock, a pointer) lands between them, and a frame after a sleep is no interval.
+    const own = f.causes.length ? f.causes.every((k) => k === 'frame') : f.cause === 'frame';
+    let interval = own ? (this.awake ? this.budget.tick(t) : (this.budget.tick(t), 0)) : 0;
     this.wheel(wheel);
     const flying = this.cam.step(t);
-    // a turn that recounted paints the previous frame's picture again next frame
+    // a turn that recounted paints the previous frame's picture again next frame; the interval
+    // across it is the count's, not the drawing's (the ladder cannot buy it back)
     if (this.ensure(f, t)) return true;
+    // Since the last live frame the census was recounted (heavy 1) or the static floor redrew
+    // (heavy 2). A recount's interval is not the drawing's: the ladder cannot buy it back. A
+    // floor redraw while the camera moves (a pan, a zoom) is: its cost joins this frame's.
+    const heavy = this.heavy;
+    this.heavy = 0;
+    const camMoving = flying || !!this.drag || wheel !== this.lastWheel;
+    this.lastWheel = wheel;
+    if (heavy === 1 || (heavy === 2 && !camMoving)) interval = 0;
     const g = this.gl, cam = this.cam, w = this.world, c = this.census;
     const now = this.tl.playhead;
-    // Calm (nothing travelling, no reaction showing, nobody pointing): the frame is drawn only
-    // when the belts' slats moved a pixel or the beat an eighth (motion.ts), at most 9 a second.
-    let travelling = false;
-    for (const cr of this.crates) if (t - cr.t0 < cr.dur) { travelling = true; break; }
-    const loud = travelling || this.ripples.busy(t) || flying || !!this.drag || this.hoverId !== '' || !!this.hud?.on || this.stress.on
-      || this.tl.mode === 'replay' || this.tl.mode === 'behind' || f.cause !== 'frame' || c.skeleton;
-    const fl = c.flow;
-    const beltPx = this.reduced ? 0 : beltSpeedPx(Math.max(fl.pushes, fl.merges, fl.enqueued, fl.started, fl.finished)) * cam.zoom;
-    if (!this.calm.wants(t, (t / 1000) * beltPx, loud)) { this.stat.slept++; this.awake = true; return true; }
     g.begin(ctx, f.scale);
     if (f.cause === 'font') g.resetFonts();
     ctx.resetTransform();
@@ -1112,6 +1123,8 @@ export class Factory {
     prog.flushQuads(g, cam, C.red);
     if (bayFine) crates.flush(g, cam, F.crateTop, F.crateSide, F.crateFront, '', 1, q >= 2 ? 1 : 3); else crates.n = 0;
     if (selBay) this.ring(g, selBay.u + selBay.du / 2, selBay.v + selBay.dv / 2, 14, ENG_H);
+    // gauges: the engines' cpu and mem towers (a sample every few seconds; a few boxes)
+    this.drawGauges(g);
     // 6. the city: its lights are the floor's (redrawn when health changes); here, a hit per
     //    block big enough to point at (LOD0/1), and deploys landing
     if ((this.blocks[0]?.d ?? 13) * cam.s >= 5) {
@@ -1231,20 +1244,23 @@ export class Factory {
     st.hits = this.hits.length;
     // the frame's cost (the cost model, budget.ts) and the ladder; the HUD draws last and
     // counts itself (it is the developer's, so it is outside the factory's own budget)
-    const est = this.budget.estimate(g.ops, g.arcs, g.texts, this.computed + st.crates);
+    const est = this.budget.estimate(g.ops, g.arcs, g.texts, this.computed + st.crates) + (heavy === 2 && camMoving ? st.floorMs : 0);
     const allCrates = st.crates + st.stressCrates;
     const per = this.budget.host === 'hermes' ? 0.026 : 0.006;
-    this.budget.record(est, g.ops, g.texts, interval, (qq: Quality) => (qq < 3 && q >= 3 ? est + Math.max(0, allCrates - st.sprites) * per : est * 1.15));
+    // a step up is predicted from what that rung cost when last drawn (30 s at most ago), else
+    // from this frame: trains undone cost every crate again, other rungs ~15 % more
+    this.qCost[q] = this.qCostAt[q] > t - 30_000 ? this.qCost[q] * 0.8 + est * 0.2 : est;
+    this.qCostAt[q] = t;
+    this.budget.record(est, g.ops, g.texts, interval, (qq: Quality) => (this.qCostAt[qq] > t - 30_000 ? this.qCost[qq] : qq < 3 && q >= 3 ? est + Math.max(0, allCrates - st.sprites) * per : est * 1.15));
     const hudOn = !!this.hud?.on;
     if (hudOn) this.drawHud(g, f);
     // Sleep when nothing moves (a game's idle frame): the canvas keeps its last picture and the
     // 250 ms tick (a surface argument) redraws it, enough for the slow progress bars. The HUD
     // and stress mode keep frames coming; so do flights, drags, hovers and replays.
-    // Calm, the belts still move and the beat still breathes (running bays, lamps, the culprit's
-    // beacon, trouble in the city): frames keep coming and the calm gate skips the unchanged ones.
-    const beatLive = st.bays > 0 || !!c.focal || this.trouble.length > 0;
-    const awake = moving || pulsing || flying || !!this.drag || this.hoverId !== '' || hudOn || this.stress.on || this.tl.mode === 'replay' || this.tl.mode === 'behind'
-      || (!this.reduced && (beltPx > 0 || beatLive));
+    // Loud (a crate travelling, a reaction showing, a pointer, a flight, a replay, the HUD,
+    // stress): every frame. Calm: sleep; the 125 ms pulse (motion.ts CALM_MS) wakes the layer for
+    // the belts and the beat, 8 frames a second.
+    const awake = moving || pulsing || flying || !!this.drag || this.hoverId !== '' || hudOn || this.stress.on || this.tl.mode === 'replay' || this.tl.mode === 'behind';
     if (!awake) st.slept++;
     this.awake = awake;
     return awake;
@@ -1357,6 +1373,9 @@ export class Factory {
   }
 
   private top = new Int32Array(16);
+  /** The draw estimate (ms) each quality rung cost when it was last drawn, and when. */
+  private qCost = new Float32Array(5);
+  private qCostAt = new Float64Array(5).fill(-1e12);
   private trouble: Block[] = [];
   private troubleAt = '';
 
@@ -1614,7 +1633,7 @@ export class Factory {
       const x = cam.x(ROW_U[r] - ROW_DU / 2, AGE_V[0] + STACK_DV + 14), y = cam.y(ROW_U[r] - ROW_DU / 2, AGE_V[0] + STACK_DV + 14) + 4;
       const s = `${ph} ${c.phaseN[r]}`;
       const yy = this.place(x, y, g.width(s, SMALL), 13, 0);
-      if (yy >= 0) g.runs([[ph, C.ink2], [` ${c.phaseN[r]}`, C.ink]], x, yy, SMALL);
+      if (yy >= 0) g.text(s, x, yy, C.ink2, SMALL);
       if (detail && q < 2) {
         AGE_V.forEach((v, b) => {
           const st = c.stacks[r][b];
@@ -1639,7 +1658,7 @@ export class Factory {
       const u0 = YARD_U0 + 8 + i * 76;
       const x = cam.x(u0, PALLET_V + 18) + 2, y = cam.y(u0, PALLET_V + 18) + 14;
       const yy = this.place(x, y, g.width(`${p.bot} ${p.n}`, SMALL), 13, 0);
-      if (yy >= 0) g.runs([[p.bot, C.ink3], [` ${p.n}`, C.ink2]], x, yy, SMALL);
+      if (yy >= 0) g.text(`${p.bot} ${p.n}`, x, yy, C.ink3, SMALL);
     });
     // sources: each dock's org and push rate
     c.docks.forEach((d, i) => {
@@ -1648,21 +1667,22 @@ export class Factory {
       const s = `${d.short} ${d.perHour}/h`;
       const wv = g.width(s, SMALL);
       const yy = this.place(x - wv, y, wv, 13, 0);
-      if (yy >= 0) g.runs([[d.short, d.org === BOTS ? C.ink3 : C.ink2], [` ${d.perHour}/h`, C.ink]], x - wv, yy, SMALL);
+      if (yy >= 0) g.text(s, x - wv, yy, d.org === BOTS ? C.ink3 : C.ink2, SMALL);
     });
     // rails: the org at the rail's start
     if (q < 3) c.rails.forEach((r, i) => {
       const x = cam.x(RAIL_U0 + 2, RAIL_V[i] - 18), y = cam.y(RAIL_U0 + 2, RAIL_V[i] - 18) - 2;
       const s = `${r.short}${r.red ? ` ${r.red} red` : ''}`;
       const yy = this.place(x, y, g.width(s, SMALL), 13, 0);
-      if (yy >= 0) g.runs([[r.short, C.ink3], [r.red ? ` ${r.red} red` : '', C.redText]], x, yy, SMALL);
+      if (yy >= 0 && r.red) g.runs([[r.short, C.ink3], [` ${r.red} red`, C.redText]], x, yy, SMALL);
+      else if (yy >= 0) g.text(r.short, x, yy, C.ink3, SMALL);
     });
     // deploy tracks
     if (q < 3) VIAS.forEach((via, i) => {
       const x = cam.x(SCAN_U + 16, TRACK_V[i] - 30), y = cam.y(SCAN_U + 16, TRACK_V[i] - 30) - 2;
-      const s = `${VIA_WORDS[via]} ${f.byVia[via] ?? 0}`;
+      const s = `${VIA_WORDS[via]} ${f.byVia[via] ?? 0}/h`;
       const yy = this.place(x, y, g.width(s, SMALL), 13, 0);
-      if (yy >= 0) g.runs([[VIA_WORDS[via], C.ink3], [` ${f.byVia[via] ?? 0}/h`, C.ink2]], x, yy, SMALL);
+      if (yy >= 0) g.text(s, x, yy, C.ink3, SMALL);
     });
     // city districts: team names; zoomed, the apps' names too
     for (const d of this.districtBox) {
@@ -1671,7 +1691,7 @@ export class Factory {
       const yy = this.place(x, y, g.width(s, SMALL), 13, 0);
       if (yy >= 0) {
         g.fillRect(x - 2, yy - 10, g.width(s, SMALL) + 4, 13, withAlpha(C.canvas, 0.75));
-        g.runs([[d.team, C.ink2], [` ${d.n}`, C.ink3]], x, yy, SMALL);
+        g.text(s, x, yy, C.ink2, SMALL);
         this.hit(x - 2, yy - 10, g.width(s, SMALL) + 4, 13, 'district', `${(d.u0 + d.u1) / 2},${(d.v0 + d.v1) / 2},3.2`, d.team);
       }
     }
@@ -1988,7 +2008,8 @@ export class Factory {
     };
     btn('+', 'zoomin', x); btn('−', 'zoomout', x + 26); btn('⌂', 'fit', x + 52);
     const lod = this.cam.zoom >= 2.6 ? 'apps' : this.cam.zoom >= 1.6 ? 'org districts' : 'fleet';
-    const words: [string, string][] = [[`${Math.round(this.cam.zoom * 100)}%`, C.ink2], [`  ${lod}`, C.ink2], ['  drag to pan · wheel to zoom · click a crate', C.ink3]];
+    // the zoom and its level of detail (how to pan and zoom needs no permanent words)
+    const words: [string, string][] = [[`${Math.round(this.cam.zoom * 100)}%  ${lod}`, C.ink2]];
     const wv = words.reduce((a, [s]) => a + g.width(s, SMALL), 0);
     g.fillRect(x + 80, y, wv + 12, 22, withAlpha(C.canvas, 0.86));
     g.runs(words, x + 86, y + 15, SMALL);

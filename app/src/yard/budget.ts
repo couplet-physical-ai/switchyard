@@ -67,6 +67,8 @@ export class Budget {
   quality: Quality = 0;
   /** A level pinned from the HUD (-1: automatic). */
   pinned = -1;
+  /** Step up only if the better level is predicted under this (ms; a layer may set its own). */
+  upHeadroom = UP_HEADROOM_MS;
   /** The model's correction from observed misses (1 = trust the prices). */
   gain = 1;
   private over = 0;
@@ -75,6 +77,8 @@ export class Budget {
   private lastUp = -1e9;
   private frameNo = 0;
   private missing = false;
+  /** The first frame whose 30-frame window holds only frames after the last step down. */
+  private missFrom = 0;
   /** The last frame's estimate (ms) and counts, for the HUD. */
   est = 0;
   ops = 0;
@@ -116,7 +120,9 @@ export class Budget {
     if (miss && share > SHARE_MS && estMs < DRAW_BUDGET_MS) this.gain = Math.min(2.5, this.gain * 1.03);
     else if (!miss && this.gain > 1) this.gain = Math.max(1, this.gain * 0.998);
     if (this.pinned >= 0) { this.quality = this.pinned as Quality; return; }
-    if (this.frameNo % 8 === 0) this.missing = this.n >= 30 && this.p(this.intervals, 30, 0.9) > FRAME_MS * 1.25;
+    // Missed frames are judged on a window of 30 that began after the last step down, so one
+    // hitch (a tap, a mount, a recount) steps the ladder once, not all the way to the bottom.
+    if (this.frameNo % 8 === 0) this.missing = this.n >= 30 && this.frameNo >= this.missFrom && this.p(this.intervals, 30, 0.9) > FRAME_MS * 1.25;
     const missing = this.missing;
     const isOver = estMs > DRAW_BUDGET_MS || (missing && estMs > SHARE_MS);
     if (isOver) {
@@ -127,6 +133,8 @@ export class Budget {
         if (this.frameNo - this.lastUp < 120) this.upAfter = Math.min(640, this.upAfter * 2);
         this.quality = (this.quality + 1) as Quality;
         this.over = 0;
+        this.missFrom = this.frameNo + 30;
+        this.missing = false;
       }
       return;
     }
@@ -134,7 +142,7 @@ export class Budget {
     this.good++;
     if (this.good >= this.upAfter && this.quality > 0) {
       const better = (this.quality - 1) as Quality;
-      if (predictUp(better) < UP_HEADROOM_MS && !(missing && estMs > SHARE_MS)) {
+      if (predictUp(better) < this.upHeadroom && !(missing && estMs > SHARE_MS)) {
         this.quality = better;
         this.lastUp = this.frameNo;
       }

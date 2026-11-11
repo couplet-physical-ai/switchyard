@@ -41,6 +41,7 @@ const args = process.argv.slice(2);
 const opt = (name: string, def: string) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : def; };
 const flag = (name: string) => args.includes(name);
 let server = args.find((a, i) => !a.startsWith('--') && !['--zoom', '--frames', '--size', '--quality'].includes(args[i - 1] ?? '')) ?? 'demo';
+//   --hermes prices the frame budget as the macOS data module does (the ladder decides as there)
 const FRAMES = Number(opt('--frames', '600'));
 const [W, H] = opt('--size', '1440x842').split('x').map(Number);
 const ZOOM = Number(opt('--zoom', '0'));
@@ -59,6 +60,8 @@ if (server === 'fixtures') {
 }
 process.on('exit', () => mock?.kill());
 
+// --hermes: the budget prices the draws as the macOS data module does (budget.ts PRICES.hermes)
+if (flag('--hermes')) (globalThis as { HermesInternal?: unknown }).HermesInternal = {};
 const mod = await import('../app.ts');
 const { sources, draw } = mod as unknown as { sources: Record<string, (a: unknown[], s?: unknown, st?: unknown) => unknown>; draw: (s: string, a: unknown[], c: unknown, f: unknown) => boolean };
 const store = { get: () => '', set() {} };
@@ -79,12 +82,20 @@ const ov = () => (sources.overview([t, 0, true], store, {}) as { facKey: string;
 // a few seconds of the fleet moving (the demo's events spawn crates), drawn as the app would
 let key = '';
 let floorDraws = 0;
+// the live layer as the host runs it: every frame while its draw asks for one, else only when an
+// argument changes (app.contract's 125 ms `facPulse`, the calm cadence)
+let awake = true;
+let pulse = 0;
 const step = (measure: boolean): number => {
   t += 1000 / 60;
   if (Math.floor(t / 250) !== tick) { tick = Math.floor(t / 250); const o = ov(); if (o.facKey !== key) { key = o.facKey; draw('factoryFloor', [key, route, ZOOM], floorCtx, frame(t, 'args')); floorDraws++; } }
   ctx.reset();
+  const p = Math.floor(t / 125);
+  const woken = p !== pulse;
+  pulse = p;
+  if (!awake && !woken) return 0;
   const a = performance.now();
-  draw('factoryLive', ['full', route, ZOOM, tick], ctx, frame(t));
+  awake = draw('factoryLive', ['full', route, ZOOM, p], ctx, frame(t, awake ? 'frame' : 'args'));
   const ms = performance.now() - a;
   return measure ? ms : 0;
 };

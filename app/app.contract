@@ -68,6 +68,7 @@ component App
   state palSel = 0
   state picked = ""
   state facWheel = 0
+  state facPulse = 0
   resource tok = loadToken(tokGen) as shape Tok else empty(token="", has=false)
   resource link = parseLink(searchParam(top(nav), "u"), searchParam(top(nav), "server"), searchParam(top(nav), "token")) as shape Link else empty(server="", token="", ok=false)
   resource conn = connect(server, tok.token, gen) with time.epochAtZero, time.utcOffset as shape Conn else empty(ok=false, status="connecting", error="", seq=0, label="", kind="", needsSetup=false, signIn="")
@@ -96,6 +97,11 @@ component App
 
   task pulse mount
     every(250, tick)
+  // The factory floor's calm clock: while it is on top and calm, its live layer (asleep when
+  // nothing travels) is woken 8 times a second for the belts and the beat (src/factory/motion.ts);
+  // a loud floor draws every frame on its own, so the clock stops.
+  task facBeat when here == "factory" and ov.facCalm
+    every(125, facPulseTick)
   // A dropped stream reconnects after 2, 4, 8, 16, then every 30 s; a reset (a gap) refetches at once.
   task resync when feed.status == "reset" key=`${retries}`
     after(250, retry)
@@ -114,6 +120,8 @@ component App
 
   action tick
     clockMs = performanceNow()
+  action facPulseTick
+    facPulse = facPulse + 1
   action retry
     retries = retries + 1
     gen = gen + 1
@@ -257,7 +265,7 @@ component App
           if e.name == "factory"
             column flex=1 min-height=0 position="relative" testId="factory"
               canvas surface=factoryFloor(ov.facKey, facNow.route, facWheel) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="factory-floor"
-              canvas surface=factoryLive(reduced ? "reduced" : "full", facNow.route, facWheel, ov.tick) position="absolute" left=0 top=0 width="100%" height="100%"
+              canvas surface=factoryLive(reduced ? "reduced" : "full", facNow.route, facWheel, facPulse) position="absolute" left=0 top=0 width="100%" height="100%"
                 tabindex=0 role="img" aria-label=ov.summary pointerdown=facDown pointermove=facMove pointerup=facUp wheel=facWheeled key=facKey touch-action="none" testId="factory-live"
               // The strip's "replay last hour" (the canvas draws its words) is this button too: its press
               // for tests and keyboards, laid over the drawn words (a fully transparent button is

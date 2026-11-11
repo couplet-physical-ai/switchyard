@@ -24,7 +24,7 @@ const flag = (name) => process.argv.includes(name);
 const [W, H] = arg('--size', '1440x900').split('x').map(Number);
 const ms = Number(arg('--ms', '8000'));
 const server = arg('--server', '');
-const dist = resolve('target/web-dist');
+const dist = resolve(arg('--dist', 'target/web-dist'));
 if (!existsSync(join(dist, 'index.html'))) { console.error('no target/web-dist: run bun exact.mjs web-build'); process.exit(1); }
 
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.wasm': 'application/wasm', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.svg': 'image/svg+xml', '.png': 'image/png' };

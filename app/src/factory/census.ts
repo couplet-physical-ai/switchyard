@@ -89,7 +89,7 @@ export class Census {
     }
     if (this.half === 1) { this.half = 0; this.countB(w, this.now); this.stretch(); return true; }
     if (w.ver === this.ver && t - this.at < 5000 && !this.skeleton) return false;
-    if (t - this.at < 250 && this.ver >= 0 && !this.skeleton) return false;
+    if (t - this.at < 1000 && this.ver >= 0 && !this.skeleton) return false;
     this.skeleton = false;
     this.ver = w.ver; this.at = t; this.now = now;
     this.countA(w, now);
@@ -351,7 +351,7 @@ export class Census {
     this.bottleneck = best;
     let cs = 0;
     for (const r of this.rails) for (const car of r.cars) cs = (Math.imul(cs, 31) + strHash(car.sha) + (car.culprit ? 7 : car.state === 'running' || car.state === 'pending' ? 3 : 1)) | 0;
-    this.carSig = `${cs}|${groups.map((g) => `${g.cpu < 0 ? -1 : Math.round(g.cpu / 5)}.${g.mem < 0 ? -1 : Math.round(g.mem / 5)}.${g.running.length}`).join(',')}`;
+    this.carSig = String(cs);
     this.sig = `${this.docks.length}|${this.stacks.map((r) => r.map((s) => Math.min(60, s.n)).join(',')).join(';')}|${this.pallets.map((p) => p.n).join(',')}|${groups.map((g) => `${g.id}:${g.slots}`).join(',')}|${this.districts.map((d) => d.apps.length).join(',')}|${w.apps.size}|${[...this.deploys24.values()].reduce((a, b) => a + b, 0)}`;
   }
 }
