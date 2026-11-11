@@ -263,6 +263,7 @@ export class Labels implements Layer {
   private machines(g: Gfx, now: number, jobsPer: number): void {
     const f = this.f, cam = f.cam, c = f.census, w = f.world;
     c.groups.forEach((gr, gi) => {
+      if (this.f.plant.label(g, gr, gi)) return; // fab-w6: the machine's name on its wall (its numbers are the wall, the lit bays, the gauges)
       const v0 = ENG_V0 + gi * ENG_STEP;
       const x = cam.x(ENG_U0 + 6, v0 + ENG_DV) + 4, y = cam.y(ENG_U0 + 6, v0 + ENG_DV, 0) + 16;
       const util = gr.slots ? Math.round((gr.running.length / gr.slots) * 100) : 0;

@@ -249,7 +249,7 @@ export class Factory {
 
   /** The static floor's key: the camera, the fleet's shape, the apps' health (the lights are
    *  painted here, not every frame), and whether the ladder wants the low-detail floor. */
-  get floorKey(): string { return `${this.cam.key}|${this.census.sig}|${this.census.healthSig}|${this.census.carSig}|${this.budget.quality >= 3 ? 'lo' : 'hi'}|${this.w2.sig}`; } // fab-w2: |w2.sig
+  get floorKey(): string { return `${this.cam.key}|${this.census.sig}|${this.census.healthSig}|${this.census.carSig}|${this.budget.quality >= 3 ? 'lo' : 'hi'}|${this.w2.sig}|${this.plant.sig}`; } // fab-w2: |w2.sig · fab-w6: |plant.sig (the machine walls' 24 h)
 
   drawFloor(ctx: Ctx2D, f: Frame, t: number): boolean {
     this.applyStress();
@@ -336,6 +336,7 @@ export class Factory {
     // over the layers: the lens on top, the selection's journey, failures named as they ride home
     const selP = this.selPipeline();
     this.lens.draw(g, ctx, f, t); // fab-lens: the lens on top dims the rest and tells its story
+    this.plant.jobLive(g, this.fr); // fab-w6
     if (this.selected) this.drawer.journey(g, ctx, f, selP, t);
     this.crates.tags(g, t, q);
     st.labels = this.labels.length;
