@@ -46,6 +46,7 @@ export class Glance {
   private keyWin: Win | '' = '';
   private counters: Counter[] = [];
   private word = '';
+  private wordReplay = '';
   private why = '';
   private sinceW = '';
   private rows: { win: Win; label: string; hint: string }[] = [];
@@ -64,6 +65,7 @@ export class Glance {
     if (k[0] === c.dgN && this.keyWin === c.win && k[1] === minute && k[2] === (c.noVisit ? 1 : 0)) return;
     k[0] = c.dgN; k[1] = minute; k[2] = c.noVisit ? 1 : 0; this.keyWin = c.win;
     this.word = d.marks.verdict;
+    this.wordReplay = `${d.marks.verdict} · replay`;
     this.why = d.marks.why || d.marks.verdict;
     const nf = Math.max(fr.failed.length, fr.failCount), nm = Math.max(fr.merged.length, fr.mergedCount);
     const ww = c.windowWords();
@@ -107,7 +109,7 @@ export class Glance {
     if (e >= 1) this.sevFrom = d.marks.sev;
     this.dial(g, x0 + 12, y + 11, sev, c.openAt < 0 ? -1 : VERDICTS.indexOf(v), t, e);
     let x = x0 + 28;
-    const word = replay ? `${this.word} · replay` : this.word;
+    const word = replay ? this.wordReplay : this.word;
     if (c.openAt >= 0) x += g.text(word, x, y + 16.5, e > 0.5 ? col : C.ink3, 15, true) + 12;
     else x += g.text('looking…', x, y + 16.5, C.ink3, 15, true) + 12;
     f.fx.hit(x0 - 4, y, x - x0, 22, 'verdict', v, this.why);
@@ -222,6 +224,7 @@ export class Glance {
     this.rows.forEach((r, i) => {
       const ry = y + 4 + i * H, on = r.win === c.win;
       if (on) { g.fillRect(x + 1, ry, W - 2, H, '#1E1E20'); g.fillRect(x + 1, ry + 4, 2, H - 8, C.ink); }
+      else if (f.hoverId === r.win) g.fillRect(x + 1, ry, W - 2, H, '#19191B');
       g.text(r.label, x + 12, ry + 15, on ? C.ink : C.ink2, SMALL, on);
       if (r.hint) g.text(r.hint, x + W - 10, ry + 15, C.ink3, SMALL, false, 'right');
       f.fx.hit(x, ry, W, H, 'since', r.win, r.label);

@@ -10,8 +10,8 @@
 //               counts after 20 s of looking (app.contract), so "new red", "fixed", "down",
 //               "recovered" and "new cluster" are exact against it on any server.
 //   marks       smoke   an OPEN failure cluster hot enough to matter (≥ 2 failures in the last hour
-//                       or ≥ 3 repos) with failures inside the window: over the scanner, wisps
-//                       over the docks of the repos it hits
+//                       or ≥ 3 repos): over the scanner, wisps over the docks of the repos it
+//                       hits; with failures inside the window it burns (a red base, denser)
 //               beacon  acute: a main line red < 1 h, an app down < 1 h, the outage watcher.
 //                       ≤ 3 pulse (severity × recency), the rest hold steady
 //               cracks  chronic: a main line red > 24 h, an app down > 24 h
@@ -217,7 +217,7 @@ function fixedAt(recent: readonly { at: number; state: string }[] | undefined, s
 export type Verdict = 'flowing' | 'slowed' | 'jammed' | 'broken';
 export const VERDICTS: readonly Verdict[] = ['flowing', 'slowed', 'jammed', 'broken'];
 
-export type Smoke = { id: string; step: string; repos: readonly string[]; repoN: number; n1h: number; k: number; at: number };
+export type Smoke = { id: string; step: string; repos: readonly string[]; repoN: number; n1h: number; fresh: boolean; k: number; at: number };
 export type Beacon = { kind: 'red' | 'down' | 'watcher'; id: string; at: number; sev: number };
 export type Crack = { kind: 'red' | 'down'; id: string; since: number };
 /** A stage of the floor (its fleet metric) or a group (any of its metrics). */
@@ -283,8 +283,10 @@ export function marks(inp: MarkInput): Marks {
   if (inp.srv) for (const c of inp.srv.clusters) if (c.count > 0) inWin.add(c.id);
   for (const c of inp.clusters) {
     if (c.open <= 0 || !(c.count_1h >= 2 || c.repo_count >= 3)) continue;
-    if (!(c.last_seen > since || inWin.has(c.id))) continue;
-    out.smoke.push({ id: c.id, step: c.step, repos: c.repos, repoN: c.repo_count, n1h: c.count_1h, k: clamp01(0.45 + c.repo_count / 10 + c.count_1h / 20), at: Math.max(since, c.last_seen) });
+    // still burning: it smokes whatever the window; failing inside the window it burns (a red
+    // base, denser) and rises in the replay when its last failure does
+    const fresh = c.last_seen > since || inWin.has(c.id);
+    out.smoke.push({ id: c.id, step: c.step, repos: c.repos, repoN: c.repo_count, n1h: c.count_1h, fresh, k: clamp01(0.4 + c.repo_count / 10 + c.count_1h / 20 + (fresh ? 0.15 : 0)), at: fresh ? Math.max(since, c.last_seen) : since });
   }
   out.smoke.sort((a, b) => b.repoN - a.repoN || b.n1h - a.n1h || (a.id < b.id ? -1 : 1));
   if (out.smoke.length > 3) out.smoke.length = 3;

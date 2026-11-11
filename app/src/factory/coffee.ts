@@ -387,16 +387,18 @@ export class Coffee {
     const span = Math.max(1, d.now - d.since);
     const T = it >= T_SETTLE - 300 ? Infinity : d.since + clamp((it - T_SWEEP) / (T_SETTLE - 300 - T_SWEEP), 0, 1) * span;
     const sz = clamp(f.cam.s * 1.3, 0.7, 3);
-    gate(this.mEmber, 5, T, this.sEmber); embers(g, this.sEmber, t);
+    // reduced motion: the marks hold still (no rising smoke, no breathing), rims only
+    const tm = f.reduced ? 0 : t;
+    gate(this.mEmber, 5, T, this.sEmber); embers(g, this.sEmber, tm);
     cracks(g, this.mCrack);
-    gate(this.mSmoke, 8, T, this.sSmoke); smoke(g, this.sSmoke, t);
+    gate(this.mSmoke, 8, T, this.sSmoke); smoke(g, this.sSmoke, tm);
     if (this.jamUV.length && T === Infinity) {
       const P = f.plan;
       for (let i = 0; i < this.jamUV.length; i += 3) f.fx.crate(g, this.jamUV[i], this.jamUV[i + 1], 7, false, true, this.jamUV[i + 2]);
-      chevrons(g, this.mChev, d.marks.jam?.k ?? 0, beatPhase(t), sz);
+      chevrons(g, this.mChev, d.marks.jam?.k ?? 0, f.reduced ? 0 : beatPhase(t), sz);
       void P;
     }
-    gate(this.mBeacon, 6, T, this.sBeacon); beacons(g, this.sBeacon, t, sz);
+    gate(this.mBeacon, 6, T, this.sBeacon); beacons(g, this.sBeacon, tm, sz);
     if (f.tl.mode !== 'replay' && !f.lens.topLens) this.freshGlows(g, t, T);
     if (it < T_SETTLE) this.replayEvents(g, it);
   }
@@ -426,7 +428,7 @@ export class Coffee {
     m.smoke.forEach((s, i) => {
       const v = 300 + i * 70;
       const top = cam.y(P.SCAN_U, v, 56);
-      pushN(sm, cam.x(P.SCAN_U, v), top, s.k, sz, i ? 8 : 12, 56, cam.y(P.SCAN_U, v, 0) - top, s.at);
+      pushN(sm, cam.x(P.SCAN_U, v), top, s.k, sz, i ? 8 : 12, 56, s.fresh ? cam.y(P.SCAN_U, v, 0) - top : 0, s.at);
       for (const r of s.repos) { const o = w.orgOf(r); wisp.set(o, Math.max(wisp.get(o) ?? 0, s.k * 0.7)); }
     });
     for (const [o, kk] of wisp) { const v = fx.dockV(o); pushN(sm, cam.x(P.DOCK_U0 + 20, v), cam.y(P.DOCK_U0 + 20, v, 14), kk, sz, 4, 30, 0, m.smoke[0]?.at ?? d.now); }
@@ -603,7 +605,7 @@ export class Coffee {
       this.glowColOf = items.map((it) => this.glowCols.indexOf(it[4]));
       if (this.seen.size > 4000) this.seen.clear();
     }
-    const ph = beatPhase(t), b = 0.5 + 0.5 * Math.cos(ph * 2 * Math.PI);
+    const ph = this.f.reduced ? 0.5 : beatPhase(t), b = 0.5 + 0.5 * Math.cos(ph * 2 * Math.PI);
     const nc = this.glowCols.length;
     const buckets = this.glowBuckets;
     for (let i = 0; i < nc * 4; i++) { if (buckets[i]) buckets[i].length = 0; else buckets[i] = []; }

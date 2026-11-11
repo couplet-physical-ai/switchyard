@@ -170,6 +170,15 @@ const redSince = (s: Snapshot, from: number) => list(s.repos).filter((r) => (r.m
     const m = f.coffee.dg.marks;
     eq([m.smoke.length, m.beacons.length, m.cracks.length, m.jam, m.embers.length, m.hot.length, m.verdict], [0, 0, 0, null, 0, 0, 'flowing'], `all green (${w}): zero marks, flowing`);
   }
+  // the same green world with a jam: the wait trend bad, the queue growing, every slot busy
+  {
+    const ins = insights(), fleet = ins.trend('fleet')!;
+    const jamIn = { ...markInput(f.world, now - HOUR, now, f.coffee.dg.fresh, true, { waiting: 6, oldestWait: 300_000, slots: 12, busy: 12, growing: true, p50: 60_000 }), trend: (id: string) => (id === 'fleet' ? { ...fleet, intake_ms: { ...fleet.intake_ms, dir: 1 as const, bad: true } } : ins.trend(id)) };
+    const mj = marks(jamIn);
+    eq([mj.jam?.waiting, mj.verdict, mj.hot.map((h) => h.kind), mj.embers.map((e) => e.id)], [6, 'jammed', ['jam'], ['intake']], 'jam: wait trend bad + queue growing + every slot busy → jammed, the intake embers, a jam callout');
+    eq(marks({ ...jamIn, queue: { ...jamIn.queue, growing: false } }).jam, null, 'jam: not while the queue is not growing');
+    eq(marks({ ...jamIn, queue: { ...jamIn.queue, busy: 11 } }).jam, null, 'jam: not while a slot is free');
+  }
   const t = run(10_000, 3);
   const g = new Gfx();
   g.begin(ctx, 1);
@@ -186,7 +195,7 @@ const redSince = (s: Snapshot, from: number) => list(s.repos).filter((r) => (r.m
   f.coffee.pick('24h', 0);
   run(16, 40);
   const m = f.coffee.dg.marks;
-  const want = list(snap.clusters ?? []).filter((c) => c.open > 0 && (c.count_1h >= 2 || c.repo_count >= 3) && c.last_seen > now - DAY).sort((a, b) => b.repo_count - a.repo_count || b.count_1h - a.count_1h || (a.id < b.id ? -1 : 1)).slice(0, 3).map((c) => c.id);
+  const want = list(snap.clusters ?? []).filter((c) => c.open > 0 && (c.count_1h >= 2 || c.repo_count >= 3)).sort((a, b) => b.repo_count - a.repo_count || b.count_1h - a.count_1h || (a.id < b.id ? -1 : 1)).slice(0, 3).map((c) => c.id);
   eq(m.smoke.map((s) => s.id), want, `fixture smoke: the open clusters hitting ≥ 3 repos or ≥ 2 an hour (${m.smoke.map((s) => `${s.step}·${s.repoN}`).join(', ')})`);
   const fleet = list(snap.trends ?? []).find((x) => x.id === 'fleet');
   const stageBad = (['pass_rate', 'intake_ms', 'run_ms', 'pr_age_ms', 'red'] as const).filter((k) => metricBad(k, fleet?.[k], false)).length;

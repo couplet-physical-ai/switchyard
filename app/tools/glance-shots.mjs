@@ -26,12 +26,13 @@ const motion = what === 'motion';
 const browser = await chromium.launch({ executablePath: chrome(), args: ['--enable-gpu-rasterization', '--ignore-gpu-blocklist'] });
 const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: motion ? 1 : 2, ...(motion ? { recordVideo: { dir: join(out, '.video'), size: { width: 1440, height: 900 } } } : {}) });
 const page = await ctx.newPage();
+const t0 = Date.now(); // the recorded video starts with the page
 await seedVisit(page, url);
 let openAt = 0, chip = null, words = '';
 page.on('console', (m) => {
   const t = m.text();
   const o = /coffee: open at \d+ · (.*)/.exec(t);
-  if (o && !openAt) { openAt = Date.now(); words = o[1]; console.log('open:', words); }
+  if (o && !openAt) { openAt = Date.now(); words = o[1]; console.log('open:', words, `(video +${((openAt - t0) / 1000).toFixed(2)} s)`); }
   const c = /coffee: since chip at (\d+),(\d+) rows (\d+) step (\d+)/.exec(t);
   if (c) chip = { x: +c[1], y: +c[2], row: +c[3], step: +c[4] };
   if (/error|Error/.test(t)) console.log('console:', t.slice(0, 300));
