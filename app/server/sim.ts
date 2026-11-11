@@ -14,7 +14,7 @@ import type {
 import { FrameLog, historyJson } from './history.ts';
 import * as N from './names.ts';
 import { ACTIVE, newPr, prOnPipeline, prPhase, prPush, wave } from './prs.ts';
-import { seedFleet } from './seed.ts';
+import { seedFleet, seedFleetSteps } from './seed.ts';
 import { Agenda, DAY, HOUR, MIN, SEC, TICK, clamp, diurnal, makeRng, median, round2, type Rng } from './util.ts';
 import { journeyOf, prDetailOf, searchFleet } from './views.ts';
 
@@ -122,16 +122,27 @@ export class Sim {
       stats: { commits_24h: 0, pipelines_24h: 0, success_rate_24h: 0, p50_queue_ms: 0, p50_build_ms: 0, deploys_24h: 0, apps_up: 0, apps_down: 0, prs_open: 0 },
     };
     for (let i = 0; i < 1440; i++) this.preCum[i + 1] = this.preCum[i]! + PEAK_PER_MS * diurnal(this.t0 - DAY + i * MIN) * MIN;
+    // A deferred warm-up seeds in steps too: `warm` runs them first, one per call.
+    if (o.deferWarmup) { this.seeding = seedFleetSteps(this); return; }
     seedFleet(this);
+    this.seeded();
+    this.warm(Infinity);
+  }
+
+  private seeding: Generator<void, void, void> | null = null;
+  private seeded(): void {
     this.computeStats();
     this.dirty.clear();
     this.events.length = 0;
     this.checkpoint();
-    if (!o.deferWarmup) this.warm(Infinity);
   }
 
   /** Runs up to `sliceMs` more of the warm-up; true once the simulation has reached its epoch. */
   warm(sliceMs: number): boolean {
+    if (this.seeding) {
+      if (this.seeding.next().done) { this.seeding = null; this.seeded(); }
+      return false;
+    }
     if (this.now < this.epoch) this.step(Math.min(this.epoch, this.now + sliceMs), false);
     if (this.lite) this.log.drop();
     return this.now + TICK > this.epoch;

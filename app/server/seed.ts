@@ -20,7 +20,15 @@ const TEAM_BY_ORG: Record<string, string[]> = {
 
 type Cand = { id: string; c: Commit; p?: Pipeline; d?: Deploy };
 
+/** The fleet, seeded at once (the mock server, tests). */
 export function seedFleet(s: Sim): void {
+  for (const _ of seedFleetSteps(s)) void _;
+}
+
+/** The same seeding in steps, so the in-app demo can spread it over turns (a turn on Hermes has
+ *  100 ms of CPU, and the whole seed takes about that on a loaded Mac). Yields draw no random
+ *  numbers, so the fleet is identical either way. */
+export function* seedFleetSteps(s: Sim): Generator<void, void, void> {
   const r = s.rng;
   const T0 = s.t0;
   const st = s.state;
@@ -66,6 +74,7 @@ export function seedFleet(s: Sim): void {
   let acc = 0;
   s.repos.forEach((rx, i) => { acc += rx.r.lane === 'none' ? rx.w * 0.3 : rx.w; s.cum[i] = acc; });
 
+  yield;
   // ── apps: ~64 deployable repos, mostly hot/warm
   const lib = /-(lib|sdk|cli|rs|py|bench)$/;
   const pool = s.repos.filter((rx) => rx.r.lane !== 'none' && !lib.test(rx.r.name));
@@ -110,10 +119,13 @@ export function seedFleet(s: Sim): void {
   st.queues.roadrunner = { id: 'roadrunner', pending: 0, running: 0, oldest_wait_ms: 0, items: [] };
   st.queues.gha = { id: 'gha', pending: 0, running: 0, oldest_wait_ms: 0, items: [] };
 
+  yield;
   // ── main history per repo
   const cands: Cand[] = [];
   const wsum = acc;
+  let nSeeded = 0;
   for (const rx of s.repos) {
+    if (++nSeeded % 40 === 0) yield;
     const lam = (0.0002 * 0.72 * 0.55 * rx.w) / wsum; // main pushes per ms, day-averaged
     const times: number[] = [];
     let t = T0 - 8 * MIN - r.exp(1 / lam) * 0.3;
@@ -186,6 +198,7 @@ export function seedFleet(s: Sim): void {
     }
   }
 
+  yield;
   // ── pull requests: ~150 open + recently merged/closed
   const phases: [PrPhase, number][] = [['draft', 0.12], ['checks', 0.26], ['review', 0.6], ['changes_requested', 0.7], ['mergeable', 0.94], ['conflict', 1]];
   const ciRepos = s.repos.filter((rx) => rx.r.lane !== 'none');
@@ -246,6 +259,7 @@ export function seedFleet(s: Sim): void {
     if (phase === 'deployed') prX.timeline.push({ at: updated, phase });
   }
 
+  yield;
   // ── commits/pipelines/deploys of the last 24 h, oldest first, capped
   cands.sort((a, b) => a.c.at - b.c.at);
   const keepFrom = Math.max(0, cands.length - 2400);
