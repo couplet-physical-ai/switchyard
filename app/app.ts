@@ -397,6 +397,35 @@ export const sources: Sources = {
     factory.offsetMin = yard.offsetMin;
     return { kind: h?.kind ?? '', id: h?.id ?? '', label: h?.label ?? '', route: `${factory.cam.key}|${factory.selected}` };
   },
+  // fab-lens: the coffee check's last visit per server (src/factory/coffee.ts), kept by Contract
+  coffeeOpen: ([server, visits, _seq, ok]) => ({ ok: !!ok, status: safe('coffeeOpen', '', () => factory.coffee.open(String(server ?? ''), String(visits ?? ''), !!ok)) }),
+  coffeeMark: ([server, visits]) => {
+    const v = safe('coffeeMark', '', () => factory.coffee.mark(String(server ?? ''), String(visits ?? '')));
+    return { ok: v !== '', status: v };
+  },
+  // fab-lens: a time-strip tick replays from that moment at 60×
+  replayAt: async ([t, at]) => {
+    if (t > 0) advance(t);
+    if (!up) return { ok: false, status: 'not connected' };
+    const to = demo ? Math.floor((epochAtZero + clock) / 1000) * 1000 : tl.liveNow();
+    const from = Math.min(to - 60_000, Math.max(to - 24 * 3_600_000, Number(at) || to - 3_600_000));
+    try {
+      if (demo) {
+        demo = null;
+        demo = await DemoUpstream.start(from);
+        up = demo;
+        tl.load(await demo.snapshot(), clock);
+        tl.beginPlayback(from, to);
+        return { ok: true, status: 'replay' };
+      }
+      chunkMs = 60_000;
+      const base = up.snapshotAt ? await up.snapshotAt(from).catch(() => null) : null;
+      const h = base ? { from, to: from, base, frames: [] } : await up.history(from, from + 60_000, true, 12 << 20);
+      return { ok: tl.startReplay(h, to), status: 'replay' };
+    } catch (e) {
+      return { ok: false, status: String((e as Error).message ?? e) };
+    }
+  },
   devToggle: ([what, on]) => {
     if (what === 'hud') yard.hud.on = on === 1;
     else if (what === 'stress') yard.setStress(on === 1);
