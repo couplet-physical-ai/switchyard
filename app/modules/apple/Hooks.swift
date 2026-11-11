@@ -96,6 +96,15 @@ final class SYHooks {
         }
     }
 
+    /// oom: SWITCHYARD_HEAPLOG=1 (or the HUD, the data module's call) puts the data module's
+    /// `heap: <MB> MB · …` line in switchyard.log every 30 s: what a soak reads (RSS cannot see the
+    /// Hermes heap). `{op:"heapLog"}` asks whether the env is set; with `line`, writes it.
+    func heapLog(_ request: [String: Any]) -> [String: Any] { // oom
+        let on = ProcessInfo.processInfo.environment["SWITCHYARD_HEAPLOG"] == "1" // oom
+        if let line = request["line"] as? String, !line.isEmpty { SYHookLog.line(String(line.prefix(2000))) } // oom
+        return ["on": on] // oom
+    } // oom
+
     /// What the data module says of the connect it made with the token (never the token).
     func report(_ request: [String: Any]) -> [String: Any] {
         let ok = request["ok"] as? Bool ?? false

@@ -2,6 +2,7 @@
 // the built-in demo (a seeded simulation of a fleet, no network). Both answer the same calls.
 
 import { parseLarge } from './json.ts';
+import { heapBytes, memOn, noteParse } from './memlog.ts'; // oom
 import type { AppDetail, Changes, EngineHistoryDoc, History, Insights, Journey, Meta, PrDetail, SearchResults, Snapshot } from './wire.ts';
 
 export interface Upstream {
@@ -78,6 +79,7 @@ export class HttpUpstream implements Upstream {
     if (this.token) headers.authorization = `Bearer ${this.token}`;
     const init: Record<string, unknown> = { headers, exactTimeout: timeout };
     if (ceiling) init.exactIndependentHttp = { maxResponseBytes: ceiling };
+    const before = memOn() ? heapBytes() : { live: 0, ext: 0 }; // oom
     const r = await fetch(this.base + path, init as RequestInit);
     if (r.status === 404) return null as T;
     if (!r.ok) throw new Error(r.status === 401 || r.status === 403 ? `the server refused the token (${r.status})` : `${path} answered ${r.status}`);
@@ -85,7 +87,7 @@ export class HttpUpstream implements Upstream {
     // With no token the platform's SSO edge redirects to its sign-in page: a page, not JSON.
     if (/^\s*</.test(body)) throw new Error('the server needs sign-in (it answered with a sign-in page)');
     // Large replies (the snapshot, history) parse piece by piece across turns.
-    return parseLarge<T>(body, undefined, skip);
+    return noteParse(path, body, before, () => parseLarge<T>(body, undefined, skip)); // oom: noteParse logs the reply's size and the heap around its parse
   }
   async snapshot(): Promise<Snapshot> {
     const s = await this.get<Snapshot | null>('/api/v1/snapshot', 30000, 12 << 20);

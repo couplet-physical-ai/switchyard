@@ -27,6 +27,7 @@ import { Yard } from './src/yard/draw.ts';
 import { Factory } from './src/factory/factory.ts';
 import { isRed } from './src/yard/layout.ts';
 import { dotLine, fmtDur } from './src/yard/paint.ts';
+import { Census, biggest, bytesOf, engineStats, extByLine, grew, memLog, memOn, noteTurn, turnStart } from './src/memlog.ts'; // oom
 import { buildingIds, queueTruth } from './src/yard/select.ts';
 
 // fx-kc: no `secret.keep`. Exact reads every kept secret synchronously before boot, and a
@@ -254,6 +255,55 @@ function heapNow(): number {
     return Number(st?.js_heapSize ?? st?.js_allocatedBytes ?? 0) || 0;
   } catch { return 0; }
 }
+// ---- oom: the heap line and the census (src/memlog.ts), while the HUD is on or a test asks ----
+export { memLog }; // oom: tools/soak.ts turns it on
+let memAt = -1e12, censusAt = -1e12, memFrames = 0, memFramesWas = 0, memPeak = 0, memAt0 = true, memWas: Record<string, number> = {}; // oom
+let census: Census | null = null, censusWas: Census | null = null, memEnvAsked: Native | 0 = 0; // oom
+/** oom: the size of everything in the module that could accumulate over a live session. */
+export function memStats(): Record<string, number> {
+  const w = tl.world, t = tl as unknown as { kept: unknown[]; keptIdx: number };
+  let examples = 0, pushes = 0;
+  for (const c of w.clusters.values()) examples += c.examples?.length ?? 0;
+  for (const l of w.pushes.values()) pushes += l.length;
+  return {
+    repos: w.repos.size, commits: w.commits.size, pipelines: w.pipelines.size, prs: w.prs.size, deploys: w.deploys.size, apps: w.apps.size, engines: w.engines.size,
+    events: w.recent.length, health: w.health.length, pushes, clusters: w.clusters.size, examples, flakes: w.flakes.size, trends: w.trends.size,
+    kept: t.kept.length - t.keptIdx, replay: tl.replayHeld, details: details.size, engHist: engineHist.series.size, ...factory.memStats(),
+  };
+}
+/** oom: from a data turn (the overview's): the heap line every `memLog.every` ms, and a census
+ *  walked a slice a turn every `memLog.census` ms, diffed with the last. */
+function memTick(native: Native): void {
+  if (memEnvAsked !== native) { memEnvAsked = native; try { memLog.env = native?.available ? native.call({ op: 'heapLog' }).on === true : false; } catch { memLog.env = false; } }
+  const h = heapNow();
+  if (h > memPeak) memPeak = h;
+  memLog.hud = yard.hud.on;
+  if (!memOn()) return;
+  if (clock - memAt >= memLog.every) {
+    const dt = Math.max(1, clock - memAt) / 1000, first = memAt0;
+    memAt = clock;
+    const st = engineStats(), ms = memStats(), was = memWas;
+    memWas = st;
+    if (memAt0) { memAt0 = false; console.log(`engine: ${Object.keys(st).map((k) => `${k}=${st[k]}`).join(' ')}`); }
+    const MB = (b: number | undefined) => ((b ?? 0) / 1048576).toFixed(1), d = (k: string) => (st[k] ?? 0) - (was[k] ?? 0), df = memFrames - memFramesWas;
+    memFramesWas = memFrames;
+    // Hermes: the live bytes (Exact collects between calls, so ~ the live set), the heap's segments,
+    // the most ever live after a collection, and what this window allocated and collected
+    const eng = st.js_allocatedBytes === undefined ? '' : ` · size ${MB(st.js_heapSize)} · peak live ${MB(st.js_peakLiveAfterGC)} · ext ${MB(st.js_externalBytes)}${first ? '' : ` · alloc ${MB(d('js_totalAllocatedBytes') / dt)} MB/s · gc ${d('js_numGCs')} in ${Math.round(d('js_gcTime') * 1000)} ms (${df ? (d('js_gcTime') * 1000 / df).toFixed(2) : '-'} ms/frame, max ${((st.js_maxGCTime ?? 0) * 1000).toFixed(1)})`}`;
+    const xb = extByLine();
+    const line = `heap: ${MB(st.js_allocatedBytes ?? h)} MB${eng} · frames ${memFrames} (+${df})${xb ? ` · ext by ${xb}` : ''} · ${Object.keys(ms).map((k) => `${k} ${ms[k]}`).join(' · ')}`;
+    console.log(line);
+    try { if (native?.available) native.call({ op: 'heapLog', line }); } catch { /* a module with no heapLog */ } // ~/Library/Logs/Switchyard/switchyard.log
+    memPeak = h;
+  }
+  if (!census && (memLog.on || memLog.hud) && clock - censusAt >= memLog.census) { censusAt = clock; census = new Census({ tl, factory, yard, engineHist, mlTable, prTable, details }); }
+  if (census && census.step(1500)) {
+    const c = census, was = censusWas;
+    census = null; censusWas = c;
+    console.log(`census: ${c.objects} objects${was ? ` (${c.objects - was.objects >= 0 ? '+' : ''}${c.objects - was.objects})` : ''} · ${bytesOf(c)} · ${was ? `grew ${grew(was, c, 10).map((g) => `${g.path} +${g.d}→${g.to}`).join(', ') || '-'}` : `biggest ${biggest(c, 10).map((b) => `${b.path} ${b.entries}`).join(', ')}`}`);
+  }
+}
+
 function fetchChunk(from: number): Promise<void> {
   if (!up || demo || chunking) return chunking ?? Promise.resolve();
   const z = replaySizing(tl.speed);
@@ -430,9 +480,11 @@ function liveFeed(server: string, token: string, seq: number, ok: boolean) {
     // stream holds twice its ceiling of the native lanes' 64 MiB, beside a history read.)
     exactIndependentHttp: { maxResponseBytes: 4 << 20 },
     exactStream(ev) {
+      turnStart(); // oom
       if (ev.type === 'open') status = 'live';
       else if (ev.type === 'message' && typeof ev.data === 'string') {
         status = 'live';
+        if (ev.data.length >= 64 << 10 && memOn()) console.log(`heap: stream message ${ev.data.length} B`); // oom
         // A coalesced message means frames were dropped on the way in: the world has a gap.
         if ((ev as { coalesced?: number }).coalesced) status = 'reset';
         else for (const f of parseFrames(ev.data)) {
@@ -443,6 +495,7 @@ function liveFeed(server: string, token: string, seq: number, ok: boolean) {
         console.log(`stream ended: ${e.kind ?? ''} ${e.message ?? ''}`);
         status = status === 'reset' ? 'reset' : e.kind === 'Network' ? 'closed' : 'error';
       } else if (ev.type === 'close') status = status === 'reset' ? 'reset' : 'closed';
+      noteTurn('stream'); // oom
       return { ok: status === 'live', status };
     },
   });
@@ -615,7 +668,7 @@ export const sources: Sources = {
     return c;
   },
   liveFeed: ([server, _ver, seq, _gen, ok]) => liveFeed(server, needsToken(server) ? token : '', seq, ok),
-  overview: ([t]) => { if (t > 0) advance(t); safe('plantHist', 0, () => { factory.plant.pump(clock); return 0; }); return safe('overview', EMPTY_OV, overview); }, // fab-w6: the machine walls' 24 h histories are asked here (a source), never in a draw
+  overview: ([t], _store, _storage, native) => { if (t > 0) advance(t); safe('plantHist', 0, () => { factory.plant.pump(clock); return 0; }); safe('memTick', 0, () => { memTick(native); return 0; }); return safe('overview', EMPTY_OV, overview); }, // oom: memTick // fab-w6: the machine walls' 24 h histories are asked here (a source), never in a draw
   timeControl: async ([what, speed]) => {
     if (what === 'pause') tl.pause();
     else if (what === 'play') {
@@ -838,8 +891,13 @@ function cached<T>(key: string, get: () => Promise<T>): Promise<T> {
 }
 
 /** The host's entry: one function for every source, as `sources` names them. */
-export const answer: Answer = ((source: keyof Sources, args: unknown, store: Store, storage: unknown, native?: unknown) =>
-  (sources[source] as (a: unknown, s: Store, st: unknown, n: unknown) => unknown)(args, store, storage, native)) as Answer;
+export const answer: Answer = ((source: keyof Sources, args: unknown, store: Store, storage: unknown, native?: unknown) => {
+  turnStart(); // oom
+  const v = (sources[source] as (a: unknown, s: Store, st: unknown, n: unknown) => unknown)(args, store, storage, native);
+  noteTurn(source); // oom: a source over the heap's high mark says so
+  if (memOn() && v instanceof Promise) v.then(() => noteTurn(`${source} (resolved)`), () => {}); // oom
+  return v;
+}) as Answer;
 
 // ---- canvases ------------------------------------------------------------------------------
 /** Surface → its arity (Contract passes that many arguments); the tables' lifetime is 9. */
@@ -856,7 +914,10 @@ export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
   // it is on top again.
   if ((surface === 'factoryLive' || surface === 'factoryTop' /* fab-w7 */) && topView !== '' && topView !== 'factory') return false;
   try {
-    return drawSurface(surface, args, ctx, frame);
+    turnStart(); // oom
+    const more = drawSurface(surface, args, ctx, frame);
+    noteTurn(`draw ${surface}`); // oom
+    return more;
   } catch (e) {
     // A draw that throws paints a line saying so, and the app goes on.
     if (!warned.has(`draw:${surface}`)) { warned.add(`draw:${surface}`); console.log(`draw ${surface}: ${(e as Error)?.stack ?? e}`); }
@@ -879,6 +940,7 @@ function drawSurface(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
   }
   if (surface === 'factoryLive') {
     advance(frame.time, false);
+    memFrames++; // oom
     factory.reduced = args[0] === 'reduced';
     return factory.drawLive(ctx, frame, clock, Number(args[2]) || 0);
   }

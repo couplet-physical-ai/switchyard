@@ -169,6 +169,20 @@ export class Factory {
   }
   /** The last Factory made (the bench reaches the loop through it). */
   static last: Factory | null = null;
+  /** oom: the sizes of the floor's structures that could accumulate (app.ts `memStats`). */
+  memStats(): Record<string, number> {
+    const any = (o: unknown) => o as Record<string, unknown>;
+    const size = (o: unknown): number => (o instanceof Map || o instanceof Set ? o.size : Array.isArray(o) ? o.length : -1);
+    const pl = any(this.plant), ci = any(this.city), fl = any(this.floor), co = any(this.coffee), cr = any(this.crates), le = any(this.lens);
+    const fr = this.coffee.dg.fresh as unknown as Record<string, unknown>;
+    let fresh = 0;
+    for (const k of Object.keys(fr)) { const n = size(fr[k]); if (n > 0) fresh += n; }
+    return {
+      crates: size(cr.list), hits: this.hits.length, lastBay: this.plant.lastBay.size, litB: size(pl.litB), litCache: size(pl.litCache), plantHist: size(any(this.plant.hist).tides), plantAsked: size(any(this.plant.hist).asked),
+      cityHist: size(ci.hist), cityAsked: size(ci.asked), citySent: size(ci.sent), citySky: size(ci.skyOf), cityNight: size(ci.nightFaces), floorHov: size(fl.hov), floorOld: size(fl.oldN), floorLit: size(fl.litN), floorTints: size(fl.tints),
+      coffeeSeen: size(co.seen), fresh, lensStack: size(le.stack), lensPost: size(le.postAt), fcLists: size(any(this.fc).lists), routeIds: size(cr.routeIds),
+    };
+  }
   /** What the last live frame drew, for the HUD and the bench. */
   readonly stat = { crates: 0, stressCrates: 0, sprites: 0, trains: 0, cars: 0, bays: 0, labels: 0, hits: 0, floorDraws: 0, floorRate: 0, floorMs: 0, floorOps: 0, sec: 0, lod: [0, 0, 0, 0], slept: 0 };
   selected = '';
