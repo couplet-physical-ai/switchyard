@@ -9,7 +9,7 @@
 //
 // The budget in Bun's milliseconds: Hermes (an interpreter) runs this code ~10-25x slower than
 // Bun's JIT on the same core, and a slow Mac 2-4x slower again, so a Bun turn of 2 ms is ~80 ms
-// on the slowest Mac we ship to. tools/turns.test.ts holds the boot path to that.
+// on the slowest Mac we ship to. This probe covers the retained Factory, Yard and Live sources.
 
 type Turn = { at: string; ms: number };
 
@@ -59,7 +59,7 @@ export async function measure(server: string, size = { w: 1440, h: 900 }): Promi
     const conn = (await call('connect', [server, '', 1, epoch0, 0])) as { ok: boolean; status: string; error?: string };
     if (!conn.ok) throw new Error(`connect: ${conn.status} ${conn.error ?? ''}`);
     await call('overview', [16]);
-    // the factory floor is the default view: its two layers on the boot path
+    // The Factory remains a view; exercise its two canvas layers on the boot path.
     paint('factoryFloor', ['', '', 0], 24);
     paint('factoryFloor', ['', '', 0], 25);
     paint('factoryFloor', ['', '', 0], 26);
@@ -67,11 +67,9 @@ export async function measure(server: string, size = { w: 1440, h: 900 }): Promi
     for (const s of ['yardStatic', 'yardInfo', 'yardLive', 'yardTop']) paint(s, s === 'yardLive' ? ['full', '', 0] : ['', 0], 32);
     for (let f = 2; f < 6; f++) for (const s of ['yardInfo', 'yardLive', 'yardTop']) paint(s, s === 'yardLive' ? ['full', '', f] : ['', f], 16 * f + 32);
     await call('overview', [300]);
-    await call('mainlines', ['', '', '', '', 300]);
-    paint('mainlinesTable', [1, '', 0, 0, 0, '', '', '', 0], 320);
-    await call('prs', ['', '', '', '', 300]);
-    paint('prsTable', [1, '', 0, 0, 0, '', '', '', 0], 340);
-    await call('fleet', [300]);
+    await call('nowFeed', [300, '', '', '']);
+    await call('nowPanel', ['', 300]);
+    await call('nowLog', ['', 300]);
     await call('search', ['zinc', 300]);
   } finally {
     globalThis.fetch = realFetch;

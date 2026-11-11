@@ -1,98 +1,49 @@
-// The recorded real fleet: contract/fixtures (394 repos, sanitized from the live
-// upstreams). Counts follow the v0.5 recording (contract 46bdd2a). `bun exact.mjs test` starts app.json's `commands.server` (server/mock.ts
-// --fixtures ../contract/fixtures --frozen, read at run time, nothing copied into app/) at the
-// address src/api.ts names, and the server field's `fixtures` connects to it. The same on web
-// and macOS; no devbox server.
+// The recorded fleet (contract/fixtures): one frozen, sanitized snapshot shared by the demo
+// server. This checks the real connection and that both legacy schematics still read it.
 
-test "the real fleet's main lines are one canvas that scrolls, focuses and opens"
+test "the fixture fleet connects on Live and remains available in Factory and Yard"
   clock data
-  tap "setup-connect"
+  tap "now-setup-connect"
   clock settle
   type "server-field" "fixtures"
   tap "settings-save"
   clock data
-  clock +500
+  clock +1000
+  clock data
   expect state conn.ok == true
   expect state ov.repos == 394
-  tap "tab-mainlines"
-  clock settle
-  clock +600
-  expect tree has "mainlines-table"
-  expect state mlData.total == 394
-  expect state mlData.red == 38
-  expect text "mainlines-count" == "394 repos · 38 red · 0 building"
-  tap "mainlines-table" wheel 0 2000
-  clock +800
-  expect state mlWheel == 2000
-  expect state mlData.top == "Northwind-Labs/mellow-prism"
-  tap "mainlines-table" wheel 0 200000
-  clock +800
-  expect state mlData.atEnd == true
-  tap "mainlines-table" wheel 0 -1000000
-  clock +800
-  expect state mlData.top == "Northwind-Labs/hollow-relay"
-  expect state mlData.atEnd == false
-  tap "mainlines-table"
-  clock data
-  clock +400
-  expect state mlData.focusShown == true
-  tap "mainlines-table"
-  clock data
-  clock settle
-  expect state here == "commit"
-  back
-  clock settle
-  clock +400
-  expect state here == "mainlines"
-  expect state mlData.focusShown == true
+  expect state nowData.ok == true
+  expect text "now-status" == "now"
+  expect tree missing "now-setup"
 
-test "a deep link focuses a repo at the end of the list and scrolls it into view"
+  tap "tab-factory"
+  clock settle
+  clock +1500 real
   clock data
-  tap "setup-connect"
+  expect state here == "factory"
+  expect tree has "factory-floor"
+  expect tree has "factory-live"
+  expect tree has "timebar"
+  expect state ov.facCity == 240
+
+  tap "tab-yard"
+  clock settle
+  expect state here == "yard"
+  expect tree has "yard-live"
+  expect tree has "timebar"
+  expect state ov.repos == 394
+
+test "a Live deep link retains its selected repo filter"
+  clock data
+  tap "now-setup-connect"
   clock settle
   type "server-field" "fixtures"
   tap "settings-save"
   clock data
-  clock +500
-  type "root" "/mainlines?repo=copper-browser%2Fvivid-harbor"
-  clock settle
-  clock +600
-  expect state mlFocus == "copper-browser/vivid-harbor"
-  expect state mlData.focusShown == true
-  expect tree has "mainlines-focus"
-  tap "state-red"
-  clock +400
-  expect text "mainlines-count" == "38 of 394 repos · 38 red · 0 building"
-
-test "the real fleet's pull requests: one canvas, filters, a row opens its PR"
+  clock +1000
   clock data
-  tap "setup-connect"
+  type "root" "/?repo=copper-browser%2Fvivid-harbor"
   clock settle
-  type "server-field" "fixtures"
-  tap "settings-save"
-  clock data
-  clock +500
-  tap "tab-prs"
-  clock settle
-  clock +600
-  expect tree has "prs-table"
-  expect state prData.open == 879
-  expect state prData.total == 879
-  expect text "prs-count" == "879 open · 422 ready to merge · 367 blocked · 608 from bots"
-  tap "prs-table" wheel 0 3000
-  clock +800
-  expect state prWheel == 3000
-  tap "prs-ready"
-  clock +400
-  expect state prData.total == 422
-  tap "prs-blocked"
-  clock +400
-  expect state prData.total == 367
-  tap "prs-open"
-  clock +400
-  tap "prs-table"
-  clock data
-  clock settle
-  clock data
-  expect state here == "pr"
-  expect tree has "pr-title"
+  expect state here == "now"
+  expect state nowRepo == "copper-browser/vivid-harbor"
+  expect state nowData.ok == true

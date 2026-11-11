@@ -1,56 +1,52 @@
-// Navigation: the four views, their deep links, the setup screen. Every test starts the
-// built-in demo fleet (no network), so it runs the same on every host.
+// Live is the default route, with Factory and Yard one click away. Every test starts from the
+// built-in demo (no network), so it runs the same on every host.
 
 test "a fresh install asks where to connect, and the demo starts at once"
   clock data
-  expect tree has "setup"
-  tap "setup-demo"
+  expect state here == "now"
+  expect tree has "now-setup"
+  tap "now-setup-demo"
   clock data
-  clock +500
-  expect tree missing "setup"
-  expect text "conn-status" == "built-in demo"
-  expect text "mode-pill" == "live"
+  clock +1000
+  clock data
+  expect tree missing "now-setup"
+  expect text "now-status" == "now"
+  expect state conn.kind == "demo"
+  expect state ov.mode == "live"
   expect state ov.repos == 410
 
-test "each tab opens its view and the yard comes back"
+test "the three tabs open Live, Factory and Yard in order"
   clock data
-  tap "setup-demo"
+  tap "now-setup-demo"
   clock data
-  tap "tab-mainlines"
+  expect text "tab-now" == "Live"
+  expect text "tab-factory" == "Factory"
+  expect text "tab-yard" == "Yard"
+  tap "tab-factory"
   clock settle
-  expect tree has "mainlines-table"
-  tap "tab-prs"
-  clock settle
-  expect tree has "prs-table"
-  tap "tab-fleet"
-  clock settle
-  expect tree has "apps-table"
+  expect state here == "factory"
+  expect tree has "factory-live"
+  expect tree has "timebar"
   tap "tab-yard"
   clock settle
+  expect state here == "yard"
   expect tree has "yard-live"
   expect tree has "timebar"
-
-test "a deep link opens a repo's main line focused"
-  clock data
-  tap "setup-demo"
-  clock data
-  type "root" "/mainlines?repo=Northwind-Labs%2Fcicd"
+  tap "tab-now"
   clock settle
-  clock +300
-  expect state mlFocus == "Northwind-Labs/cicd"
-  expect tree has "mainlines-focus"
-  expect state mlData.focusShown == true
+  expect state here == "now"
+  expect tree has "now"
 
-test "the main lines put red first and filter by state"
+test "deep links filter Live by repo, app and commit"
   clock data
-  tap "setup-demo"
+  tap "now-setup-demo"
   clock data
-  tap "tab-mainlines"
+  type "root" "/?repo=Northwind-Labs%2Fcicd"
   clock settle
-  clock +300
-  tap "state-red"
-  clock +300
-  expect state mlFilter == "red"
-  tap "state-all"
-  clock +300
-  expect state mlFilter == ""
+  expect state here == "now"
+  expect state nowRepo == "Northwind-Labs/cicd"
+  type "root" "/?app=web%2Fswitchyard&sha=Northwind-Labs%2Fcicd%40abc123"
+  clock settle
+  expect state nowRepo == ""
+  expect state nowApp == "web/switchyard"
+  expect state nowSha == "Northwind-Labs/cicd@abc123"

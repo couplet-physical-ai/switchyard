@@ -359,16 +359,18 @@ grep -E 'token-file|snapshot' ~/Library/Logs/Switchyard/switchyard.log
 
 | Path | What |
 |---|---|
-| `app.contract`, `views/*.contract` | the views (Contract): chrome, Mainlines, PRs, Fleet, Journey, ⌘K, settings |
+| `app.contract`, `views/*.contract` | Contract routes: Live, Factory, Yard, Connect, ⌘K and settings |
 | `app.ts` | the data module: sources Contract asks, and the canvases' `draw` |
 | `src/world.ts` | the fleet as Maps, applying wire frames |
 | `src/timeline.ts` | LIVE / Pause / 1× / ¼× / the hour replay |
-| `src/yard/*` | the yard: layout, motion (packets), the two canvas layers |
-| `src/project.ts` | what each view reads |
+| `src/now/view.ts` | Live's data-source seam |
+| `src/factory/*` | the Factory floor, its canvases, lenses, replay and coffee check |
+| `src/yard/*` | the Yard: layout, motion (packets), the canvas layers |
+| `src/project.ts` | the Live search palette's projections |
 | `src/wire.ts` | the wire contract (`../contract/CONTRACT.md`) in TypeScript |
 | `server/` | the deterministic simulation and mock server |
 | `tests/` | `*.test.contract` suites (web and macOS) |
 | `modules/apple/Updater*.swift`, `views/update.contract`, `src/update.ts` | the macOS updater ("Updates" above) |
 | `modules/apple/Hooks*.swift`, `views/hooks.contract`, `src/hooks.ts` | the macOS test hooks ("Test hooks" above) |
 | `modules/apple/Keychain*.swift`, `modules/web/index.js`, `views/token.contract` | the token at rest and its card ("Security" above) |
-| `tools/` | `webperf.mjs` (frame pacing in Chromium), `mini-sync.sh` (copy to the Mac mini), `updater-tests.sh`, `updater-e2e.sh` |
+| `tools/` | `yard-regress.mjs` (pixel comparison), `webperf.mjs` (frame pacing in Chromium), `mini-sync.sh`, updater tools |

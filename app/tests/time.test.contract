@@ -1,11 +1,14 @@
-// Time controls (DESIGN.md, "Time"): LIVE, Pause, 1×, ¼×, the hour replay.
+// Time controls stay on the Factory and Yard; the footer is visible on Yard throughout.
 
 test "pause freezes the yard and back to live returns"
   clock data
-  tap "setup-demo"
+  type "root" "/yard"
+  clock settle
+  tap "yard-setup-demo"
   clock data
   clock +1000
   expect state mode == "live"
+  expect tree has "timebar"
   tap "pause"
   clock data
   expect state mode == "paused"
@@ -21,7 +24,9 @@ test "pause freezes the yard and back to live returns"
 
 test "quarter speed plays behind live, then 1× catches up"
   clock data
-  tap "setup-demo"
+  type "root" "/yard"
+  clock settle
+  tap "yard-setup-demo"
   clock data
   clock +1000
   tap "speed-quarter"
@@ -35,10 +40,12 @@ test "quarter speed plays behind live, then 1× catches up"
 
 test "the hour replay plays history at 60× and comes back live"
   clock data
-  tap "setup-demo"
+  type "root" "/yard"
+  clock settle
+  tap "yard-setup-demo"
   clock data
   clock +1000
-  tap "replay"
+  tap "yard-replay"
   clock data
   expect state mode == "replay"
   expect state ov.mode == "replay"
@@ -48,13 +55,12 @@ test "the hour replay plays history at 60× and comes back live"
   clock data
   expect state ov.mode == "live"
 
-// fx-day: "24 h in 2 min". The built-in demo has no history: it simulates its fleet as the
-// playhead pulls it, too slowly for 720× on Hermes, so its day is the last 2 h at 120× (app.ts
-// DEMO_DAY_*; a server's is the last 24 h at DAY_SPEED, 720×, below). The playhead runs at the
-// day's speed (the dial counts it: 20 s are 40 min at 120×), a pause holds it, Play goes on at the
-// day's speed, and live leaves it.
+// fx-day: the demo's last 2 h at 120×; a server's last 24 h at 720×. Pause holds the
+// playhead and Play resumes at the day's speed.
 test "the 24 h replay plays the day at its speed, pauses and resumes at it, and comes back live"
   clock data
+  type "root" "/factory"
+  clock settle
   tap "setup-demo"
   clock data
   clock +1000
@@ -90,6 +96,8 @@ test "the 24 h replay plays the day at its speed, pauses and resumes at it, and 
 
 test "the 24 h replay of a server plays at the day's speed, 720×"
   clock data
+  type "root" "/factory"
+  clock settle
   tap "setup-connect"
   clock settle
   type "server-field" "fixtures"

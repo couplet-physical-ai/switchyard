@@ -2,7 +2,7 @@
 // the built-in demo (a seeded simulation of a fleet, no network). Both answer the same calls.
 
 import { parseLarge } from './json.ts';
-import type { AppDetail, Changes, EngineHistoryDoc, History, Insights, Journey, Meta, PrDetail, SearchResults, Snapshot } from './wire.ts';
+import type { AppDetail, Changes, EngineHistoryDoc, History, Insights, Journey, Meta, SearchResults, Snapshot } from './wire.ts';
 
 export interface Upstream {
   readonly kind: 'http' | 'demo';
@@ -12,7 +12,6 @@ export interface Upstream {
   /** The fleet as it was at `at` (contract v0.3 `/snapshot?at=`); null where the server has none. */
   snapshotAt?(at: number): Promise<Snapshot | null>;
   journey(repo: string, sha: string): Promise<Journey | null>;
-  pr(repo: string, number: number): Promise<PrDetail | null>;
   search(q: string): Promise<SearchResults>;
   meta(): Promise<Meta | null>;
   /** v0.5 `GET /api/v1/insights`; null where the server has none (a v0.4 server: 404). */
@@ -115,9 +114,6 @@ export class HttpUpstream implements Upstream {
   }
   journey(repo: string, sha: string): Promise<Journey | null> {
     return this.get<Journey | null>(`/api/v1/commit/${repo}/${sha}`, 15000, 4 << 20);
-  }
-  pr(repo: string, number: number): Promise<PrDetail | null> {
-    return this.get<PrDetail | null>(`/api/v1/pr/${repo}/${number}`, 15000, 4 << 20);
   }
   search(q: string): Promise<SearchResults> {
     return this.get<SearchResults>(`/api/v1/search?q=${encodeURIComponent(q)}`);

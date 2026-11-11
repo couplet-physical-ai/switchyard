@@ -7,7 +7,7 @@
 
 import { createSim, PROTOCOL, type Sim } from '../server/sim.ts';
 import type { Upstream } from './api.ts';
-import type { Changes, Frame as WireFrame, History, Insights, Journey, Meta, PrDetail, SearchResults, Snapshot } from './wire.ts';
+import type { Changes, Frame as WireFrame, History, Insights, Journey, Meta, SearchResults, Snapshot } from './wire.ts';
 
 export async function yieldTurn(): Promise<void> {
   const s = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
@@ -56,9 +56,6 @@ export class DemoUpstream implements Upstream {
   }
   async journey(repo: string, sha: string): Promise<Journey | null> {
     return this.sim.journey(repo, sha) as Journey | null;
-  }
-  async pr(repo: string, number: number): Promise<PrDetail | null> {
-    return this.sim.prDetail(repo, number) as PrDetail | null;
   }
   async search(q: string): Promise<SearchResults> {
     return this.sim.search(q);

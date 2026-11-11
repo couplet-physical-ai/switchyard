@@ -1,8 +1,8 @@
-// ⌘K: one field that reaches any repo, PR, commit, app or pipeline.
+// ⌘K: one field that routes repo, PR, app, commit and pipeline hits to Live filters.
 
-test "the palette finds a repo and opens it"
+test "the palette finds a repo and opens its Live filter"
   clock data
-  tap "setup-demo"
+  tap "now-setup-demo"
   clock data
   tap "open-palette"
   clock settle
@@ -11,13 +11,13 @@ test "the palette finds a repo and opens it"
   expect tree has "hit-repo-Northwind-Labs/cicd"
   tap "hit-repo-Northwind-Labs/cicd"
   clock settle
-  expect state here == "mainlines"
-  expect state mlFocus == "Northwind-Labs/cicd"
-  expect tree has "mainlines-focus"
+  expect state here == "now"
+  expect state nowRepo == "Northwind-Labs/cicd"
+  expect tree has "now"
 
 test "an empty palette lists what is on fire"
   clock data
-  tap "setup-demo"
+  tap "now-setup-demo"
   clock data
   tap "open-palette"
   clock +300

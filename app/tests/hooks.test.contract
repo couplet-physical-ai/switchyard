@@ -13,4 +13,4 @@ test "with no SWITCHYARD_TOKEN_FILE the token-file hook does nothing"
   expect state tfr.ok == false
   expect state server == ""
   expect state tok.has == false
-  expect tree has "setup-demo"
+  expect tree has "now-setup-demo"

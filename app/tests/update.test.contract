@@ -9,6 +9,8 @@ test "the web has no updater: no pill, no Check for Updates, no UPDATES in Setti
   expect state upd.supported == false
   expect tree missing "update-pill"
   expect tree missing "update-check"
+  tap "tab-yard"
+  clock settle
   tap "open-settings"
   clock settle
   expect tree has "settings-save"
@@ -24,6 +26,8 @@ test "macOS under the agent: Settings and the pill walk through up to date, fail
   expect state upd.checks == 0
   expect tree has "update-check"
   expect tree missing "update-pill"
+  tap "tab-yard"
+  clock settle
   tap "open-settings"
   clock settle
   expect tree has "update-settings"

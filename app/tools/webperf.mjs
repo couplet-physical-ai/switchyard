@@ -77,8 +77,7 @@ const m0 = await metric();
 const profiling = process.argv.includes('--profile');
 if (profiling) { await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 200 }); await cdp.send('Profiler.start'); }
 if (process.argv.includes('--wheel')) {
-  // Scroll the view under the pointer the whole window: 120 px notches every 16 ms, turning
-  // around every 3 s (Mainlines and PRs are one canvas: this is their scroll path).
+  // Exercise the visible canvas/view with 120 px notches every 16 ms, turning around every 3 s.
   await page.mouse.move(w / 2, h / 2);
   const end = Date.now() + seconds * 1000;
   let dir = 1, turn = Date.now() + 3000;
