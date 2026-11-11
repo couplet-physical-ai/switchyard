@@ -257,7 +257,6 @@ export class Plant implements Layer {
     gauge.flush(g, cam, '#9A9A9E', '#6A6A6E', '#58585C', '', 1, 3);
     cap.flushQuads(g, cam, C.red);
   }
-
 }
 
 /** The deploy tracks' traffic: deploys in flight sit on their track, nearer the city the longer

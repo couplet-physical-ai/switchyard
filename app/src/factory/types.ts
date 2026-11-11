@@ -30,6 +30,11 @@
 //   tools (turns.ts, factory-bench.ts) reach the factory only through app.ts's sources/draw.
 //   factory.ts also still exports `dur` and the type `Plan`.
 //   seams.ts, hud.ts and motion.ts reach nothing on Factory (they do not import it).
+//   New with the split (additive): the layers by name (`floor`, `plant`, `city`, `crates`,
+//     `reactions`, `words`), the registry `order`, the chrome (`drawer`, `strip`), the scratch
+//     batches `bA`..`bD`, `stat`, `selPipeline()`, and `overlay(g, lens)`, which runs the layers'
+//     `overlay` hooks for the lens on top (lens.ts may call it; nothing implements it yet).
+//   pointer() and select() stay in factory.ts (W3's hook; W7 owns the loop).
 //
 // THE LAYERS (layers.ts, back to front). The loop (factory.ts) runs every layer's hook in
 // registry order: `onEvent` as events land, `census` after each census check, `floor` when the

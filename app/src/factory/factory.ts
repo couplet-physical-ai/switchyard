@@ -10,38 +10,40 @@
 // when the camera or the fleet's shape moved) and `factoryLive` (belt motion, crates, bays,
 // gauges, health lights, heat, labels, the journey, the drawer, the time strip: every frame
 // while anything moves). Every word is drawn in screen space at a projected anchor.
+//
+// This file is the loop: the camera, the pointer, the census check, the frame budget, and the
+// hook surface the lens system reaches (types.ts lists it). The stages are layers (layers.ts,
+// one line each, run back to front): floor.ts, plant.ts, city.ts, crates.ts, labels.ts; the
+// chrome is drawer.ts (journey, drawer, hover card) and strip.ts; the plan is layout.ts; the
+// shared shapes and paint are types.ts and prims.ts.
 
 import type { Ctx2D, Frame } from '../../app.contract.d.ts';
 import type { Event, Journey, Pipeline } from '../wire.ts';
 import type { Timeline } from '../timeline.ts';
 import type { World } from '../world.ts';
-import { BOTS } from '../world.ts';
 import { Budget, type Quality } from '../yard/budget.ts';
-import { Gfx, times } from '../yard/gfx.ts';
+import { Gfx } from '../yard/gfx.ts';
 import type { Hud } from '../yard/hud.ts';
-import { C, TAU, clamp, font, withAlpha } from '../yard/theme.ts';
-import { BoxBatch, TrainTable } from './batch.ts';
-import { AGES, AGE_WORDS, Census, PHASES, failingStep, short } from './census.ts';
+import { C, clamp } from '../yard/theme.ts';
+import { BoxBatch } from './batch.ts';
+import { Census } from './census.ts';
+import { Drawer } from './drawer.ts';
 import { FacHud } from './hud.ts';
-import { Cam, LU, LV } from './iso.ts';
-import { R_BEAM, R_DOOR, R_RING, Ripples, arrival, beltSpeedPx, blink, breathe, flash } from './motion.ts';
+import { Cam } from './iso.ts';
+import { buildLayers } from './layers.ts';
+import { PLAN } from './layout.ts';
+import { F, box, crate, dur, onScreen, poly, quad } from './prims.ts';
 import { FACTOR, FactoryStress } from './stress.ts';
+import { Strip } from './strip.ts';
+import type { Bay, Block, DistrictBox, FloorPass, HitBox, Label, Layer, Lens, LiveFrame } from './types.ts';
 import { Lenses } from './lens.ts'; // fab-lens
 import { Coffee } from './coffee.ts'; // fab-lens
 import type { FactoryFx } from './lens.ts'; // fab-lens
-import { PLAN, VIA_WORDS } from './layout.ts';
-import { F, HOUR_MS, MONO, SMALL, TITLE, box as boxP, clockWords, crate as crateP, dur, easeInOut, flushLights as flushLightsP, hash, onScreen as onScreenP, pipeWords as pipeWordsP, poly as polyP, quad as quadP, ring as ringP, runningStep } from './prims.ts';
-import type { Bay, Block, Crate, DistrictBox, FloorPass, HitBox, Label, Layer, LiveFrame, Pt } from './types.ts';
-import { buildLayers } from './layers.ts';
 
 export type { Plan } from './types.ts';
 export { dur };
 
-const {
-  DOCK_U0, DOCK_U1, COLLECT_U, AISLE_V, YARD_U0, YARD_U1, ROW_U, ROW_DU, AGE_V, STACK_DV, PALLET_V, GATE_U,
-  RAIL_U0, RAIL_U1, RAIL_V, INTAKE_U0, INTAKE_U1, LANE_V, DIST_U, ENG_U0, ENG_U1, ENG_V0, ENG_STEP, ENG_DV, ENG_H,
-  SCAN_U, TRACK_V, TRACK_U1, CITY_U0, CITY_U1, CITY_V0, CITY_V1, RETURN_V, VIAS,
-} = PLAN;
+const { RAIL_U1, RAIL_V, ENG_H } = PLAN;
 
 export class Factory {
   readonly cam = new Cam();
@@ -59,15 +61,12 @@ export class Factory {
   readonly words = this.L.words;
   /** Back to front: every hook of every layer runs in this order. */
   readonly order: Layer[] = this.L.order;
-  /** Every machine's slots (plant.ts). */
-  get bays(): Bay[] { return this.plant.bays; }
-  /** The city's blocks, by app, and its districts (city.ts). */
-  get blocks(): Block[] { return this.city.blocks; }
-  get blockAt(): Map<string, Block> { return this.city.blockAt; }
-  get districtBox(): DistrictBox[] { return this.city.districtBox; }
+  /** The chrome over the lens: the selection's journey and drawer, the hover card (drawer.ts);
+   *  the time strip and the camera's controls (strip.ts). */
+  readonly drawer = new Drawer(this);
+  readonly strip = new Strip(this);
+  /** What the pointer can pick, drawn this frame (`hit`, `hitAt`). */
   private hits: HitBox[] = [];
-  /** The labels placed this frame (the placer's, labels.ts). */
-  get labels(): Label[] { return this.words.list; }
   private floorSig = '';
   // ---- the frame budget's plumbing (DESIGN.md "Factory", "Rendering") ----
   /** Stress mode: a 10× fleet for the renderer (stress.ts); `stressWanted` lands at the next draw. */
@@ -85,6 +84,9 @@ export class Factory {
   /** Since the last live frame: 1 the census recounted, 2 the static floor redrew. */
   private heavy = 0;
   private lastWheel = 0;
+  /** The draw estimate (ms) each quality rung cost when it was last drawn, and when. */
+  private qCost = new Float32Array(5);
+  private qCostAt = new Float64Array(5).fill(-1e12);
   /** Asleep between the calm clock's wake-ups (app.contract's `facBeat` runs while this holds). */
   get calm(): boolean { return !this.awake; }
   /** What the last live frame drew, for the HUD and the bench. */
@@ -106,6 +108,10 @@ export class Factory {
   private logged = '';
   private loggedCar = '';
   span = 'live';
+  private flown = false;
+  /** fab-lens: every object is a lens (lens.ts); what changed since you last looked (coffee.ts). */
+  readonly lens = new Lenses(this);
+  readonly coffee = new Coffee(this);
 
   constructor(public tl: Timeline) {
     // The floor's full rung costs ~4.4 ms on Hermes at 1× (its words: ~80 texts at ~22 µs);
@@ -143,25 +149,14 @@ export class Factory {
   }
 
   // ---- events → crates -----------------------------------------------------------------------
-  // Each event sends its crate along its path; every reaction on the way (motion.ts) fires when
-  // the crate ARRIVES there: a push flashes its dock's door as it leaves and rings the gate and
-  // its rail (or the yard's cell) as it gets there; a finish lights the scanner's beam when its
-  // crate passes it, and a failure's red door at its dock 9 s later; a deploy rings its
-  // building when the crate reaches it.
+  // Each event sends its crate along its path, from the layer that owns the route (floor.ts:
+  // pushes, merges; plant.ts: runs; city.ts: deploys, health); every reaction on the way
+  // (motion.ts) fires when the crate ARRIVES there.
   onEvent(e: Event, w: World, t: number): void {
     if (this.reduced) return;
     this.crates.cap();
     for (const L of this.order) L.onEvent?.(e, w, t);
   }
-
-  private flown = false;
-  /** fab-lens: every object is a lens (lens.ts); what changed since you last looked (coffee.ts). */
-  readonly lens = new Lenses(this);
-  readonly coffee = new Coffee(this);
-
-  /** The v of an org's dock and of its main-line rail (floor.ts). */
-  dockV(org: string): number { return this.floor.dockV(org); }
-  railV(org: string): number { return this.floor.railV(org); }
 
   // ---- pointer, camera -------------------------------------------------------------------------
   pointer(kind: string, x: number, y: number, buttons: number, t: number): HitBox | null {
@@ -232,38 +227,9 @@ export class Factory {
     return best;
   }
 
-  /** The selection's pipeline (a commit selection: its newest pipeline). */
-  selPipeline(): Pipeline | null {
-    const w = this.world;
-    if (!this.selected) return null;
-    const p = w.pipelines.get(this.selected);
-    if (p) return p;
-    const c = w.commits.get(this.selected);
-    if (c) for (let i = c.pipelines.length - 1; i >= 0; i--) { const q = w.pipelines.get(c.pipelines[i]); if (q) return q; }
-    return null;
-  }
-
-  /** repo and sha of the selection (for the journey fetch). */
-  selCommit(): { repo: string; sha: string } | null {
-    const p = this.selPipeline();
-    if (p) return { repo: p.repo, sha: p.sha };
-    const at = this.selected.indexOf('@');
-    if (at > 0) return { repo: this.selected.slice(0, at), sha: this.selected.slice(at + 1) };
-    return null;
-  }
-
-  // ---- geometry primitives ---------------------------------------------------------------------
-  poly(g: Gfx, pts: number[]): void { polyP(this.cam, g, pts); }
-
-  quad(g: Gfx, u0: number, v0: number, u1: number, v1: number, z = 0): void { quadP(this.cam, g, u0, v0, u1, v1, z); }
-
-  /** An extruded block: the faces the camera sees (front +v, right +u, top), dark, tone-shaded. */
-  box(g: Gfx, u0: number, v0: number, du: number, dv: number, h: number, top: string = F.top, side: string = F.side, front: string = F.front, edge: string = F.edge, lw?: number): void {
-    boxP(this.cam, g, u0, v0, du, dv, h, top, side, front, edge, lw);
-  }
-
-  /** A small crate (a cube) at floor point (u, v), side `d` world units. */
-  crate(g: Gfx, u: number, v: number, d: number, red: boolean, dim: boolean, z = 2): void { crateP(this.cam, g, u, v, d, red, dim, z); }
+  /** The selection's pipeline (a commit selection: its newest) and its repo and sha (drawer.ts). */
+  selPipeline(): Pipeline | null { return this.drawer.selPipeline(); }
+  selCommit(): { repo: string; sha: string } | null { return this.drawer.selCommit(); }
 
   // ---- the floor layer -------------------------------------------------------------------------
   /** Fits the camera and recounts the census when due; true when it counted this turn (the
@@ -281,8 +247,6 @@ export class Factory {
   /** The static floor's key: the camera, the fleet's shape, the apps' health (the lights are
    *  painted here, not every frame), and whether the ladder wants the low-detail floor. */
   get floorKey(): string { return `${this.cam.key}|${this.census.sig}|${this.census.healthSig}|${this.census.carSig}|${this.budget.quality >= 3 ? 'lo' : 'hi'}`; }
-
-  private onScreen(u0: number, v0: number, u1: number, v1: number, h = 0, pad = 24): boolean { return onScreenP(this.cam, u0, v0, u1, v1, h, pad); }
 
   drawFloor(ctx: Ctx2D, f: Frame, t: number): boolean {
     this.applyStress();
@@ -308,7 +272,7 @@ export class Factory {
     const afters: (() => void)[] = [];
     const fp: FloorPass = {
       g, lo, idle,
-      add: (u, v, fn, u1, v1, h) => { if (this.onScreen(u, v, u1, v1, h)) items.push({ k: u * 0.19 + v * 0.66, f: fn }); },
+      add: (u, v, fn, u1, v1, h) => { if (onScreen(cam, u, v, u1, v1, h)) items.push({ k: u * 0.19 + v * 0.66, f: fn }); },
       after: (fn) => { afters.push(fn); },
     };
     for (const L of this.order) L.floor?.(fp);
@@ -343,7 +307,7 @@ export class Factory {
     const camMoving = flying || !!this.drag || wheel !== this.lastWheel;
     this.lastWheel = wheel;
     if (heavy === 1 || (heavy === 2 && !camMoving)) interval = 0;
-    const g = this.gl, cam = this.cam, w = this.world, c = this.census;
+    const g = this.gl, cam = this.cam, c = this.census;
     const now = this.tl.playhead;
     g.begin(ctx, f.scale);
     if (f.cause === 'font') g.resetFonts();
@@ -366,42 +330,19 @@ export class Factory {
     for (const L of this.order) L.hits?.(fr);
     let moving = false;
     for (const L of this.order) if (L.live?.(g, fr)) moving = true;
-    // the journey of the selection: its path lights across the floor, the rest dims to 25 %
+    // over the layers: the lens on top, the selection's journey, failures named as they ride home
     const selP = this.selPipeline();
     this.lens.draw(g, ctx, f, t); // fab-lens: the lens on top dims the rest and tells its story
-    if (this.selected) this.drawJourney(g, ctx, f, selP, t);
-    // failures riding home are named (failure is the main character), under the conveyor
+    if (this.selected) this.drawer.journey(g, ctx, f, selP, t);
     this.crates.tags(g, t, q);
     st.labels = this.labels.length;
-    // 10. the drawer, the time strip, the camera controls
-    if (this.selected) this.drawDrawer(g, f, selP, now);
+    // the drawer, the hover card, the time strip, the camera controls
+    if (this.selected) this.drawer.draw(g, f, selP, now);
     if (this.lens.legacyKey && !this.selected && this.cam.zoom < 1.2) this.words.legend(g, f); // fab-lens: the key is on demand (?)
-    // hover: quick facts beside the pointer
-    if (this.hoverId && !this.drag) {
-      const h = this.hitAt(this.px, this.py);
-      if (h && h.label && h.kind !== 'stage' && h.kind !== 'drawer') {
-        const facts = this.facts(h);
-        const wv = Math.max(...facts.map((l) => g.width(l, SMALL))) + 16;
-        const bx = Math.min(this.px + 14, f.width - wv - 8), by = this.py + 18;
-        g.fillRect(bx, by, wv, facts.length * 16 + 10, '#161618');
-        g.begin_(); g.rect(bx + 0.5, by + 0.5, wv - 1, facts.length * 16 + 9); g.stroke('#3A3A3E', 1);
-        facts.forEach((l, i) => g.text(l, bx + 8, by + 18 + i * 16, i ? C.ink2 : C.ink, SMALL, i === 0));
-      }
-    }
-    this.drawStrip(g, f, now);
-    this.drawControls(g, f);
-    const b0 = this.bays.find((x) => x.pid);
-    if (b0 && this.logged !== `${b0.pid}|${this.cam.key}`) {
-      this.logged = `${b0.pid}|${this.cam.key}`;
-      const b = b0;
-      if (b && this.cam.zoom === 1) console.log(`factory: busy bay ${b.pid} at ${Math.round(cam.x(b.u + b.du / 2, b.v + b.dv / 2))},${Math.round(cam.y(b.u + b.du / 2, b.v + b.dv / 2, ENG_H))}`);
-    }
-    // the newest car on the first rail, for drivers and tests (once per camera)
-    const r0 = c.rails[0], car0 = r0?.cars[r0.cars.length - 1];
-    if (car0 && this.loggedCar !== `${car0.sha}|${this.cam.key}` && this.cam.zoom === 1) {
-      this.loggedCar = `${car0.sha}|${this.cam.key}`;
-      console.log(`factory: newest car ${car0.repo}@${car0.sha} at ${Math.round(cam.x(RAIL_U1 - 12, RAIL_V[0]))},${Math.round(cam.y(RAIL_U1 - 12, RAIL_V[0], 3))}`);
-    }
+    if (this.hoverId && !this.drag) this.drawer.hover(g, f);
+    this.strip.draw(g, f, now);
+    this.strip.controls(g, f);
+    this.logAnchors();
     this.lens.top(g, f, t); // fab-lens: breadcrumb, story/compare card, the coffee glance, the key
     this.lastT = t;
     st.hits = this.hits.length;
@@ -429,9 +370,21 @@ export class Factory {
     return awake;
   }
 
-  /** The draw estimate (ms) each quality rung cost when it was last drawn, and when. */
-  private qCost = new Float32Array(5);
-  private qCostAt = new Float64Array(5).fill(-1e12);
+  /** For drivers and tests, once per camera at the fit: a busy bay's and the first rail's
+   *  newest car's screen positions. */
+  private logAnchors(): void {
+    const cam = this.cam, c = this.census;
+    const b0 = this.bays.find((x) => x.pid);
+    if (b0 && this.logged !== `${b0.pid}|${cam.key}`) {
+      this.logged = `${b0.pid}|${cam.key}`;
+      if (cam.zoom === 1) console.log(`factory: busy bay ${b0.pid} at ${Math.round(cam.x(b0.u + b0.du / 2, b0.v + b0.dv / 2))},${Math.round(cam.y(b0.u + b0.du / 2, b0.v + b0.dv / 2, ENG_H))}`);
+    }
+    const r0 = c.rails[0], car0 = r0?.cars[r0.cars.length - 1];
+    if (car0 && this.loggedCar !== `${car0.sha}|${cam.key}` && cam.zoom === 1) {
+      this.loggedCar = `${car0.sha}|${cam.key}`;
+      console.log(`factory: newest car ${car0.repo}@${car0.sha} at ${Math.round(cam.x(RAIL_U1 - 12, RAIL_V[0]))},${Math.round(cam.y(RAIL_U1 - 12, RAIL_V[0], 3))}`);
+    }
+  }
 
   /** The developer HUD (⌘⇧D) over the floor: top right, left of an open drawer. */
   private drawHud(g: Gfx, f: Frame): void {
@@ -447,303 +400,45 @@ export class Factory {
     this.hit(r.quality.x, r.quality.y, r.quality.w, r.quality.h, 'quality', '', 'Pin quality');
   }
 
-  /** One car (a lens draws a lit one over the floor's batched cars). */
-  car(g: Gfx, u: number, v: number, red: boolean, settled: boolean): void { this.floor.car(g, u, v, red, settled, this.gl.hair); }
-
-  private ring(g: Gfx, u: number, v: number, r: number, z = 0): void { ringP(this.cam, g, u, v, r, z); }
-
-  hit(x: number, y: number, w: number, h: number, kind: string, id: string, label: string): void {
-    if (x + w < 0 || y + h < 0 || x > this.cam.W || y > this.cam.H) return;
-    this.hits.push({ x, y, w, h, kind, id, label });
-  }
-
-  private pipeWords(p: Pipeline | undefined): string { return pipeWordsP(p); }
-
-  /** Greedy label placement (labels.ts), for the lens system. */
-  placeAt(x: number, y: number, w: number, h: number, maxUp: number, slide: boolean): [number, number] | null { return this.words.placeAt(x, y, w, h, maxUp, slide); }
-
-  // ---- the journey -------------------------------------------------------------------------------
-  private journeyPath(p: Pipeline | null): { pts: Pt[]; red: boolean; stops: [Pt, string][] } {
-    const w = this.world;
-    const cm = this.selCommit();
-    const repo = p?.repo ?? cm?.repo ?? '';
-    const org = w.orgOf(repo);
-    const dv = this.dockV(org), rv = this.railV(org);
-    const pts: Pt[] = [[DOCK_U0 + 20, dv], [COLLECT_U, dv], [COLLECT_U, AISLE_V]];
-    const stops: [Pt, string][] = [[[DOCK_U0 + 20, dv], 'pushed']];
-    const prN = p?.pr ?? w.commits.get(`${repo}@${cm?.sha ?? ''}`)?.pr;
-    if (prN || p?.event === 'pull_request') {
-      pts.push([ROW_U[1], AISLE_V], [ROW_U[1], AGE_V[0] + 10], [ROW_U[3], AGE_V[0] + 10], [ROW_U[3], AISLE_V]);
-      stops.push([[ROW_U[1], AGE_V[0] + 10], `PR #${prN ?? ''}`]);
-    }
-    pts.push([YARD_U1, AISLE_V], [GATE_U + 4, AISLE_V], [RAIL_U0, rv], [RAIL_U1, rv], [INTAKE_U0, LANE_V[p?.lane === 'gha' ? 1 : 0]], [INTAKE_U1, LANE_V[p?.lane === 'gha' ? 1 : 0]]);
-    stops.push([[GATE_U + 4, AISLE_V], 'merged']);
-    stops.push([[INTAKE_U0 + 20, LANE_V[p?.lane === 'gha' ? 1 : 0]], 'queued']);
-    const bay = p ? (this.bays.find((b) => b.pid === p.id) ?? this.plant.lastBay.get(p.id ?? '')) : undefined;
-    const gi = p?.lane === 'gha' ? this.census.groups.length - 1 : 0;
-    const bv = bay ? bay.v + bay.dv / 2 : ENG_V0 + gi * ENG_STEP + ENG_DV / 2;
-    const bu = bay ? bay.u + bay.du / 2 : (ENG_U0 + ENG_U1) / 2;
-    pts.push([DIST_U, LANE_V[0]], [DIST_U, bv], [bu, bv]);
-    stops.push([[bu, bv], p?.state === 'running' ? 'building' : 'built']);
-    if (!p || p.state === 'running' || p.state === 'pending') return { pts, red: false, stops };
-    pts.push([ENG_U1, bv], [SCAN_U, bv]);
-    const red = p.state === 'failure' || p.state === 'error';
-    stops.push([[SCAN_U, bv], red ? `failed · ${failingStep(p)}` : 'passed']);
-    if (red) {
-      pts.push([SCAN_U, RETURN_V], [24, RETURN_V], [24, dv]);
-      return { pts, red, stops };
-    }
-    const dep = w.deploys.get(`${p.repo}@${p.sha}`);
-    const app = dep?.app ?? w.repos.get(p.repo)?.app;
-    const b = app ? this.blockAt.get(app) : undefined;
-    if (b && (dep || p.deploy)) {
-      const vi = Math.max(0, VIAS.indexOf(((dep?.via === 'manual' ? 'gha_fallback' : dep?.via) ?? 'roadrunner') as typeof VIAS[number]));
-      pts.push([SCAN_U, TRACK_V[vi]], [TRACK_U1, TRACK_V[vi]], [b.u + b.d / 2, b.v + b.d / 2]);
-      stops.push([[b.u + b.d / 2, b.v + b.d / 2], `${app} ${dep?.state === 'success' ? 'deployed' : dep?.state ?? 'deploying'}`]);
-    }
-    return { pts, red, stops };
-  }
-
-  private drawJourney(g: Gfx, ctx: Ctx2D, f: Frame, p: Pipeline | null, t: number): void {
-    const cam = this.cam;
-    // the rest of the floor dims to 25 %
-    g.fillRect(0, 0, f.width, f.height, withAlpha(C.canvas, 0.75));
-    const { pts, red, stops } = this.journeyPath(p);
-    const col = red ? C.red : C.packet;
-    const trace = () => { g.begin_(); pts.forEach(([u, v], i) => { const x = cam.x(u, v), y = cam.y(u, v, 1); if (i) g.line(x, y); else g.move(x, y); }); };
-    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-    trace(); g.stroke(withAlpha(col, 0.18), 9);
-    trace(); g.stroke(withAlpha(col, 0.35), 4);
-    trace(); g.stroke(col, 1.5);
-    // a travelling spark along the lit path (where the selection is now)
-    let total = 0;
-    for (let i = 1; i < pts.length; i++) total += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
-    const run = p?.state === 'running';
-    if (run) {
-      const bay = this.bays.find((b) => b.pid === p?.id);
-      if (bay) this.crate(g, bay.u + bay.du / 2, bay.v + bay.dv / 2, 11, false, false, ENG_H - 3);
-    }
-    void total; void t;
-    // stops: the stations it passed, named (the dimmed words below no longer claim space)
-    this.words.reset();
-    stops.forEach(([[u, v], s], i) => {
-      const x = cam.x(u, v), y = cam.y(u, v, 1);
-      g.begin_(); g.move(x, y - 4); g.line(x + 4, y); g.line(x, y + 4); g.line(x - 4, y); g.ctx.closePath(); g.fill(i === stops.length - 1 ? col : C.ink);
-      const bad = s.startsWith('failed');
-      this.words.tag(g, s, x + 7, y - 6, bad ? C.redText : C.ink2, bad ? C.red : '#5A5A5E');
-    });
-  }
-
-  // ---- the drawer ----------------------------------------------------------------------------------
-  private drawDrawer(g: Gfx, f: Frame, p: Pipeline | null, now: number): void {
-    const w = this.world;
-    const W = 372, x0 = f.width - W, y0 = 40, H = f.height - y0 - 66;
-    g.fillRect(x0, y0, W, H, '#111112');
-    g.vline(g.crisp(x0), y0, y0 + H, '#2E2E30');
-    g.hline(x0, x0 + W, g.crisp(y0), '#2E2E30');
-    this.hit(x0, y0, W, H, 'drawer', '', '');
-    this.hit(x0 + W - 30, y0 + 6, 24, 22, 'close', '', 'close');
-    g.text('×', x0 + W - 18, y0 + 22, C.ink3, 14, false, 'center');
-    let y = y0 + 24;
-    const j = this.journey && this.journeyFor === this.selected ? this.journey : null;
-    // the world may no longer hold it (a replay, retention): the journey the server sent does
-    if (!p && j?.pipelines?.length) p = j.pipelines.find((q) => q.id === this.selected) ?? j.pipelines[j.pipelines.length - 1];
-    const cm = this.selCommit() ?? (j ? { repo: j.repo, sha: j.sha } : null);
-    const commit = (cm ? w.commits.get(`${cm.repo}@${cm.sha}`) : undefined) ?? j?.commit ?? undefined;
-    const repo = p?.repo ?? cm?.repo ?? '';
-    const state = p?.state ?? commit?.ci ?? '';
-    const stCol = state === 'failure' || state === 'error' ? C.redText : state === 'success' ? C.green : C.amberText;
-    g.text(p ? `${p.lane === 'gha' ? 'github actions' : 'roadrunner'} #${p.number}` : 'commit', x0 + 16, y, C.ink3, SMALL);
-    y += 20;
-    g.text(g.fit(repo, 13, W - 40, true), x0 + 16, y, C.ink, 13, true);
-    y += 18;
-    const title = p?.title ?? commit?.title ?? '';
-    g.text(g.fit(title, MONO, W - 32), x0 + 16, y, C.ink2, MONO);
-    y += 16;
-    const sha = (p?.sha ?? cm?.sha ?? '').slice(0, 7);
-    g.runs([[sha, C.ink3], [` · ${p?.branch ?? commit?.branch ?? ''}`, C.ink3], [` · ${p?.author ?? commit?.author ?? ''}`, C.ink3]], x0 + 16, y, SMALL, W - 32);
-    y += 22;
-    const el = p?.started ? (p.finished ?? now) - p.started : 0;
-    const exp = p?.expected_ms ?? 0;
-    g.runs([[state || 'unknown', stCol, true], [el ? `  ${dur(el)}${state === 'running' && exp ? ` of ~${dur(exp)}` : ''}` : '', C.ink2], [p?.engine ? `  on ${p.engine}` : '', C.ink3]], x0 + 16, y, MONO, W - 32);
-    y += 26;
-    // timeline
-    const eyebrow = (s: string) => { g.hline(x0 + 16, x0 + W - 16, g.crisp(y - 12), '#232325'); g.text(s, x0 + 16, y + 2, C.ink3, SMALL); y += 18; };
-    eyebrow('TIMELINE');
-    const tl: [number, string, string][] = [];
-    if (j?.timeline?.length) for (const e of j.timeline.slice(-9)) tl.push([e.at, e.k, e.label]);
-    else {
-      if (commit) tl.push([commit.at, 'push', `pushed by ${commit.author}`]);
-      if (p) {
-        tl.push([p.created, 'enqueue', `queued on ${p.lane}`]);
-        if (p.started) tl.push([p.started, 'start', `started${p.engine ? ` on ${p.engine}` : ''}`]);
-        if (p.finished) tl.push([p.finished, 'finish', `${p.state}${p.state === 'failure' ? ` at ${failingStep(p)}` : ''}`]);
-      }
-      const d = w.deploys.get(`${repo}@${p?.sha ?? cm?.sha ?? ''}`);
-      if (d) tl.push([d.started, 'deploy', `deploy ${d.app} via ${VIA_WORDS[d.via] ?? d.via} · ${d.state}`]);
-    }
-    tl.sort((a, b) => a[0] - b[0]);
-    const t0 = tl[0]?.[0] ?? now;
-    for (const [at, k, s] of tl) {
-      const bad = /fail|error/.test(s);
-      g.begin_(); g.circle(x0 + 20, y - 4, 2.5); g.fill(bad ? C.red : k === 'deploy' || k === 'deployed' ? C.green : C.packet);
-      g.text(at === t0 ? clockWords(at, this.offsetMin) : `+${dur(at - t0)}`, x0 + 30, y, C.ink3, SMALL);
-      g.text(g.fit(s, SMALL, W - 120), x0 + 104, y, bad ? C.redText : C.ink2, SMALL);
-      y += 16;
-      if (y > y0 + H * 0.45) break;
-    }
-    y += 12;
-    // steps: each workflow's steps as a bar on a shared axis
-    eyebrow('STEPS');
-    const wfs = (j?.pipelines?.find((q) => q.id === p?.id) ?? p)?.workflows ?? [];
-    let sMin = Infinity, sMax = 0;
-    for (const wf of wfs) for (const s of wf.steps) { if (s.started) sMin = Math.min(sMin, s.started); sMax = Math.max(sMax, s.finished ?? (s.started ? now : 0)); }
-    const axisW = W - 32 - 150;
-    let shown = 0;
-    for (const wf of wfs) {
-      if (y > y0 + H - 90) break;
-      g.text(g.fit(wf.name, SMALL, W - 40), x0 + 16, y, C.ink2, SMALL, true);
-      y += 15;
-      for (const s of wf.steps) {
-        if (y > y0 + H - 80) { g.text(`… ${wf.steps.length - shown} more`, x0 + 16, y, C.ink3, SMALL); y += 15; break; }
-        shown++;
-        const bad = s.state === 'failure' || s.state === 'error';
-        const run = s.state === 'running';
-        g.text(g.fit(s.name, SMALL, 140), x0 + 22, y, bad ? C.redText : run ? C.amberText : C.ink3, SMALL);
-        if (s.started && sMax > sMin) {
-          const a = x0 + 166 + ((s.started - sMin) / (sMax - sMin)) * axisW;
-          const b = x0 + 166 + (((s.finished ?? now) - sMin) / (sMax - sMin)) * axisW;
-          g.fillRect(a, y - 7, Math.max(2, b - a), 6, bad ? C.red : run ? C.packet : s.cached ? '#3A3A3E' : '#5A6E5F');
-        }
-        y += 14;
-      }
-    }
-    if (!wfs.length) { g.text('no steps reported for this run', x0 + 16, y, C.ink3, SMALL); y += 16; }
-    y += 12;
-    // deploys
-    if (y < y0 + H - 40) {
-      eyebrow('DEPLOYS');
-      const deps = j?.deploys?.length ? j.deploys : [...w.deploys.values()].filter((d) => d.repo === repo && d.sha === (p?.sha ?? cm?.sha));
-      if (!deps.length) g.text(p?.deploy ? 'deploys after it passes' : 'this run deploys nothing', x0 + 16, y, C.ink3, SMALL);
-      for (const d of deps.slice(0, 3)) {
-        g.runs([[d.app, C.ink, true], [`  via ${VIA_WORDS[d.via] ?? d.via}`, C.ink3], [`  ${d.state}`, d.state === 'success' ? C.green : d.state === 'failure' ? C.redText : C.amberText]], x0 + 16, y, SMALL, W - 32);
-        y += 16;
-      }
-    }
-  }
-
-  // ---- the time strip and the fleet sentence ------------------------------------------------------
-  private drawStrip(g: Gfx, f: Frame, now: number): void {
-    const c = this.census, w = this.world, tl = this.tl;
-    const y0 = f.height - 58, H = 58, W = f.width;
-    g.fillRect(0, y0, W, H, withAlpha(C.canvas, 0.94));
-    g.hline(0, W, g.crisp(y0), '#1F1F21');
-    // the span control: live · last hour · 24 h
-    const mode = tl.mode;
-    const opts: [string, string][] = [['live', 'live'], [mode === 'replay' ? 'replaying the hour' : 'replay last hour', 'replay'], ['24 h at 60×', 'replay24']];
-    let x = 16;
-    g.fillRect(x, y0 + 13, 4 + opts.reduce((a, [s]) => a + g.width(s, 13) + 22, 0), 28, '#1A1A1C');
-    x += 2;
-    for (const [s, k] of opts) {
-      const on = (k === 'live' && mode === 'live') || (k === 'replay' && mode === 'replay');
-      const wv = g.width(s, 13) + 22;
-      if (on) g.fillRect(x, y0 + 15, wv, 24, '#2C2C2E');
-      if (k === 'live') { g.begin_(); g.circle(x + 10, y0 + 27, 3); g.fill(mode === 'live' ? C.green : C.ink4); }
-      g.text(s, x + (k === 'live' ? 17 : 11), y0 + 31.5, on ? C.ink : C.ink2, 13);
-      this.hit(x, y0 + 13, wv, 28, k, k, s);
-      x += wv;
-    }
-    // the last 24 h: event density per 5 min, failures red, the playhead amber
-    const sx = x + 20, sw = Math.min(460, W * 0.3), sh = 22, sy = y0 + 13;
-    let mx = 1;
-    for (let i = 0; i < 288; i += 2) mx = Math.max(mx, (c.dens[i] + c.dens[i + 1]) / 2);
-    // ten-minute bars, each one stroke (a bar is 2 calls; a rect is 6 on the native recorder)
-    const bw = Math.max(0.8, (sw / 144) * 0.75);
-    for (let pass = 0; pass < 2; pass++) {
-      const d = pass ? c.densRed : c.dens;
-      g.begin_();
-      for (let i = 0; i < 288; i += 2) {
-        const h = ((d[i] + d[i + 1]) / (mx * 2)) * sh;
-        if (h <= 0.3) continue;
-        const x = sx + ((i + 1) / 288) * sw;
-        g.move(x, sy + sh); g.line(x, sy + sh - h);
-      }
-      g.stroke(pass ? C.red : '#3A3A3E', bw);
-    }
-    g.hline(sx, sx + sw, g.crisp(sy + sh + 0.5), '#2A2A2C');
-    const ph = mode === 'replay' ? 1 - (tl.liveNow() - now) / (24 * HOUR_MS) : 1;
-    const px = sx + clamp(ph, 0, 1) * sw;
-    g.vline(g.crisp(px), sy - 3, sy + sh + 3, C.packet, 1.5);
-    this.lens.strip(g, sx, sy, sw, sh, now); // fab-lens: a tick jumps the replay there
-    g.text('24 h ago', sx, sy + sh + 15, C.ink3, 12);
-    g.text(mode === 'live' ? 'now' : clockWords(now, this.offsetMin), sx + sw, sy + sh + 15, mode === 'live' ? C.ink3 : C.amberText, 12, false, 'right');
-    // the fleet sentence: failure first
-    const red = c.redLines;
-    let up = 0, down = 0;
-    for (const a of w.apps.values()) { if (a.health === 'up') up++; else if (a.health === 'down') down++; }
-    const bx = sx + sw + 26;
-    const head: [string, string, boolean?][] = red ? [[`${red} main ${red === 1 ? 'line' : 'lines'} red`, C.redText, true]] : [['every main line green', C.green, true]];
-    if (down) head.push([` · ${down} ${down === 1 ? 'app' : 'apps'} down`, C.redText, true]);
-    const slots = c.groups.reduce((a, gr) => a + (gr.hosted ? 0 : gr.slots), 0);
-    const busy = c.groups.reduce((a, gr) => a + (gr.hosted ? 0 : gr.running.length), 0);
-    // one count per thing, the same words the floor and the status line use
-    const tail: string[] = [`${c.building} building (${busy} of ${slots} bays)`, `${c.waiting} queued`, `${c.deploying.length} deploying`, `${c.flow.finished} builds/h`, `${c.flow.failed} failed/h`, `${up} of ${w.apps.size} apps up`];
-    if (c.bottleneck) tail.push(`bottleneck: ${({ prs: 'pr yard', intake: 'intake', engines: 'the engines', deploy: 'deploy' } as Record<string, string>)[c.bottleneck]}`);
-    // whole fields only: drop from the end instead of cutting one
-    let room = W - bx - 16 - head.reduce((a, [s, , b]) => a + g.width(s, 13, !!b), 0);
-    let line = '';
-    for (const t of tail) { const add = `  ·  ${t}`; if (g.width(line + add, 13) > room) break; line += add; }
-    g.runs([...head.map(([s, col]) => [s, col, true] as [string, string, boolean]), [line, C.ink2]], bx, y0 + 26, 13);
-    void room;
-    const parts = [`${w.repos.size} repos`, `${c.docks.length - 1} orgs`, `${this.census.phaseN.reduce((a, b) => a + b, 0) + c.botN} PRs open`];
-    if (c.redNames.length) parts.push(`newest red: ${c.redNames.join(', ')}`);
-    let l2 = '';
-    for (const t of parts) { const add = l2 ? ` · ${t}` : t; if (g.width(l2 + add, 12) > W - bx - 16) break; l2 += add; }
-    g.text(l2, bx, y0 + 44, C.ink3, 12);
-  }
-
-  private facts(h: HitBox): string[] {
-    const lf = this.lens.preview(h); // fab-lens: ≤ 3 short lines per kind
-    if (lf) return lf;
-    const w = this.world, now = this.tl.playhead;
-    if (h.kind === 'pipeline') {
-      const p = w.pipelines.get(h.id);
-      if (!p) return [h.label];
-      const el = p.started ? (p.finished ?? now) - p.started : now - p.created;
-      return [`${p.repo} #${p.number}`, `${p.state} · ${dur(el)}${p.expected_ms ? ` · typical ${dur(p.expected_ms)}` : ''}`, `${p.event} · ${p.branch}${p.engine ? ` · ${p.engine}` : ''}`, 'click: light its journey'];
-    }
-    if (h.kind === 'app') {
-      const a = w.apps.get(h.id);
-      return [h.id, `${a?.health ?? 'unknown'}${a?.latency_ms ? ` · ${a.latency_ms} ms` : ''}${a?.team ? ` · ${a.team}` : ''}`, `${this.census.deploys24.get(h.id) ?? 0} deploys in 24 h${a?.behind ? ` · ${a.behind} behind main` : ''}`];
-    }
-    if (h.kind === 'commit') return [h.label.slice(0, 60), 'click: light its journey'];
-    return [h.label];
-  }
-
-  private drawControls(g: Gfx, f: Frame): void {
-    const x = 16, y = 46;
-    const btn = (s: string, k: string, xx: number) => {
-      g.fillRect(xx, y, 24, 22, '#1A1A1C');
-      g.begin_(); g.rect(xx + 0.5, y + 0.5, 23, 21); g.stroke('#2E2E30', 1);
-      g.text(s, xx + 12, y + 15, C.ink2, 12, false, 'center');
-      this.hit(xx, y, 24, 22, k, k, s);
-    };
-    btn('+', 'zoomin', x); btn('−', 'zoomout', x + 26); btn('⌂', 'fit', x + 52);
-    const lod = this.cam.zoom >= 2.6 ? 'apps' : this.cam.zoom >= 1.6 ? 'org districts' : 'fleet';
-    // the zoom and its level of detail (how to pan and zoom needs no permanent words)
-    const words: [string, string][] = [[`${Math.round(this.cam.zoom * 100)}%  ${lod}`, C.ink2]];
-    if (this.lens.legacyKey) words.push(['  drag to pan · wheel to zoom · click a crate', C.ink3]); // fab-lens: the coffee glance takes the hint's place
-    const wv = words.reduce((a, [s]) => a + g.width(s, SMALL), 0);
-    g.fillRect(x + 80, y, wv + 12, 22, withAlpha(C.canvas, 0.86));
-    g.runs(words, x + 86, y + 15, SMALL);
-    void f;
-  }
-
-  // ---- fab-lens hooks: the floor's plan and primitives for src/factory/lens.ts and coffee.ts ----
+  // ---- THE HOOK SURFACE (types.ts lists every member reached from outside) -------------------
+  // fab-lens: the floor's plan and primitives for src/factory/lens.ts and coffee.ts.
   /** The internals the lens system draws and picks with, typed there by indexed access
    *  (`Factory['box']`), so a rename here fails the build there instead of a draw. */
   get fx(): FactoryFx { return this as unknown as FactoryFx; }
   readonly plan = PLAN;
-}
+  /** Every machine's slots (plant.ts). */
+  get bays(): Bay[] { return this.plant.bays; }
+  /** The city's blocks, by app, and its districts (city.ts). */
+  get blocks(): Block[] { return this.city.blocks; }
+  get blockAt(): Map<string, Block> { return this.city.blockAt; }
+  get districtBox(): DistrictBox[] { return this.city.districtBox; }
+  /** The labels placed this frame (the placer's, labels.ts). */
+  get labels(): Label[] { return this.words.list; }
 
-void AGES; void short; void font;
+  poly(g: Gfx, pts: number[]): void { poly(this.cam, g, pts); }
+  quad(g: Gfx, u0: number, v0: number, u1: number, v1: number, z = 0): void { quad(this.cam, g, u0, v0, u1, v1, z); }
+  /** An extruded block: the faces the camera sees (front +v, right +u, top), dark, tone-shaded. */
+  box(g: Gfx, u0: number, v0: number, du: number, dv: number, h: number, top: string = F.top, side: string = F.side, front: string = F.front, edge: string = F.edge, lw?: number): void {
+    box(this.cam, g, u0, v0, du, dv, h, top, side, front, edge, lw);
+  }
+  /** A small crate (a cube) at floor point (u, v), side `d` world units. */
+  crate(g: Gfx, u: number, v: number, d: number, red: boolean, dim: boolean, z = 2): void { crate(this.cam, g, u, v, d, red, dim, z); }
+  /** One car (a lens draws a lit one over the floor's batched cars). */
+  car(g: Gfx, u: number, v: number, red: boolean, settled: boolean): void { this.floor.car(g, u, v, red, settled, this.gl.hair); }
+  /** Something the pointer can pick this frame (screen px; off screen is dropped). */
+  hit(x: number, y: number, w: number, h: number, kind: string, id: string, label: string): void {
+    if (x + w < 0 || y + h < 0 || x > this.cam.W || y > this.cam.H) return;
+    this.hits.push({ x, y, w, h, kind, id, label });
+  }
+  /** Greedy label placement (labels.ts), for the lens system. */
+  placeAt(x: number, y: number, w: number, h: number, maxUp: number, slide: boolean): [number, number] | null { return this.words.placeAt(x, y, w, h, maxUp, slide); }
+  /** The v of an org's dock and of its main-line rail (floor.ts). */
+  dockV(org: string): number { return this.floor.dockV(org); }
+  railV(org: string): number { return this.floor.railV(org); }
+  /** The layers' story for the lens on top (`Layer.overlay`): the first layer that owns its kind
+   *  draws it; false when none does (lens.ts draws its own). */
+  overlay(g: Gfx, lens: Lens): boolean {
+    for (const L of this.order) if (L.overlay?.(g, lens, this.fr)) return true;
+    return false;
+  }
+}

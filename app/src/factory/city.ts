@@ -226,5 +226,4 @@ export class City implements Layer {
     }
     return this.trouble;
   }
-
 }

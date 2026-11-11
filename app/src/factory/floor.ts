@@ -112,7 +112,6 @@ export class Floor implements Layer {
 
   laneW(n: number): number { return 5 + Math.min(4, Math.max(1, Math.ceil(n / 25))) * 4; }
 
-
   // ---- the static floor: paints the ground now, hands its extruded things to the depth sort,
   // and the cars after them ----
   floor(fp: FloorPass): void {
@@ -365,5 +364,4 @@ export class Floor implements Layer {
   car(g: Gfx, u: number, v: number, red: boolean, settled: boolean, hair: number): void {
     box(this.f.cam, g, u - 4, v - 4, 8, 8, 5, red ? F.redTop : settled ? '#6E6A62' : F.crateTop, red ? F.redSide : settled ? '#4A4844' : F.crateSide, red ? F.redFront : settled ? '#3E3C38' : F.crateFront, red ? '#E08088' : settled ? '#8A867E' : '#F0CC8A', hair);
   }
-
 }

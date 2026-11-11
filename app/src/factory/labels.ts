@@ -303,5 +303,4 @@ export class Labels implements Layer {
     }
     g.text('failed crates turn red at the scanner and ride the return conveyor home', x, yy + 2, C.redText, SMALL);
   }
-
 }
