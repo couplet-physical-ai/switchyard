@@ -16,10 +16,10 @@ import { MainlinesModel, stateWords } from './src/table/mainlines.ts';
 import { PrsModel } from './src/table/prs.ts';
 import { Timeline } from './src/timeline.ts';
 import type { Frame as WireFrame } from './src/wire.ts';
-import { drawStatic, LiveLayer } from './src/yard/draw.ts';
-import { isRed, layout, pickMains, type Layout } from './src/yard/layout.ts';
-import { Motion } from './src/yard/motion.ts';
-import { fmtDur } from './src/yard/paint.ts';
+import { Yard } from './src/yard/draw.ts';
+import { isRed } from './src/yard/layout.ts';
+import { dotLine, fmtDur } from './src/yard/paint.ts';
+import { buildingIds, queueTruth } from './src/yard/select.ts';
 
 export const grants = [
   'net.fetch https:',
@@ -33,23 +33,18 @@ const TOKEN = 'switchyard.token';
 
 // ---- state ---------------------------------------------------------------------------------
 const tl = new Timeline();
-let L: Layout | null = null;
-let mains: string[] = [];
-let mainsAt = -1e9;
-let mainsShape = -1;
 /** The module clock: the runner's ms, as draws and beats report it. */
 let clock = 0;
-let lastLive = 0;
 let epochAtZero = 0;
 let up: Upstream | null = null;
 let demo: DemoUpstream | null = null;
 let seenEpoch = -1;
-const motion = new Motion(() => L, () => clock);
+/** The yard: scene, LOD, frame budget, packet pool (src/yard/draw.ts). */
+const yard = new Yard(tl);
+tl.listener = (e, w) => yard.pool.onEvent(e, w, clock);
 /** The canvas tables (src/table/): one per view, alive across visits (scroll and focus kept). */
 const mlTable = new MainlinesModel();
 const prTable = new PrsModel();
-const liveLayer = new LiveLayer();
-tl.listener = (e, w) => motion.onEvent(e, w);
 
 /** `asking`: called from a source's answer, so it may fetch (a fetch started elsewhere, in
  *  `draw` or a promise's continuation, is never run). */
@@ -80,7 +75,7 @@ function advance(t: number, asking = true): void {
   }
   if (tl.epoch !== seenEpoch) {
     seenEpoch = tl.epoch;
-    motion.sync(tl.world);
+    yard.sync(clock);
   }
 }
 
@@ -143,25 +138,6 @@ async function demoLive(): Promise<void> {
   tl.load(await demo.snapshot(), clock);
 }
 
-function ensureLayout(w: number, h: number): Layout {
-  const world = tl.world;
-  const n = 10;
-  if (clock - mainsAt > 8000 || mainsShape !== world.shapeVer || !mains.length) {
-    // Red lines join at once; otherwise the selection changes at most every 8 s.
-    mains = pickMains(world, n, mains);
-    mainsAt = clock;
-    mainsShape = world.shapeVer;
-  } else if (Array.from(world.repos.values()).some((r) => isRed(r) && !mains.includes(r.id) && mains.length > 0)) {
-    mains = pickMains(world, n, mains);
-  }
-  const key = `${w}|${h}|${mains.join(',')}|${world.shapeVer}`;
-  if (!L || key !== lkey) {
-    L = layout(w, h, world, mains);
-    lkey = key;
-  }
-  return L;
-}
-let lkey = '';
 
 // ---- sources -------------------------------------------------------------------------------
 type Conn = Result<'connect'>;
@@ -179,7 +155,7 @@ async function connect(server: string, token: string, epoch0: number): Promise<C
       }
       up = demo;
       tl.load(await demo.snapshot(), clock);
-      motion.sync(tl.world);
+      yard.sync(clock);
       return { ...none, ok: true, status: 'demo', seq: tl.world.seq, label: demo.label, kind: 'demo' };
     }
     demo = null;
@@ -192,7 +168,7 @@ async function connect(server: string, token: string, epoch0: number): Promise<C
     up = new HttpUpstream(base, token);
     const snap = await up.snapshot();
     tl.load(snap, clock);
-    motion.sync(tl.world);
+    yard.sync(clock);
     return { ...none, ok: true, status: 'connected', seq: tl.world.seq, label: up.label, kind: 'http' };
   } catch (e) {
     const base = resolveBase(server);
@@ -244,10 +220,24 @@ function parseFrames(data: string): WireFrame[] {
   }
 }
 
+/** The server as a person names it: its host, never a loopback address. */
+function hostLabel(): string {
+  if (!up) return '';
+  if (up.kind === 'demo') return 'built-in demo';
+  const m = /^(\[[^\]]+\]|[^/:]+)(?::(\d+))?/.exec(up.label);
+  const host = m?.[1] ?? up.label, port = m?.[2];
+  if (/^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[::1?\])$/i.test(host)) return port ? `local server :${port}` : 'local server';
+  return host;
+}
+
 function overview(): Result<'overview'> {
   const w = tl.world;
-  let building = 0, queued = 0, red = 0, appsUp = 0;
-  for (const p of w.pipelines.values()) { if (p.state === 'running') building++; else if (p.state === 'pending') queued++; }
+  // Never builds the scene here (a source turn has 100 ms on Hermes): the first draw does.
+  const S = yard.S;
+  // One truth for building and queued: the yard, the status line and the QUEUE band agree.
+  const building = buildingIds(w).size;
+  const queued = queueTruth(w).waiting;
+  let red = 0, appsUp = 0;
   for (const r of w.repos.values()) if (isRed(r)) red++;
   for (const a of w.apps.values()) if (a.health === 'up') appsUp++;
   const behind = tl.mode === 'live' ? '' : `${fmtDur(tl.behindMs())} behind`;
@@ -255,9 +245,13 @@ function overview(): Result<'overview'> {
     ? `${w.repos.size} repos · ${building} building · ${queued} queued · ${red} main ${red === 1 ? 'line' : 'lines'} red · ${appsUp} of ${w.apps.size} apps up`
     : 'waiting for the fleet';
   const summary = w.loaded ? `The delivery yard: ${building} pipelines building, ${queued} queued, ${red} main ${red === 1 ? 'line' : 'lines'} red, ${appsUp} of ${w.apps.size} apps up.` : 'The delivery yard, waiting for data.';
+  const k = S?.k ?? 1;
+  const dial = tl.mode === 'replay' ? `replaying · ${Math.round(tl.replayProgress() * 60)} of 60 min` : tl.mode === 'paused' ? `paused · 1 hour, sped up` : '1 hour, sped up';
   return {
-    status: w.loaded ? 'ready' : 'waiting', mode: tl.mode, speed: tl.speed, sentence, summary, layoutKey: L?.key ?? '', repos: w.repos.size,
+    status: w.loaded ? 'ready' : 'waiting', mode: tl.mode, speed: tl.speed, sentence, summary, layoutKey: `${S?.key ?? ''}|${yard.budget.quality >= 3 ? 'lo' : 'hi'}`, repos: w.repos.size,
     building, queued, red, appsUp, appsTotal: w.apps.size, behind, seq: w.seq,
+    tick: Math.floor(clock / 250), host: hostLabel(), dial, dialPad: Math.round(((S?.m ?? 16) + 22) * k), dialFont: Math.round(11 * k), dialH: Math.round(34 * k),
+    hud: yard.hud.on, stress: yard.stress.on, quality: yard.budget.quality,
   };
 }
 
@@ -327,7 +321,7 @@ export const sources: Sources = {
     return { ok: true, status: set ? 'saved' : 'kept' };
   },
   connect: ([server, token, _gen, epoch0, offset]) => {
-    liveLayer.offsetMin = offset;
+    yard.offsetMin = offset;
     return connect(server, token, epoch0);
   },
   liveFeed: ([server, token, seq, _gen, ok]) => liveFeed(server, token, seq, ok),
@@ -367,11 +361,23 @@ export const sources: Sources = {
     }
   },
   pickAt: ([x, y]) => {
-    let best: { kind: string; id: string; label: string } | null = null;
-    for (const h of liveLayer.hits) if (x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) best = h;
-    if (!best) { liveLayer.selected = ''; return { kind: '', id: '', label: '', route: '' }; }
-    if (best.kind === 'pipeline') liveLayer.selected = liveLayer.selected === best.id ? '' : best.id;
+    const k = yard.S?.k ?? 1;
+    const best = yard.hitAt(x / k, y / k);
+    if (!best) { yard.selected = ''; return { kind: '', id: '', label: '', route: '' }; }
+    if (best.kind === 'pipeline') yard.selected = yard.selected === best.id ? '' : best.id;
+    else if (best.kind === 'stress') yard.setStress(!yard.stress.on);
+    else if (best.kind === 'quality') yard.budget.pinned = yard.budget.pinned >= 4 ? -1 : yard.budget.pinned + 1;
     return { kind: best.kind, id: best.id, label: best.label, route: route(best.kind, best.id) };
+  },
+  hoverAt: ([x, y]) => {
+    const k = yard.S?.k ?? 1;
+    const h = yard.hoverAt(x < 0 ? -1 : x / k, y / k, clock);
+    return h ? { kind: h.kind, id: h.id, label: h.label, route: '' } : { kind: '', id: '', label: '', route: '' };
+  },
+  devToggle: ([what, on]) => {
+    if (what === 'hud') yard.hud.on = on === 1;
+    else if (what === 'stress') yard.setStress(on === 1);
+    return { ok: true, status: `${what} ${on === 1 ? 'on' : 'off'}` };
   },
   search: ([q, t]) => {
     if (t > 0) advance(t);
@@ -388,7 +394,7 @@ export const sources: Sources = {
     if (!repo || !sha) return journeyView(null, tl.playhead, ' ');
     try {
       const j = await cached(`j:${repo}@${sha}`, () => (up ? up.journey(repo, sha) : Promise.resolve(null)));
-      return journeyView(j, tl.playhead, '', liveLayer.offsetMin);
+      return journeyView(j, tl.playhead, '', yard.offsetMin);
     } catch (e) {
       return journeyView(null, tl.playhead, String((e as Error)?.message ?? e));
     }
@@ -418,6 +424,7 @@ const NO_HIT = { kind: '', id: '', label: '', route: '' };
 const EMPTY_OV: Result<'overview'> = {
   status: 'waiting', mode: 'live', speed: 1, sentence: 'waiting for the fleet', summary: 'The delivery yard, waiting for data.', layoutKey: '', repos: 0,
   building: 0, queued: 0, red: 0, appsUp: 0, appsTotal: 0, behind: '', seq: 0,
+  tick: 0, host: '', dial: '1 hour, sped up', dialPad: 38, dialFont: 11, dialH: 34, hud: false, stress: false, quality: 0,
 };
 const EMPTY_FLEET = { apps: [], engines: [], queues: [], stats: [], up: 0, total: 0, down: 0, degraded: 0, attention: [], behindN: 0, never: 0, hasLatency: false, watcher: '', watcherTripped: false };
 
@@ -507,7 +514,8 @@ export const answer: Answer = ((source: keyof Sources, args: unknown, store: Sto
   (sources[source] as (a: unknown, s: Store, st: unknown) => unknown)(args, store, storage)) as Answer;
 
 // ---- canvases ------------------------------------------------------------------------------
-export const surfaces: Record<string, number> = { yardStatic: 1, yardLive: 2, mainlinesTable: 9, prsTable: 9 };
+/** Surface → its arity (Contract passes that many arguments); the tables' lifetime is 9. */
+export const surfaces: Record<string, number> = { yardStatic: 2, yardInfo: 2, yardLive: 3, yardTop: 2, mainlinesTable: 9, prsTable: 9 };
 
 /** The route on top (`viewOnTop`). The yard stays mounted under every other view; its live
  *  layer animating there cost 3-4× the ops of the view on top. Covered, it is not drawn (the
@@ -515,7 +523,7 @@ export const surfaces: Record<string, number> = { yardStatic: 1, yardLive: 2, ma
 let topView = '';
 
 export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame): boolean {
-  if (surface === 'yardLive' && topView !== '' && topView !== 'yard') return true;
+  if ((surface === 'yardLive' || surface === 'yardInfo' || surface === 'yardTop') && topView !== '' && topView !== 'yard') return true;
   try {
     return drawSurface(surface, args, ctx, frame);
   } catch (e) {
@@ -534,19 +542,21 @@ export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
 function drawSurface(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame): boolean {
   if (surface === 'yardStatic') {
     advance(frame.time, false);
-    const lay = ensureLayout(frame.width, frame.height);
-    drawStatic(ctx, lay);
+    yard.drawStatic(ctx, frame, clock);
     return false;
   }
-  if (surface === 'yardLive') {
-    const dt = Math.max(0, Math.min(100, frame.time - lastLive));
-    lastLive = frame.time;
+  if (surface === 'yardInfo') {
     advance(frame.time, false);
-    const lay = ensureLayout(frame.width, frame.height);
-    motion.reduced = args[0] === 'reduced';
-    motion.update(clock, tl.world, dt);
-    liveLayer.draw(ctx, lay, tl, motion, clock, motion.reduced);
-    return true;
+    return yard.drawInfo(ctx, frame, clock);
+  }
+  if (surface === 'yardLive') {
+    advance(frame.time, false);
+    yard.reduced = args[0] === 'reduced';
+    return yard.drawLive(ctx, frame, clock);
+  }
+  if (surface === 'yardTop') {
+    advance(frame.time, false);
+    return yard.drawTop(ctx, frame, clock);
   }
   if (surface === 'mainlinesTable') {
     // (tick, focus, wheel, px, py, org, filter, q, kick)
