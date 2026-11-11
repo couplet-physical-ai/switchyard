@@ -1963,6 +1963,13 @@ pub fn extract(workflow: &str, step: &str, exit_code: Option<i32>, log: &[String
     if h.tier <= T_EXCEPTION && exit_code == Some(137) {
         h.class = FailClass::Oom;
     }
+    // A generic line ("Error: …", "exit status 1") says what, not which kind: the step's
+    // name does ("failsafe-deploy", "lint").
+    if h.class == FailClass::Exit
+        && let Some(c) = class_from_name(step).or_else(|| class_from_name(workflow))
+    {
+        h.class = c;
+    }
     let text = display_text(&lines, idx, h);
     let line = normalize(&text);
     Signature {

@@ -276,17 +276,47 @@ impl Store {
     }
 
     /// A failed step's signature: from its log when read, else from its name + exit code.
+    /// The repo's own name and app ids in the line are masked, so the same cause in
+    /// different repos ("Container not found for app 'x'") is one cluster.
     fn failure_sig(&self, pipeline: &str, wf: &str, s: &Step) -> (String, String, Signature) {
         let sig = match self.step_errors.get(&step_key(pipeline, wf, &s.name)) {
             Some(e) => Signature {
                 class: e.class,
-                line: e.line.clone(),
+                line: e.line.as_ref().map(|l| self.mask_own_names(pipeline, l)),
                 exit_code: e.exit_code.or(s.exit_code),
             },
             None => signature::extract(wf, &s.name, s.exit_code, &[]),
         };
         let (k, id) = signature::key(&s.name, &sig);
         (k, id, sig)
+    }
+
+    fn mask_own_names(&self, pipeline: &str, line: &str) -> String {
+        let Some(p) = self.pipelines.get(pipeline) else {
+            return line.to_string();
+        };
+        let mut names: Vec<String> = self
+            .app_list
+            .iter()
+            .flat_map(|l| l.apps.iter())
+            .filter(|a| a.repo.as_deref() == Some(p.repo.as_str()))
+            .map(|a| a.id.clone())
+            .collect();
+        names.push(p.repo.split('/').nth(1).unwrap_or("").to_string());
+        names.retain(|n| n.len() >= 3);
+        // Longest first, case-insensitively, whole quoted or word-bounded tokens only.
+        names.sort_by_key(|n| std::cmp::Reverse(n.len()));
+        let mut out = line.to_string();
+        for n in names {
+            for q in ['\'', '"', '`'] {
+                let pat = format!("{q}{n}{q}");
+                let low = out.to_ascii_lowercase();
+                if let Some(i) = low.find(&pat.to_ascii_lowercase()) {
+                    out.replace_range(i..i + pat.len(), &format!("{q}…{q}"));
+                }
+            }
+        }
+        out
     }
 
     /// `Step.cluster` on failed steps and `Pipeline.flaky`.

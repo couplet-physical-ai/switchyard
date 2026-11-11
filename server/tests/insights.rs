@@ -413,3 +413,57 @@ fn rollups_persist_what_the_trends_saw() {
     let later = s.closed_rollups(NOW - NOW % H - 2 * H, NOW);
     assert!(later.iter().all(|r| r.hour > NOW - NOW % H - 2 * H));
 }
+
+#[test]
+fn a_repos_own_names_do_not_split_a_cluster() {
+    let bad = CiState::Failure;
+    let deploy_err = |repo: &str, n: u64, app: &str| {
+        Fact::StepError(StepErrorFact {
+            pipeline: ids::wp_pipeline(repo, n),
+            workflow: "deploy".into(),
+            step: "failsafe-deploy".into(),
+            class: FailClass::Deploy,
+            line: Some(format!(
+                "Container not found for app '{app}'. Run the first deploy"
+            )),
+            exit_code: Some(1),
+            observed: NOW,
+        })
+    };
+    let s = store(vec![
+        apps(),
+        run(
+            "acme/api",
+            1,
+            SHA1,
+            "main",
+            bad,
+            NOW - 10 * 60_000,
+            30_000,
+            &[("deploy", "failsafe-deploy", bad, Some(1))],
+        ),
+        deploy_err("acme/api", 1, "api"),
+        run(
+            "volt/grid",
+            2,
+            SHA2,
+            "main",
+            bad,
+            NOW - 20 * 60_000,
+            30_000,
+            &[("deploy", "failsafe-deploy", bad, Some(1))],
+        ),
+        deploy_err("volt/grid", 2, "grid"),
+    ]);
+    let cs: Vec<Value> = s
+        .table(Kind::Cluster)
+        .values()
+        .map(|j| serde_json::from_str(j).unwrap())
+        .collect();
+    assert_eq!(cs.len(), 1, "{cs:#?}");
+    assert_eq!(
+        cs[0]["line"],
+        "Container not found for app '…'. Run the first deploy"
+    );
+    assert_eq!(cs[0]["repo_count"], 2);
+}
