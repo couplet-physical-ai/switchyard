@@ -218,19 +218,21 @@ export function layout(Wc: number, Hc: number, deviceScale: number, c: Census, l
       const n = Math.max(1, spec.slots);
       let box: Lane;
       let lh: number;
+      // A machine is sized to its slots: words never sit where a packet travels. At LOD0 the
+      // lane's words (name, load, what runs) are a label band above the machine; at LOD1 they
+      // sit to the machine's right and the exit wire runs in the gap under the lane.
+      const pitch1 = Math.min(12, Math.max(7, (we * 0.45) / n));
       if (laneLod === 0) {
-        box = mk(spec.id, xe, ly + 15, we, 22) as Lane;
+        box = mk(spec.id, xe, ly + 15, Math.min(we, n * pitch0 + 14), 22) as Lane;
         lh = LANE0_H;
       } else {
-        box = mk(spec.id, xe, ly + 2, we, Math.max(12, lh1 - 6)) as Lane;
+        box = mk(spec.id, xe, ly + 2, Math.min(we * 0.6, n * pitch1 + 12), Math.max(12, lh1 - 6)) as Lane;
         lh = lh1;
       }
       box.title = spec.title; box.sub = spec.sub; box.kind = spec.kind; box.engines = spec.engines; box.offline = spec.offline;
       box.virtual = spec.virtual; box.lod = laneLod; box.labelY = ly + 10; box.captionY = box.y + box.h + 12; box.slots = [];
       const list = spec.engines.length ? spec.engines : [spec.id];
       let k2 = 0;
-      const labelW = Math.min(110, Math.round(we * 0.36));
-      const pitch1 = Math.min(12, Math.max(7, (we - labelW - 64) / n));
       const r1 = Math.min(3.5, box.h / 2 - 2.5);
       for (const eid of list) {
         const per = spec.engines.length ? Math.max(1, slotsOfEngine(spec, eid)) : n;
@@ -238,7 +240,7 @@ export function layout(Wc: number, Hc: number, deviceScale: number, c: Census, l
         for (let i = 0; i < per; i++, k2++) {
           const s: Slot = laneLod === 0
             ? { engine: eid, idx: i, x: box.x + 7 + pitch0 / 2 + k2 * pitch0, y: box.y + box.h / 2, r: 5, lane: li }
-            : { engine: eid, idx: i, x: box.x + labelW + 6 + k2 * pitch1, y: box.y + box.h / 2, r: r1, lane: li };
+            : { engine: eid, idx: i, x: box.x + 6 + pitch1 / 2 + k2 * pitch1, y: box.y + box.h / 2, r: r1, lane: li };
           sl.push(s);
           box.slots.push(s);
         }
@@ -386,7 +388,14 @@ export function layout(Wc: number, Hc: number, deviceScale: number, c: Census, l
   for (const ln of lanes) {
     const q = ln.kind === 'gha_runner' ? gha : rr;
     toLane.push(bezLeg(q.outPort.x, q.outPort.y, ln.inPort.x, ln.inPort.y));
-    fromLane.push(bezLeg(ln.outPort.x, ln.outPort.y, gate.inPort.x, gate.inPort.y));
+    // Out of the machine's side port, along the lane (LOD0: on the machine's axis, nothing
+    // written there; LOD1: down into the gap under the lane, clear of its label), to the
+    // column's edge, then the curve to the gate.
+    const edge = xe + we + 2;
+    const run = ln.lod === 0
+      ? [ln.outPort.x, ln.outPort.y, edge, ln.outPort.y]
+      : [ln.outPort.x, ln.outPort.y, ln.outPort.x + 4, ln.outPort.y, ln.outPort.x + 4, ln.y + ln.h + 3, edge, ln.y + ln.h + 3];
+    fromLane.push(joinLegs(polyLeg(run), bezLeg(edge, run[run.length - 1], gate.inPort.x, gate.inPort.y)));
   }
   if (!lanes.length) {
     const mid = { x: xe, y: body0 + bodyH / 2 };
@@ -463,6 +472,14 @@ export function bezLeg(ax: number, ay: number, bx: number, by: number, n = 14): 
     pts[i * 2 + 1] = a * ay + b * ay + c2 * by + d * by;
   }
   return { pts, len: polyLen(pts) };
+}
+
+/** Two legs end to end (b starts where a ends). */
+export function joinLegs(a: Leg, b: Leg): Leg {
+  const pts = new Float32Array(a.pts.length + b.pts.length - 2);
+  pts.set(a.pts, 0);
+  pts.set(b.pts.subarray(2), a.pts.length);
+  return { pts, len: a.len + b.len };
 }
 
 export function polyLeg(xy: number[]): Leg {

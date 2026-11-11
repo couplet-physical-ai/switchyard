@@ -254,7 +254,12 @@ function drawSources(g: Gfx, v: View, r: Rect): void {
   sourcesAt(g, v, src.lod);
   if (fd.a < 1) g.alpha(1);
   // The return wire's caption, under the sources.
-  g.text('failures come home here', src.x, S.divY - 9, C.ink3, T.caption);
+  // Written on the return wire itself, as the inspiration labels its wires: the wire breaks
+  // for the words (a canvas-coloured backing; the static layer's wire runs under it).
+  const cap = 'failures ride home to whoever pushed them';
+  const cw = Math.min(g.width(cap, T.caption), S.gates.gate.x - src.x - 40);
+  g.fillRect(src.x + 2, S.divY - 7, cw + 12, 13, C.canvas);
+  g.text(g.fit(cap, T.caption, cw), src.x + 8, S.divY + 4, C.ink3, T.caption);
 }
 
 function sourcesAt(g: Gfx, v: View, lod: Level): void {
@@ -332,7 +337,7 @@ function drawIntake(g: Gfx, v: View, r: Rect): void {
   g.text(rr.w >= 76 ? 'roadrunner' : 'rr queue', rr.x, rr.y - 5, C.ink2, T.caption);
   const capN = Math.max(1, Math.floor((rr.w - 14) / 11));
   if (qt.rr.length > capN) g.text(`+${qt.rr.length - capN}`, rr.x + 4, rr.y + rr.h / 2 + 4, C.amberText, T.caption);
-  const rrSub: Run[] = qt.rrWaiting ? (stuck ? [[`stuck ${fmtDur(now - (qt.rr[0]?.created ?? qt.oldestAt))}`, C.redText]] : [[`${qt.rrWaiting} in line`, C.amberText]]) : [['empty', C.ink3]];
+  const rrSub: Run[] = qt.rrWaiting ? (stuck ? [[`stuck ${fmtDur(now - qt.rr.reduce((m, p) => Math.min(m, p.created), now))}`, C.redText]] : [[`${qt.rrWaiting} in line`, C.amberText]]) : [['empty', C.ink3]];
   g.runs(rrSub, rr.x, rr.y + rr.h + 13, T.caption, rr.w + 20);
   g.text(gh.w >= 96 ? 'github actions' : 'actions', gh.x, gh.y - 5, C.ink2, T.caption);
   g.runs(qt.ghaWaiting ? [[`${qt.ghaWaiting} queued`, C.amberText]] : [['empty', C.ink3]], gh.x, gh.y + gh.h + 13, T.caption, gh.w + 20);
@@ -408,31 +413,28 @@ function enginesAt(g: Gfx, v: View, lod: Level, r: Rect): void {
       const stat = lane.offline ? 'offline' : `${st.busy}/${st.slots}${cpu}`;
       // amber only when the lane is full (the next push waits); otherwise a plain count
       const statColor = lane.offline ? C.ink3 : st.busy >= st.slots && st.slots > 0 ? C.amberText : C.ink2;
+      const x1 = r.x + r.w - 6;
+      // What runs there, oldest first, and for how long (amber: over 1.5x its typical time).
+      const cap = lane.offline ? null : laneRunning(v, lane);
+      const tail: Run[] = [];
+      if (lane.offline) {
+        const e = lane.engines.map((id) => w.engines.get(id)).find((x) => x?.last_seen);
+        tail.push([e?.last_seen ? ` · last seen ${fmtDur(now - e.last_seen)} ago` : '', C.ink3]);
+      } else if (cap && cap.length) {
+        for (let k = 0; k < cap.length; k++) {
+          const c = cap[k];
+          tail.push([k ? ' · ' : '  ', C.ink3], [c.name, C.ink2], [` ${fmtShort(c.el)}`, c.slow ? C.amberText : C.ink3]);
+        }
+      } else tail.push([lane.virtual ? '  synthetic' : '  idle', C.ink3]);
       if (lod === 0) {
-        const x1 = r.x + r.w - 6;
-        const endX = g.runs([[lane.title, C.ink2], [` · ${lane.sub}`, C.ink3]], lane.x, lane.labelY, T.caption, x1 - lane.x - 90);
-        g.runs([[' · ', C.ink3], [stat, statColor]], endX, lane.labelY, T.caption, x1 - endX);
-        // Inside the machine, after its slots: what runs there and for how long (amber: over
-        // 1.5× its typical time).
-        const last = lane.slots[lane.slots.length - 1];
-        const cx0 = (last ? last.x + last.r : lane.x) + 12;
-        const cy = lane.y + lane.h / 2 + 4;
-        const room = lane.x + lane.w - 8 - cx0;
-        const cap = lane.offline ? null : laneRunning(v, lane);
-        if (lane.offline) {
-          const e = lane.engines.map((id) => w.engines.get(id)).find((x) => x?.last_seen);
-          g.text(g.fit(e?.last_seen ? `offline · last seen ${fmtDur(now - e.last_seen)} ago` : 'offline', T.caption, room), cx0, cy, C.ink3, T.caption);
-        } else if (cap && cap.length) {
-          const runs: Run[] = [];
-          for (let k = 0; k < cap.length; k++) {
-            const c = cap[k];
-            runs.push([k ? ' · ' : '', C.ink3], [c.name, C.ink2], [` ${fmtShort(c.el)}`, c.slow ? C.amberText : C.ink3]);
-          }
-          g.runs(runs, cx0, cy, T.caption, room);
-        } else g.text(lane.virtual ? 'synthetic' : 'idle', cx0, cy, C.ink3, T.caption);
+        // The label band above the machine: nothing is written where packets travel.
+        const endX = g.runs([[lane.title, C.ink2], [` · ${lane.sub}`, C.ink3], [' · ', C.ink3], [stat, statColor]], lane.x, lane.labelY, T.caption, x1 - lane.x);
+        g.runs(tail, endX, lane.labelY, T.caption, x1 - endX);
       } else {
-        g.text(g.fit(lane.title, T.caption, Math.min(110, Math.round(E.w * 0.36)) - 12), lane.x + 7, lane.y + lane.h / 2 + 4, C.ink2, T.caption);
-        g.text(stat, lane.x + lane.w - 7, lane.y + lane.h / 2 + 4, statColor, T.caption, false, 'right');
+        // LOD1: the words to the right of the (slot-sized) machine; the exit wire runs under.
+        const tx = lane.x + lane.w + 8;
+        const endX = g.runs([[trim(lane.title, 14), C.ink2], [' ', C.ink3], [stat, statColor]], tx, lane.y + lane.h / 2 + 4, T.caption, x1 - tx);
+        g.runs(tail, endX, lane.y + lane.h / 2 + 4, T.caption, x1 - endX);
       }
     });
     return;
@@ -697,15 +699,26 @@ function drawApps(g: Gfx, v: View, r: Rect): void {
   const aa = v.agg.apps;
   const up = S.stress ? v.stress.appHealth.reduce((n, x) => n + (x === 0 || x === 4 ? 1 : 0), 0) : aa.up;
   const parts: Run[] = [['apps', C.ink, true], [` · ${thousands(up)} of ${thousands(A.n)} up`, C.ink3]];
-  // Problem apps by name (up to five), "down 4m".
-  for (const id of aa.problems.slice(0, 5)) {
-    const a = w.apps.get(id);
-    parts.push([` · ${id} ${a?.health ?? ''}`, a?.health === 'down' ? C.redText : C.amberText]);
+  // Problem apps by name, as many as fit whole; the rest "+N more", never past the margin.
+  const room = r.x + r.w - 8 - A.x;
+  let used = g.width(`apps · ${thousands(up)} of ${thousands(A.n)} up`, T.caption);
+  const probs = aa.problems;
+  let shown = 0;
+  for (let k = 0; k < probs.length; k++) {
+    const a = w.apps.get(probs[k]);
+    const s1 = ` · ${probs[k]} ${a?.health ?? ''}`;
+    const left = probs.length - k - 1;
+    const reserve = left ? g.width(` · +${left} more`, T.caption) : 0;
+    const wd = g.width(s1, T.caption);
+    if (used + wd + reserve > room) break;
+    parts.push([s1, a?.health === 'down' ? C.redText : C.amberText]);
+    used += wd;
+    shown++;
   }
+  if (probs.length > shown) { const s2 = ` · +${probs.length - shown} more`; parts.push([s2, C.redText]); used += g.width(s2, T.caption); }
+  if (used + g.width(' · by attention', T.caption) <= room) parts.push([' · by attention', C.ink3]);
   void now;
-  if (aa.problems.length > 5) parts.push([` +${aa.problems.length - 5}`, C.redText]);
-  parts.push([' · by attention', C.ink3]);
-  g.runs(parts, A.x, A.namesY, T.caption, r.w - 8);
+  g.runs(parts, A.x, A.namesY, T.caption, room);
   const health = S.stress ? v.stress.appHealth : aa.health;
   const fd = v.lod.fade('apps', t);
   void fd;

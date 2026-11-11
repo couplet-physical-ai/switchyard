@@ -645,8 +645,7 @@ export class Yard {
         const run = e.running.filter((pid) => b.has(pid));
         for (let k = 0; k < run.length && k < slots.length; k++) {
           const s = slots[k];
-          const reach = S.engines.lod === 0 ? 46 : s.r + 4;
-          if (Math.abs(x - s.x - (S.engines.lod === 0 ? 36 : 0)) <= reach && Math.abs(y - s.y) <= Math.max(8, s.r + 4)) {
+          if (Math.abs(x - s.x) <= Math.max(7, s.r + 3) && Math.abs(y - s.y) <= Math.max(8, s.r + 4)) {
             const p = w.pipelines.get(run[k]);
             return { kind: 'pipeline', id: run[k], label: p ? `${p.repo} #${p.number}` : run[k] };
           }
