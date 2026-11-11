@@ -44,6 +44,8 @@ pub struct AppState {
     pub adapters: Arc<Adapters>,
     pub auth: Arc<Auth>,
     pub traces: Option<Arc<Traces>>,
+    /// Step log tails (live mode with upstream tokens).
+    pub logs: Option<Arc<crate::logs::Logs>>,
     pub clock: Clock,
     pub mode: &'static str,
     pub version: String,
@@ -66,6 +68,7 @@ pub fn router(st: Arc<AppState>) -> Router {
         .route("/insights", get(insights))
         .route("/app/{id}", get(app_history))
         .route("/engine/{id}/history", get(engine_history))
+        .route("/pipeline/{id}/log", get(pipeline_log))
         .route("/changes", get(changes))
         .route("/whoami", get(auth::whoami))
         .route("/tokens", get(auth::list_tokens))
@@ -275,6 +278,7 @@ async fn meta(State(st): State<Arc<AppState>>) -> Response {
         "counts": counts,
         "process": process_stats(),
         "web": web_info(st.static_dir.as_deref()),
+        "caps": caps(&st),
         "now": (st.clock)(),
     });
     (StatusCode::OK, axum::Json(body)).into_response()
@@ -851,6 +855,114 @@ async fn engine_history(State(st): State<Arc<AppState>>, Path(id): Path<String>)
     match st.hub.ledger.engine_history(&id, &st.mirror.read(), now) {
         Some(v) => (StatusCode::OK, axum::Json(v)).into_response(),
         None => not_found_json("no such engine"),
+    }
+}
+
+/// Optional features this server serves (clients show them only when listed).
+fn caps(st: &AppState) -> Vec<&'static str> {
+    let mut c = Vec::new();
+    if st.logs.is_some() {
+        c.push("pipeline_log");
+    }
+    c
+}
+
+#[derive(Deserialize)]
+struct LogQ {
+    step: Option<String>,
+    workflow: Option<String>,
+    tail: Option<usize>,
+}
+
+/// `PipelineLog`: the tail of one step's log (see `logs.rs`).
+async fn pipeline_log(
+    State(st): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(q): Query<LogQ>,
+) -> Response {
+    let Some(logs) = st.logs.clone() else {
+        return not_found_json("this server does not serve logs");
+    };
+    let Some(step) = q.step.filter(|s| !s.is_empty()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": "bad_request", "message": "need ?step="})),
+        )
+            .into_response();
+    };
+    let tail = q
+        .tail
+        .unwrap_or(crate::logs::TAIL_DEFAULT)
+        .clamp(1, crate::logs::TAIL_MAX);
+    // The step, from the live view.
+    let found = {
+        let m = st.mirror.read();
+        let Some(p) = m.get(Kind::Pipeline, &id) else {
+            return not_found_json("no such pipeline");
+        };
+        let repo = p
+            .get("repo")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        p.get("workflows")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|w| {
+                q.workflow
+                    .as_deref()
+                    .is_none_or(|n| w.get("name").and_then(Value::as_str) == Some(n))
+            })
+            .find_map(|w| {
+                let wname = w.get("name").and_then(Value::as_str).unwrap_or("");
+                w.get("steps")
+                    .and_then(Value::as_array)?
+                    .iter()
+                    .find(|s| s.get("name").and_then(Value::as_str) == Some(step.as_str()))
+                    .map(|s| crate::logs::StepRef {
+                        pipeline: id.clone(),
+                        repo: repo.clone(),
+                        workflow: wname.to_string(),
+                        step: step.clone(),
+                        state: s
+                            .get("state")
+                            .cloned()
+                            .and_then(|v| serde_json::from_value(v).ok())
+                            .unwrap_or(crate::model::CiState::Pending),
+                    })
+            })
+    };
+    let Some(sref) = found else {
+        return not_found_json("no such step");
+    };
+    let now = (st.clock)();
+    if matches!(
+        sref.state,
+        crate::model::CiState::Pending
+            | crate::model::CiState::Blocked
+            | crate::model::CiState::Skipped
+    ) || !logs.serves(&id)
+    {
+        // Not started (or no log source): an empty tail, never an upstream read.
+        let mut v = json!({"id": id, "step": sref.step, "state": sref.state,
+            "lines": [], "truncated": false, "bytes": 0, "fetched": now});
+        if !sref.workflow.is_empty() {
+            v["workflow"] = sref.workflow.into();
+        }
+        return (StatusCode::OK, axum::Json(v)).into_response();
+    }
+    match logs.tail(&sref, tail, now).await {
+        Ok(v) => (StatusCode::OK, axum::Json(v)).into_response(),
+        Err(crate::logs::LogError::NotFound(m)) => not_found_json(&m),
+        Err(crate::logs::LogError::Upstream(m)) => {
+            tracing::warn!(pipeline = %id, error = %m, "pipeline log read failed");
+            (
+                StatusCode::BAD_GATEWAY,
+                axum::Json(json!({"error": "upstream", "message": m})),
+            )
+                .into_response()
+        }
     }
 }
 

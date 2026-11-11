@@ -315,6 +315,23 @@ async fn serve(cli: Cli) -> Result<()> {
                 switchyard::adapters::http_client(),
             ))
         });
+    // Step log tails for the steps panel (live mode, read with the adapters' tokens).
+    let logs = (!cli.demo)
+        .then(switchyard::adapters::UpstreamCfg::from_env)
+        .and_then(|c| {
+            let wp = c
+                .woodpecker_token
+                .clone()
+                .map(|t| (c.woodpecker_url.clone(), t));
+            let gh = c.github_token.clone().map(|t| (c.github_api.clone(), t));
+            (wp.is_some() || gh.is_some()).then(|| {
+                Arc::new(switchyard::logs::Logs::new(
+                    wp,
+                    gh,
+                    switchyard::adapters::http_client(),
+                ))
+            })
+        });
     let st = Arc::new(AppState {
         hub,
         mirror,
@@ -322,6 +339,7 @@ async fn serve(cli: Cli) -> Result<()> {
         adapters,
         auth,
         traces,
+        logs,
         clock,
         mode: if cli.demo { "demo" } else { "live" },
         version: env!("CARGO_PKG_VERSION").to_string(),

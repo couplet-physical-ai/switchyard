@@ -72,7 +72,12 @@ Then `curl -s localhost:8080/api/v1/meta | jq` or open `ws://localhost:8080/api/
   off the stream and persisted to `<data-dir>/ledger.jsonl` (appended as things happen,
   compacted at boot and daily); the same ledger serves `/api/v1/app/{id}` (last deploys,
   health over 7 days) and `/api/v1/engine/{id}/history` (24 h of engine load by the minute,
-  rebuilt from history at boot). All of it is computed from the registers like
+  rebuilt from history at boot).
+- `/api/v1/pipeline/{id}/log?step=` serves the tail of one step's log on demand
+  (`src/logs.rs`): Woodpecker step logs or GitHub Actions job logs, read with the
+  adapters' tokens, ≤ 500 lines / 64 KB, secrets redacted, cached 10 s while running and
+  10 min once done, ≤ 4 upstream reads at a time. Listed in `meta.caps` as
+  `pipeline_log` when configured (live mode). All of it is computed from the registers like
   every other entity, so the order-independence properties cover it.
 - **Restart settling** (`Hub::begin_settle` / `end_settle`, `Adapters::settled`): a new
   process starts empty and backfills the whole fleet (GitHub's inventory and PR pages take

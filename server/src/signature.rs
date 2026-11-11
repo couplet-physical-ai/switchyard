@@ -140,7 +140,7 @@ pub fn clean_line(raw: &str) -> String {
     rest.trim_end().to_string()
 }
 
-fn strip_ansi(s: &str) -> Cow<'_, str> {
+pub fn strip_ansi(s: &str) -> Cow<'_, str> {
     if !s
         .bytes()
         .any(|b| b == 0x1b || (b < 0x20 && b != b'\t') || b == 0x7f)

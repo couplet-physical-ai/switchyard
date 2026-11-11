@@ -136,6 +136,7 @@ async fn a_one_hour_resume_never_sends_more_than_512_kb_at_once() {
             None,
         )),
         traces: None,
+        logs: None,
         clock,
         mode: "test",
         version: "0".into(),

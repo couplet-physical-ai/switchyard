@@ -49,6 +49,7 @@ async fn serve(mode: AuthMode, web: Option<&Path>) -> Server {
         adapters: Arc::new(Adapters::default()),
         auth: Arc::new(auth),
         traces: None,
+        logs: None,
         clock,
         mode: "test",
         version: "0".into(),
@@ -158,7 +159,11 @@ async fn tstream_accepts_only_a_device_token_in_the_query() {
         .unwrap();
     assert!(first.is_some_and(|c| !c.is_empty()));
     // The Factory Floor queries are ordinary guarded reads.
-    for p in ["/api/v1/app/nope", "/api/v1/engine/nope/history"] {
+    for p in [
+        "/api/v1/app/nope",
+        "/api/v1/engine/nope/history",
+        "/api/v1/pipeline/wp:acme%2Fapi:1/log?step=test",
+    ] {
         let u = format!("{}{p}", s.base);
         assert_eq!(status(&u, &[]).await, 401, "{p} anonymous");
         assert_eq!(

@@ -10,6 +10,7 @@ pub mod google;
 pub mod history;
 pub mod hub;
 pub mod ledger;
+pub mod logs;
 pub mod model;
 pub mod query;
 pub mod record;

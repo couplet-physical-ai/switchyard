@@ -27,8 +27,9 @@ except the two singleton snapshot fields, which are `null` before their first va
 | `GET /api/v1/insights` | the Factory Floor in one call: `Insights` (groups, failure clusters, flakes, trends), same entities as the snapshot tables, sorted for display. |
 | `GET /api/v1/changes?since=<ms>[&until=<ms>]` | "since your last visit": `Changes` — what turned red, recovered, deployed, new failure clusters, PRs, counts; up to 7 days back. |
 | `GET /api/v1/app/{id}` | `AppHistory`: the app now, its last 10 deploys, its health transitions over 7 days. 404 if unknown. |
+| `GET /api/v1/pipeline/{id}/log?step=<Step.name>[&workflow=<Workflow.name>][&tail=200]` | `PipelineLog`: the tail of one step's log, read on demand (only when `meta.caps` has `"pipeline_log"`). `id` URL-encoded (`wp%3Aacme%2Fapi%3A42`, `gha%3A123`); `tail` lines, default 200, max 500. 404 for a pipeline not in the live view or an unknown step; 400 without `step`; 502 when the upstream fails. |
 | `GET /api/v1/engine/{id}/history` | `EngineHistory`: one engine (agent, Dagger host, runner pool) over 24 h at one-minute resolution, columnar; the repos it served in the last hour. 404 if unknown. |
-| `GET /api/v1/meta` | `{protocol, version, git_sha, mode: "live"\|"demo", epoch, seq, snapshot:{seq,at,bytes,gzip_bytes}, clients, adapters: AdapterStatus[], orgs, counts, process: {rss_bytes, peak_rss_bytes, threads}, web, now}`. `web` (null without a web client): `{sha, tree?, files, shell_bytes, app_js_bytes}`, `sha` = the commit the served web build came from, `tree` = that commit's `app/` tree hash (`git rev-parse <sha>:app`, 40 hex): a deploy that changes only the server moves `sha`, never `tree`. |
+| `GET /api/v1/meta` | `{protocol, version, git_sha, mode: "live"\|"demo", epoch, seq, snapshot:{seq,at,bytes,gzip_bytes}, clients, adapters: AdapterStatus[], orgs, counts, process: {rss_bytes, peak_rss_bytes, threads}, web, caps, now}`. `caps`: optional features this server serves, e.g. `["pipeline_log"]` (a client shows a feature only when listed; absent on servers before it). `web` (null without a web client): `{sha, tree?, files, shell_bytes, app_js_bytes}`, `sha` = the commit the served web build came from, `tree` = that commit's `app/` tree hash (`git rev-parse <sha>:app`, 40 hex): a deploy that changes only the server moves `sha`, never `tree`. |
 | `GET /api/healthz` | liveness `{ok:true}` (public). |
 | `GET /api/readyz` | `{ready, mode, seq, adapters: AdapterStatus[]}`; 200 when every enabled adapter has synced once, else 503. |
 | `GET /connect` | (browser, SSO) page that mints a device token for the macOS app. |
@@ -425,6 +426,30 @@ type AppHistory = {                      // GET /api/v1/app/{id}
   since: number, complete: boolean       // the 7 d window, or less while the log is younger
 }
 
+type PipelineLog = {                     // GET /api/v1/pipeline/{id}/log?step=&workflow=&tail=
+  id: string, step: string,
+  workflow?: string,                     // the step's workflow (Woodpecker workflow / GHA workflow)
+  state: CiState,                        // the step's state as read
+  lines: string[],                       // the tail, oldest first: ANSI and \r progress stripped,
+                                         // GitHub's per-line timestamps stripped, each line cut at
+                                         // 400 chars (…), secrets redacted to "[redacted]" (see
+                                         // below); [] for a step that has not started (pending,
+                                         // blocked, skipped) or a GHA job still running (GitHub
+                                         // publishes a job's log when it ends)
+  truncated: boolean,                    // the log goes on before `lines`, or a line / the 64 KB
+                                         // budget was cut
+  bytes: number,                         // UTF-8 size of `lines` (≤ 64 KB)
+  fetched: number                        // when it was read upstream (ms)
+}
+// Woodpecker (`wp:`): the step's own log. GitHub Actions (`gha:`): a Step is a job; its
+// log is the job's. Cached 10 s while the step runs and 10 min once it is done; at
+// most 4 upstream reads at a time. Redacted: `Authorization: …`, `Bearer`/`Basic`
+// credentials, URL user:password@, values of secret-named keys (token, secret,
+// password, api_key, access_key, private_key, credential, dsn, …: `k=v`, `k: v`,
+// `"k": "v"`, `--k=v`), known token shapes (ghp_/ghs_/github_pat_, xox?-, sk-…, AKIA…,
+// AIza…, syd_/sys_, npm_, glpat-, …), JWTs, PEM private key blocks (every line),
+// and long mixed-case high-entropy strings. Hex digests and paths stay.
+
 type EngineHistory = {                   // GET /api/v1/engine/{id}/history (id URL-encoded:
                                          // "dagger%3AVM%20153")
   id: string, kind: Engine["kind"], host?: string,
@@ -469,7 +494,8 @@ cargo run --release -- --demo --listen 127.0.0.1:8080   # from server/, fixtures
   Measured on the live fleet: the new tables add 127 KB (5 %) to the snapshot (2.39 MB) and
   49 KB/h (3.4 %) to the stream (1.45 MB/h). Then: `/changes` PR counts (opened / merged /
   stuck per group) and a 7-day window (a persisted log), `GET /api/v1/app/{id}`,
-  `GET /api/v1/engine/{id}/history`.
+  `GET /api/v1/engine/{id}/history`; `GET /api/v1/pipeline/{id}/log` behind
+  `meta.caps: ["pipeline_log"]`.
 - **0.4**: smaller deltas and snapshot (measured on the live fleet: stream 7.0 → 1.9 MB/h,
   snapshot 3.1 → 2.5 MB, so 1 h of `/history` ≈ 4.4 MB). New ops `patch` (RFC 7386 merge patch) and `dot` (one main-line
   Dot); `Repo.main.recent` keeps 12 dots (was ≤ 40, 20 in practice); `Pr.checks` lists only
