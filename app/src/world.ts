@@ -3,12 +3,23 @@
 // entity, removes delete it, events go to the listener (the yard's motion) after the ops of
 // the same frame have landed, so a listener always sees the world the event produced.
 
-import type { App, Commit, Deploy, Dot, Engine, Event, Frame as WireFrame, Kind, Lane, Org, Pipeline, Pr, Queue, Repo, Snapshot, Stats, Watcher } from './wire.ts';
+import type { App, Cluster, Commit, Deploy, Dot, Engine, Event, Flake, Frame as WireFrame, Group, Health, Kind, Lane, Org, Pipeline, Pr, Queue, Repo, Snapshot, Stats, Trend, Watcher } from './wire.ts';
 
 /** The sources column's row for bots (AUTOFIX, Renovate, agents). */
 export const BOTS = '@bots';
 
 export type Listener = (e: Event, w: World) => void;
+
+/** A health change of an app, as the stream reported it (World.health). */
+export type HealthChange = { app: string; from: Health; to: Health; at: number };
+
+/** True when `protocol` ("0.5", "0.4", "0") is at least major.minor. */
+export function protocolAtLeast(protocol: string, major: number, minor: number): boolean {
+  const m = /^(\d+)(?:\.(\d+))?/.exec(String(protocol ?? ''));
+  if (!m) return false;
+  const a = Number(m[1]), b = Number(m[2] ?? 0);
+  return a > major || (a === major && b >= minor);
+}
 
 const EMPTY_STATS: Stats = { commits_24h: 0, pipelines_24h: 0, success_rate_24h: 0, p50_queue_ms: 0, p50_build_ms: 0, deploys_24h: 0, apps_up: 0, apps_down: 0, prs_open: 0 };
 
@@ -28,16 +39,32 @@ export class World {
   lanes = new Map<string, Lane>();
   watcher: Watcher = { id: 'outage', tripped: false, gh_status: 'unknown' };
   stats: Stats = { ...EMPTY_STATS };
+  /** v0.5 Factory Floor tables (empty from a v0.4 server: src/insights.ts approximates them). */
+  groups = new Map<string, Group>();
+  clusters = new Map<string, Cluster>();
+  flakes = new Map<string, Flake>();
+  trends = new Map<string, Trend>();
+  /** The server speaks v0.5 (its snapshot carries the Factory Floor tables). False for a v0.4
+   *  server, which must keep working exactly as before. */
+  v05 = false;
   /** Bumps on every applied change; projections cache on it. */
   ver = 0;
   /** Bumps when the set of repos, orgs, engines or apps changes (the yard's layout). */
   shapeVer = 0;
   /** Per-kind change counters: the yard's panels redraw only when what they show changed. */
-  kv: Record<string, number> = { org: 0, repo: 0, commit: 0, pipeline: 0, pr: 0, deploy: 0, app: 0, engine: 0, queue: 0, lane: 0, watcher: 0, stats: 0 };
+  kv: Record<string, number> = {
+    org: 0, repo: 0, commit: 0, pipeline: 0, pr: 0, deploy: 0, app: 0, engine: 0, queue: 0, lane: 0, watcher: 0, stats: 0,
+    group: 0, cluster: 0, flake: 0, trend: 0,
+  };
   /** Push times by org, newest last, for the sources column's rate (last 60 minutes). */
   pushes = new Map<string, number[]>();
   /** Events applied, newest last (bounded): the yard's recent-activity feed. */
   recent: Event[] = [];
+  /** Health changes from the stream, newest last, bounded (insights.appHistory, changesSince on
+   *  a v0.4 server): `recent` keeps every kind and turns over in minutes. */
+  health: HealthChange[] = [];
+  /** Fleet time of the snapshot this world was loaded from (what `health` has seen starts here). */
+  loadedAt = 0;
   loaded = false;
 
   load(s: Snapshot): void {
@@ -54,6 +81,11 @@ export class World {
     this.engines = toMap(s.engines);
     this.queues = toMap(s.queues);
     this.lanes = toMap(s.lanes);
+    this.groups = toMap(s.groups);
+    this.clusters = toMap(s.clusters);
+    this.flakes = toMap(s.flakes);
+    this.trends = toMap(s.trends);
+    this.v05 = protocolAtLeast(this.protocol, 0, 5) || s.groups != null;
     this.watcher = s.watcher ?? { id: 'outage', tripped: false, gh_status: 'unknown' };
     this.stats = { ...EMPTY_STATS, ...(s.stats ?? {}) };
     this.pushes = new Map();
@@ -62,6 +94,8 @@ export class World {
     }
     for (const list of this.pushes.values()) list.sort((a, b) => a - b);
     this.recent = [];
+    this.health = [];
+    this.loadedAt = this.at;
     this.loaded = true;
     this.ver++;
     this.shapeVer++;
@@ -91,6 +125,7 @@ export class World {
     if (events) {
       for (const e of events) {
         if (e.k === 'push') { this.notePush(e.bot || e.author?.endsWith('[bot]') ? BOTS : this.orgOf(e.repo), e.at); this.kv.commit++; }
+        else if (e.k === 'health') { this.health.push({ app: e.app, from: e.from, to: e.to, at: e.at }); if (this.health.length > 600) this.health.splice(0, 100); }
         this.recent.push(e);
         listener?.(e, this);
       }
@@ -103,7 +138,7 @@ export class World {
     if (kind in this.kv) this.kv[kind]++;
     const m = this.mapOf(kind);
     if (m) {
-      if (!m.has(id) && (kind === 'repo' || kind === 'org' || kind === 'engine' || kind === 'app' || kind === 'queue')) this.shapeVer++;
+      if (!m.has(id) && SHAPE.has(kind)) this.shapeVer++;
       if (v && typeof v === 'object' && !(v as { id?: string }).id) (v as { id?: string }).id = id;
       m.set(id, v);
     } else if (kind === 'watcher') this.watcher = v as Watcher;
@@ -113,11 +148,13 @@ export class World {
   /** v0.4 `patch`: a merge patch makes a new entity (copy on write: whoever holds the old
    *  object still sees the old one, as after an upsert). Unknown entities are ignored. */
   private patch(kind: Kind | string, id: string, v: unknown): void {
-    if (kind === 'watcher') { this.watcher = mergePatch(this.watcher, v) as Watcher; return; }
-    if (kind === 'stats') { this.stats = { ...EMPTY_STATS, ...(mergePatch(this.stats, v) as Stats) }; return; }
+    // (a patch changes what a view shows as much as an upsert: the per-kind counter bumps too)
+    if (kind === 'watcher') { this.kv.watcher++; this.watcher = mergePatch(this.watcher, v) as Watcher; return; }
+    if (kind === 'stats') { this.kv.stats++; this.stats = { ...EMPTY_STATS, ...(mergePatch(this.stats, v) as Stats) }; return; }
     const m = this.mapOf(kind);
     const cur = m?.get(id);
     if (!m || cur === undefined) return;
+    if (kind in this.kv) this.kv[kind]++;
     const next = mergePatch(cur, v) as { id?: string };
     if (next && typeof next === 'object' && !next.id) next.id = id;
     m.set(id, next);
@@ -132,12 +169,13 @@ export class World {
     recent.sort((a: Dot, b: Dot) => a.at - b.at || (a.sha < b.sha ? -1 : a.sha > b.sha ? 1 : 0));
     const main = { ...(r.main ?? {}), recent: recent.length > MAIN_DOTS ? recent.slice(recent.length - MAIN_DOTS) : recent };
     this.repos.set(id, { ...r, main });
+    this.kv.repo++;
   }
 
   private remove(kind: Kind | string, id: string): void {
     if (kind in this.kv) this.kv[kind]++;
     const m = this.mapOf(kind);
-    if (m?.delete(id) && (kind === 'repo' || kind === 'org' || kind === 'engine' || kind === 'app' || kind === 'queue')) this.shapeVer++;
+    if (m?.delete(id) && SHAPE.has(kind)) this.shapeVer++;
   }
 
   private mapOf(kind: Kind | string): Map<string, any> | null {
@@ -152,6 +190,10 @@ export class World {
       case 'engine': return this.engines;
       case 'queue': return this.queues;
       case 'lane': return this.lanes;
+      case 'group': return this.groups;
+      case 'cluster': return this.clusters;
+      case 'flake': return this.flakes;
+      case 'trend': return this.trends;
       default: return null;
     }
   }
@@ -188,6 +230,9 @@ export class World {
     return this.commits.get(`${p.repo}@${p.sha}`);
   }
 }
+
+/** Kinds whose arrival or removal changes the floor's layout (World.shapeVer). */
+const SHAPE = new Set<string>(['repo', 'org', 'engine', 'app', 'queue', 'group']);
 
 /** v0.2 sends arrays of entities with their own ids; the demo sends id-keyed maps. */
 function toMap<T>(o: T[] | Record<string, T> | undefined | null): Map<string, T> {

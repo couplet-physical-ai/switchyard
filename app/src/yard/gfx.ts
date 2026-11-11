@@ -111,14 +111,17 @@ export class Gfx {
     return this.paint(total <= maxW + 0.01 ? parts : this.fitTokens(parts, px, maxW), x, y, px);
   }
 
+  /** Paints runs left to right; neighbouring runs of one colour and weight go out as one text
+   *  (a text is a host round trip: ~22 µs on Hermes), the same pixels in a monospaced face. */
   private paint(parts: readonly Tok[], x: number, y: number, px: number): number {
     const ctx = this.ctx;
     ctx.textAlign = 'left';
     for (let i = 0; i < parts.length; i++) {
       const p = parts[i];
-      const s = p[0];
+      let s = p[0];
       if (!s) continue;
       const bold = !!p[2];
+      while (i + 1 < parts.length && (!parts[i + 1][0] || (parts[i + 1][1] === p[1] && !!parts[i + 1][2] === bold))) s += parts[++i][0];
       ctx.font = font(px, bold);
       ctx.fillStyle = p[1];
       ctx.fillText(s, x, y);

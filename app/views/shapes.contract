@@ -60,6 +60,17 @@ shape Overview
   hud: bool
   stress: bool
   quality: number
+  facKey: string
+  facDrawer: bool
+  facQ: number
+  facStress: bool
+  facCalm: bool
+  facStats: string
+  facCity: number
+  facCars: number
+  facBays: number
+  facLens: number
+  facLensTop: string
 
 shape SearchHit
   kind: string

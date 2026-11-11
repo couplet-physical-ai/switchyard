@@ -1,0 +1,144 @@
+// The factory floor: the default view (DESIGN.md "Factory"). The floor is two canvases
+// (factory-floor, factory-live); what they drew is read from the overview (`ov.fac*`), and a
+// press on the floor is a real pointer gesture at a point in the canvas: `drag 1 0 from x y`
+// presses there, moves one point (under the 4 px pan threshold) and lets go, which is a click.
+// The points are the recorded fleet's (contract/fixtures, frozen) at 1440×900: the floor's
+// fitted camera puts VM 154's busy bay (Northwind-EMS/ember-vector #37) at 870,315 and the labs
+// rail's newest car at 724,328 (the app logs both: `factory: busy bay …`, `factory: newest car …`).
+// What the canvases drew is read after `clock … real`: under the agent's virtual clock the macOS
+// host draws a canvas only as real frames pass.
+
+size 1440x900
+
+test "the factory is the default view, an idle floor behind the setup card"
+  clock data
+  expect state here == "factory"
+  expect tree has "factory-floor"
+  expect tree has "factory-live"
+  expect tree has "setup"
+  expect state ov.facDrawer == false
+  expect text "tab-factory" == "factory"
+
+test "the demo fills the floor"
+  clock data
+  tap "setup-demo"
+  clock data
+  clock +1000
+  clock +1500 real
+  expect tree missing "setup"
+  expect state here == "factory"
+  expect state ov.status == "ready"
+  expect state ov.facCity == 64
+  expect state ov.facDrawer == false
+
+test "the recorded real fleet fills the floor"
+  clock data
+  tap "setup-connect"
+  clock settle
+  type "server-field" "fixtures"
+  tap "settings-save"
+  clock data
+  clock +1000
+  clock +1500 real
+  expect state conn.ok == true
+  expect state ov.repos == 394
+  expect state ov.facCity == 239
+  expect state ov.facCars == 85
+  expect state ov.facBays == 3
+
+test "the tabs go to the yard and back to the factory; a deep link leaves it"
+  clock data
+  tap "setup-demo"
+  clock data
+  tap "tab-yard"
+  clock settle
+  expect state here == "yard"
+  expect tree has "yard-live"
+  tap "tab-factory"
+  clock settle
+  clock +500
+  clock +1000 real
+  expect state here == "factory"
+  expect tree has "factory-live"
+  expect state ov.facCity == 64
+  type "root" "/fleet"
+  clock settle
+  expect state here == "fleet"
+  tap "tab-factory"
+  clock settle
+  expect state here == "factory"
+
+test "a press on a busy bay opens its lens, Escape walks back"
+  clock data
+  tap "setup-connect"
+  clock settle
+  type "server-field" "fixtures"
+  tap "settings-save"
+  clock data
+  clock +1000
+  clock +1500 real
+  tap "factory-live" drag 1 0 from 870 315 mouse
+  clock data
+  clock +300
+  expect state ov.facLens == 1
+  type "factory-live" key "Escape"
+  clock data
+  clock +300
+  expect state ov.facLens == 0
+
+test "a press on a car on a main line opens its lens, Backspace walks back"
+  clock data
+  tap "setup-connect"
+  clock settle
+  type "server-field" "fixtures"
+  tap "settings-save"
+  clock data
+  clock +1000
+  clock +1500 real
+  tap "factory-live" drag 1 0 from 724 328 mouse
+  clock data
+  clock +300
+  expect state ov.facLens == 1
+  type "factory-live" key "Backspace"
+  clock data
+  clock +300
+  expect state ov.facLens == 0
+
+test "stress mode puts a 10x fleet on the floor and takes it off"
+  clock data
+  tap "setup-demo"
+  clock data
+  tap "open-settings"
+  clock settle
+  expect text "settings-stress" == "Stress mode: off"
+  tap "settings-stress"
+  clock +300
+  expect state ov.stress == true
+  expect text "settings-stress" == "Stress mode: on (10× synthetic fleet)"
+  tap "settings-cancel"
+  clock settle
+  clock +1000
+  clock +1500 real
+  expect state ov.facStress == true
+  expect state ov.facCity == 640
+  tap "open-settings"
+  clock settle
+  tap "settings-stress"
+  tap "settings-cancel"
+  clock settle
+  clock +1000
+  clock +1500 real
+  expect state ov.stress == false
+  expect state ov.facStress == false
+  expect state ov.facCity == 64
+
+test "the developer HUD turns on over the floor"
+  clock data
+  tap "setup-demo"
+  clock data
+  tap "hud-toggle"
+  clock +500
+  expect state ov.hud == true
+  tap "hud-toggle"
+  clock +500
+  expect state ov.hud == false

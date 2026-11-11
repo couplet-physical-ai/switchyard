@@ -2,7 +2,7 @@
 // the built-in demo (a seeded simulation of a fleet, no network). Both answer the same calls.
 
 import { parseLarge } from './json.ts';
-import type { History, Journey, Meta, PrDetail, SearchResults, Snapshot } from './wire.ts';
+import type { Changes, History, Insights, Journey, Meta, PrDetail, SearchResults, Snapshot } from './wire.ts';
 
 export interface Upstream {
   readonly kind: 'http' | 'demo';
@@ -15,6 +15,10 @@ export interface Upstream {
   pr(repo: string, number: number): Promise<PrDetail | null>;
   search(q: string): Promise<SearchResults>;
   meta(): Promise<Meta | null>;
+  /** v0.5 `GET /api/v1/insights`; null where the server has none (a v0.4 server: 404). */
+  insights?(): Promise<Insights | null>;
+  /** v0.5 `GET /api/v1/changes?since=&until=`; null where the server has none. */
+  changes?(since: number, until?: number): Promise<Changes | null>;
 }
 
 /** The recorded real fleet (contract/fixtures), served by `bun exact.mjs server` (server/mock.ts
@@ -116,5 +120,15 @@ export class HttpUpstream implements Upstream {
   }
   meta(): Promise<Meta | null> {
     return this.get<Meta | null>('/api/v1/meta');
+  }
+  /** The Factory Floor in one call (contract v0.5), through the bounded, yielding JSON path; a
+   *  v0.4 server answers 404 (null): src/insights.ts approximates then. */
+  insights(): Promise<Insights | null> {
+    return this.get<Insights | null>('/api/v1/insights', 15000, 4 << 20);
+  }
+  /** "Since your last visit" (contract v0.5); null from a v0.4 server. */
+  changes(since: number, until?: number): Promise<Changes | null> {
+    const q = `since=${Math.floor(since)}${until === undefined ? '' : `&until=${Math.floor(until)}`}`;
+    return this.get<Changes | null>(`/api/v1/changes?${q}`, 15000, 2 << 20);
   }
 }

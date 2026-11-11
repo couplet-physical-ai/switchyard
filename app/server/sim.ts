@@ -8,17 +8,20 @@
 // (server/reduce.ts) applied to any checkpoint reproduces `snapshot()` exactly.
 
 import type {
-  App, CiState, Commit, Deploy, DeployVia, Engine, Event, Frame, Health, History, Journey, Kind,
+  App, Changes, CiState, Commit, Deploy, DeployVia, Engine, Event, Frame, Health, History, Insights, Journey, Kind,
   Pipeline, Pr, PrDetail, PrPhase, Queue, Repo, SearchResults, DemoSnapshot as Snapshot, Step, Workflow,
 } from '../src/wire.ts';
 import { FrameLog, historyJson } from './history.ts';
 import * as N from './names.ts';
 import { ACTIVE, newPr, prOnPipeline, prPhase, prPush, wave } from './prs.ts';
 import { seedFleet, seedFleetSteps } from './seed.ts';
-import { Agenda, DAY, HOUR, MIN, SEC, TICK, clamp, diurnal, makeRng, median, round2, type Rng } from './util.ts';
+import { Floor } from './floor.ts';
+import { floorSeedSteps, type StoryCast } from './stories.ts';
+import { Agenda, DAY, HOUR, MIN, SEC, TICK, clamp, diurnal, hash32, makeRng, median, round2, type Rng } from './util.ts';
 import { journeyOf, prDetailOf, searchFleet } from './views.ts';
 
-export const PROTOCOL = '0';
+/** The contract version the mock speaks (CONTRACT.md v0.5: the Factory Floor). */
+export const PROTOCOL = '0.5';
 export { TICK };
 const PEAK_PER_MS = 1 / 5000; // ~1 commit / 5 s fleet-wide at daytime peak
 
@@ -38,6 +41,8 @@ export type RepoX = {
   r: Repo; idx: number; w: number; tier: 0 | 1 | 2; size: number; sec: boolean; appId?: string;
   via: DeployVia; wpNum: number; ghaNum: number; prNum: number; mainCount: number;
   ord: Map<string, number>; settledOrd: number; pushes: number[]; prs: PrX[];
+  /** The stories (server/stories.ts): the ci test step's name(s), taken in turn (shards). */
+  testStep?: string[]; shard?: number;
 };
 export type PipeX = {
   id: string; p: Pipeline; rx: RepoX; commitId: string; isMain: boolean; ord: number;
@@ -58,6 +63,7 @@ type PipeRec = { t: number; s: CiState; q: number; b: number };
 const COLL: Record<string, keyof Snapshot> = {
   org: 'orgs', repo: 'repos', commit: 'commits', pipeline: 'pipelines', pr: 'prs', deploy: 'deploys',
   app: 'apps', engine: 'engines', queue: 'queues', lane: 'lanes',
+  group: 'groups', cluster: 'clusters', flake: 'flakes', trend: 'trends',
 };
 const isTerminal = (s: CiState): boolean => s !== 'pending' && s !== 'running';
 const ms100 = (s: number): number => Math.max(TICK, Math.round((s * SEC) / TICK) * TICK);
@@ -105,6 +111,16 @@ export class Sim {
   private readonly maxCommits: number;
   private readonly lite: boolean;
   private snapCache = { key: '', json: '' };
+  /** The Factory Floor (contract v0.5): groups, failure clusters, flakes, trends, changes. */
+  readonly floor: Floor;
+  /** The Floor follows the simulation once it is seeded. */
+  floorOn = false;
+  /** The stories' cast, their forced outcomes per commit (in order, one per run of it: a failure
+   *  then a success is a flaky re-run) and the down-trending group's extra failure chance. */
+  cast: StoryCast | null = null;
+  storyForce = new Map<string, CiState[]>();
+  storyBias = new Map<string, number>();
+  readonly storyRng: Rng;
 
   constructor(o: SimOptions) {
     this.seed = o.seed ?? 7;
@@ -120,16 +136,21 @@ export class Sim {
       protocol: PROTOCOL, seq: 0, at: this.t0, orgs: {}, repos: {}, commits: {}, pipelines: {}, prs: {},
       deploys: {}, apps: {}, engines: {}, queues: {}, lanes: {}, watcher: { id: 'outage', tripped: false, gh_status: 'operational' },
       stats: { commits_24h: 0, pipelines_24h: 0, success_rate_24h: 0, p50_queue_ms: 0, p50_build_ms: 0, deploys_24h: 0, apps_up: 0, apps_down: 0, prs_open: 0 },
+      groups: {}, clusters: {}, flakes: {}, trends: {},
     };
+    this.storyRng = makeRng((this.seed * 31 + 0xb1a5) >>> 0);
+    this.floor = new Floor({ state: this.state, mark: (k, id) => this.mark(k, id) });
     for (let i = 0; i < 1440; i++) this.preCum[i + 1] = this.preCum[i]! + PEAK_PER_MS * diurnal(this.t0 - DAY + i * MIN) * MIN;
     // A deferred warm-up seeds in steps too: `warm` runs them first, one per call.
     if (o.deferWarmup) { this.seeding = seedFleetSteps(this); return; }
     seedFleet(this);
+    for (const _ of floorSeedSteps(this)) void _;
     this.seeded();
     this.warm(Infinity);
   }
 
   private seeding: Generator<void, void, void> | null = null;
+  private floorSeeding = false;
   private needSeeded = false;
   private seeded(): void {
     this.computeStats();
@@ -141,8 +162,9 @@ export class Sim {
   /** Runs up to `sliceMs` more of the warm-up; true once the simulation has reached its epoch. */
   warm(sliceMs: number): boolean {
     if (this.seeding) {
-      // the stats and the first checkpoint get a call of their own
-      if (this.seeding.next().done) this.seeding = null, this.needSeeded = true;
+      // the Floor's seeding, then the stats and the first checkpoint, get calls of their own
+      if (this.seeding.next().done) this.seeding = this.floorSeeding ? null : (this.floorSeeding = true, floorSeedSteps(this));
+      if (!this.seeding) this.needSeeded = true;
       return false;
     }
     if (this.needSeeded) { this.needSeeded = false; this.seeded(); return false; }
@@ -197,6 +219,10 @@ export class Sim {
   historyJson(from: number, to: number): string { return historyJson(this.log.window(from, to, this.now)); }
   history(from: number, to: number): History { return JSON.parse(this.historyJson(from, to)) as History; }
   journey(repo: string, sha: string): Journey | null { return journeyOf(this, repo, sha); }
+  /** GET /api/v1/insights. */
+  insights(): Insights { return this.floor.insights(this.now); }
+  /** GET /api/v1/changes?since=&until=. */
+  changes(since: number, until?: number): Changes { return this.floor.changes(since, until, this.now); }
   prDetail(repo: string, number: number): PrDetail | null { return prDetailOf(this, repo, number); }
   search(q: string): SearchResults { return searchFleet(this, q); }
   get historyStart(): number { return this.log.oldestAt; }
@@ -238,7 +264,10 @@ export class Sim {
     const key = kind + '\u0000' + id;
     if (!this.dirty.has(key)) this.dirty.set(key, [kind, id]);
   }
-  ev(e: Event): void { this.events.push(JSON.stringify({ op: 'event', e })); }
+  ev(e: Event): void {
+    if (this.floorOn) this.floor.onEvent(e);
+    this.events.push(JSON.stringify({ op: 'event', e }));
+  }
   private lookup(kind: DirtyKind, id: string): unknown {
     if (kind === 'watcher') return this.state.watcher;
     if (kind === 'stats') return this.state.stats;
@@ -247,6 +276,13 @@ export class Sim {
   private flush(): void {
     for (const lane of ['roadrunner', 'gha'] as const) if (this.queueDirty[lane]) this.refreshQueue(lane);
     if (!this.dirty.size && !this.events.length) return;
+    if (this.floorOn) {
+      // the Floor reads the pipelines that changed (failed steps join clusters, flips, rollups);
+      // what it changes is marked and goes out in this same frame
+      const pids: string[] = [];
+      for (const [kind, id] of this.dirty.values()) if (kind === 'pipeline') pids.push(id);
+      for (const id of pids) { const p = this.state.pipelines[id]; if (p) this.floor.observe(id, p, this.now); }
+    }
     const parts: string[] = [];
     for (const [kind, id] of this.dirty.values()) {
       const v = this.lookup(kind, id);
@@ -279,6 +315,8 @@ export class Sim {
     if (this.k % 100 === 0) this.computeStats();
     if (this.k % 600 === 0) this.prune();
     if (this.k % 3000 === 0) this.staleSweep();
+    if (this.floorOn && now - this.floor.lastTick >= 5 * MIN) this.floor.tick(now);
+    else if (this.floorOn && this.floor.trendsDue) this.floor.tickTrends(now, 2);
   }
 
   pickAuthor(main: boolean): string {
@@ -300,7 +338,28 @@ export class Sim {
 
   // ───────────────────────────── commits & pipelines ─────────────────────────────
 
-  push(rx: RepoX, branch: string, author: string, title: string, prX?: PrX, sha = this.rng.hex(40)): string {
+  /** A story's push (server/stories.ts) at `at`: its runs end as `outcomes` says, in order (a
+   *  failure then a success: the failed run is re-run on the same sha 25 s after it ends). */
+  storyPush(at: number, rx: RepoX, outcomes: CiState[], title: string): void {
+    this.agenda.add(at, () => {
+      const author = N.HUMANS[hash32(`${rx.r.id}|${title}`) % N.HUMANS.length]!;
+      const cid = this.push(rx, rx.r.default_branch, author, title, undefined, this.rng.hex(40), true);
+      this.storyForce.set(cid, outcomes.slice());
+    });
+  }
+
+  /** A forced outcome: a failure fails the ci workflow's test step. */
+  private force(px: PipeX, o: CiState): void {
+    delete px.deployFail;
+    if (o === 'failure') {
+      const steps = px.p.workflows[0]?.steps ?? [];
+      const ti = steps.findIndex((st) => /^(test|e2e)/.test(st.name));
+      px.outcome = 'failure';
+      px.fail = [0, ti >= 0 ? ti : Math.min(3, steps.length - 1)];
+    } else { px.outcome = 'success'; delete px.fail; }
+  }
+
+  push(rx: RepoX, branch: string, author: string, title: string, prX?: PrX, sha = this.rng.hex(40), forceCi = false): string {
     const now = this.now;
     const bot = author.endsWith('[bot]');
     const repo = rx.r.id;
@@ -312,7 +371,7 @@ export class Sim {
     this.ev({ k: 'push', repo, sha, branch, author, ...(bot ? { bot } : {}), title, at: now });
     const isMain = branch === rx.r.default_branch;
     let ord = 0;
-    const skip = rx.r.lane === 'none' || this.rng.chance(0.15);
+    const skip = rx.r.lane === 'none' || (this.rng.chance(0.15) && !forceCi);
     if (isMain) {
       ord = ++rx.mainCount;
       rx.ord.set(sha, ord);
@@ -368,7 +427,7 @@ export class Sim {
       ['clone', r.range(2, 6), false],
       ['deps', depsC ? r.range(1, 3) : clamp(r.range(5, 40) * sz, 5, 40), depsC],
       ['build', buildC ? r.range(3, 12) : clamp((20 + 180 * r() ** 2.5) * sz, 20, 200), buildC],
-      ['test', clamp((15 + 285 * r() ** 3) * sz, 15, 300), false],
+      [rx.testStep ? rx.testStep[(rx.shard = ((rx.shard ?? -1) + 1) % rx.testStep.length)]! : 'test', clamp((15 + 285 * r() ** 3) * sz, 15, 300), false],
       ['lint', r.range(3, 12), false],
     ]);
     if (rx.sec) add('security', [['gitleaks', r.range(3, 12), false], ['osv', r.range(5, 25), r.chance(0.3)]]);
@@ -413,6 +472,9 @@ export class Sim {
       dur: pl.dur, cached: pl.cached, prX, deployWf: pl.deployWf, deployVia: pl.deployVia, done: false,
     };
     this.outcome(px, rx.r.main.state === 'failure');
+    const forced = this.storyForce.get(commitId);
+    if (forced?.length) this.force(px, forced.shift()!);
+    else if (this.storyBias.size && px.outcome === 'success' && this.storyRng() < (this.storyBias.get(rx.r.id) ?? 0)) this.force(px, 'failure');
     this.state.pipelines[id] = p;
     this.pipes.set(id, px);
     this.mark('pipeline', id);
@@ -602,6 +664,10 @@ export class Sim {
     }
     if (px.prX) prOnPipeline(this, px.prX, px);
     if (px.isMain && px.rx.appId && state === 'success' && px.deployWf < 0) this.outOfBandDeploy(px);
+    // a story's flaky step: the failed run is re-run on the same sha
+    if (state === 'failure' && this.storyForce.get(px.commitId)?.length) {
+      this.agenda.add(now + 25 * SEC, () => this.enqueue(px.rx, px.commitId, px.isMain, px.ord, px.prX));
+    }
   }
 
   private setCommit(px: PipeX, f: (c: Commit) => void): void {

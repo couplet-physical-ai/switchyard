@@ -56,10 +56,11 @@ component UpdatePill
     check: action
     install: action
     toggleNotes: action
+    lift: number
   view
     if u.supported
       // Above the status line, in the web-reload pill's slot (the two never show together).
-      column position="absolute" right=16 bottom=60 align-items="flex-end" gap=6 pointer-events="none" testId="update"
+      column position="absolute" right=16 bottom=lift align-items="flex-end" gap=6 pointer-events="none" testId="update"
         // App menu ▸ Check for Updates… (macOS); the agent taps this same button. It takes no
         // room in the page: the pill and Settings say the outcome.
         button -exact-menu="about" press=check appearance="none" aria-label="Check for Updates…" testId="update-check"

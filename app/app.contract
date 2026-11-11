@@ -15,7 +15,8 @@ font "Commit Mono"
   700 = "assets/fonts/CommitMono-700.ttf"
 
 routes nav
-  yard "/"
+  factory "/"
+  yard "/yard"
   mainlines "/mainlines"
   prs "/prs"
   fleet "/fleet"
@@ -66,6 +67,8 @@ component App
   state retries = 0
   state palSel = 0
   state picked = ""
+  state facWheel = 0
+  state facPulse = 0
   resource tok = loadToken(tokGen) as shape Tok else empty(token="", has=false)
   resource link = parseLink(searchParam(top(nav), "u"), searchParam(top(nav), "server"), searchParam(top(nav), "token")) as shape Link else empty(server="", token="", ok=false)
   resource conn = connect(server, tok.token, gen) with time.epochAtZero, time.utcOffset as shape Conn else empty(ok=false, status="connecting", error="", seq=0, label="", kind="", needsSetup=false, signIn="")
@@ -76,6 +79,7 @@ component App
   mutation replayed as shape Ack refreshes ov then afterReplay
   mutation hit as shape Hit then afterHit
   mutation hov as shape Hit
+  mutation fac as shape Hit then afterFac
   mutation saved as shape Ack then afterSave
   derive reduced = media.prefersReducedMotion
   derive here = top(nav).name
@@ -83,6 +87,16 @@ component App
   derive hitNow = match hit { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }
   derive replayOk = match replayed { case some(r) => r.ok, case none => false }
   derive hovering = match hov { case some(h) => h.kind != "", case none => false }
+  derive facNow = match fac { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }
+  // fab-lens: the coffee check (src/factory/coffee.ts). The last visit per server, kept as the
+  // server is: marked after 2 min of looking at the floor, every minute after, and on leaving it.
+  state visits = "" persist
+  state looking = false
+  state visitN = 0
+  state visitTry = 0
+  mutation visit as shape Ack then afterVisit
+  derive visitNow = match visit { case some(v) => v.status, case none => "" }
+  resource coffee = coffeeOpen(server, visits, conn.seq, conn.ok, ov.tick) as shape Ack else empty(ok=false, status="")
   members "./views/mainlines.contract"
   members "./views/prs.contract"
   members "./views/fleet.contract"
@@ -92,6 +106,11 @@ component App
 
   task pulse mount
     every(250, tick)
+  // The factory floor's calm clock: while it is on top and calm, its live layer (asleep when
+  // nothing travels) is woken 8 times a second for the belts and the beat (src/factory/motion.ts);
+  // a loud floor draws every frame on its own, so the clock stops.
+  task facBeat when here == "factory" and ov.facCalm
+    every(125, facPulseTick)
   // A dropped stream reconnects after 2, 4, 8, 16, then every 30 s; a reset (a gap) refetches at once.
   task resync when feed.status == "reset" key=`${retries}`
     after(250, retry)
@@ -107,20 +126,43 @@ component App
     after(30000, retry)
   task steady when feed.status == "live" and retries > 0
     after(20000, steadyAgain)
+  // fab-lens: the coffee check's last visit
+  task coffeeLook when conn.ok and here == "factory" and not looking key=server
+    after(20000, startLooking)
+  task coffeeFirst when looking and here == "factory" and visitTry == 0 key=server
+    after(100000, markVisit)
+  task coffeeAgain when looking and here == "factory" and visitTry > 0 key=`${visitTry}`
+    after(60000, markVisit)
+  task coffeeLeave when looking and here != "factory"
+    after(1, leaveFactory)
 
   action tick
     clockMs = performanceNow()
+  action facPulseTick
+    facPulse = facPulse + 1
   action retry
     retries = retries + 1
     gen = gen + 1
   action steadyAgain
     retries = 0
+  action startLooking
+    looking = true
+  action markVisit
+    visitTry = visitTry + 1
+    send visit = coffeeMark(server, visits)
+  action leaveFactory
+    looking = false
+    markVisit()
+  action afterVisit
+    if visitNow != ""
+      visits = visitNow
+      visitN = visitN + 1
   action follow(url: string)
     nav = go(nav, url)
   action back
     nav = back(nav)
   action goTo(name: string)
-    nav = go(nav, name == "yard" ? "/" : `/${name}`)
+    nav = go(nav, name == "factory" ? "/" : `/${name}`)
 
   // Time controls (DESIGN.md, "Time")
   action pause
@@ -158,6 +200,29 @@ component App
   action leaveYard
     if hovering
       send hov = hoverAt(-1, -1)
+
+  // The factory floor: drag pans, the wheel zooms, a click picks (a crate lights its journey)
+  action facDown(e: PointerEvent)
+    send fac = facPointer("down", e.offsetX, e.offsetY, e.buttons)
+  action facMove(e: PointerEvent)
+    send fac = facPointer("move", e.offsetX, e.offsetY, e.buttons)
+  action facUp(e: PointerEvent)
+    send fac = facPointer("up", e.offsetX, e.offsetY, e.buttons + (e.shiftKey ? 256 : 0))
+  // fab-lens: Esc / ⌫ walk back up the lens stack, ? shows the key
+  action facKey(k: string)
+    if k == "Escape" or k == "Backspace" or k == "?"
+      preventDefault()
+      send fac = facPointer(`key:${k}`, 0, 0, 0)
+  action facWheeled(e: WheelEvent)
+    facWheel = facWheel + e.deltaY
+    preventDefault()
+  action afterFac
+    if facNow.kind == "replay" or facNow.kind == "replay24"
+      startReplay()
+    else if facNow.kind == "replayAt"
+      send replayed = replayAt(clockMs, facNow.id)
+    else if facNow.kind == "live"
+      goLive()
 
   // Developer: the HUD (⌘⇧D) and stress mode (a 10× synthetic fleet for the renderer)
   action toggleHud
@@ -232,6 +297,36 @@ component App
       for e in stack(nav) key=e.id
         column navigationKey=`${e.id}` position="absolute" inset=0 display="flex" flex-direction="column"
           TopBar(here=e.name, goTo=goTo, openPalette=openPalette)
+          if e.name == "factory"
+            column flex=1 min-height=0 position="relative" testId="factory" key=facKey outline="none"
+              // fab-lens: the coffee check's glance in words (the canvas draws it)
+              text coffee.status position="absolute" left=0 top=0 width=1 height=1 overflow="hidden" opacity=0 testId="coffee"
+              canvas surface=factoryFloor(ov.facKey, facNow.route, facWheel) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="factory-floor"
+              canvas surface=factoryLive(reduced ? "reduced" : "full", facNow.route, facWheel, facPulse) position="absolute" left=0 top=0 width="100%" height="100%"
+                tabindex=0 role="img" aria-label=ov.summary pointerdown=facDown pointermove=facMove pointerup=facUp wheel=facWheeled key=facKey touch-action="none" testId="factory-live"
+              // The strip's "replay last hour" (the canvas draws its words) is this button too: its press
+              // for tests and keyboards, laid over the drawn words (a fully transparent button is
+              // still a target on every host, an opacity 0 one is not on macOS).
+              button appearance="none" press=startReplay testId="replay" aria-label="Replay the last hour, sped up" disabled=(ov.mode == "replay" or not conn.ok)
+                position="absolute" bottom=17 left=80 width=120 height=28 background-color="transparent" padding=0
+                text "last hour" color="#00000000" font-size=1
+              // Offline or not set up: a card over the floor (the idle floor, or the last fleet
+              // it showed, dimmed behind it), never a black void.
+              if not conn.ok and conn.status != "connecting"
+                column position="absolute" inset=0 background-color="sy.canvas" opacity=0.7 aria-hidden=true
+              if not conn.ok and conn.status != "connecting"
+                column position="absolute" inset=0 align-items="center" justify-content="center" testId="setup"
+                  column align-items="center" gap=14 padding="26px 32px" border-radius=12 border="1px solid sy.edge" background-color="sy.raised" max-width=620
+                    text (conn.needsSetup ? "Connect Switchyard to a server" : "The server is not answering") font-weight=700 font-size=16
+                    text (conn.error != "" ? conn.error : "Its address and a token, or watch the built-in demo fleet.") color="sy.ink3" font-size=13 max-width=560 text-align="center" testId="setup-error"
+                    row gap=10
+                      if conn.signIn != ""
+                        link href=conn.signIn class=Primary testId="setup-signin"
+                          text "Sign in on the web…"
+                      button press=openSettings class=(conn.signIn != "" ? Quiet : Primary) testId="setup-connect"
+                        text (conn.signIn != "" ? "Use a token…" : "Connect…")
+                      button press=useDemo testId="setup-demo" class=Quiet
+                        text "Watch the demo"
           if e.name == "yard"
             column flex=1 min-height=0 position="relative" testId="yard"
               canvas surface=yardStatic(ov.layoutKey, ov.stress) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-static"
@@ -240,20 +335,20 @@ component App
               canvas surface=yardTop(ov.hud, hovering) position="absolute" left=0 top=0 width="100%" height="100%"
                 role="img" aria-label=ov.summary pointerdown=pressYard pointermove=moveYard touch-action="none" testId="yard-top"
               // The dial is the replay: the canvas draws its face, this button is its words and its press.
-              button appearance="none" press=startReplay testId="replay" aria-label="Replay the last hour, sped up" disabled=(ov.mode == "replay" or not conn.ok)
+              button appearance="none" press=startReplay testId="yard-replay" aria-label="Replay the last hour, sped up" disabled=(ov.mode == "replay" or not conn.ok)
                 position="absolute" top=0 right=0 height=(ov.dialH > 0 ? ov.dialH : 26) padding-left=12 padding-right=(ov.dialPad > 0 ? ov.dialPad : 38) display="flex" align-items="center"
                 text (ov.dial != "" ? ov.dial : "1 hour, sped up") font-size=(ov.dialFont > 0 ? ov.dialFont : 11) color=(ov.mode == "replay" or ov.mode == "paused" ? "sy.amber-text" : "sy.ink3")
               if not conn.ok and conn.status != "connecting"
-                column position="absolute" inset=0 align-items="center" justify-content="center" background-color="sy.canvas" gap=14 testId="setup"
+                column position="absolute" inset=0 align-items="center" justify-content="center" background-color="sy.canvas" gap=14 testId="yard-setup"
                   text (conn.needsSetup ? "Connect Switchyard to a server" : "The server is not answering") font-weight=700 font-size=16
-                  text (conn.error != "" ? conn.error : "Its address and a token, or watch the built-in demo fleet.") color="sy.ink3" font-size=13 max-width=560 text-align="center" testId="setup-error"
+                  text (conn.error != "" ? conn.error : "Its address and a token, or watch the built-in demo fleet.") color="sy.ink3" font-size=13 max-width=560 text-align="center" testId="yard-setup-error"
                   row gap=10
                     if conn.signIn != ""
-                      link href=conn.signIn class=Primary testId="setup-signin"
+                      link href=conn.signIn class=Primary testId="yard-setup-signin"
                         text "Sign in on the web…"
-                    button press=openSettings class=(conn.signIn != "" ? Quiet : Primary) testId="setup-connect"
+                    button press=openSettings class=(conn.signIn != "" ? Quiet : Primary) testId="yard-setup-connect"
                       text (conn.signIn != "" ? "Use a token…" : "Connect…")
-                    button press=useDemo testId="setup-demo" class=Quiet
+                    button press=useDemo testId="yard-setup-demo" class=Quiet
                       text "Watch the demo"
           if e.name == "mainlines"
             MainlinesView(data=mlData, org=mlOrg, filter=mlFilter, q=mlQ, focus=mlFocus, wheel=mlWheel, px=mlPx, py=mlPy, kick=mlKick, active=(e.id == top(nav).id), mode=ov.mode, pickOrg=mlPickOrg, pickFilter=mlPickFilter, typed=mlTyped, press=mlPress, move=mlMove, hover=mlHover, wheeled=mlWheeled, key=mlKey)
@@ -298,8 +393,9 @@ component App
               button role="radio" appearance="none" aria-checked=(ov.speed == 0.25 and ov.mode != "paused") press=playAt(0.25) testId="speed-quarter" padding="1px 9px" border-radius=4 disabled=(not conn.ok)
                 background-color=(ov.speed == 0.25 and ov.mode != "paused" ? "sy.control-on" : "transparent")
                 text "¼×" font-size=11 color=(ov.speed == 0.25 and ov.mode != "paused" ? "sy.ink" : "sy.ink3")
-      WebReload(v=webVer, go=webReload)
-      UpdatePill(u=upd, notesOpen=updNotes, check=checkUpdates, install=installUpdate, toggleNotes=updToggleNotes)
+      // Over the factory they sit above its time strip (58 px over the status line); elsewhere just over the status line.
+      WebReload(v=webVer, go=webReload, lift=(top(nav).name == "factory" ? 92 : 60))
+      UpdatePill(u=upd, notesOpen=updNotes, check=checkUpdates, install=installUpdate, toggleNotes=updToggleNotes, lift=(top(nav).name == "factory" ? 92 : 60))
       dialog id="palette" aria-label="Search" testId="palette" color="sy.ink" width=640 max-width="90vw" padding=0 border-radius=12 background-color="sy.raised" border="1px solid sy.edge"
         column padding=10 gap=6
           input type="text" value=q input=typed key=palKey aria-label="Search" autofocus=true placeholder="repo, #pr, sha, app" testId="palette-input" class=Field
@@ -365,8 +461,8 @@ component TopBar
           path d="M5 12a7 7 0 0 1 14 0M8.5 12a3.5 3.5 0 0 1 7 0" fill="none" stroke="sy.brand" stroke-width=2 stroke-linecap="round"
         text "switchyard" role="heading" aria-level=1 font-weight=700 font-size=13 letter-spacing="0.02em"
       row role="tablist" appearance="none" aria-label="Views" gap=1
-        for v in ["yard", "mainlines", "prs", "fleet"] key=v
-          button role="tab" appearance="none" aria-selected=(here == v) press=goTo(v) testId=`tab-${v}` aria-keyshortcuts=`Meta+${v == "yard" ? "1" : v == "mainlines" ? "2" : v == "prs" ? "3" : "4"}`
+        for v in ["factory", "yard", "mainlines", "prs", "fleet"] key=v
+          button role="tab" appearance="none" aria-selected=(here == v) press=goTo(v) testId=`tab-${v}` aria-keyshortcuts=`Meta+${v == "factory" ? "1" : v == "yard" ? "5" : v == "mainlines" ? "2" : v == "prs" ? "3" : "4"}`
             padding="3px 9px" border-radius=5 background-color=(here == v ? "sy.control" : "transparent")
             text v color=(here == v ? "sy.ink" : "sy.ink3") font-size=12
       row flex=1

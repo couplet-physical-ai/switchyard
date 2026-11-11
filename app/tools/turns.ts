@@ -59,6 +59,11 @@ export async function measure(server: string, size = { w: 1440, h: 900 }): Promi
     const conn = (await call('connect', [server, '', 1, epoch0, 0])) as { ok: boolean; status: string; error?: string };
     if (!conn.ok) throw new Error(`connect: ${conn.status} ${conn.error ?? ''}`);
     await call('overview', [16]);
+    // the factory floor is the default view: its two layers on the boot path
+    paint('factoryFloor', ['', '', 0], 24);
+    paint('factoryFloor', ['', '', 0], 25);
+    paint('factoryFloor', ['', '', 0], 26);
+    for (let f = 0; f < 4; f++) paint('factoryLive', ['full', '', 0, f], 24 + 16 * f);
     for (const s of ['yardStatic', 'yardInfo', 'yardLive', 'yardTop']) paint(s, s === 'yardLive' ? ['full', '', 0] : ['', 0], 32);
     for (let f = 2; f < 6; f++) for (const s of ['yardInfo', 'yardLive', 'yardTop']) paint(s, s === 'yardLive' ? ['full', '', f] : ['', f], 16 * f + 32);
     await call('overview', [300]);
@@ -101,8 +106,12 @@ if (import.meta.main) {
   });
   const top = [...turns].sort((a, b) => b.ms - a.ms).slice(0, 12);
   for (const t of top) console.log(`${t.ms.toFixed(2).padStart(8)} ms  ${t.at}`);
-  const worst = top[0]?.ms ?? 0;
-  console.log(`${turns.length} turns · longest ${worst.toFixed(2)} ms (Bun)`);
-  if (worst > max) { console.log(`FAIL: a turn over ${max} ms (Bun); on a slow Mac's Hermes that is over its 100 ms budget`); process.exit(1); }
+  // Module evaluation is one turn too, but on macOS Hermes runs precompiled bytecode while Bun
+  // parses and compiles here, so it is held to twice the max (it was the noisiest turn on CI).
+  const IMPORT = 'import → module evaluated';
+  const worst = Math.max(0, ...turns.filter((t) => t.at !== IMPORT).map((t) => t.ms));
+  const imp = turns.find((t) => t.at === IMPORT)?.ms ?? 0;
+  console.log(`${turns.length} turns · longest ${worst.toFixed(2)} ms (Bun) · module evaluation ${imp.toFixed(2)} ms`);
+  if (worst > max || imp > 2 * max) { console.log(`FAIL: a turn over ${max} ms (module evaluation over ${2 * max} ms) in Bun; on a slow Mac's Hermes that nears its 100 ms budget`); process.exit(1); }
   process.exit(0);
 }

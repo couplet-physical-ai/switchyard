@@ -18,9 +18,10 @@ component WebReload
   props
     v: WebVer
     go: action
+    lift: number
   view
     if v.stale
-      row position="absolute" right=16 bottom=60 align-items="center" gap=8 padding="4px 6px 4px 10px" border-radius=999 border="1px solid sy.edge" background-color="sy.raised" testId="web-reload"
+      row position="absolute" right=16 bottom=lift align-items="center" gap=8 padding="4px 6px 4px 10px" border-radius=999 border="1px solid sy.edge" background-color="sy.raised" testId="web-reload"
         column width=6 height=6 border-radius=3 background-color="sy.amber"
         text "A new version of Switchyard is out" font-size=11 color="sy.ink2" white-space="nowrap"
         button press=go appearance="none" testId="web-reload-go" padding="1px 6px" border-radius=999
