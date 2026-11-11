@@ -78,10 +78,12 @@ test "the coffee header's totals are the status line's, live"
   tap "setup-demo"
   clock data
   clock +12000
+  clock +500 real
   clock data
   expect state headAgrees == true
   tap "pause"
   clock +1000
+  clock +500 real
   clock data
   expect state headAgrees == true
 
@@ -99,6 +101,7 @@ test "the coffee header's totals are the status line's, in a replay"
   // a frame later): held on the replayed moment, the two read the same world
   tap "pause"
   clock +1000
+  clock +500 real
   clock data
   expect state headAgrees == true
 
@@ -116,4 +119,10 @@ test "the coffee header's totals are the status line's, in stress mode"
   clock +2000
   clock data
   expect state ov.stress == true
+  // held still (the 10× fleet moves every frame; the header draws the status line's last count a
+  // frame later), the two read the same world
+  tap "pause"
+  clock +1000
+  clock +500 real
+  clock data
   expect state headAgrees == true
