@@ -591,7 +591,7 @@ export class Coffee {
   /** The veil's holes on screen: quads (8 numbers each), wound against the veil. */
   private lookHoles: number[] = [];
   private lookFrom = -1;
-  private liveG: Gfx | null = null; // fx-demo: the live canvas's Gfx (under() draws there); the walking light goes on it, not on the retained top canvas it re-sent every frame (PERF.md, "The demo's last misses")
+  private liveG: Gfx | null = null; // fx-demo: the live canvas's Gfx (under() draws there): the walking light's glow moves every frame, so it goes there, not on the retained top canvas (PERF.md, "The demo's last misses")
 
   private layoutLook(): void {
     const f = this.f, cam = f.cam, P = f.plan, m = this.dg.marks;
@@ -646,23 +646,19 @@ export class Coffee {
     g.fill(tint(K_BLACK, a));
   }
 
-  /** The light walking the worst path (on top), every 6 beats, eased; the path faintly drawn. */
+  /** The light walking the worst path, every 6 beats, eased (fx-demo: its glow on the live canvas; no faint path line under it: on macOS that 1.2 px, 9 % white stroke cost ~2 fps wherever it was drawn, PERF.md "The demo's last misses"; the veil's holes mark the path). */
   look(g: Gfx, t: number): void {
-    if (!this.looking(t) || this.lookFrom < 0) return; g = this.liveG ?? g; // fx-demo: drawn on the live canvas (above its layers, under the words)
+    if (!this.looking(t) || this.lookFrom < 0) return;
     const xy = this.lookXY, ln = this.lookLen, total = ln[ln.length - 1];
     if (!(total > 0)) return;
     const fade = clamp((t - this.lookFrom) / 1000, 0, 1);
-    g.begin_();
-    g.move(xy[0], xy[1]);
-    for (let i = 2; i < xy.length; i += 2) g.line(xy[i], xy[i + 1]);
-    g.stroke(tint(K_INK, 0.1 * fade), 1.2);
     const p = (t / (6 * 1000)) % 1, e = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2, d = e * total;
     let k = 1;
     while (k < ln.length - 1 && ln[k] < d) k++;
     const s = (d - ln[k - 1]) / Math.max(1e-6, ln[k] - ln[k - 1]);
     const x = xy[(k - 1) * 2] + (xy[k * 2] - xy[(k - 1) * 2]) * s, y = xy[(k - 1) * 2 + 1] + (xy[k * 2 + 1] - xy[(k - 1) * 2 + 1]) * s;
     const env = Math.sin(Math.PI * p) * fade;
-    for (const [r, al] of LOOK_GLOW) { g.begin_(); g.circle(x, y, r); g.fill(tint(K_INK, al * env)); }
+    const lg = this.liveG ?? g; for (const [r, al] of LOOK_GLOW) { lg.begin_(); lg.circle(x, y, r); lg.fill(tint(K_INK, al * env)); } // fx-demo: it moves every frame: on the live canvas, not the retained top one (which it re-sent every frame)
   }
 
   /** A group's place on the floor: an org's dock, a team's district ([u, v, r, z]). */
