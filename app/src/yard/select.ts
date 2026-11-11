@@ -366,7 +366,8 @@ export class Aggregates {
 
 // ---- narrative ---------------------------------------------------------------------------------
 
-export type Run = readonly [string, string, boolean?];
+/** A run of text: [text, colour, bold?, priority?, cuttable?] (gfx.ts `fitTokens`). */
+export type Run = readonly [string, string, boolean?, number?, boolean?];
 
 /** "1,513" */
 export function thousands(n: number): string {

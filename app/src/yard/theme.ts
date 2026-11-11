@@ -61,6 +61,8 @@ export function font(px: number, bold = false): string {
 /** The type scale (DESIGN.md "Type"), in yard units (the yard scales with `k`, layout.ts). */
 export const T = {
   eyebrow: 11,
+  /** Inline tags: a main row's culprit sha. */
+  small: 10,
   caption: 11,
   label: 11.5,
   title: 12,

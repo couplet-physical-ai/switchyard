@@ -105,8 +105,9 @@ export class InfoLayer {
     const broke = p.state === 'failure' || p.state === 'error';
     const x0 = r.x + 4;
     let x = g.eyebrow([['now', C.ink3]], x0, y1, T.eyebrow);
-    x = g.runs([[' · ', C.ink3], [repo?.name ?? p.repo, C.ink, true], [p.lane === 'gha' ? ' (actions)' : ` #${p.number}`, C.ink2], [` · ${p.branch} · `, C.ink3], [where, broke ? C.redText : C.ink3],
-      [broke && p.author ? ` · ${p.sha.slice(0, 7)} ${p.author.replace(/\[bot\]$/, '')}` : '', C.ink3]], x, y1, T.label, r.w - (x - x0) - 8);
+    // Whole tokens: the repo and what happened stay; the branch goes first, then the culprit.
+    x = g.runs([[' · ', C.ink3, false, 10], [repo?.name ?? p.repo, C.ink, true], [p.lane === 'gha' ? ' (actions)' : ` #${p.number}`, C.ink2], [` · ${p.branch}`, C.ink3, false, -6], [` · ${where}`, broke ? C.redText : C.ink3, false, 8],
+      [broke && p.author ? ` · ${p.sha.slice(0, 7)} ${p.author.replace(/\[bot\]$/, '')}` : '', C.ink3, false, 2]], x, y1, T.label, r.w - (x - x0) - 8);
     // The right part: the repo's main line, its story in words.
     const split = Math.round(r.w * (r.w > 760 ? 0.6 : 0.56));
     const mx0 = r.x + split + 12, mx1 = r.x + r.w - 14;
@@ -178,7 +179,7 @@ export class InfoLayer {
       const story = mainStory(repo, now, fmtDur);
       const tone = story.tone === 'red' ? C.redText : story.tone === 'green' ? C.greenInk : story.tone === 'amber' ? C.amberText : C.ink3;
       g.runs([[repo.name, C.ink, true], [' · main', C.ink3]], mx0, cy - 16, T.label, mx1 - mx0);
-      mainLine(g, repo, mx0, mx1, cy + 2, 13, 4, 0, v.q, now, true);
+      mainLine(g, repo, mx0, mx1, cy + 2, 13, 4, 0, v.q, now, false);
       g.runs([[story.text, tone], [story.fix && story.tone === 'red' ? ` → ${story.fix}` : '', C.ink3]], mx0, cy + 26, T.caption, mx1 - mx0 + 10);
     }
   }
@@ -233,11 +234,13 @@ function drawHeader(g: Gfx, v: View, r: Rect): void {
   x = g.runs(hl, x, y + (big > 16 ? 1 : 0), big, Math.max(0, r.w - x - 8)) + 16;
   const lh = lastHour(w, now);
   const qt = queueTruth(w);
+  // Whole tokens only (fitTokens): the mode's words stay, then the hour's builds and failures,
+  // then building and waiting; the repo count and the clock go first.
   const data: Run[] = [];
-  if (mode === 'live') data.push([r.w > 1100 ? `${thousands(v.S.mains.heat.n)} repos · ${fmtClock(now, v.offsetMin)} · ` : '', C.ink3]);
-  else if (mode === 'replay') data.push([`${fmtClock(tl.replayFrom, v.offsetMin)} → ${fmtClock(tl.replayTo, v.offsetMin)} · at ${fmtClock(tl.playhead, v.offsetMin)} · 60× · `, C.amberText]);
-  else data.push([`${fmtDur(tl.behindMs())} behind live${mode === 'behind' ? ` · ${tl.speed === 1 ? '1×' : '¼×'}` : ' · frozen'} · `, C.amberText]);
-  data.push([`last hour ${lh.total} builds, ${lh.failed} failed · ${buildingIds(w).size} building · ${qt.waiting} waiting`, C.ink3]);
+  if (mode === 'live') data.push([`${thousands(v.S.mains.heat.n)} repos`, C.ink3, false, -6], [` · ${fmtClock(now, v.offsetMin)}`, C.ink3, false, -7]);
+  else if (mode === 'replay') data.push([`${fmtClock(tl.replayFrom, v.offsetMin)} → ${fmtClock(tl.replayTo, v.offsetMin)}`, C.amberText, false, 9], [` · at ${fmtClock(tl.playhead, v.offsetMin)}`, C.amberText, false, 10], [' · 60×', C.amberText, false, -5]);
+  else data.push([`${fmtDur(tl.behindMs())} behind live`, C.amberText, false, 10], [mode === 'behind' ? ` · ${tl.speed === 1 ? '1×' : '¼×'}` : ' · frozen', C.amberText, false, 8]);
+  data.push([` · last hour ${lh.total} builds`, C.ink3, false, 6], [`, ${lh.failed} failed`, C.ink3, false, 5], [` · ${buildingIds(w).size} building`, C.ink3, false, 4], [` · ${qt.waiting} waiting`, C.ink3, false, 3]);
   g.runs(data, x, y, T.caption, Math.max(0, r.w - x - 8));
 }
 
@@ -409,8 +412,8 @@ function enginesAt(g: Gfx, v: View, lod: Level, r: Rect): void {
   if (lod <= 1 && E.lanes.length) {
     E.lanes.forEach((lane, li) => {
       const st = laneStat(v, lane, li);
-      const cpu = st.cpu >= 0 ? ` · cpu ${Math.round(st.cpu <= 1 ? st.cpu * 100 : st.cpu)}%` : '';
-      const stat = lane.offline ? 'offline' : `${st.busy}/${st.slots}${cpu}`;
+      const cpu = st.cpu >= 0 && !lane.offline ? ` · cpu ${Math.round(st.cpu <= 1 ? st.cpu * 100 : st.cpu)}%` : '';
+      const stat = lane.offline ? 'offline' : `${st.busy}/${st.slots}`;
       // amber only when the lane is full (the next push waits); otherwise a plain count
       const statColor = lane.offline ? C.ink3 : st.busy >= st.slots && st.slots > 0 ? C.amberText : C.ink2;
       const x1 = r.x + r.w - 6;
@@ -428,12 +431,13 @@ function enginesAt(g: Gfx, v: View, lod: Level, r: Rect): void {
       } else tail.push([lane.virtual ? '  synthetic' : '  idle', C.ink3]);
       if (lod === 0) {
         // The label band above the machine: nothing is written where packets travel.
-        const endX = g.runs([[lane.title, C.ink2], [` · ${lane.sub}`, C.ink3], [' · ', C.ink3], [stat, statColor]], lane.x, lane.labelY, T.caption, x1 - lane.x);
+        // Whole tokens: the name and the load stay, the platform and the cpu go first.
+        const endX = g.runs([[lane.title, C.ink2, false, 9], [` · ${lane.sub}`, C.ink3, false, -3], [` · ${stat}`, statColor, false, 8], [cpu, C.ink3, false, -2]], lane.x, lane.labelY, T.caption, x1 - lane.x);
         g.runs(tail, endX, lane.labelY, T.caption, x1 - endX);
       } else {
         // LOD1: the words to the right of the (slot-sized) machine; the exit wire runs under.
         const tx = lane.x + lane.w + 8;
-        const endX = g.runs([[trim(lane.title, 14), C.ink2], [' ', C.ink3], [stat, statColor]], tx, lane.y + lane.h / 2 + 4, T.caption, x1 - tx);
+        const endX = g.runs([[trim(lane.title, 14), C.ink2, false, 9], [` ${stat}`, statColor, false, 8], [cpu, C.ink3, false, -2]], tx, lane.y + lane.h / 2 + 4, T.caption, x1 - tx);
         g.runs(tail, endX, lane.y + lane.h / 2 + 4, T.caption, x1 - endX);
       }
     });
@@ -540,17 +544,22 @@ function mainRow(g: Gfx, v: View, repo: Repo, row: MainRow, lod: Level): void {
   g.text(g.fit(repo.name, px, row.nameW - sw - 10, lod === 0), row.x0, ty, red && fresh ? C.ink : C.ink2, px, lod === 0);
   g.text(state, row.x0 + row.nameW, ty, stColor, T.caption, false, 'right');
   if (lod <= 1) {
-    const first = mainLine(g, repo, row.dx0, row.dx1, row.y, row.pitch, row.r, lod, q, now, lod === 0);
-    // The rail's empty stretch carries the newest commit (on a red line, the culprit's): what
-    // it says, who, when. Only where it fits without touching a dot.
+    const first = mainLine(g, repo, row.dx0, row.dx1, row.y, row.pitch, row.r, lod, q, now, false);
+    // The rail's empty stretch carries the newest commit (on a red line, the culprit's): its
+    // sha (10 px, gray as the Mainlines table's: inline at the row's height, as the Mainlines table has it, never
+    // over the dots or a neighbour), what it says, who, when. The message is cut first, then
+    // when, then who; the sha goes last. Only where it fits without touching a dot.
     const room = first - 14 - row.dx0;
-    if (room > 80) {
+    if (room > 60) {
       const rec = repo.main.recent;
       const c = red && repo.main.culprit ? rec.find((d) => d.sha === repo.main.culprit) : rec[rec.length - 1];
       if (c) {
         const ago = fmtShort(now - c.at);
         const who = c.author.replace(/\[bot\]$/, '');
-        g.runs([[c.title, lod === 0 ? C.ink2 : C.ink3], [` · ${who} · ${ago}`, C.ink3]], row.dx0, ty, T.caption, room);
+        const lead = red && c.sha === repo.main.culprit;
+        let x = row.dx0;
+        if (lead) x = g.runs([[c.sha.slice(0, 7), C.ink3, false, 9]], x, ty, T.small, room) + 6;
+        g.runs([[c.title, lod === 0 ? C.ink2 : C.ink3, false, -50, true], [` · ${who}`, C.ink3, false, -1], [` · ${ago}`, C.ink3, false, -2]], x, ty, T.caption, row.dx0 + room - x);
       }
     }
   } else bucketBars(g, repo, row.dx0, row.dx1, row.y, row.h - 3, now);
@@ -623,7 +632,7 @@ export function mainLine(g: Gfx, r: Repo, x0: number, x1: number, y: number, pit
       break;
     }
   }
-  // the culprit: a ring, and on LOD0 its sha and author over it
+  // the culprit: a ring, and (the lens card only: rows carry it inline) its sha and author over it
   const ci = red && r.main.culprit ? rec.findIndex((d) => d.sha === r.main.culprit) : -1;
   if (ci >= start) {
     const x = xAt(ci);
@@ -671,8 +680,10 @@ function drawHeat(g: Gfx, v: View, r: Rect): void {
   const ra = v.agg.repos;
   const st = S.stress ? v.stress.repoState : ra.state;
   const shown = S.mains.rows.length;
-  g.runs([[`every repo · ${thousands(H.n)}`, C.ink2], [' · one cell each · bright red = red today', C.ink3], [` · ${shown} have rows above`, C.ink3], ['   mainlines ›', C.ink3]], S.mains.x0, H.y + 8, T.caption, r.w - 8);
-  for (const b of H.blocks) g.text(g.fit(b.label, T.caption, 66), b.x - 6, b.labelY + 3, C.ink3, T.caption, false, 'right');
+  // Whole tokens: the count and the way to Mainlines stay; the legend goes first.
+  g.runs([['every repo', C.ink2, false, 10], [` · ${thousands(H.n)}`, C.ink2, false, 9], [' · one cell each', C.ink3, false, -4], [' · bright red = red today', C.ink3, false, -2], [` · ${shown} have rows above`, C.ink3, false, -3], ['   mainlines ›', C.ink3, false, 5]], S.mains.x0, H.y + 8, T.caption, r.w - 8);
+  // One label per org band, in the gutter left of the cells, centred on its band.
+  for (const b of H.blocks) g.text(g.fit(b.label, T.caption, b.x - S.mains.x0 - 8), S.mains.x0, b.labelY + 3.5, C.ink3, T.caption);
   for (const s of [S_GREEN, S_NONE, S_PEND, S_STALE, S_RUN, S_RED]) {
     g.setFill(HEAT_COLORS[s]);
     for (const b of H.blocks) {
@@ -747,7 +758,7 @@ function drawQueue(g: Gfx, v: View, r: Rect): void {
     show.forEach((p, i) => {
       const y = r.y + 38 + i * rowH;
       const name = w.repos.get(p.repo)?.name ?? p.repo.split('/')[1] ?? p.repo;
-      g.runs([[pnum(p), C.ink2], [name, C.ink3]], x0, y + 4, T.label, 180);
+      g.runs([[pnum(p), C.ink2, false, 9], [name, C.ink3, false, 8, true]], x0, y + 4, T.label, 180);
       x = x0 + 190;
       const age = now - p.created;
       const est = p.expected_ms ?? w.repos.get(p.repo)?.p50_build_ms ?? w.stats.p50_build_ms ?? 0;
@@ -790,11 +801,11 @@ function drawQueue(g: Gfx, v: View, r: Rect): void {
     const cx0 = x0 + c * colW;
     const name = w.repos.get(p.repo)?.name ?? p.repo.split('/')[1] ?? p.repo;
     const nameW = Math.min(180, colW * 0.45);
-    g.runs([[pnum(p), C.ink2], [name, C.ink3]], cx0, y + 4, T.label, nameW - 8);
+    g.runs([[pnum(p), C.ink2, false, 9], [name, C.ink3, false, 8, true]], cx0, y + 4, T.label, nameW - 8);
     const ok = p.state === 'success';
     let cx = cx0 + nameW;
     cx += chip(g, ok ? 'passed' : p.state, cx, y, ok ? 'ok' : p.state === 'failure' || p.state === 'error' ? 'bad' : 'skip', T.chip) + 8;
-    g.text(g.fit(`${fmtDur((p.finished ?? 0) - (p.started ?? p.created))} · ${fmtShort(now - (p.finished ?? now))} ago`, T.caption, cx0 + colW - cx - 8), cx, y + 4, C.ink3, T.caption);
+    g.runs([[fmtDur((p.finished ?? 0) - (p.started ?? p.created)), C.ink3], [` · ${fmtShort(now - (p.finished ?? now))} ago`, C.ink3]], cx, y + 4, T.caption, cx0 + colW - cx - 8);
   });
 }
 
@@ -831,10 +842,13 @@ function drawBusy(g: Gfx, v: View, r: Rect): void {
   const rowsN = Math.max(1, Math.floor((r.h - 24) / rowH));
   const list = busiest(w, now, rowsN * cols);
   const mx = list[0]?.n ?? 1;
+  // The bars leave room for the widest count ("15 · 2 red"), so no count is ever cut.
+  let labW = 0;
+  for (const b of list) labW = Math.max(labW, g.width(`${b.n}${b.red ? ` · ${b.red} red` : ''}`, T.caption));
   list.forEach((b, i) => {
     const c = Math.floor(i / rowsN), k = i % rowsN;
     const x = x0 + c * (colW + 16), y = r.y + 32 + k * rowH;
-    const barX = x + Math.min(132, colW * 0.5), barW = Math.max(8, colW - (barX - x) - 44);
+    const barX = x + Math.min(132, colW * 0.5), barW = Math.max(8, colW - (barX - x) - labW - 10);
     g.text(g.fit(b.name, T.caption, barX - x - 8), x, y, b.red ? C.ink2 : C.ink3, T.caption);
     const bwid = Math.max(2, (b.n / mx) * barW);
     g.fillRect(barX, y - 6, bwid, 5, C.packetDim);
