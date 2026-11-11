@@ -743,7 +743,17 @@ export class Coffee {
     const add = (key: string, u: number, v: number, z: number, r: number, col: string, when: string) => { items.push([key, cam.x(u, v), cam.y(u, v, z), r, col]); at.push(fr.at.get(when) ?? this.dg.since); };
     const { carAt } = this.carSpots();
     // a main line newly red: a WHITE rim (§E; its beacon is the red), still, until it fades
-    for (const id of fr.newRed) { const s = repoSpot(id); if (s) add(`red:${id}`, s[0], s[1], 5, 6, RIM, `red:${id}`); }
+    // sy-client: one rim per spot (a lane's rail end holds many repos' newest cars: stacked rims
+    // read as a spiral), at most 6
+    const rimAt: [number, number][] = [];
+    for (const id of fr.newRed) {
+      const s = repoSpot(id);
+      if (!s || rimAt.length >= 6) continue;
+      const x = cam.x(s[0], s[1]), y = cam.y(s[0], s[1], 5);
+      if (rimAt.some(([a, b]) => Math.abs(a - x) < 10 && Math.abs(b - y) < 10)) continue;
+      rimAt.push([x, y]);
+      add(`red:${id}`, s[0], s[1], 5, 6, RIM, `red:${id}`);
+    }
     // fresh failures: one ring per CLUSTER on the conveyor (fab-w3's parked groups), sized to its
     // run, so tight-packed crates do not melt into one red blob; it starts with the newest
     const parkedK = new Map(f.lens.parked.map((x) => [x.id, x.k]));
@@ -754,7 +764,10 @@ export class Coffee {
       const when = fr.at.get(`fail:${id}`) ?? 0;
       if (when > (groupAt.get(k) ?? -1)) groupAt.set(k, when);
     }
-    for (const [k, when] of groupAt) {
+    // sy-client: the biggest 3 heaps only (fx-engine heaps every signature: a ring on each read as
+    // a train of rings along the belt)
+    const ringed = [...groupAt].filter(([k]) => f.lens.parkGroups[k]).sort((a, b) => f.lens.parkGroups[b[0]]!.n - f.lens.parkGroups[a[0]]!.n).slice(0, 3);
+    for (const [k, when] of ringed) {
       const pg = f.lens.parkGroups[k];
       if (!pg) continue;
       const um = (pg.u0 + pg.u1) / 2, half = Math.abs(cam.x(pg.u1, P.RETURN_V) - cam.x(pg.u0, P.RETURN_V)) / 2;

@@ -195,7 +195,7 @@ export class Strip {
       g.hline(fx, sx + sw, g.crisp(cy + 0.5), '#2C2C2E');
       g.text(`no history before ${clockWords(end - (BINS - first) * BIN_MS, this.f.offsetMin).slice(0, 5)}`, (sx + fx) / 2, cy - 4, C.ink3, SMALL, false, 'center');
     } else g.hline(sx, sx + sw, g.crisp(cy + 0.5), '#2C2C2E');
-    // the hour scale: a tick an hour on the axis, the local clock every 6 h
+    // the hour scale: a tick an hour on the axis, the local clock every 12 h
     const off = this.f.offsetMin * 60_000;
     const firstH = Math.ceil((end - DAY_MS + off) / HOUR_MS) * HOUR_MS - off;
     g.begin_();
@@ -204,7 +204,7 @@ export class Strip {
     const ly = y0 + BAR_H - 5;
     for (let at = firstH; at <= end; at += HOUR_MS) {
       const hour = Math.round((at + off) / HOUR_MS) % 24;
-      if (hour % 6 !== 0) continue;
+      if (hour % 12 !== 0) continue; // sy-client (text budget): the clock every 12 h, a tick an hour
       const xx = sx + (1 - (end - at) / DAY_MS) * sw;
       if (xx < sx + 18 || xx > sx + sw - 70) continue;
       g.text(`${String(hour).padStart(2, '0')}:00`, xx, ly, C.ink3, SMALL, false, 'center');

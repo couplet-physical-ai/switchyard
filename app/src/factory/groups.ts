@@ -40,8 +40,11 @@ export type Lane = {
   kind: LaneKind;
   /** 'Software', 'Northwind-Labs', 'other teams', 'bots'. */
   name: string;
-  /** ≤ 11 characters, lower case: the floor's label ('software', 'labs', 'other teams'). */
+  /** ≤ 11 characters, lower case: the floor's label ('software', 'labs', 'other teams'); a key
+   *  too (district names, lens titles), so an org that shares a team's name says so ('ems org'). */
   short: string;
+  /** The name alone ('ems' for both the team and the org): `groupLabel` puts the kind's mark on it. */
+  bare: string;
   hue: GroupHue;
   /** The Group ids folded into this lane (one for a hued group; none for bots). */
   members: string[];
@@ -136,13 +139,14 @@ export class Groups {
       let l = byLane.get(lid);
       if (!l) {
         const kind: LaneKind = lid === OTHER_LANE ? 'other' : g.kind === 'team' ? 'team' : 'org';
-        l = { id: lid, index: 0, kind, name: lid === OTHER_LANE ? 'other teams' : g.name, short: lid === OTHER_LANE ? 'other teams' : shortOf(g.id, g.name), hue: lid === OTHER_LANE ? OTHER_HUE : h, members: [], repos: 0, apps: 0, red: 0 };
+        const short = lid === OTHER_LANE ? 'other teams' : shortOf(g.id, g.name);
+        l = { id: lid, index: 0, kind, name: lid === OTHER_LANE ? 'other teams' : g.name, short, bare: short, hue: lid === OTHER_LANE ? OTHER_HUE : h, members: [], repos: 0, apps: 0, red: 0 };
         byLane.set(lid, l);
       }
       l.members.push(g.id);
       l.repos += g.repos; l.apps += g.apps; l.red += g.red;
     }
-    byLane.set(BOTS_LANE, { id: BOTS_LANE, index: 0, kind: 'bots', name: 'bots', short: 'bots', hue: BOTS_HUE, members: [], repos: 0, apps: 0, red: 0 });
+    byLane.set(BOTS_LANE, { id: BOTS_LANE, index: 0, kind: 'bots', name: 'bots', short: 'bots', bare: 'bots', hue: BOTS_HUE, members: [], repos: 0, apps: 0, red: 0 });
     // the frozen order: lanes seen before keep their places; new ones are ranked in
     const fresh = [...byLane.values()].filter((l) => !this.order.includes(l.id)).sort(laneRank);
     if (fresh.length) {
@@ -304,6 +308,17 @@ export class Groups {
     for (const l of lanes) at(l.id).trend = trendOfLane(l);
     return { lanes: out, stacks, at: now };
   }
+}
+
+/** The mark an org-fallback group carries in words (fx-lanes, overseer note 8): a team keeps its
+ *  bare name, a group that is an org because its repos have no app team reads '◇ ems'. The
+ *  legend explains it (legend.ts). */
+export const ORG_MARK = '◇';
+
+/** A lane's name as people read it: '◇ ems' for an org lane, else its name ('ems', 'other
+ *  teams', 'bots'). The floor draws the mark dim (a glyph, not a run: labels.ts). */
+export function groupLabel(l: Pick<Lane, 'kind' | 'bare' | 'short'>): string {
+  return l.kind === 'org' ? `${ORG_MARK} ${l.bare}` : l.short;
 }
 
 /** A lane's rank in the §C order: hued teams by slot, other teams, orgs by slot, bots. */

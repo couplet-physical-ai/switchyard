@@ -38,7 +38,7 @@ import type { Census } from './census.ts';
 import type { Factory } from './factory.ts';
 import { clusterOf, groupOf as insGroupOf, insights, insightsVer } from '../insights.ts';
 import { Hover } from './hover.ts';
-import { BOTS_LANE, OTHER_LANE, floorGroups } from './groups.ts';
+import { BOTS_LANE, OTHER_LANE, floorGroups, groupLabel } from './groups.ts'; // sy-client: ◇ org names
 import { stackH } from './floor.ts';
 import { LANE_V0, LANE_V1 } from './layout.ts';
 import { normTeam } from '../../server/floor.ts';
@@ -381,7 +381,7 @@ export class Lenses {
     const pt = this.part(h);
     if (pt === 'dock' && f.floor.on) {
       const lid = this.laneOf(h), G = floorGroups(), s = G.stats(lid), L = G.lane(lid);
-      if (s && L) return [`${L.short} dock`, `${s.pushes1h} pushes/h \u00b7 ${s.repos} repos`, `${s.prsOpen} open PRs \u00b7 ${s.redMains} red mains${s.stale ? ` \u00b7 ${s.stale} stale` : ''}`, 'click: the group across the floor'];
+      if (s && L) return [`${groupLabel(L)} dock`, `${s.pushes1h} pushes/h \u00b7 ${s.repos} repos`, `${s.prsOpen} open PRs \u00b7 ${s.redMains} red mains${s.stale ? ` \u00b7 ${s.stale} stale` : ''}`, 'click: the group across the floor'];
     }
     if (pt === 'gate') return ['merge gate', `${c.flow.merges} merged/h`, 'click: what landed today, by lane'];
     switch (h.kind) {
@@ -1997,7 +1997,7 @@ export class Lenses {
           if (paint && top.length) {
             let gx = x;
             for (const [id, n, rd] of top) {
-              const name = `${G.lane(id)?.short ?? id} ${n}`, ww = g.width(name, SMALL) + 16;
+              const gl = G.lane(id), name = `${gl ? groupLabel(gl) : id} ${n}`, ww = g.width(name, SMALL) + 16;
               if (gx + ww > x + W) break;
               g.fillRect(gx, y + h + 7, 9, 9, G.hex(id));
               g.text(name, gx + 13, y + h + 16, C.ink2, SMALL);

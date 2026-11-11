@@ -27,12 +27,15 @@ import type { Gfx } from '../yard/gfx.ts';
 import { C, TAU, clamp, withAlpha } from '../yard/theme.ts';
 import { normTeam } from '../../server/floor.ts';
 import type { Factory } from './factory.ts';
-import { BOTS_LANE, OTHER_LANE, floorGroups, isBot } from './groups.ts';
+import { BOTS_LANE, OTHER_LANE, floorGroups, groupLabel, isBot } from './groups.ts';
 import { LU, LV } from './iso.ts';
-import { LaneData, type Cell, type LaneCount, type LaneInfo, type LaneRepo } from './lanes.ts';
+import { LaneData, PR_CHECKS, PR_CONFLICT, PR_RED, PR_STALE, type Cell, type LaneCount, type LaneInfo, type LaneRepo } from './lanes.ts';
+import { laneInk, oklch, tone } from './grammar.ts';
+import { frontOf } from './front.ts'; // fx-front: the roads (and their midpoints) live in front.ts
 import { GROUP_Z_IN, GROUP_Z_OUT, LANE_U, LANE_V0, LANE_V1, LaneMap, PLAN, REPO_Z_IN, REPO_Z_OUT, ROAD_DU, SIDING_DV, SUB_ROWS, laneSlots } from './layout.ts';
 import { R_DOOR, R_RING, beltSpeedPx, blink, flash } from './motion.ts';
 import { F, box, flushLights, poly, quad, ring } from './prims.ts';
+import { BoxBatch } from './batch.ts';
 import type { FloorPass, HitBox, Layer, LiveFrame, Lens, Pt } from './types.ts';
 import { phaseRow } from './census.ts';
 
@@ -50,8 +53,42 @@ const HOUR = 3_600_000;
 export type Belt = { id: string; pts: Pt[]; n: number; label: string; at: Pt; hw?: number; hue?: string };
 
 /** How a lane is drawn now: its index, id, hue, its band (now) and slots; its base band (b0, b1:
- *  the docks and the approach roads stay on it, the index the accordion never moves) and slots. */
-type LaneGeo = { i: number; id: string; hex: string; kind: string; v0: number; v1: number; s: ReturnType<typeof laneSlots>; b0: number; b1: number; bs: ReturnType<typeof laneSlots> };
+ *  the docks and the approach roads stay on it, the index the accordion never moves) and slots.
+ *  fx-lanes: `tint` its colours off the hue (the label's ink at L 0.80, the PR cells' muted faces,
+ *  stale dust, the rail cars' underframe). */
+type LaneGeo = { i: number; id: string; hex: string; kind: string; v0: number; v1: number; s: ReturnType<typeof laneSlots>; b0: number; b1: number; bs: ReturnType<typeof laneSlots>; tint: LaneTint };
+/** A lane's colours, derived once per layout from its hue (fx-lanes, REVIEW-iter2 #1). */
+export type LaneTint = {
+  /** words on the floor: the hue at OKLCH L 0.80 */ ink: string;
+  /** the lane's floor (its carpet), the alpha alternating by lane (neighbours apart in L) */ carpet: number;
+  /** a PR cell's fresh layers (top, side, front): the hue, muted, light or dark as its palette L */ top: string; side: string; front: string;
+  /** stale layers: the hue nearly gray, lighter (dust) */ dustTop: string; dustSide: string; dustFront: string;
+  /** the rail cars' underframe sides */ ufSide: string; ufFront: string;
+  /** a single PR crate in a sub-row (group level): the hue lighter than the stacks' (one crate on
+   *  the dark floor must read), and its stale (dusty) variant, nearly gray */ cTop: string; cSide: string; cFront: string; cdTop: string; cdSide: string; cdFront: string;
+};
+/** The rail cars stand on a 2-px underframe in their lane's hue (world z at the fit: ≈ 2 px). */
+const UF_Z = 2.4;
+/** The buffer stop at each rail's end: its least height and a red notch's pitch (one notch per red
+ *  main, at most STOP_N; past that the column's cap goes solid red). */
+const STOP_H = 4, NOTCH = 1.7, STOP_N = 20;
+
+function laneTint(hex: string, i: number, kind: string): LaneTint {
+  const L = oklch(hex)[0];
+  // the palette's lightness, kept as an alternation on the cells (neighbours light / dark)
+  const k = Math.min(1, Math.max(0, (L - 0.54) / 0.26));
+  const cl = 0.30 + 0.09 * k;
+  const neutral = kind === 'bots' || kind === 'other';
+  return {
+    ink: laneInk(hex),
+    carpet: kind === 'bots' ? 0.05 : i % 2 ? 0.08 : 0.12,
+    top: tone(hex, cl + 0.05, neutral ? 1 : 0.62), side: tone(hex, cl - 0.07, neutral ? 1 : 0.5), front: tone(hex, cl - 0.04, neutral ? 1 : 0.55),
+    dustTop: tone(hex, cl + 0.1, 0.3), dustSide: tone(hex, cl - 0.04, 0.25), dustFront: tone(hex, cl - 0.01, 0.25),
+    ufSide: tone(hex, Math.max(0.3, L - 0.22), 0.8), ufFront: tone(hex, Math.max(0.36, L - 0.15), 0.85),
+    cTop: tone(hex, 0.66, neutral ? 1 : 0.8), cSide: tone(hex, 0.47, neutral ? 1 : 0.7), cFront: tone(hex, 0.54, neutral ? 1 : 0.75),
+    cdTop: tone(hex, 0.6, 0.22), cdSide: tone(hex, 0.43, 0.18), cdFront: tone(hex, 0.5, 0.2),
+  };
+}
 /** Where a lane's belt jogs from its dock's band onto its open band (u). */
 const JOG_U = DOCK_U1 + 14;
 
@@ -108,7 +145,11 @@ export class Floor implements Layer {
     this.geo = L.ids.map((id, i) => {
       const v0 = L.v0(i), v1 = L.v1(i), b0 = L.base[i]!, b1 = L.base[i + 1]!;
       const lane = on ? G.lane(id) : undefined;
-      return { i, id, hex: on ? G.hex(id) : '#3A3A3E', kind: lane?.kind ?? (id === BOTS_LANE ? 'bots' : 'org'), v0, v1, s: laneSlots(v0, v1), b0, b1, bs: laneSlots(b0, b1) };
+      const hex = on ? G.hex(id) : '#3A3A3E', kind = lane?.kind ?? (id === BOTS_LANE ? 'bots' : 'org');
+      const tk = `${hex}|${i}|${kind}`;
+      let tint = this.tints.get(tk);
+      if (!tint) this.tints.set(tk, (tint = laneTint(hex, i, kind)));
+      return { i, id, hex, kind, v0, v1, s: laneSlots(v0, v1), b0, b1, bs: laneSlots(b0, b1), tint };
     });
     // the census's org rails (lens.ts, coffee.ts read them by index): each onto its org's lane
     const RV = PLAN.RAIL_V as number[];
@@ -116,6 +157,19 @@ export class Floor implements Layer {
   }
 
   get lanesNow(): LaneGeo[] { if (this.geoAt !== this.lanes.ver) this.relayout(); return this.geo; }
+  /** fx-lanes: lane colours by hue, index and kind (the accordion relayouts every frame of its
+   *  600 ms: the OKLCH maths runs once a lane). */
+  private tints = new Map<string, LaneTint>();
+  /** The sub-rows' batches: PR crates by stack level × colour class (red, checks, stale, fresh),
+   *  and the main-line dots (red, running, ok lamp, settled). */
+  private rowB = Array.from({ length: 16 }, () => new BoxBatch());
+  private dotB = Array.from({ length: 4 }, () => new BoxBatch());
+  private rowN = new Uint8Array(24);
+
+  /** Where a lane's name stands: its approach road's midpoint (u, v on the floor), on the lane's
+   *  base band (the accordion leaves the roads be). fx-front's roads() owns the roads' geometry:
+   *  this is the one place that says where the middle of a lane's road is. */
+  roadMid(L: LaneGeo): [number, number] { const m = frontOf(this.f)?.roadMid(L.id); return m ? [m[0], m[1]] : [(-ROAD_DU + LANE_UA - 1) / 2, (L.b0 + L.b1) / 2]; } // fx-front: on its fanned road
 
   /** A repo id ('org/name'), an org, BOTS or a lane id → its lane's index (-1 none). */
   laneIndex(key: string): number {
@@ -301,12 +355,13 @@ export class Floor implements Layer {
     for (const z of zones) quad(cam, g, z[0], z[1], z[2], z[3], 0);
     g.stroke(F.zone, g.hair * 1.5);
     g.dash(false);
-    // the lanes: a faint plate in the group's hue, its back curb a line of it (a stripe: solid)
+    // the lanes: each one's floor a CARPET in the group's hue from its dock to its buffer stop (fx-lanes:
+    // 8–12 %, neighbours alternating, REVIEW-iter2 #1), its back curb a line of it (a stripe: solid)
     for (const L of lanes) {
       g.begin_();
       if (Math.abs(L.b0 - L.v0) < 0.5 && Math.abs(L.b1 - L.v1) < 0.5) quad(cam, g, LANE_UA, L.v0 + 0.6, LANE_UB, L.v1 - 0.6, 0.1);
       else poly(cam, g, [LANE_UA, L.b0 + 0.6, 0.1, JOG_U - 6, L.b0 + 0.6, 0.1, JOG_U + 6, L.v0 + 0.6, 0.1, LANE_UB, L.v0 + 0.6, 0.1, LANE_UB, L.v1 - 0.6, 0.1, JOG_U + 6, L.v1 - 0.6, 0.1, JOG_U - 6, L.b1 - 0.6, 0.1, LANE_UA, L.b1 - 0.6, 0.1]);
-      g.fill(withAlpha(L.hex, L.s.stripe ? 0.22 : L.kind === 'bots' ? 0.035 : 0.05));
+      g.fill(withAlpha(L.hex, L.s.stripe ? 0.22 : L.tint.carpet));
       if (!L.s.stripe) {
         g.begin_(); g.move(cam.x(JOG_U + 6, L.v0 + 0.8), cam.y(JOG_U + 6, L.v0 + 0.8, 0.2)); g.line(cam.x(LANE_UB, L.v0 + 0.8), cam.y(LANE_UB, L.v0 + 0.8, 0.2));
         g.stroke(withAlpha(L.hex, L.kind === 'bots' || L.kind === 'other' ? 0.36 : 0.42), Math.max(1, g.hair * 1.5));
@@ -331,7 +386,7 @@ export class Floor implements Layer {
     this.ribbon(g, lanes, on);
     // main-line rails (per lane) and deploy tracks: two rails and sleepers, every track in two paths
     const tracks: [number, number, number][] = [];
-    for (const L of lanes) if (!L.s.stripe && L.kind !== 'bots') tracks.push([RAIL_U0, RAIL_U1, L.s.rail]);
+    for (const L of lanes) if (!L.s.stripe && L.kind !== 'bots' && !this.subRowsOn(L)) tracks.push([RAIL_U0, RAIL_U1, L.s.rail]);
     for (let i = 0; i < 3; i++) tracks.push([SCAN_U + 10, TRACK_U1, TRACK_V[i]]);
     if (!lo) {
       g.begin_();
@@ -346,26 +401,30 @@ export class Floor implements Layer {
     g.stroke(F.rail, g.hair * 2);
     // each rail's underframe: the group's hue between its rails
     for (const L of lanes) {
-      if (L.s.stripe || L.kind === 'bots') continue;
+      if (L.s.stripe || L.kind === 'bots' || this.subRowsOn(L)) continue;
       g.begin_(); g.move(cam.x(RAIL_U0, L.s.rail), cam.y(RAIL_U0, L.s.rail, 0.3)); g.line(cam.x(RAIL_U1, L.s.rail), cam.y(RAIL_U1, L.s.rail, 0.3));
       g.stroke(withAlpha(L.hex, 0.5), Math.max(1, g.hair * 2));
     }
     // the blocks, far to near (every layer's, sorted together); each culled by its floor box
     this.f.w2.floor(g, add); // fab-w2: group docks (on the lanes' bands), embers
     if (fp.idle) return;
-    const focusI = this.lanes.index(this.focusId);
     for (const L of lanes) {
       if (L.s.stripe) continue;
       const info = cnt.lanes.get(L.id);
       if (L.kind === 'bots') { this.siding(g, add, L, cnt); continue; }
-      const repoLevel = L.i === focusI && this.level >= 2 && L.v1 - L.v0 > 120;
-      if (repoLevel) { this.subRows(g, add, L, info); continue; }
-      const bays = L.i === focusI && L.v1 - L.v0 > 90;
-      for (let r = 0; r < 4; r++) {
+      // fx-lanes: the open lane (the accordion at group zoom, or a lens's pinned lane) is its
+      // repos, a sub-row each (§F); else its four phase cells
+      if (this.subRowsOn(L)) { this.subRows(g, add, L, info); }
+      else for (let r = 0; r < 4; r++) {
         const C = info?.cells[r];
         const u0 = ROW_U[r] - CELL_DU / 2;
         const hgt = C ? stackH(C.n) : 2;
-        add(u0, L.s.cell0, () => (bays && C ? this.ageBays(g, u0, L, C) : this.stack(g, u0, L.s.cell0, CELL_DU, L.s.cell1 - L.s.cell0, C, L.hex, lo)), u0 + CELL_DU, L.s.cell1, hgt);
+        add(u0, L.s.cell0, () => this.stack(g, u0, L.s.cell0, CELL_DU, L.s.cell1 - L.s.cell0, C, L, lo), u0 + CELL_DU, L.s.cell1, hgt);
+      }
+      // the buffer stop at the rail's end: a red notch per red main line of the group
+      if (info) {
+        const red = Math.min(STOP_N, info.red), h = STOP_H + red * NOTCH + (info.red > STOP_N ? 1.6 : 0), v = this.subRowsOn(L) ? (L.v0 + L.v1) / 2 : L.s.rail;
+        add(RAIL_U1 - 1, v - 4.5, () => this.stop(g, L, v, info), RAIL_U1 + 3, v + 4.5, h);
       }
     }
     // the posts: one per active repo on each lane's back curb, red first
@@ -405,11 +464,13 @@ export class Floor implements Layer {
     });
   }
 
-  /** A PR stack: a cell plate with the group's base stripe; on it the open PRs (a layer per 5),
-   *  stale layers dusty at the bottom, a red band on top for CI failing, a crack for conflicts, an
-   *  amber rim while most wait on checks. */
-  private stack(g: Gfx, u0: number, v0: number, du: number, dv: number, C: Cell | undefined, hex: string, lo: boolean): void {
-    const cam = this.f.cam;
+  /** A PR stack: a cell plate with the group's base stripe; on it the open PRs (a layer per 5) in
+   *  the lane's hue, muted (fx-lanes: the yard reads as the lanes' colours, not one olive carpet),
+   *  stale layers dusty at the bottom (the hue nearly gray and lighter, specked), a red band on top
+   *  for CI failing, a crack for conflicts, an amber rim while PRs wait on checks (heavier when most
+   *  do). */
+  private stack(g: Gfx, u0: number, v0: number, du: number, dv: number, C: Cell | undefined, L: LaneGeo, lo: boolean): void {
+    const cam = this.f.cam, hex = L.hex, T = L.tint;
     if (dv < 4) return;
     box(cam, g, u0 + 2, v0, du - 4, dv, 1.2, '#161618', '#111113', '#0F0F11', '#232326');
     g.begin_(); quad(cam, g, u0 + 2, v0 + dv - 1.6, u0 + du - 2, v0 + dv, 1.25); g.fill(withAlpha(hex, 0.9));
@@ -418,20 +479,28 @@ export class Floor implements Layer {
     const lh = 2.4, inset = Math.min(5, dv * 0.18);
     const ua = u0 + 2 + inset, ub = u0 + du - 2 - inset, va = v0 + inset * 0.6, vb = v0 + dv - inset;
     const dusty = Math.min(layers, Math.round((layers * C.stale) / C.n));
-    const amber = C.checks >= C.n / 2;
-    const edge = amber ? '#B48C4E' : '#3E3E43';
+    const amber = C.checks > 0, most = C.checks >= C.n / 2;
+    const edge = amber ? (most ? '#C89A55' : '#8E6E3E') : withAlpha(T.ink, 0.35);
     const h0 = 1.2;
-    if (dusty) box(cam, g, ua, va, ub - ua, vb - va, dusty * lh, '#3A3936', '#26251F', '#211F1B', '#4A4840');
+    if (dusty) {
+      box(cam, g, ua, va, ub - ua, vb - va, h0 + dusty * lh, T.dustTop, T.dustSide, T.dustFront, '');
+      // dust: a few specks on the stale top while it is the top
+      if (!lo && dusty === layers) {
+        g.begin_();
+        for (let k = 0; k < 6; k++) { const su = ua + ((ub - ua) * ((k * 37) % 11 + 0.5)) / 11, sv = va + ((vb - va) * ((k * 53) % 7 + 0.5)) / 7; quad(cam, g, su - 0.5, sv - 0.5, su + 0.5, sv + 0.5, h0 + dusty * lh + 0.02); }
+        g.fill(withAlpha('#B8B2A0', 0.35));
+      }
+    }
     const fresh = layers - dusty;
     if (fresh) {
-      // the fresh layers stand on the dusty ones
+      // the fresh layers stand on the dusty ones, in the lane's hue
       const z0 = h0 + dusty * lh;
-      g.begin_(); poly(cam, g, [ua, vb, z0, ub, vb, z0, ub, vb, z0 + fresh * lh, ua, vb, z0 + fresh * lh]); g.fill('#1D1D20');
-      g.begin_(); poly(cam, g, [ub, va, z0, ub, vb, z0, ub, vb, z0 + fresh * lh, ub, va, z0 + fresh * lh]); g.fill('#18181B');
-      g.begin_(); quad(cam, g, ua, va, ub, vb, z0 + fresh * lh); g.fill('#2C2C30');
+      g.begin_(); poly(cam, g, [ua, vb, z0, ub, vb, z0, ub, vb, z0 + fresh * lh, ua, vb, z0 + fresh * lh]); g.fill(T.front);
+      g.begin_(); poly(cam, g, [ub, va, z0, ub, vb, z0, ub, vb, z0 + fresh * lh, ub, va, z0 + fresh * lh]); g.fill(T.side);
+      g.begin_(); quad(cam, g, ua, va, ub, vb, z0 + fresh * lh); g.fill(T.top);
     }
     const top = h0 + layers * lh;
-    g.begin_(); quad(cam, g, ua, va, ub, vb, top); g.stroke(edge, g.hair * (amber ? 1.6 : 1));
+    g.begin_(); quad(cam, g, ua, va, ub, vb, top); g.stroke(edge, g.hair * (most ? 1.8 : amber ? 1.3 : 1));
     if (!lo && layers > 1) {
       g.begin_();
       for (let k = 1; k < layers; k++) { const z = h0 + k * lh; g.move(cam.x(ua, vb), cam.y(ua, vb, z)); g.line(cam.x(ub, vb), cam.y(ub, vb, z)); g.line(cam.x(ub, va), cam.y(ub, va, z)); }
@@ -455,64 +524,138 @@ export class Floor implements Layer {
     if (C.n > 80) { g.begin_(); quad(cam, g, ua + 3, va + 2, ub - 3, vb - 2, top); g.stroke(edge, g.hair * 1.5); }
   }
 
-  /** Group zoom: a cell split into age bays (newest at the back, the oldest in front, where it
-   *  shows), each a stack of its own. */
-  private ageBays(g: Gfx, u0: number, L: LaneGeo, C: Cell): void {
+  /** The buffer stop at a lane's rail end (fx-lanes, REVIEW-iter2 #1): a low block in the lane's hue,
+   *  standing taller by a red notch per red main line of the group (on its face toward the plant,
+   *  the newest reds, under an hour, bright; older ones darker; past STOP_N the cap goes solid). A
+   *  calm lane's stop is a low hued block: the column of stops reads "which team is red" at once. */
+  private stop(g: Gfx, L: LaneGeo, v: number, info: LaneInfo): void {
     const cam = this.f.cam;
-    const v0 = L.s.cell0, v1 = L.s.cell1, n = C.ages.length;
-    box(cam, g, u0 + 2, v0, CELL_DU - 4, v1 - v0, 1.2, '#161618', '#111113', '#0F0F11', '#232326');
-    g.begin_(); quad(cam, g, u0 + 2, v1 - 1.6, u0 + CELL_DU - 2, v1, 1.25); g.fill(withAlpha(L.hex, 0.9));
-    const bay = (v1 - v0 - 2) / n;
-    for (let b = 0; b < n; b++) {
-      const k = C.ages[b]!;
-      if (!k) continue;
-      const vb = v0 + 1 + b * bay;
-      const layers = Math.min(16, Math.ceil(k / 2));
-      const old = b >= 4;
-      box(cam, g, u0 + 6, vb + 1, CELL_DU - 12, bay - 2, 1.2 + layers * 1.6, old ? '#3A3936' : '#2C2C30', old ? '#26251F' : '#18181B', old ? '#211F1B' : '#1D1D20', old ? '#4A4840' : '#3E3E43');
-    }
-    if (C.red) {
-      const top = 1.2 + Math.min(16, Math.ceil(Math.max(...C.ages) / 2)) * 1.6;
-      void top;
-    }
+    const red = Math.min(STOP_N, info.red), over = info.red > STOP_N;
+    const u0 = RAIL_U1 - 1, u1 = RAIL_U1 + 3, v0 = v - 4.5, v1 = v + 4.5;
+    const h = STOP_H + red * NOTCH + (over ? 1.6 : 0);
+    box(cam, g, u0, v0, u1 - u0, v1 - v0, h, L.hex, L.tint.ufSide, L.tint.ufFront, '#0C0C0E', g.hair);
+    if (!red) return;
+    // the notches: across the stop's two visible faces (+u, the plant's side; +v, the front)
+    const fresh = Math.min(red, info.fresh);
+    const notch = (k0: number, k1: number, col: string) => {
+      if (k1 <= k0) return;
+      g.begin_();
+      for (let k = k0; k < k1; k++) {
+        const za = STOP_H - 0.6 + k * NOTCH + 0.35, zb = za + NOTCH - 0.6;
+        poly(cam, g, [u1, v0 + 0.6, za, u1, v1, za, u1, v1, zb, u1, v0 + 0.6, zb]);
+        poly(cam, g, [u0 + 0.4, v1, za, u1, v1, za, u1, v1, zb, u0 + 0.4, v1, zb]);
+      }
+      g.fill(col);
+    };
+    // newest at the top: the older reds below, the fresh ones on top of them
+    notch(0, red - fresh, F.redFront);
+    notch(red - fresh, red, F.redTop);
+    if (over) { g.begin_(); quad(cam, g, u0, v0, u1, v1, h); g.fill(F.redTop); }
   }
 
-  /** Repo level: the open lane's per-repo sub-rows (the 12 busiest), each repo's PRs as single
-   *  crates in their phase cells, red when CI fails. */
+  /** fx-lanes: true when a lane shows its repos as sub-rows (§F group level): the open lane of the
+   *  accordion (a zoom of 1.4–2.4 over it, or a lens that pins it), once it is deep enough. */
+  subRowsOn(L: LaneGeo): boolean {
+    return !!this.focusId && L.id === this.focusId && !L.s.stripe && L.kind !== 'bots' && L.v1 - L.v0 > 120 && this.on;
+  }
+
+  /** Group level (§F; fx-lanes: was the repo level only, and half empty): the open lane's repos as
+   *  sub-rows, the busiest 12 then "+N", over the lane's whole depth. Each row: its PRs one by one
+   *  in their phase cell, by age left → right (six age bays: < 1 h … 30 d +), several in a bay
+   *  stacked; red = CI failing, amber = waiting on checks, dusty = stale, a pink crack = conflict,
+   *  else the lane's hue. Then its main line: the post lamp (red, amber, ok) and its last 12 runs
+   *  as dots (the culprit tall). The "+N" row sums the rest per phase. Empty bays stay dark: a
+   *  dark cell is a phase the repo has nothing in. */
   private subRows(g: Gfx, add: FloorPass['add'], L: LaneGeo, info: LaneInfo | undefined): void {
-    const cam = this.f.cam;
+    const cam = this.f.cam, T = L.tint;
     if (!info) return;
     const rows = this.rowsOf(L, info);
-    for (const r of rows) {
+    const bay = (CELL_DU - 8) / 6;
+    // the rest ("+N"): its PRs per phase
+    const rest = [0, 0, 0, 0], restRed = [0, 0, 0, 0];
+    for (let j = SUB_ROWS; j < info.repos.length; j++) { const r = info.repos[j]!; for (let p = 0; p < 4; p++) rest[p] += r.prs[p]; for (const it of r.items) if (it >> 5 & PR_RED) restRed[it & 3]++; }
+    const restMax = Math.max(1, ...rest);
+    rows.forEach((r, ri) => {
+      const dv = r.v1 - r.v0, mid = (r.v0 + r.v1) / 2;
+      // the row's floor: a plate under each phase cell the repo has PRs in (an empty one stays
+      // bare floor: it drops), and the repo's belt from the yard to its main line, as wide as its
+      // merges in 24 h (an idle repo: a hairline)
       add(ROW_U[0] - CELL_DU / 2, r.v0, () => {
-        g.begin_(); g.move(cam.x(DOCK_U1 + 2, r.v0), cam.y(DOCK_U1 + 2, r.v0, 0.2)); g.line(cam.x(RAIL_U1, r.v0), cam.y(RAIL_U1, r.v0, 0.2));
-        g.stroke(withAlpha(L.hex, 0.22), g.hair);
-        if (!r.repo) return;
-        const lr = r.repo;
-        for (let p = 0; p < 4; p++) {
-          const n = lr.prs[p];
-          if (!n) continue;
-          const u0 = ROW_U[p] - CELL_DU / 2 + 6, k = Math.min(n, 6);
-          const reds = Math.min(k, p === 1 || p === 2 ? lr.red : 0);
-          for (let j = 0; j < k; j++) {
-            const red = j < reds;
-            box(cam, g, u0 + j * 6.4, r.v0 + 3, 5, Math.min(6, r.v1 - r.v0 - 5), 3.6, red ? F.redTop : '#55555A', red ? F.redSide : '#36363A', red ? F.redFront : '#2E2E32', red ? '#E08088' : '#6A6A70', g.hair);
+        const has = r.repo ? r.repo.prs : rest;
+        g.begin_();
+        let any = false;
+        for (let p = 0; p < 4; p++) if (has[p]) { quad(cam, g, ROW_U[p] - CELL_DU / 2 + 2, r.v0 + 0.8, ROW_U[p] + CELL_DU / 2 - 2, r.v1 - 0.8, 0.3); any = true; }
+        if (any) g.fill(withAlpha(L.hex, ri % 2 ? 0.1 : 0.14));
+        const day = r.repo ? r.repo.day : 0;
+        const hw = r.repo ? Math.min(dv * 0.3, 0.45 + 0.85 * Math.log2(1 + day)) : 0;
+        if (hw) { g.begin_(); quad(cam, g, ROW_U[0] - CELL_DU / 2 + 2, mid - hw, RAIL_U0 - 1, mid + hw, 0.2); g.fill(withAlpha(L.hex, day ? 0.3 : 0.12)); }
+        g.begin_(); g.move(cam.x(ROW_U[0] - CELL_DU / 2, r.v1), cam.y(ROW_U[0] - CELL_DU / 2, r.v1, 0.35)); g.line(cam.x(RAIL_U1, r.v1), cam.y(RAIL_U1, r.v1, 0.35));
+        g.stroke(withAlpha(L.hex, 0.18), g.hair);
+        if (!r.repo) {
+          // "+N": the rest's PRs per phase, a low bar each (length = its share), red where failing
+          for (let p = 0; p < 4; p++) {
+            if (!rest[p]) continue;
+            const len = Math.max(2, ((CELL_DU - 8) * rest[p]) / restMax), u0 = ROW_U[p] - CELL_DU / 2 + 4, k = restRed[p] / rest[p];
+            box(cam, g, u0, mid - dv * 0.22, len, dv * 0.44, 2.2, T.cdTop, T.cdSide, T.cdFront, '', g.hair);
+            if (k > 0) { g.begin_(); quad(cam, g, u0 + len * (1 - k), mid - dv * 0.22, u0 + len, mid + dv * 0.22, 2.25); g.fill(F.redTop); }
           }
+          return;
         }
-        // the main line, oldest → newest: a dot per run (red failing, amber running, gray ok)
-        const mid = (r.v0 + r.v1) / 2;
-        lr.dots.forEach((d, j) => {
-          const u = RAIL_U0 + 14 + j * 13;
-          const red = d.state === 'failure' || d.state === 'error', run = d.state === 'running' || d.state === 'pending';
-          box(cam, g, u - 2.5, mid - 2.5, 5, 5, d.culprit ? 5 : 3, red ? F.redTop : run ? F.crateTop : '#6E6A62', red ? F.redSide : run ? F.crateSide : '#4A4844', red ? F.redFront : run ? F.crateFront : '#3E3C38', '', g.hair);
+        const lr = r.repo, B = this.rowB;
+        // the PRs: each into its (phase, age bay), stacked upward (≤ 4, then a tick); batched by
+        // colour class and stack level (boxes of one batch never overlap on screen)
+        const n = this.rowN; n.fill(0);
+        const d = Math.min(bay - 1.2, dv * 0.5, 6.5), hz = d * 0.7;
+        const cracks: number[] = [];
+        for (const it of lr.items) {
+          const p = it & 3, age = it >> 2 & 7, fl = it >> 5, slot = p * 6 + age;
+          const k = n[slot]!++;
+          if (k >= 4) continue;
+          const u = ROW_U[p] - CELL_DU / 2 + 4 + (age + 0.5) * bay, z = 0.3 + k * (hz + 0.3);
+          const cls = fl & PR_RED ? 0 : fl & PR_CHECKS ? 1 : fl & PR_STALE ? 2 : 3;
+          B[k * 4 + cls]!.add(u - d / 2, mid - d / 2, d, d, hz, z);
+          if (fl & PR_CONFLICT) cracks.push(u, z);
+        }
+        const edge = cam.s * d >= 7;
+        for (let k = 0; k < 4; k++) {
+          B[k * 4]!.flush(g, cam, F.redTop, F.redSide, F.redFront, edge ? '#E08088' : '', g.hair, 3);
+          B[k * 4 + 1]!.flush(g, cam, F.crateTop, F.crateSide, F.crateFront, edge ? '#F0CC8A' : '', g.hair, 3);
+          B[k * 4 + 2]!.flush(g, cam, T.cdTop, T.cdSide, T.cdFront, '', g.hair, 3);
+          B[k * 4 + 3]!.flush(g, cam, T.cTop, T.cSide, T.cFront, edge ? withAlpha(T.ink, 0.5) : '', g.hair, 3);
+        }
+        if (cracks.length) {
+          g.begin_();
+          for (let i = 0; i < cracks.length; i += 2) { const u = cracks[i]!, z = cracks[i + 1]!; g.move(cam.x(u - d * 0.1, mid + d / 2), cam.y(u - d * 0.1, mid + d / 2, z + hz)); g.line(cam.x(u + d * 0.15, mid + d / 2), cam.y(u + d * 0.15, mid + d / 2, z)); }
+          g.stroke('#E3858C', Math.max(1, g.hair * 1.2));
+        }
+        // more than four in a bay: a tick over the stack
+        let ticks = false;
+        for (let s = 0; s < 24; s++) if (n[s]! > 4) {
+          if (!ticks) { g.begin_(); ticks = true; }
+          const p = (s / 6) | 0, age = s % 6, u = ROW_U[p] - CELL_DU / 2 + 4 + (age + 0.5) * bay, z = 0.3 + 4 * (hz + 0.3) + 1;
+          g.move(cam.x(u - d / 2, mid), cam.y(u - d / 2, mid, z)); g.line(cam.x(u + d / 2, mid), cam.y(u + d / 2, mid, z));
+        }
+        if (ticks) g.stroke(T.ink, Math.max(1, g.hair * 1.4));
+        // the main line: the post's lamp, then the last 12 runs, oldest → newest (the culprit tall)
+        const st = lr.post.st, D = this.dotB;
+        (st === 0 ? D[0] : st === 1 ? D[1] : st === 2 ? D[2] : D[3])!.add(RAIL_U0 + 2, mid - 3, 6, 6, st === 0 ? 8 : 4);
+        lr.dots.forEach((dd, j) => {
+          const u = RAIL_U0 + 20 + j * 13;
+          const red = dd.state === 'failure' || dd.state === 'error', run = dd.state === 'running' || dd.state === 'pending';
+          D[red ? 0 : run ? 1 : 3]!.add(u - 2.5, mid - 2.5, 5, 5, dd.culprit ? 6 : 3);
         });
+        D[0]!.flush(g, cam, F.redTop, F.redSide, F.redFront, '', g.hair, 3);
+        D[1]!.flush(g, cam, F.crateTop, F.crateSide, F.crateFront, '', g.hair, 3);
+        D[2]!.flush(g, cam, '#7E9483', '#4A5A4E', '#3E4C42', '', g.hair, 3);
+        D[3]!.flush(g, cam, '#6E6A62', '#4A4844', '#3E3C38', '', g.hair, 3);
       }, RAIL_U1, r.v1, 6);
-    }
+    });
   }
 
-  /** The open lane's sub-rows (v bands): the busiest 12 repos, then the "+N" row. */
+  /** The open lane's sub-rows (v bands) over its whole depth: the busiest 12 repos, then the "+N"
+   *  row. */
   rowsOf(L: LaneGeo, info: LaneInfo): { v0: number; v1: number; repo: LaneRepo | null; more: number }[] {
-    const top = L.s.rail + 7, bot = L.s.cell1;
+    const top = L.s.cell0, bot = L.s.cell1;
     const n = Math.min(SUB_ROWS, info.repos.length);
     const more = info.repos.length - n;
     const k = n + (more > 0 ? 1 : 0);
@@ -620,14 +763,14 @@ export class Floor implements Layer {
   }
 
   /** Each lane's cars: its newest merged commits, newest at the right; one path per face and state
-   *  (settled gray, running amber, red culprit), edges only zoomed in. */
+   *  (settled gray, running amber, red culprit), edges only zoomed in. fx-lanes: each car stands on
+   *  a 2-px underframe in its lane's hue (REVIEW-iter2 #1: a red car says which team at once). */
   private drawCars(g: Gfx, lo: boolean): void {
     const cam = this.f.cam, cnt = this.data.last;
-    const carG = this.f.bA, carA = this.f.bB, carR = this.f.bC;
+    const carG = this.f.bA, carA = this.f.bB, carR = this.f.bC, uf = this.f.bD;
     let cars = 0;
-    const focusI = this.lanes.index(this.focusId);
     for (const L of this.lanesNow) {
-      if (L.s.stripe || L.kind === 'bots' || (L.i === focusI && this.level >= 2)) continue;
+      if (L.s.stripe || L.kind === 'bots' || this.subRowsOn(L)) continue;
       const list = cnt.lanes.get(L.id)?.cars ?? [];
       const n = list.length, v = L.s.rail;
       list.forEach((car, k) => {
@@ -635,8 +778,17 @@ export class Floor implements Layer {
         if (u < RAIL_U0 + 4) return;
         const x = cam.x(u, v), y = cam.y(u, v);
         if (x < -24 || x > cam.W + 24 || y < -24 || y > cam.H + 24) return;
+        uf.add(u - 4.5, v - 4, 9, 8, UF_Z);
+      });
+      // the lane's underframes first (one batch a hue), the cars on them after
+      uf.flush(g, cam, L.hex, L.tint.ufSide, L.tint.ufFront, '', g.hair, 3);
+      list.forEach((car, k) => {
+        const u = RAIL_U1 - 12 - (n - 1 - k) * 10;
+        if (u < RAIL_U0 + 4) return;
+        const x = cam.x(u, v), y = cam.y(u, v);
+        if (x < -24 || x > cam.W + 24 || y < -24 || y > cam.H + 24) return;
         const run = car.state === 'running' || car.state === 'pending';
-        (car.culprit ? carR : run ? carA : carG).add(u - 4, v - 3.5, 8, 7, car.culprit ? 7.5 : 5);
+        (car.culprit ? carR : run ? carA : carG).add(u - 4, v - 3.5, 8, 7, car.culprit ? 7.5 : 5, UF_Z);
         cars++;
       });
     }
@@ -654,7 +806,6 @@ export class Floor implements Layer {
     if (!this.on) return;
     void fr;
     const f = this.f, cam = f.cam, cnt = this.data.last, G = floorGroups(), c = f.census;
-    const focusI = this.lanes.index(this.focusId);
     const rect = (u0: number, v0: number, u1: number, v1: number, h: number): [number, number, number, number] => {
       const x0 = cam.x(u0, v1), x1 = cam.x(u1, v0), y0 = cam.y(u0, v0, h), y1 = cam.y(u1, v1, 0);
       return [x0, y0, x1 - x0, y1 - y0];
@@ -682,14 +833,20 @@ export class Floor implements Layer {
     for (const L of this.lanesNow) {
       const info = cnt.lanes.get(L.id);
       const lane = G.lane(L.id);
-      const name = lane?.short ?? L.id;
+      const name = lane ? groupLabel(lane) : L.id; // fx-lanes: '◇ ems' for an org
       const [k, id, label] = lensOf(L);
       if (L.s.stripe) {
         if (k) band(JOG_U, L.v0, RAIL_U1, L.v1, 2, k, id, label, [name, `${info?.red ?? 0} red · ${info?.posts.length ?? 0} active repos`, 'zoom or click: open the lane']);
         continue;
       }
       // the rail (a group lens) and the posts (a repo each: its main's newest commit)
-      if (L.kind !== 'bots' && k) band(RAIL_U0, L.s.rail - 5, RAIL_U1, L.s.rail + 5, 6, k, id, label, [`${name} main lines`, `${info?.red ?? 0} red · ${info?.merges1h ?? 0} merged/h · ${info?.cars.length ?? 0} merges 24 h`, 'click: the group across the floor']);
+      const rows = this.subRowsOn(L);
+      // fx-lanes: the buffer stop (its notches: the group's red main lines)
+      if (L.kind !== 'bots' && k && info) {
+        const v = rows ? (L.v0 + L.v1) / 2 : L.s.rail, h = STOP_H + Math.min(STOP_N, info.red) * NOTCH;
+        push(rect(RAIL_U1 - 1, v - 4.5, RAIL_U1 + 3, v + 4.5, h), k, id, label, [`${lane ? groupLabel(lane) : name} · buffer stop`, info.red ? `${info.red} main line${info.red === 1 ? '' : 's'} red${info.fresh ? ` · ${info.fresh} in the last hour` : ''}` : 'every main line green', 'click: the group across the floor']);
+      }
+      if (L.kind !== 'bots' && k && !rows) band(RAIL_U0, L.s.rail - 5, RAIL_U1, L.s.rail + 5, 6, k, id, label, [`${name} main lines`, `${info?.red ?? 0} red · ${info?.merges1h ?? 0} merged/h · ${info?.cars.length ?? 0} merges 24 h`, 'click: the group across the floor']);
       if (info?.posts.length) {
         const span = RAIL_U1 - RAIL_U0 - 8, max = Math.floor(span / 3.6);
         const list = info.posts.slice(0, max);
@@ -714,11 +871,13 @@ export class Floor implements Layer {
       }
       // the cells: the group's lens; hover tells the cell
       if (!info || !k) continue;
-      if (L.i === focusI && this.level >= 2) {
+      if (rows) {
         for (const r of this.rowsOf(L, info)) {
           if (!r.repo) continue;
-          const lr = r.repo;
-          band(ROW_U[0] - CELL_DU / 2, r.v0, RAIL_U1, r.v1, 4, 'commit', `${lr.repo}@${lr.post.head}`, `${lr.name}`, [lr.name, `${lr.prs.reduce((a, b) => a + b, 0)} open PRs (${lr.prs.join(' · ')})${lr.red ? ` · ${lr.red} failing` : ''}`, `main ${['red', 'running', 'ok', 'unknown'][lr.post.st]}`]);
+          const lr = r.repo, open = lr.prs.reduce((a, b) => a + b, 0);
+          const stale = lr.items.reduce((a, it) => a + (it >> 5 & PR_STALE ? 1 : 0), 0);
+          const ph = lr.prs.map((x, i) => (x ? `${x} ${PH[i]}` : '')).filter(Boolean).join(' · ');
+          band(ROW_U[0] - CELL_DU / 2, r.v0, RAIL_U1, r.v1, 4, 'commit', `${lr.repo}@${lr.post.head}`, `${lr.name}`, [lr.name, open ? `${open} open PRs: ${ph}${lr.red ? ` · ${lr.red} failing CI` : ''}${stale ? ` · ${stale} stale` : ''}` : 'no open PRs', `main ${['red', 'running', 'ok', 'unknown'][lr.post.st]}${lr.post.st === 0 && lr.post.since ? ` · ${ago(f.tl.playhead - lr.post.since)}` : ''} · ${lr.day} merged 24 h`]);
         }
         continue;
       }
@@ -750,8 +909,10 @@ export class Floor implements Layer {
     const cam = this.f.cam, c = this.f.census, ctx = fr.ctx, t = fr.t, q = fr.q;
     const offX = (x: number) => x < -24 || x > cam.W + 24;
     const offY = (y: number) => y < -24 || y > cam.H + 24;
-    // 1. heat haze: a warm glow under the stage that backs up
-    if (c.bottleneck && q < 3) {
+    // 1. heat haze: a warm glow under the stage that backs up (fx-lanes: only on the idle, lane-less
+    //    floor; with the lanes on, the worst stage's ember (trendmarks) says it once, and the PR
+    //    yard's cells carry their lanes' hues and states instead of a warm wash, REVIEW-iter2 #6)
+    if (c.bottleneck && q < 3 && !this.on) {
       const at: Record<string, [number, number, number]> = { prs: [270, 300, 180], intake: [705, 291, 90], engines: [915, 300, 230], deploy: [1165, 330, 90] };
       const [u, v, r] = at[c.bottleneck] ?? [0, 0, 0];
       if (r) {
@@ -801,11 +962,10 @@ export class Floor implements Layer {
     //    newest culprit's beacon, the selection's ring
     let selCar: Pt | null = null;
     const lamps = this.f.bD, cnt = this.data.last;
-    const focusI = this.lanes.index(this.focusId);
     let focal: Pt | null = null;
     const fc = c.focal;
     for (const L of this.lanesNow) {
-      if (L.s.stripe || L.kind === 'bots' || (L.i === focusI && this.level >= 2)) continue;
+      if (L.s.stripe || L.kind === 'bots' || this.subRowsOn(L)) continue;
       const list = cnt.lanes.get(L.id)?.cars ?? [];
       const n = list.length, v = L.s.rail;
       list.forEach((car, k) => {
@@ -850,6 +1010,11 @@ export class Floor implements Layer {
       const list = info.posts.slice(0, max), pitch = Math.min(7, span / Math.max(1, list.length));
       list.forEach((p, j) => { const at: [number, number] = [RAIL_U0 + 4 + j * pitch, L.s.curb]; repoAt.set(p.repo, at); if (p.st === 0) culpritAt.set(p.repo, at); });
       if (L.s.stripe) continue;
+      // fx-lanes: the open lane's sub-rows: a repo's spot is its row's post lamp (its cars are off)
+      if (this.subRowsOn(L)) {
+        for (const r of this.rowsOf(L, info)) if (r.repo) { const at: [number, number] = [RAIL_U0 + 5, (r.v0 + r.v1) / 2]; repoAt.set(r.repo.repo, at); if (r.repo.post.st === 0) culpritAt.set(r.repo.repo, at); }
+        continue;
+      }
       const n = info.cars.length;
       info.cars.forEach((car, k) => {
         const u = RAIL_U1 - 12 - (n - 1 - k) * 10;
@@ -925,7 +1090,7 @@ export class Floor implements Layer {
     for (const a of this.litN.values()) for (let r = 0; r < 4; r++) maxN = Math.max(maxN, a[r]!);
     const cnt = this.data.last;
     for (const L of this.lanesNow) {
-      if (L.s.stripe) continue;
+      if (L.s.stripe || this.subRowsOn(L)) continue; // fx-lanes: an open lane shows its repos' own rows
       const a = this.litN.get(L.id);
       if (a) for (let r = 0; r < 4; r++) {
         const n = a[r]!;
@@ -968,9 +1133,10 @@ export class Floor implements Layer {
   private litKey = '';
   private litN = new Map<string, Int16Array>();
 
-  /** One car (a lens draws a lit one over the floor's batched cars). */
+  /** One car (a lens draws a lit one over the floor's batched cars; fx-lanes: as tall as a car on
+   *  its underframe). */
   car(g: Gfx, u: number, v: number, red: boolean, settled: boolean, hair: number): void {
-    box(this.f.cam, g, u - 4, v - 4, 8, 8, 5, red ? F.redTop : settled ? '#6E6A62' : F.crateTop, red ? F.redSide : settled ? '#4A4844' : F.crateSide, red ? F.redFront : settled ? '#3E3C38' : F.crateFront, red ? '#E08088' : settled ? '#8A867E' : '#F0CC8A', hair);
+    box(this.f.cam, g, u - 4, v - 4, 8, 8, 5 + UF_Z, red ? F.redTop : settled ? '#6E6A62' : F.crateTop, red ? F.redSide : settled ? '#4A4844' : F.crateSide, red ? F.redFront : settled ? '#3E3C38' : F.crateFront, red ? '#E08088' : settled ? '#8A867E' : '#F0CC8A', hair);
   }
 }
 

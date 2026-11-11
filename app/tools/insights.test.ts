@@ -37,10 +37,10 @@ ok(gs.some((g) => g.id === 'team:software' && g.repos === 124 && g.apps === 136)
 eq(gs.reduce((n, g) => n + g.red, 0), [...tl4.world.repos.values()].filter((r: any) => r.main.state === 'failure' || r.main.state === 'error').length, 'v0.4 groups: red counts add up to the red mains');
 // §C hues: the fixture's ten groups get the spec's colours
 const hex = (id: string) => i4.groupHue(id).hex;
-eq(['team:software', 'team:controls', 'team:hardware', 'team:optics'].map(hex), ['#90B1D7', '#727DAD', '#85B9BF', '#55889F'], '§C hues: the four biggest teams (by apps)');
-eq(['org:Northwind-Labs', 'org:Northwind-Forge', 'org:Northwind-EMS', 'org:couplet-physical-ai', 'org:copper-browser'].map(hex), ['#61A89A', '#B2A6D0', '#94729C', '#949E70', '#C196AD'], '§C hues: each org its own');
+eq(['team:software', 'team:controls', 'team:hardware', 'team:optics'].map(hex), ['#96C7D6', '#7285B4', '#919C66', '#C9B2E2'], '§C hues: the four biggest teams (by apps)'); // fx-lanes: the re-picked palette
+eq(['org:Northwind-Labs', 'org:Northwind-Forge', 'org:Northwind-EMS', 'org:couplet-physical-ai', 'org:copper-browser'].map(hex), ['#6E6798', '#B88AAD', '#5BA49D', '#9D6F91', '#89A3CA'], '§C hues: each org its own'); // fx-lanes
 eq([i4.groupHue('team:power-systems'), i4.groupHue('team:hr')], [OTHER_HUE, OTHER_HUE], '§C hues: teams past the nine slots fold into "other teams"');
-eq([hex('bots'), OTHER_HUE.hex], ['#606468', '#89867E'], '§C hues: the bots siding and other teams');
+eq([hex('bots'), OTHER_HUE.hex], ['#44484C', '#89867E'], '§C hues: the bots siding and other teams'); // fx-lanes
 const hues = gs.map((g) => i4.groupHue(g.id));
 ok(hues.filter((h) => !h.folded).length === HUE_SLOTS && hues.every((h) => h.c <= 0.075 && !(h.h > 0 && h.h < 50 && !h.folded) && !(h.h >= 60 && h.h <= 100 && !h.folded)), '§C hues: 9 hued, chroma ≤ 0.075, clear of red 0–50° and amber 60–100°');
 eq(i4.groupHue('team:software'), new Insights(tl4).groupHue('team:software'), '§C hues: deterministic');

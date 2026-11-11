@@ -38,19 +38,20 @@ const KIND: Record<Table, string> = { groups: 'group', clusters: 'cluster', flak
 export type GroupHue = { l: number; c: number; h: number; hex: string; slot: number; folded: boolean };
 
 /** §C: group chroma ≤ 0.075 (state colours are ≥ 0.11), hues clear of red (0–50°) and amber
- *  (60–100°); adjacent lanes alternate lightness. The fixture's groups get exactly these:
- *  the four biggest teams (by apps) the blues, the five orgs their own. */
-const TEAM_SLOTS: [number, number, number][] = [[0.75, 0.065, 252], [0.60, 0.075, 274], [0.75, 0.055, 205], [0.60, 0.065, 228]];
+ *  (60–100°); adjacent lanes alternate lightness. The four biggest teams (by apps) take the team
+ *  slots in order, the five known orgs their own (fx-lanes). */
+// fx-lanes: the palette re-picked (REVIEW-iter2 #1): lane neighbours ΔE_ok ≥ 0.10, any two groups ≥ 0.06, every group ≥ 0.10 from red, amber, ok and the fixed flash (grammar.ts PALETTE, tools/factory-grammar.test.ts prints the closest pair)
+const TEAM_SLOTS: [number, number, number][] = [[0.80, 0.055, 219], [0.62, 0.075, 267], [0.67, 0.075, 118], [0.80, 0.070, 307]];
 const ORG_SLOTS: Record<string, [number, number, number]> = {
-  'Northwind-Labs': [0.68, 0.075, 180], 'Northwind-Forge': [0.75, 0.060, 298], 'Northwind-EMS': [0.60, 0.075, 320], // fab-w1: labs L .62→.68, C .070→.075: ΔE ≥ 20 from ok's green-gray (grammar.ts RESERVE)
-  'couplet-physical-ai': [0.68, 0.065, 118], 'copper-browser': [0.72, 0.060, 345],
+  'Northwind-Labs': [0.54, 0.075, 290], 'Northwind-Forge': [0.69, 0.073, 335], 'Northwind-EMS': [0.67, 0.075, 187],
+  'couplet-physical-ai': [0.60, 0.075, 337], 'copper-browser': [0.71, 0.064, 258],
 };
 /** The org slots in lane order (an unknown org takes the first one no known org holds). */
 const ORG_ORDER_HUE = ['Northwind-Labs', 'Northwind-Forge', 'Northwind-EMS', 'couplet-physical-ai', 'copper-browser'];
 /** Teams past the hued slots fold into "other teams": neutral. */
 export const OTHER_HUE: GroupHue = hue(0.62, 0.012, 90, -1, true);
 /** The bots siding (§C): near-neutral, drawn with a hatch. */
-export const BOTS_HUE: GroupHue = hue(0.50, 0.008, 250, -1, true);
+export const BOTS_HUE: GroupHue = hue(0.40, 0.008, 250, -1, true); // fx-lanes: L .50 → .40, ≥ 0.10 ΔE_ok from ok's green-gray
 /** At most this many hued groups (§C: "teams beyond the 9 hue slots fold into other teams"). */
 export const HUE_SLOTS = 9;
 

@@ -261,6 +261,7 @@ export class GroupFloor {
       if (kind === 'org') fx.hit(hx, hy, Math.max(...xs) - hx, Math.max(...ys) - hy, 'dock', gg.lane.id.slice(4), `${gg.lane.short} dock`);
       else if (kind === 'bots') fx.hit(hx, hy, Math.max(...xs) - hx, Math.max(...ys) - hy, 'dock', BOTS, 'bots dock');
       else if (team) fx.hit(hx, hy, Math.max(...xs) - hx, Math.max(...ys) - hy, 'district', team.team, `${team.team} ${team.apps.length}`);
+      if (f.floor.on) continue; // fx-lanes: labels.ts laneNames names the lanes (one per lane, on its road, in its hue)
       const name = gg.lane.short;
       if (kind === 'bots' && f.floor.level === 0 && !f.floor.focusId) continue; // fab-w1: the hatch names the bots (text budget)
       const wv = g.width(name, 12);

@@ -78,7 +78,7 @@ ok(area / plotOf(DIST_U0) < 0.8, `calm: the footprint shrank (${(100 * area / pl
   ok(!city.calm && city.cityU0 === DIST_U0 && city.districtBox.every((d) => d.u0 === DIST_U0), 'an app down → loud at once: the city takes the whole plot');
   ok(city.sig !== s0, 'city.sig changed with the layout');
   const names = city.fleetNames();
-  ok(names.some((d) => d.lane === city.blockAt.get(id)!.lane) && names.length === Math.min(DISTRICT_NAMES_MAX, city.districtBox.length), `fleet names: every district (${names.map((d) => d.team).join(', ')}), the down app's included`);
+  ok(names.length === 1 && names[0]!.lane === city.blockAt.get(id)!.lane, `fleet names: only the district in trouble (${names.map((d) => d.team).join(', ')}); the lane names name the rest`);
   w.apps.set(id, { ...a0 }); w.kv.app++;
   census();
   ok(!city.calm, 'back up: still loud (no flapping re-pack)');
@@ -97,8 +97,8 @@ ok(area / plotOf(DIST_U0) < 0.8, `calm: the footprint shrank (${(100 * area / pl
   w.apps.set(id, { ...a0 }); w.kv.app++;
   const di = city.blockAt.get(id)!.district;
   ok(n.includes(city.districtBox[di]!), `the down app's district (${city.districtBox[di]!.team}, ${city.districtBox[di]!.n} apps) is among the names, before bigger ones`);
-  ok(n.length === DISTRICT_NAMES_MAX, `district names ≤ ${DISTRICT_NAMES_MAX} (14 districts → ${n.length})`);
-  ok(n[0] === city.districtBox[di] && n.slice(1).every((d, i) => i === 0 || d.n <= n[i]!.n), `placing order: trouble first, then by size (${n.slice(0, 4).map((d) => `${d.team} ${d.n}`).join(', ')}, …)`);
+  ok(n.length <= DISTRICT_NAMES_MAX && n.length === 1, `district names: only those in trouble, ≤ ${DISTRICT_NAMES_MAX} (14 districts, 1 in trouble → ${n.length})`);
+  ok(n[0] === city.districtBox[di], `the district in trouble is named first (${n.map((d) => `${d.team} ${d.n}`).join(', ')})`);
   city.districtBox.length = 0; city.districtBox.push(...real);
 }
 

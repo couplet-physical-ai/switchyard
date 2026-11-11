@@ -88,7 +88,7 @@ export const FLEET_GHOSTS = 3;
  *  DISTRICT_NAMES_SURE (trouble first, then the biggest) may step aside to find room, the tail
  *  only takes its own corner, so the placer drops it first when space (or the text budget) is
  *  tight. */
-export const DISTRICT_NAMES_MAX = 10;
+export const DISTRICT_NAMES_MAX = 3;
 export const DISTRICT_NAMES_SURE = 4;
 /** A calm city (every app up, held CALM_MS): its districts start this much of the plot's width
  *  further from the ladder, and the deploy spurs (the groups' deploy rates) take that ground. */
@@ -959,7 +959,9 @@ export class City implements Layer {
     const trouble = new Set<number>();
     for (const b of this.troubleBlocks()) trouble.add(b.district);
     const order = this.districtBox.map((d, i) => ({ d, i })).sort((a, b) => (trouble.has(b.i) ? 1 : 0) - (trouble.has(a.i) ? 1 : 0) || b.d.n - a.d.n || a.i - b.i);
-    return order.slice(0, DISTRICT_NAMES_MAX).map((x) => x.d);
+    // sy-client (text budget): at the fleet zoom the lane names (left, same hue) already name the
+    // teams, so a district is named here only when it is in trouble (an app down or degraded)
+    return order.filter((x) => trouble.has(x.i)).slice(0, DISTRICT_NAMES_MAX).map((x) => x.d);
   }
 
   /** Each named district's name, in its lane's light hue, just outside its front-left corner
