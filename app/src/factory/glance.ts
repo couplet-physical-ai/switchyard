@@ -335,7 +335,7 @@ export class Glance {
       const focal = f.selected ? '' : (f.census.focal?.repo ?? '');
       c.dg.marks.hot.forEach((h, i) => {
         const ax = c.hotXY[i * 2], ay = c.hotXY[i * 2 + 1];
-        if (!(ax >= 0) || this.callouts.length >= 3) return;
+        if (!(ax >= 0) || this.callouts.length >= 2) return; // ≤ 2: the fleet frame's text budget (40 items, sy-client)
         if ((h.kind === 'cluster' || h.kind === 'flaky') && h.id === tall) return;
         if (h.kind === 'red' && h.id === focal) return;
         // a flaky cluster never takes the first slot (w2-glance2, #6)
