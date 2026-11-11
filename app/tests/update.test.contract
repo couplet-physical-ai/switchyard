@@ -50,7 +50,7 @@ test "macOS under the agent: Settings and the pill walk through up to date, fail
   expect tree has "update-install"
   tap "open-settings"
   clock settle
-  expect text "update-status" == "v9.9.9 is ready · relaunch to update"
+  expect text "update-status" == "v9.9.9 is ready"
   expect tree has "update-install-settings"
   tap "update-install-settings"
   clock settle

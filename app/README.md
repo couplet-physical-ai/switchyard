@@ -47,55 +47,147 @@ bun app/server/selftest.ts                  # 50 checks: shapes, determinism, hi
 
 ## Updates (macOS)
 
-The Mac app keeps itself current, like Copper. `modules/apple/Updater.swift` is a native module:
+The Mac app keeps itself current, the way Copper does. Copper's `Search/Updater.swift` is the
+model: a small JSON file next to the download, a ZIP that is fetched, checked and put where the
+bundle is, and nothing that relaunches on its own. The code is in `modules/apple/`:
 
-- **When it checks.** An installed copy checks by itself about 10 s after launch, then every
-  6 h, on a background queue. Installed means it lives in `/Applications` or `~/Applications`,
-  its folder is writable, and it is not running under the Exact agent. Dev builds
-  (`target/clients/…`) never check by themselves. **Switchyard ▸ Check for Updates…** (the app
-  menu) checks at any time, and a slim pill reports the result: *up to date*, *Downloading
-  0.1.1 · 42%*, or *Update failed: …*.
-- **The feed.** GitHub releases of `couplet-physical-ai/switchyard`, read through the API.
-  `app.json` `moduleConfig.updater.repo` overrides the repo. The updater takes the highest
-  semver among non-draft releases that carry `Switchyard-<v>-arm64.zip` and `SHA256SUMS`.
-  When the API rate-limits it (403/429), it falls back to
-  `releases/latest/download/SHA256SUMS`.
-- **Download and verify.** A newer release downloads in the background. Then the updater
-  checks all of these before it accepts the update:
-  - the zip's SHA-256 matches its `SHA256SUMS` line;
-  - `ditto -x -k` unpacks it into a staging folder on the same volume as the app;
-  - the bundle id matches this app's, and `CFBundleShortVersionString` matches the release;
-  - `codesign --verify --deep --strict` passes;
-  - the quarantine flag is removed.
-- **Install.** The pill then says *Switchyard 0.1.1 is ready · Restart to update*. Its *notes*
-  show the release body (the first ~1,500 characters) as plain text. Pressing the pill swaps
-  the bundle in place with `FileManager.replaceItemAt`, an atomic same-volume exchange, and
-  relaunches into the new version. A failed swap leaves the old app as it was.
-- **Log.** It writes to `~/Library/Logs/Switchyard/updater.log`, and to stdout.
-- **Web.** There is no updater on the web (the server serves the newest web build), and
-  nothing shows.
+- `UpdaterCore.swift`: the pure logic (versions, the feed, the host allowlist, the verify chain,
+  the swap). It has no Exact in it.
+- `Updater.swift`: the module, the timer, the network and the state.
 
-**Pre-release channel.** Pre-releases are skipped unless you turn the channel on with
-`defaults write com.exowatt.switchyard SwitchyardUpdatePrerelease -bool true`, or the env
-`SWITCHYARD_UPDATE_PRERELEASE=1`.
+**When it checks.** An installed copy checks by itself, on a background queue: about 10 s after
+launch, then every 6 h. *Installed* means all three of these:
 
-**Release requirements.** Each release must stamp its version into `Info.plist` and
-re-sign; the version check refuses a zip whose version differs from its tag. **The Homebrew
-cask must declare `auto_updates true`**, so `brew upgrade` leaves the self-updated app alone
-and Homebrew does not fight the updater.
+- it lives in `/Applications` or `~/Applications`;
+- that folder is writable;
+- it is not running under the Exact agent.
 
-**End-to-end test (a real Mac, outside the agent):**
+Dev builds (`target/clients/…`) never check by themselves. A manual check works anywhere and
+reports its result: **Switchyard ▸ Check for Updates…** (the app menu), or **Check for updates**
+in the Settings sheet's UPDATES section.
 
-```sh
-app/tools/updater-e2e.sh <path to a release Switchyard.app> 0.0.2
+**The feed.** The primary feed is `latest.json`, a release asset that `scripts/release/latest-json.py`
+publishes on every stable release:
+
+```
+https://github.com/couplet-physical-ai/switchyard/releases/latest/download/latest.json
 ```
 
-The script installs a copy at `~/Applications`, stamped to an old version and re-signed.
-It launches the copy with `SWITCHYARD_UPDATE_PRERELEASE=1` and
-`SWITCHYARD_UPDATE_AUTOINSTALL=1`. Once the update is ready, the Contract installs and
-relaunches it. The script then prints the log, the versions, and the process now running,
-and removes the copy. `FEED=<base URL>` points the run at a test feed instead
-(`SWITCHYARD_UPDATE_FEED`, read only from the environment).
+```json
+{"version": "0.1.1",
+ "url": "https://github.com/couplet-physical-ai/switchyard/releases/download/v0.1.1/Switchyard-0.1.1-arm64.zip",
+ "sha256": "<hex of the zip>",
+ "notes": "…",
+ "published": "<ISO-8601>"}
+```
+
+- **Required fields:** `version` (semver; a leading `v` is allowed), `url` and `sha256`
+  (64 hex digits).
+- **Optional fields:** `notes` and `published` are shown when present.
+- **Checked when present:** `bundleId` (must be `com.exowatt.switchyard`) and
+  `minimumSystemVersion` (a release that needs a newer macOS is not offered).
+- **Ignored:** `build`, `dmg` and `commit`.
+
+If `latest.json` is missing or cannot be read, the updater falls back to the releases API
+(`api.github.com/repos/…/releases`). From there it takes the highest non-draft release that
+carries both `Switchyard-<v>-arm64.zip` and `SHA256SUMS`, and the sum is that file's line for
+the zip. If the API rate-limits it (403/429), it reads `releases/latest/download/SHA256SUMS`
+instead. `app.json` `moduleConfig.updater.repo` overrides the repo.
+
+**Host allowlist.** The feed must be https. A zip is fetched only from:
+
+- `github.com`
+- `objects.githubusercontent.com`
+- `release-assets.githubusercontent.com`
+
+The same rule applies to every redirect hop on the way: a `URLSession` redirect delegate checks
+each one (GitHub redirects downloads to its asset hosts). The API request may also redirect
+within `api.github.com`. Anything else, or plain http, is refused.
+
+**The verify chain.** A newer version downloads in the background, into a staging folder on the
+app's volume (Copper's `itemReplacementDirectory`). Before that, the updater checks that the
+app's folder is writable and that staging is on the same volume. The download is accepted only
+if all of these hold, in this order:
+
+1. The zip's SHA-256 equals the feed's `sha256` (or its `SHA256SUMS` line). A mismatch runs
+   no tool.
+2. `/usr/bin/ditto -x -k` unpacks it, and the zip holds exactly one `.app`.
+3. Its `CFBundleIdentifier` is `com.exowatt.switchyard`, the running bundle's id.
+4. Its `CFBundleShortVersionString` equals the feed's version and is strictly newer than the
+   running one.
+5. `codesign --verify --deep --strict` passes. If the running copy carries a Team ID, the new
+   one must carry the same. Releases are signed ad hoc, so today they carry none.
+6. The quarantine flag is removed, and the updater checks that it is gone.
+
+**Install: Copper's `Swap`.** The pill then reads *Update ready · Relaunch to update*. The same
+button appears in Settings. Pressing it does two sibling renames with `rename(2)`, so it never
+copies:
+
+1. `Switchyard.app` → `Switchyard.app.old`
+2. the staged bundle → `Switchyard.app`
+
+If the second rename fails, the first is undone. The Contract then calls `relaunch()`. The old
+process runs from `.old` until it exits.
+
+The next launch, before its first check, removes what an update left:
+
+- the `.old` bundle, and only if it is this app;
+- the staging folders that this copy recorded, with their downloads.
+
+The updater never relaunches on its own. It never touches the settings, the token in the
+Keychain, or `~/Library/Application Support`.
+
+**The pill and Settings.**
+
+- **The pill** sits above the status line, in the web-reload pill's slot. It reads
+  *Update available · v0.1.1* (a copy that cannot install itself), then
+  *Downloading v0.1.1 · 42%*, then *Update ready · Relaunch to update*.
+- **Failures** read *Update failed: <reason>*, quietly. An automatic check that cannot reach
+  the feed shows nothing.
+- **Settings ▸ UPDATES** shows *Switchyard <version>*, a status line (checking / downloading %
+  / ready / failed / up to date), **Check for updates**, and, when an update is ready,
+  **Relaunch to update**.
+- **Log:** `~/Library/Logs/Switchyard/updater.log`, and stdout.
+- **Web:** there is no updater on the web (`views/webreload.contract` offers a reload instead),
+  and none of this shows.
+
+**Pre-release channel.** Pre-releases are skipped unless the channel is on. Turn it on with
+`defaults write com.exowatt.switchyard SwitchyardUpdatePrerelease -bool true`, or the env
+`SWITCHYARD_UPDATE_PRERELEASE=1`. The channel reads the releases API (pre-releases do not move
+`releases/latest`), with the same allowlist and verify chain.
+
+**Test hooks (env only, never a setting).**
+
+- `SWITCHYARD_UPDATE_FEED=<base URL>` reads `<base>/latest.json` instead of GitHub. It must be
+  https, or plain `http://127.0.0.1:<port>`. That origin may also serve the zip.
+- `SWITCHYARD_UPDATE_AUTOINSTALL=1` presses *Relaunch to update* as soon as an update is ready
+  (installed copies only).
+- Under the Exact agent, the updater never touches the network. An in-process stub feed
+  (`SYStubFeed`) answers instead. Its first check is up to date, its second is a checksum
+  failure, and its third is a ready 9.9.9 (a minimal ad-hoc-signed bundle that passes the whole
+  chain). `tests/update.test.contract` walks through these on macOS.
+
+**Homebrew.** The cask must declare **`auto_updates true`**. Then `brew upgrade` leaves the
+self-updated app alone and does not fight the updater.
+
+**Tests.**
+
+```sh
+app/tools/updater-tests.sh                 # native unit tests (on a Mac; MINI=user@host from elsewhere)
+app/tools/updater-e2e.sh <Switchyard.app>  # end to end on a Mac, outside the agent
+```
+
+- `updater-tests.sh` compiles `UpdaterCore.swift` + `UpdaterTests.swift` with `swiftc`. It
+  covers version compare, latest.json/SHA256SUMS/API parsing, the host allowlist, the verify
+  chain (bad sum, corrupt zip, wrong id, not newer, tampered signature, quarantine) and the
+  swap with an injected rename failure.
+- `updater-e2e.sh`:
+  1. Stamps two re-signed copies, 0.0.2 and 0.0.3.
+  2. Serves the 0.0.3 zip and its `latest.json` on 127.0.0.1.
+  3. Shows that the installed 0.0.2 finds it, downloads it, verifies it and is ready.
+  4. With the AUTOINSTALL hook, shows that it swaps and relaunches as 0.0.3, and that the new
+     process sweeps the `.old`.
+  5. Quits only the pids it started, and removes the copy.
 
 ## Layout
 
@@ -110,5 +202,5 @@ and removes the copy. `FEED=<base URL>` points the run at a test feed instead
 | `src/wire.ts` | the wire contract (`../contract/CONTRACT.md`) in TypeScript |
 | `server/` | the deterministic simulation and mock server |
 | `tests/` | `*.test.contract` suites (web and macOS) |
-| `modules/apple/Updater.swift`, `views/update.contract`, `src/update.ts` | the macOS updater ("Updates" above) |
-| `tools/` | `webperf.mjs` (frame pacing in Chromium), `mini-sync.sh` (copy to the Mac mini), `updater-e2e.sh` |
+| `modules/apple/Updater*.swift`, `views/update.contract`, `src/update.ts` | the macOS updater ("Updates" above) |
+| `tools/` | `webperf.mjs` (frame pacing in Chromium), `mini-sync.sh` (copy to the Mac mini), `updater-tests.sh`, `updater-e2e.sh` |

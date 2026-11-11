@@ -50,8 +50,9 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
 
     static let firstCheck: TimeInterval = 10
     static let period: TimeInterval = 6 * 3600
-    /// Staging folders made by this app, for the next launch's sweep.
-    static let stagingKey = "SwitchyardUpdateStaging"
+    /// Staging folders made by the copy at this path, for its next launch's sweep (one key per
+    /// bundle path: another copy of the app, a dev build say, never sweeps this one's).
+    var stagingKey: String { "SwitchyardUpdateStaging " + bundleURL.path }
 
     // Facts of this process, fixed at launch.
     let current: String
@@ -426,9 +427,9 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
                 try files.createDirectory(at: dir, withIntermediateDirectories: true)
             }
             try SYSwap(target: bundleURL, bundleID: bundleID).preflight(staging: dir)
-            var kept = UserDefaults.standard.stringArray(forKey: SYUpdateEngine.stagingKey) ?? []
+            var kept = UserDefaults.standard.stringArray(forKey: stagingKey) ?? []
             kept.append(dir.path)
-            UserDefaults.standard.set(kept, forKey: SYUpdateEngine.stagingKey)
+            UserDefaults.standard.set(kept, forKey: stagingKey)
         }
         try files.createDirectory(at: dir, withIntermediateDirectories: true)
         lock.withLock { stagingDir = dir }
@@ -442,8 +443,8 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
         }
         guard let dir else { return }
         try? FileManager.default.removeItem(at: dir)
-        let kept = (UserDefaults.standard.stringArray(forKey: SYUpdateEngine.stagingKey) ?? []).filter { $0 != dir.path }
-        UserDefaults.standard.set(kept, forKey: SYUpdateEngine.stagingKey)
+        let kept = (UserDefaults.standard.stringArray(forKey: stagingKey) ?? []).filter { $0 != dir.path }
+        UserDefaults.standard.set(kept, forKey: stagingKey)
     }
 
     private func stage(_ rel: SYRelease, zip: URL, sha256 want: String, in dir: URL) {
@@ -491,9 +492,9 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
 
     /// At launch: the aside bundle a swap left, and the staging folders (with their downloads).
     private func sweep() {
-        let kept = (UserDefaults.standard.stringArray(forKey: SYUpdateEngine.stagingKey) ?? []).map { URL(fileURLWithPath: $0) }
+        let kept = (UserDefaults.standard.stringArray(forKey: stagingKey) ?? []).map { URL(fileURLWithPath: $0) }
         let gone = SYSwap(target: bundleURL, bundleID: bundleID).sweep(staging: kept)
-        if !kept.isEmpty { UserDefaults.standard.removeObject(forKey: SYUpdateEngine.stagingKey) }
+        if !kept.isEmpty { UserDefaults.standard.removeObject(forKey: stagingKey) }
         log(gone.isEmpty ? "sweep: nothing left over" : "sweep: removed \(gone.joined(separator: ", "))")
     }
 

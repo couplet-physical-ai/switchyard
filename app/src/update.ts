@@ -45,7 +45,7 @@ export function present(raw: Record<string, unknown>): Upd {
     : state === 'current' ? 'Up to date'
     : state === 'available' ? `${v} is available${canInstall ? '' : ' · this copy is not in Applications, so it cannot update itself'}`
     : state === 'downloading' ? `Downloading ${v} · ${pct}%`
-    : state === 'ready' ? `${v} is ready · relaunch to update`
+    : state === 'ready' ? `${v} is ready`
     : state === 'installing' ? `Installing ${v}…`
     : state === 'error' ? `Update failed: ${error}`
     : b('auto') ? 'Checks every 6 hours'
