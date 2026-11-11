@@ -21,7 +21,7 @@ import type { Ctx2D, Frame } from '../../app.contract.d.ts';
 import type { Event, Journey, Pipeline } from '../wire.ts';
 import type { Timeline } from '../timeline.ts';
 import type { World } from '../world.ts';
-import { Budget, type Quality } from '../yard/budget.ts';
+import { Budget, FRAME_MS, type Quality } from '../yard/budget.ts';
 import { Gfx } from '../yard/gfx.ts';
 import type { Hud } from '../yard/hud.ts';
 import { C, clamp } from '../yard/theme.ts';
@@ -44,6 +44,24 @@ import type { FactoryFx } from './lens.ts'; // fab-lens
 
 export type { Plan } from './types.ts';
 
+/** The floor's ladder (yard/budget.ts) with one difference: a missed frame counts against the
+ *  floor only when its own drawing is a real part of the frame. On the mini the floor's frame at
+ *  full quality is ~2.2 ms (estimate) of a budget of 6, its work ends ~7 ms before the deadline,
+ *  and the 1-3 frames a minute the host still misses (no work of ours late) used to step the
+ *  ladder down from full and back every few seconds. The yard's threshold for "a real part" is a
+ *  third of the budget; the floor's is three quarters (the native cost is the list's bytes: the
+ *  calibration in PERF.md holds 59.8 fps up to ~6 ms of them). Over the budget it still steps. */
+export class FacBudget extends Budget {
+  /** Below this estimate (ms) a missed frame is the host's. */
+  shareMs = 4.5;
+  record(estMs: number, ops: number, texts: number, interval: number, predictUp: (q: Quality) => number): void {
+    // an interval of 0 is "not a frame of ours to judge": the window keeps a good one in its slot
+    // (the yard's window counts a frame over 1.25 periods as a miss; so does this)
+    if (interval > FRAME_MS * 1.25 && estMs < this.shareMs) interval = 0;
+    super.record(estMs, ops, texts, interval, predictUp);
+  }
+}
+
 /** The layers whose live drawing goes to the top canvas (the last in `order`: words over all). */
 const TOP_LAYERS = new Set(['groups', 'labels']);
 
@@ -58,7 +76,7 @@ const { RAIL_U1, RAIL_V, ENG_H } = PLAN;
 export class Factory {
   readonly cam = new Cam();
   readonly census = new Census();
-  readonly budget = new Budget();
+  readonly budget = new FacBudget();
   private gf = new Gfx();
   private gl = new Gfx();
   /** The words and the chrome: drawn into a retained list (cache.ts) that the `factoryTop` canvas,
@@ -70,6 +88,8 @@ export class Factory {
   private topFresh = true;
   /** The last live frame was in the coffee check's intro (see drawLive). */
   private settling = true;
+  private qWas = 0;
+  private toTopWas = false;
   /** The HUD's numbers, sampled four times a second (its box redraws then, not every frame). */
   private hudSnap: { at: number; b: Budget; info: FacHudInfo; key: string } | null = null;
   // ---- the layers (layers.ts): every stage of the floor, and the registry the loop runs ----
@@ -357,7 +377,16 @@ export class Factory {
   }
 
   // ---- the live layer ---------------------------------------------------------------------------
+  /** What the live layer's last draw answered: asking for the next frame, or asleep until an
+   *  argument wakes it (the top canvas follows it: drawTop). */
+  private liveWants = false;
   drawLive(ctx: Ctx2D, f: Frame, t: number, wheel: number): boolean {
+    const wants = this.drawLive0(ctx, f, t, wheel);
+    this.liveWants = wants;
+    return wants;
+  }
+
+  private drawLive0(ctx: Ctx2D, f: Frame, t: number, wheel: number): boolean {
     this.applyStress();
     if (freshBitmap(f)) this.liveFresh = true;
     // Only the display's own frames time the budget: a draw woken by an argument (the calm
@@ -383,7 +412,10 @@ export class Factory {
     // misses there and sit at its survival rung for good: PERF.md, "Factory B, W7").
     const settling = this.introHolds(t);
     if (settling) interval = 0;
-    else if (this.settling && this.budget.pinned < 0) { this.budget.quality = 0; this.budget.gain = 1; }
+    else if (this.settling && this.budget.pinned < 0) {
+      if (this.budget.quality) console.log(`factory: the intro is over: quality q${this.budget.quality} → q0`);
+      this.budget.quality = 0; this.budget.gain = 1; this.qWas = 0;
+    }
     this.settling = settling;
     const g = this.gl, cam = this.cam, c = this.census;
     const now = this.tl.playhead;
@@ -399,6 +431,7 @@ export class Factory {
     const ret = this.ret;
     const veiled = !!this.lens.topLens && this.lens.topLens.kind !== 'pipeline';
     const toTop = t - this.topAt < 1000 && !veiled;
+    if (toTop !== this.toTopWas) { this.toTopWas = toTop; console.log(`factory: words and chrome on the ${toTop ? 'top' : 'live'} canvas at ${Math.round(t)} ms${veiled ? ' (a lens veils the floor)' : ''}`); }
     ret.begin(f.width, f.height);
     ret.measurer = ctx;
     const gt = toTop ? this.gt : g;
@@ -460,6 +493,12 @@ export class Factory {
     this.qCost[q] = this.qCostAt[q] > t - 30_000 ? this.qCost[q] * 0.8 + est * 0.2 : est;
     this.qCostAt[q] = t;
     this.budget.record(est, g.ops + tl.ops, g.texts + tl.texts, interval, (qq: Quality) => (this.qCostAt[qq] > t - 30_000 ? this.qCost[qq] : qq < 3 && q >= 3 ? est + Math.max(0, allCrates - st.sprites) * per : est * 1.15));
+    if (this.budget.quality !== this.qWas) {
+      // every rung change, said once (drivers read the ladder's story from the log)
+      const sb = this.budget.stats();
+      console.log(`factory: quality q${this.qWas} → q${this.budget.quality} at ${Math.round(t)} ms · est ${est.toFixed(2)} ms (live ${g.ops} ops, top ${tl.ops} ops${tl.whole ? ' whole' : ''}) · interval ${interval.toFixed(1)} · fps ${sb.fps.toFixed(1)} p95 ${sb.frameP95.toFixed(1)} ms · gain ${this.budget.gain.toFixed(2)}`);
+      this.qWas = this.budget.quality;
+    }
     const hudOn = !!this.hud?.on;
     if (hudOn) this.drawHud(gt, f, t);
     ret.end();
@@ -492,8 +531,10 @@ export class Factory {
   // ---- the top canvas ---------------------------------------------------------------------------
   /** The `factoryTop` canvas, over the live one (pointer-events none): the words and the chrome
    *  the live frame recorded into `ret`, sent as changes only (cache.ts). It asks for frames while
-   *  the live layer does, and once more after any argument: a draw woken with the live one may
-   *  run before it, and the next frame flushes what it records. */
+   *  the live layer does (whose last draw asked for one: a live layer awake through its own
+   *  frames wakes nothing else, so the top canvas must not sleep then), and once more after any
+   *  argument: woken with the live one (they share their arguments), it may draw first, and the
+   *  next frame flushes what the live one records. */
   drawTop(ctx: Ctx2D, f: Frame, t: number): boolean {
     if (freshBitmap(f) || this.topAt < 0) { this.ret.invalidate(); this.topFresh = true; }
     const was = this.topAt;
@@ -505,7 +546,7 @@ export class Factory {
     const claim = this.topFresh;
     this.topFresh = false;
     const args = f.causes.length ? f.causes.some((k) => k !== 'frame') : f.cause !== 'frame';
-    return claim || args || this.awake || this.ret.pending;
+    return claim || args || this.liveWants || this.ret.pending;
   }
 
   /** For drivers and tests, once per camera at the fit: a busy bay's and the first rail's

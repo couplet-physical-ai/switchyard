@@ -22,6 +22,9 @@ const {
   LANE_V, DIST_U, ENG_U0, ENG_U1, ENG_V0, ENG_STEP, ENG_DV, SCAN_U, TRACK_V, TRACK_U1, CITY_U0, RETURN_V,
 } = PLAN;
 
+/** Crates on the floor at once beyond which they ride as trains (FACTORY-SPEC §G). */
+export const TRAINS_OVER = 24;
+
 /** A crate's wake on its belt: a step lighter than the slats. */
 const cr0Wake = '#38383E';
 
@@ -35,6 +38,8 @@ export class Crates implements Layer {
   private routeIds = new Map<string, number>();
   private pt = new Float32Array(2);
   private top = new Int32Array(16);
+  /** The badges drawn this frame: x, y, width each. */
+  private badgeBox = new Float32Array(48);
 
   constructor(readonly f: Factory) {}
 
@@ -87,7 +92,12 @@ export class Crates implements Layer {
   private draw(g: Gfx, t: number, q: number): boolean {
     const f = this.f, cam = f.cam, st = f.stat;
     const amber = f.bA, red = f.bB;
-    const trains = q >= 3;
+    // FACTORY-SPEC §G: more than 24 crates on the floor at once ride as trains with a ×N badge
+    // (a 60× replay, a burst, stress), on any rung; the ladder's train rungs always do
+    let inFlight = 0;
+    for (const cr of this.list) { const u = (t - cr.t0) / cr.dur; if (u >= 0 && u <= 1) inFlight++; }
+    if (f.stress.on && !f.reduced) { this.stressRoutes(); for (const r of f.stress.routes) inFlight += r.n; }
+    const trains = q >= 3 || inFlight > TRAINS_OVER;
     const tt = this.trains;
     tt.reset();
     // a train's stretch: 32 units on the trains rung, 56 on survival
@@ -176,10 +186,19 @@ export class Crates implements Layer {
     const faces = q >= 2 ? 1 : 3;
     amber.flush(g, cam, F.crateTop, F.crateSide, F.crateFront, '', 1, faces);
     red.flush(g, cam, F.redTop, F.redSide, F.redFront, '', 1, faces);
+    // biggest first; a badge that would overlap one already drawn is left out (trains bunch up
+    // where routes meet: ×36 over ×30 read as neither)
+    const bx = this.badgeBox;
+    let nbx = 0;
     for (let k = 0; k < nb; k++) {
       const h = badges[k];
       const x = cam.x(tt.u[h], tt.v[h]) + 6, y = cam.y(tt.u[h], tt.v[h], 8) - 3;
-      g.text(times(tt.count[h]), x, y, tt.red[h] ? C.redText : C.amberText, SMALL);
+      const s = times(tt.count[h]), w = g.width(s, SMALL) + 4;
+      let clear = true;
+      for (let j = 0; j < nbx; j++) if (x < bx[j * 3] + bx[j * 3 + 2] && x + w > bx[j * 3] && Math.abs(y - bx[j * 3 + 1]) < SMALL + 2) { clear = false; break; }
+      if (!clear) continue;
+      bx[nbx * 3] = x; bx[nbx * 3 + 1] = y; bx[nbx * 3 + 2] = w; nbx++;
+      g.text(s, x, y, tt.red[h] ? C.redText : C.amberText, SMALL);
     }
     st.crates = crates;
     st.stressCrates = sc;

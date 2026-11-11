@@ -24,7 +24,7 @@ export const F = {
   edgeHi: '#4E4E53',
   belt: '#121214',
   beltEdge: '#2B2B2F',
-  slat: '#2A2A2E',
+  slat: '#252529', // fab-w7: FACTORY-SPEC §G, the slats' OKLab lightness +0.08 over the belt (#121214); was +0.10
   slatHot: '#2E2C28',
   rail: '#3A3A3E',
   sleeper: '#1D1D20',
