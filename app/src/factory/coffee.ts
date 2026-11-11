@@ -19,7 +19,13 @@ import { C, TAU, clamp, withAlpha } from '../yard/theme.ts';
 import { isRed } from '../yard/select.ts';
 import type { Factory } from './factory.ts';
 import { ago } from './lens.ts';
-import { beat, beatPhase, changesSince, clusterStep, clusters, type Changes, type Cluster } from './seams.ts';
+import type { World } from '../world.ts';
+import { beat, beatPhase, changesSince, clusterStep, clusters, type Changes as SrvChanges, type Cluster } from './seams.ts';
+
+type Changes = {
+  newRed: string[]; fixed: string[]; acute: string[]; failed: string[]; deployApps: string[]; deploys: number; deployFails: number;
+  merged: string[]; down: string[]; recovered: string[];
+};
 
 export type Verdict = 'flowing' | 'slowed' | 'jammed' | 'broken';
 type Visit = { at: number; r: string; d: string };
@@ -28,6 +34,8 @@ type Digest = Changes & {
   /** the biggest failure cluster of the last hour when it spans ≥ 3 repos (smoke), else null */
   smoke: Cluster | null; smokeQueue: number; smokeDeploy: number;
   beacons: { di: number; down: boolean }[]; jam: number;
+  /** counts from the seam when they reach further than the world's own lists (-1: the lists') */
+  failCount: number; mergedCount: number;
 };
 
 const FRESH_MS = 120_000;
@@ -38,7 +46,7 @@ const HOUR = 3_600_000;
 function emptyDigest(): Digest {
   return {
     newRed: [], fixed: [], acute: [], failed: [], deployApps: [], deploys: 0, deployFails: 0, merged: [], down: [], recovered: [],
-    verdict: 'flowing', why: '', smoke: null, smokeQueue: 0, smokeDeploy: 0, beacons: [], jam: 0,
+    verdict: 'flowing', why: '', smoke: null, smokeQueue: 0, smokeDeploy: 0, beacons: [], jam: 0, failCount: -1, mergedCount: -1,
   };
 }
 
@@ -55,11 +63,15 @@ export class Coffee {
   private dgAt = -1e12;
   /** Fresh thing → the module clock when it was first drawn (its pulse fades from then). */
   private seen = new Map<string, number>();
-  /** Health seen per app this session: [server ms, health] transitions. */
-  private health = new Map<string, [number, string][]>();
   /** The queue's length every 15 s of the world, the last 5 minutes (a growing queue jams). */
   private qlen: number[] = [];
   private qAt = 0;
+  /** The seam's answer for `since` (the server's /changes on v0.5 and the demo, approximated on
+   *  0.4): re-asked every 30 s of looking. */
+  private srv: SrvChanges | null = null;
+  private srvFor = 0;
+  private srvAt = -1e12;
+  private srvBusy = false;
 
   constructor(readonly f: Factory) {}
 
@@ -78,7 +90,8 @@ export class Coffee {
         this.since = now - 24 * HOUR; this.first = true; this.baseRed = null; this.baseDown = null;
       }
       this.seen.clear();
-      this.dgVer = -1; this.dgAt = -1e12;
+      this.srv = null; this.srvAt = -1e12;
+      this.dgVer = -1; this.dgAt = -1e12; this.job = null;
     }
     return this.words();
   }
@@ -108,31 +121,81 @@ export class Coffee {
     const parts: string[] = [d.why ? `${d.verdict}: ${d.why}` : d.verdict];
     if (d.newRed.length) parts.push(`${d.newRed.length} newly red`);
     if (d.fixed.length) parts.push(`${d.fixed.length} fixed`);
-    if (d.failed.length) parts.push(`${d.failed.length} failed`);
+    if (d.failed.length || d.failCount > 0) parts.push(`${Math.max(d.failed.length, d.failCount)} failed`);
     if (d.down.length) parts.push(`${d.down.length} down`);
     if (d.deploys) parts.push(`${d.deploys} deploys`);
-    if (d.merged.length) parts.push(`${d.merged.length} merged`);
-    parts.push(this.first ? 'first look, last 24 h' : `since ${ago(this.f.tl.liveNow() - this.since)} ago`);
+    if (d.merged.length || d.mergedCount > 0) parts.push(`${Math.max(d.merged.length, d.mergedCount)} merged`);
+    parts.push(this.sinceWords());
     return parts.join(' · ');
   }
 
+  private sinceWords(): string {
+    if (this.first) return 'first look, last 24 h';
+    if (this.srv && !this.srv.complete) return 'since over 24 h ago';
+    return `since ${ago(this.f.tl.liveNow() - this.since)} ago`;
+  }
+
+  /** Asks the seam what changed since the visit (async; the digest blends it in when it lands). */
+  private ask(t: number): void {
+    if (this.srvBusy || !this.since || (this.srvFor === this.since && t - this.srvAt < 30_000)) return;
+    this.srvBusy = true;
+    this.srvAt = t;
+    const since = this.since;
+    changesSince(since).then((c) => { if (since === this.since) { this.srv = c; this.srvFor = since; this.dgAt = -1e12; this.job = null; } })
+      .catch(() => {}).finally(() => { this.srvBusy = false; });
+  }
+
   // ---- the digest --------------------------------------------------------------------------------
+  /** Advances the digest one slice a turn (≈ 0.3 ms each: the world's entities in three passes,
+   *  then the clusters and the verdict); a new digest starts at most every 2 s while the world
+   *  changes, every 10 s while it stands still. */
   private update(t: number): void {
-    const f = this.f, w = f.world, c = f.census;
-    if (!w.loaded) return;
-    if (t - this.dgAt < 2000 || (w.ver === this.dgVer && t - this.dgAt < 10_000)) return;
-    this.dgVer = w.ver; this.dgAt = t;
-    const now = f.tl.playhead;
+    const f = this.f, w = f.world;
+    if (!w.loaded || t === this.stepT) return;
+    this.stepT = t;
+    if (!this.job) {
+      if (t - this.dgAt < 2000 || (w.ver === this.dgVer && t - this.dgAt < 10_000)) return;
+      this.dgVer = w.ver; this.dgAt = t;
+      if (f.tl.mode === 'live') this.ask(t);
+      this.job = this.digest(w, f.tl.playhead);
+    }
+    const r = this.job.next();
+    if (r.done) { this.job = null; if (r.value) this.dg = r.value; }
+  }
+
+  private job: Generator<void, Digest | null, void> | null = null;
+  private stepT = -1;
+
+  private *digest(w: World, now: number): Generator<void, Digest | null, void> {
+    const f = this.f, c = f.census;
     if (!this.since) this.since = now - 24 * HOUR;
-    const d: Digest = { ...emptyDigest(), ...changesSince(w, this.since, now, { red: this.baseRed, down: this.baseDown }, h36) };
+    const lc = yield* localChanges(w, this.since, now, this.baseRed, this.baseDown);
+    if (w !== f.world) return null;
+    const d: Digest = { ...emptyDigest(), ...lc };
+    // the seam's answer: red/recovered/apps from it unless the visit's own baseline says (exact on
+    // any server); counts from it (it reaches past the pipelines the world holds)
+    const sv = this.srv && this.srvFor === this.since && f.tl.mode === 'live' ? this.srv : null;
+    if (sv) {
+      if (!this.baseRed) {
+        d.newRed = [...new Set(sv.red.map((r) => r.repo))].filter((r) => isRed(w.repos.get(r)));
+        d.fixed = [...new Set(sv.recovered.map((r) => r.repo))].filter((r) => !isRed(w.repos.get(r)));
+      }
+      if (!this.baseDown) {
+        const last = new Map<string, string>();
+        for (const a of sv.apps) last.set(a.app, a.to);
+        d.down = [...last].filter(([, to]) => to === 'down' || to === 'degraded').map(([a]) => a);
+        d.recovered = [...last].filter(([, to]) => to === 'up').map(([a]) => a);
+      }
+      d.failCount = Math.max(d.failed.length, sv.counts.failed);
+      d.deploys = Math.max(d.deploys, sv.counts.deploys);
+      d.deployFails = Math.max(d.deployFails, sv.counts.deploys_failed);
+      d.mergedCount = Math.max(d.merged.length, sv.counts.prs_merged);
+    }
     let downNow = 0;
     const downApps = new Set<string>();
     for (const a of w.apps.values()) {
       const id = a.id ?? '';
       if (a.health === 'down') { downNow++; downApps.add(id); }
-      let log = this.health.get(id);
-      if (!log) { log = []; this.health.set(id, log); }
-      if (!log.length || log[log.length - 1][1] !== a.health) { log.push([now, a.health]); if (log.length > 24) log.shift(); }
     }
     // the jam (§E): something waits, every slot is busy, and the oldest waits over 2× the p50
     // queue time; or the queue grew by ≥ 3 in five minutes and ≥ 3 wait
@@ -145,6 +208,8 @@ export class Coffee {
     const jammed = (c.waiting > 0 && full && c.oldestWait > 2 * p50q) || (grew >= 3 && c.waiting >= 3);
     d.jam = jammed ? clamp(0.5 + c.waiting / 12 + grew / 10, 0.5, 1) : 0;
     // failures: the hour's clusters (smoke: one signature across ≥ 3 repos)
+    yield;
+    if (w !== f.world) return null;
     const cl = clusters(w, now - HOUR, now);
     d.smoke = cl.length && cl[0].repos.size >= 3 ? cl[0] : null;
     const fl = c.flow;
@@ -164,11 +229,9 @@ export class Coffee {
     else if (c.waiting > 0 && c.oldestWait > 2 * p50q) { d.verdict = 'slowed'; d.why = `oldest waits ${ago(c.oldestWait)}`; }
     // beacons: districts with an app down
     c.districts.forEach((dist, i) => { for (const id of dist.apps) if (downApps.has(id)) { d.beacons.push({ di: i, down: true }); break; } });
-    this.dg = d;
+    return d;
   }
 
-  /** This session's health transitions of an app (the app lens's strip). */
-  healthLog(id: string): [number, string][] { return this.health.get(id) ?? []; }
 
   /** What a glance chip lights (the "since you looked" lens). */
   freshSet(k: string): { repos: string[]; apps: string[]; fails: string[] } {
@@ -346,11 +409,12 @@ export class Coffee {
       if (d.fixed.length) chips.push({ key: 'fixed', arrow: -1, n: `${d.fixed.length}`, w: 'fixed', col: C.greenInk, arrowCol: OK });
       if (d.down.length) chips.push({ key: 'down', arrow: 1, n: `${d.down.length}`, w: 'down', col: C.redText, arrowCol: C.red });
       else if (d.recovered.length) chips.push({ key: 'down', arrow: -1, n: `${d.recovered.length}`, w: 'recovered', col: C.greenInk, arrowCol: OK });
-      if (d.failed.length) chips.push({ key: 'failed', arrow: 0, n: `${d.failed.length}`, w: 'failed', col: C.redText, arrowCol: C.red });
+      const nf = d.failCount >= 0 ? d.failCount : d.failed.length, nm = d.mergedCount >= 0 ? d.mergedCount : d.merged.length;
+      if (nf) chips.push({ key: 'failed', arrow: 0, n: `${nf}`, w: 'failed', col: C.redText, arrowCol: C.red });
       if (d.deploys) chips.push({ key: 'deploys', arrow: 0, n: `${d.deploys}`, w: 'deploys', col: C.ink2, arrowCol: C.ink2 });
-      if (d.merged.length) chips.push({ key: 'merged', arrow: 0, n: `${d.merged.length}`, w: 'merged', col: C.ink2, arrowCol: C.ink2 });
+      if (nm) chips.push({ key: 'merged', arrow: 0, n: `${nm}`, w: 'merged', col: C.ink2, arrowCol: C.ink2 });
     }
-    const since = replay ? '' : this.first ? 'last 24 h' : `since ${ago(f.tl.liveNow() - this.since)} ago`;
+    const since = replay ? '' : this.first ? 'last 24 h' : this.sinceWords();
     const ww = 24 + g.width(word, 15, true) + 12;
     const cwOf = (ch: Chip) => (ch.arrow ? 12 : 0) + g.width(ch.n, SMALL, true) + 5 + g.width(ch.w, SMALL) + 14;
     const sw = since ? g.width(since, SMALL) + 12 : 0;
@@ -413,4 +477,41 @@ export function h36(s: string): string {
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
   return (h >>> 0).toString(36);
+}
+
+/** What changed in (since, now] from the world: red/green main lines against the visit's baseline
+ *  (or, a first look, `main.since` and the recent dots), the failures, deploys and merges the
+ *  world holds, app health. The ids say WHERE (the glows); the seam's counts reach further. */
+function* localChanges(w: World, since: number, now: number, baseRed: Set<string> | null, baseDown: Set<string> | null): Generator<void, Changes, void> {
+  const d: Changes = { newRed: [], fixed: [], acute: [], failed: [], deployApps: [], deploys: 0, deployFails: 0, merged: [], down: [], recovered: [] };
+  for (const r of w.repos.values()) {
+    const red = isRed(r);
+    if (red && (r.main?.since ?? 0) >= now - HOUR) d.acute.push(r.id);
+    if (baseRed) {
+      const was = baseRed.has(h36(r.id));
+      if (red && !was) d.newRed.push(r.id); else if (!red && was) d.fixed.push(r.id);
+    } else if (red) { if ((r.main?.since ?? 0) >= since) d.newRed.push(r.id); }
+    else for (const dot of r.main?.recent ?? []) if (dot.at >= since && (dot.state === 'failure' || dot.state === 'error')) { d.fixed.push(r.id); break; }
+  }
+  for (const p of w.pipelines.values()) if ((p.state === 'failure' || p.state === 'error') && p.finished && p.finished > since && p.finished <= now) d.failed.push(p.id ?? '');
+  yield;
+  const apps = new Set<string>();
+  for (const dp of w.deploys.values()) {
+    if (dp.started <= since || dp.started > now) continue;
+    d.deploys++;
+    if (dp.state === 'failure') d.deployFails++;
+    apps.add(dp.app);
+  }
+  d.deployApps = [...apps];
+  for (const p of w.prs.values()) if (p.merged_at && p.merged_at > since && p.merged_at <= now) d.merged.push(`${p.repo}@${p.merge_sha ?? ''}`);
+  yield;
+  for (const a of w.apps.values()) {
+    const id = a.id ?? '';
+    const bad = a.health === 'down' || a.health === 'degraded';
+    if (baseDown) {
+      const was = baseDown.has(h36(id));
+      if (bad && !was) d.down.push(id); else if (!bad && was && a.health === 'up') d.recovered.push(id);
+    } else if (bad) d.down.push(id);
+  }
+  return d;
 }

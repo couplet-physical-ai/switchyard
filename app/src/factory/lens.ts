@@ -33,7 +33,7 @@ import type { Gfx } from '../yard/gfx.ts';
 import { C, TAU, clamp, withAlpha } from '../yard/theme.ts';
 import { isRed } from '../yard/select.ts';
 import { AGES, HOUR, PHASES, failingStep, phaseRow, short, teamOf } from './census.ts';
-import { beat, beatPhase, clusterKey, clusterStep, groupOf } from './seams.ts';
+import { appHistory, beat, beatPhase, clusterKey, clusterStep, groupOf } from './seams.ts';
 import type { Census } from './census.ts';
 import type { Factory } from './factory.ts';
 
@@ -469,21 +469,29 @@ export class Lenses {
         const a = w.apps.get(l.id);
         rel.apps.add(l.id);
         if (a?.repo) R.add(a.repo);
-        st.items = [];
-        for (const d of w.deploys.values()) if (d.app === l.id && d.started >= now - 24 * HOUR && d.started <= now) st.items.push({ id: d.sha, label: d.sha.slice(0, 7), v: d.started, state: d.state });
+        // its deploys and health over time (the seam's app history, H7)
+        const hist = appHistory(l.id);
+        st.items = (hist?.deploys ?? []).filter((d) => d.at >= now - 24 * HOUR && d.at <= now).map((d) => ({ id: d.sha, label: d.sha.slice(0, 7), v: d.at, state: d.state }));
         st.items.sort((a2, b2) => a2.v - b2.v);
         st.n = a?.behind ?? 0;
         st.note = a?.health ?? 'unknown';
         st.app = a ?? null;
-        st.health = f.coffee.healthLog(l.id);
+        const tr = hist?.transitions ?? [];
+        st.health = [[Math.max(now - 24 * HOUR, hist?.since ?? now), tr.length ? tr[0].from : a?.health ?? 'unknown'], ...tr.map((x) => [x.at, x.to] as [number, string])];
         break;
       }
       case 'district': {
         // the team's whole pipeline: its apps, and every repo whose group is the team
         const d = c.districts.find((x) => x.team === l.id);
-        const teams = new Set<string>();
-        for (const id of d?.apps ?? []) { rel.apps.add(id); const a = w.apps.get(id); if (a?.repo) R.add(a.repo); teams.add(`team:${teamOf(a ?? ({} as App))}`); }
-        for (const r of w.repos.values()) if (teams.has(groupOf(w, r.id).id)) R.add(r.id);
+        const votes = new Map<string, number>();
+        for (const id of d?.apps ?? []) {
+          rel.apps.add(id);
+          const a = w.apps.get(id);
+          if (a?.repo) { R.add(a.repo); const gid = groupOf(w, a.repo).id; if (gid.startsWith('team:')) votes.set(gid, (votes.get(gid) ?? 0) + 1); }
+        }
+        let team = '', most = 0;
+        for (const [gid, n] of votes) if (n > most) { team = gid; most = n; }
+        if (team) for (const r of w.repos.values()) if (groupOf(w, r.id).id === team) R.add(r.id);
         break;
       }
       case 'gate': {
@@ -1164,16 +1172,15 @@ export class Lenses {
     const culprits = new Set<string>();
     for (const r of f.census.rails) for (const car of r.cars) if (car.culprit || car.state === 'failure' || car.state === 'error') culprits.add(`${car.repo}@${car.sha}`);
     let best = -1;
+    const open = (h: Hit) => { const [mx, my] = mid(h); return f.hitAt(mx, my) === h; }; // not covered by something drawn later
     for (const h of this.fx.hits) {
-      const [mx, my] = mid(h);
-      if (f.hitAt(mx, my) !== h) continue; // covered by something drawn later
       let k = h.kind;
       if (k === 'pipeline' && this.fx.bays.some((b) => b.pid === h.id)) k = 'bay';
       if (k === 'commit' && culprits.has(h.id)) k = 'culprit';
-      if (k === 'stack') { const n = Number(h.label.split(' ').pop()); if (n > best) { best = n; out.stack = mid(h); } continue; }
-      if (k === 'app' && !out.appBehind && (f.world.apps.get(h.id)?.behind ?? 0) > 0) out.appBehind = mid(h);
-      if (k === 'dock' || k === 'districtArea' || k === 'district' || k === 'track') { const re = new RegExp(`^${k}\\d+$`); const i = Object.keys(out).filter((x) => re.test(x)).length; if (i < 3) out[`${k}${i}`] = mid(h); continue; }
-      if (!out[k]) out[k] = mid(h);
+      if (k === 'stack') { const n = Number(h.label.split(' ').pop()); if (n > best && open(h)) { best = n; out.stack = mid(h); } continue; }
+      if (k === 'app' && !out.appBehind && (f.world.apps.get(h.id)?.behind ?? 0) > 0 && open(h)) out.appBehind = mid(h);
+      if (k === 'dock' || k === 'districtArea' || k === 'district' || k === 'track') { const re = new RegExp(`^${k}\\d+$`); const i = Object.keys(out).filter((x) => re.test(x)).length; if (i < 3 && open(h)) out[`${k}${i}`] = mid(h); continue; }
+      if (!out[k] && open(h)) out[k] = mid(h);
     }
     console.log(`factory-lens: anchors ${JSON.stringify(out)}`);
   }
