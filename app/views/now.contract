@@ -78,6 +78,7 @@ shape NowJob
   links: NowLink[]
   chain: NowChip[]
   note: string
+  full: string
 
 shape NowChain
   id: string
@@ -511,8 +512,8 @@ component NowJobLine
       row min-height=24 flex-wrap="wrap" align-items="center" column-gap=4 row-gap=4
         text (j.last ? "└" : "├") font-size=11.5 color="zr.ink4" width=14 flex-shrink=0 aria-hidden=true
         text j.glyph font-size=11 font-weight=700 color=toneInk(j.tone) width=14 text-align="center" flex-shrink=0 aria-label=j.state
-        button appearance="none" press=select(j.sel) testId=`now-jobpress-${testKey}` aria-expanded=(sel == j.sel) aria-label=`${j.kind} ${j.name}: ${j.state}. Show its steps and log.`
-          padding="1px 4px" border-radius=3 background-color=(sel == j.sel ? "zr.raise" : "transparent") width=(narrow ? "auto" : 150) flex-shrink=0 text-align="start"
+        button appearance="none" press=select(j.sel) testId=`now-jobpress-${testKey}` aria-expanded=(sel == j.sel) aria-label=`${j.full}: ${j.state}. Show its steps and log.` title=j.full
+          padding="1px 4px" border-radius=3 background-color=(sel == j.sel ? "zr.raise" : "transparent") width=(narrow ? "auto" : 220) flex-shrink=0 text-align="start"
           :hover
             background-color="zr.raise"
           row gap=6 align-items="baseline" min-width=0

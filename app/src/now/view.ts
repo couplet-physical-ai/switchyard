@@ -186,6 +186,8 @@ export type JobLine = {
   links: Link[];
   /** the chain: where → the steps (lit as they pass) → the result */
   chain: Chip[]; note: string;
+  /** the whole name (the tooltip; the line may cut it) */
+  full: string;
 };
 export type ChainItem = { id: string; glyph: string; tone: string; text: string; app: string; health: string };
 export type EvBlock = {
@@ -312,6 +314,7 @@ function jobLine(w: World, j: FlowJob, last: boolean, now: number): JobLine {
     step, pct, hasPct, over, timer: tmr, usual, result, err, app, health,
     dur: !live(j.state) ? dur(r.durationMs ?? (j.finished && j.started ? j.finished - j.started : undefined)) : '',
     links, chain: chainOf(w, j, now), note: noteOf(w, j, now),
+    full: fit(`${j.kind}${d ? ` → ${d.app}` : j.name && j.name !== j.kind ? ` · ${j.name}` : ''}`, 160),
   };
 }
 
