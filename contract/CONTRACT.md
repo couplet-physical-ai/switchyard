@@ -34,7 +34,7 @@ except the two singleton snapshot fields, which are `null` before their first va
 | `GET /connect` | (browser, SSO) page that mints a device token for the macOS app. |
 | `GET /api/v1/whoami`, `GET /api/v1/tokens`, `DELETE /api/v1/tokens/{id}` | the caller, their device tokens, revoke one. |
 
-`AdapterStatus = {name, state: "disabled"|"starting"|"syncing"|"ok"|"degraded"|"error", last_ok?, last_error?, lag_ms?, synced, note?, requests}`
+`AdapterStatus = {name, state: "disabled"|"starting"|"syncing"|"ok"|"degraded"|"error", last_ok?, last_error?, last_error_at?, lag_ms?, synced, backfilling?, note?, requests}` (an adapter back to `ok` keeps its `last_error`; `last_error_at` says when it was)
 
 ### Auth
 

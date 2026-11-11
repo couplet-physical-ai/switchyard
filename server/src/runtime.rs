@@ -93,6 +93,9 @@ pub struct AdapterStatus {
     pub last_ok: Option<Ms>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// When `last_error` happened (an adapter back to `ok` keeps its last error).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error_at: Option<Ms>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lag_ms: Option<i64>,
     pub synced: bool,
@@ -128,6 +131,7 @@ impl Adapters {
                 },
                 last_ok: None,
                 last_error: None,
+                last_error_at: None,
                 lag_ms: None,
                 synced: false,
                 backfilling: false,
@@ -138,6 +142,9 @@ impl Adapters {
     }
     pub fn ok(&self, name: &str, now: Ms, lag_ms: Option<i64>) {
         if let Some(a) = self.inner.lock().get_mut(name) {
+            if matches!(a.state, AdapterState::Degraded | AdapterState::Error) {
+                tracing::info!(adapter = name, after = ?a.last_error, "adapter recovered");
+            }
             a.state = AdapterState::Ok;
             a.last_ok = Some(now);
             a.synced = true;
@@ -164,19 +171,33 @@ impl Adapters {
     }
     pub fn degraded(&self, name: &str, why: String) {
         if let Some(a) = self.inner.lock().get_mut(name) {
-            a.state = AdapterState::Degraded;
-            a.last_error = Some(why);
+            Self::set_error(name, a, AdapterState::Degraded, why);
         }
     }
     pub fn error(&self, name: &str, why: String) {
         if let Some(a) = self.inner.lock().get_mut(name) {
-            a.state = if a.synced {
+            let st = if a.synced {
                 AdapterState::Degraded
             } else {
                 AdapterState::Error
             };
-            a.last_error = Some(why);
+            Self::set_error(name, a, st, why);
         }
+    }
+    /// Record a failure; log when the adapter leaves `ok` (or the reason changes), not on
+    /// every repeat.
+    fn set_error(name: &str, a: &mut AdapterStatus, st: AdapterState, why: String) {
+        if a.state != st || a.last_error.as_deref() != Some(why.as_str()) {
+            tracing::warn!(adapter = name, state = ?st, error = %why, "adapter unhealthy");
+        }
+        a.state = st;
+        a.last_error = Some(why);
+        a.last_error_at = Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as Ms)
+                .unwrap_or(0),
+        );
     }
     pub fn request(&self, name: &str, n: u64) {
         if let Some(a) = self.inner.lock().get_mut(name) {
