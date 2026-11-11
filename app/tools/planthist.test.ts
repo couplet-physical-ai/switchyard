@@ -186,5 +186,39 @@ const fixture = await Bun.file(new URL('../../contract/fixtures/snapshot.json', 
   eq(cutAtHeap([[0, 10], [PLAN.SCAN_U, 10], [PLAN.SCAN_U, R], [24, R], [24, 40]], 900), [[0, 10], [PLAN.SCAN_U, 10], [PLAN.SCAN_U, R], [900, R]], 'cutAtHeap: down the scanner, along the conveyor to the heap, no further');
 }
 
+// v4-heaps (REVIEW-iter3b #1–#3): failure CONCENTRATION, the shared contract with v4-verdict
+{
+  const { concentration, errorShape } = await import('../src/factory/clusters.ts');
+  const NOW = 1_794_411_679_000, M = 60_000;
+  eq([errorShape('error: …/admin/run-renewal-check returned HTTP 000'), errorShape('process exited with code 137'), errorShape('context deadline exceeded'), errorShape(null), errorShape('leaks found: N')], ['HTTP 000', 'exit 137', 'timed out', '', ''], 'errorShape: one shape for many endpoints');
+  let n = 0;
+  const P = (repo: string, state: string, ago: number, event = 'push', step = 'test', cluster?: string) => [`p${n++}`, {
+    id: `p${n}`, lane: 'roadrunner', repo, number: n, sha: 's', branch: 'main', event, state, created: NOW - ago - 5 * M, finished: NOW - ago, url: '',
+    workflows: [{ name: 'ci', state, steps: [{ name: step, state, cluster }] }],
+  }] as const;
+  const clusters = new Map([['f:a', { id: 'f:a', signature: 'x', step: 'patent-integrity-cron', class: 'exit', line: 'error: …/admin/run-patent-integrity-check returned HTTP 000', count: 1, count_1h: 1, repos: [], repo_count: 1, groups: [], first_seen: 0, last_seen: 0, examples: [], open: 1 }]]);
+  const lt = 'Northwind-Labs/legal-tracker';
+  // the 15:40Z hour: 27 runs, 8 failures, all legal-tracker's crons (three jobs, HTTP 000)
+  const runs = [
+    ...['notification-outbox', 'esign-sync', 'patent-integrity-cron'].flatMap((s, i) => [P(lt, 'failure', (5 + i) * M, 'cron', s, s === 'patent-integrity-cron' ? 'f:a' : undefined), P(lt, 'failure', (25 + i) * M, 'cron', s)]),
+    P(lt, 'failure', 45 * M, 'cron', 'notification-outbox'), P(lt, 'error', 50 * M, 'cron', 'esign-sync'),
+    ...Array.from({ length: 18 }, (_, i) => P(`Northwind-Labs/r${i % 6}`, 'success', (i + 2) * 3 * M)),
+    P('Northwind-Labs/r9', 'running', 2 * M),
+    P('Northwind-Labs/old', 'failure', 70 * M), // outside the hour
+  ];
+  const w = { at: NOW, ver: 1, pipelines: new Map(runs as any), clusters: clusters as any };
+  const c = concentration(w, NOW, 60 * M);
+  eq(c && [c.key, c.label, c.repo, c.fails, c.total, c.share, c.runs, c.fleetRuns, c.error, c.jobs], ['crons:Northwind-Labs/legal-tracker', 'legal-tracker crons', lt, 8, 8, 1, 8, 26, 'HTTP 000', 3], 'concentration: 8 of 8 fails are legal-tracker\'s crons (HTTP 000, 3 jobs)');
+  // spread failures: no repo holds 60 %
+  const w2 = { at: NOW, ver: 1, pipelines: new Map([P('a/x', 'failure', M), P('a/x', 'failure', 2 * M), P('a/y', 'failure', 3 * M), P('a/z', 'failure', 4 * M)] as any) };
+  eq(concentration(w2, NOW, 60 * M), null, 'concentration: 2 of 4 is not a concentration (< 60 %)');
+  const w3 = { at: NOW, ver: 1, pipelines: new Map([P('a/x', 'failure', M), P('a/y', 'success', 2 * M)] as any) };
+  eq(concentration(w3, NOW, 60 * M), null, 'concentration: one failure is not a concentration (< 2)');
+  const w4 = { at: NOW, ver: 1, pipelines: new Map([P('a/x', 'failure', M), P('a/x', 'failure', 2 * M), P('a/x', 'failure', 3 * M, 'cron'), P('a/y', 'failure', 4 * M, 'push', 'lint')] as any) };
+  const c4 = concentration(w4, NOW, 60 * M);
+  eq(c4 && [c4.key, c4.label, c4.fails, c4.total, c4.error], ['repo:a/x', 'x', 3, 4, ''], 'concentration: 3 of 4 on one repo\'s pushes is the repo, not its crons');
+  eq(concentration({ at: NOW, ver: 1, pipelines: new Map() }, NOW, 60 * M), null, 'concentration: no failures, null');
+}
+
 console.log(fails ? `${fails} FAILED` : 'all planthist tests passed');
 process.exit(fails ? 1 : 0);

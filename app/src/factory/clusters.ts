@@ -4,7 +4,7 @@
 // approximation; a failure no cluster holds gets the signature of its folded step and guessed
 // class (`step · class`), the same key the server would build without an error line.
 
-import type { FailClass } from '../wire.ts';
+import type { Cluster, FailClass, Pipeline } from '../wire.ts';
 import { foldStep, guessClass, signatureOf } from '../../server/floor.ts';
 import { insights } from '../insights.ts';
 import type { ParkGroup, Parked } from './lenses.ts';
@@ -220,4 +220,109 @@ function failedStepName(pid: string): string {
   const p = insights().world.pipelines.get(pid);
   for (const wf of p?.workflows ?? []) for (const s of wf.steps ?? []) if (s.state === 'failure' || s.state === 'error') return s.name;
   return '';
+}
+
+// ───────────────────────────── failure CONCENTRATION (v4) ─────────────────────────────
+//
+// v4-heaps (REVIEW-iter3b #1–#3): failure concentration is a first-class signal. When most of a
+// window's failures are ONE repo (or one repo's crons failing the same way), the news is that repo,
+// not the fleet's pass rate: the verdict names it (v4-verdict, glance.ts), the chute shrinks to a
+// rail and the belt names its heap group (plant.ts). Pure over the world: one pass over its
+// pipelines, cached per (world, ver, now's second, window).
+
+/** The window's failures concentrate on one repo (or one repo's crons): ≥ CONC_SHARE of them,
+ *  and at least CONC_MIN. */
+export const CONC_SHARE = 0.6, CONC_MIN = 2;
+
+export type Concentration = {
+  /** `repo:<owner/name>`, or `crons:<owner/name>` when its failures are mostly its crons. */
+  key: string;
+  /** What the floor and the verdict call it: `legal-tracker`, or `legal-tracker crons`. */
+  label: string;
+  /** The repo id (`Northwind-Labs/legal-tracker`). */
+  repo: string;
+  /** Its failures in the window, the fleet's failures in the window, fails / total. */
+  fails: number; total: number; share: number;
+  /** Its runs that finished in the window (fails included): `legal-tracker 0 / 12` = runs − fails passed. */
+  runs: number;
+  /** The fleet's finished runs in the window and its failures without this repo (the verdict's
+   *  "steady but …" test: the fleet minus the repo against its usual). */
+  fleetRuns: number;
+  /** Its failures' shared error shape (`HTTP 000`), else their class (`exit`), else ''. */
+  error: string;
+  /** Failed jobs (distinct failed step names) among its failures: `3 jobs`. */
+  jobs: number;
+};
+
+const FAILED = (s: string | undefined): boolean => s === 'failure' || s === 'error';
+const DONE = (s: string | undefined): boolean => s === 'success' || s === 'failure' || s === 'error';
+
+/** The short shape of a failure's error line: `HTTP 000`, `exit 137`, `timed out`, else ''. One
+ *  shape for many endpoints (`…/admin/run-renewal-check returned HTTP 000` → `HTTP 000`). */
+export function errorShape(line: string | null | undefined): string {
+  if (!line) return '';
+  let m = /\bHTTP[ /]?(\d{3})\b/i.exec(line);
+  if (m) return `HTTP ${m[1]}`;
+  m = /\bexit(?:ed)?(?: with)?(?: code| status)?[ :=]+(\d{1,3})\b/i.exec(line);
+  if (m) return `exit ${m[1]}`;
+  if (/\btimed? ?out\b|\btimeout\b|deadline exceeded/i.test(line)) return 'timed out';
+  if (/\bconnection refused\b|ECONNREFUSED/i.test(line)) return 'conn refused';
+  if (/\bnot found\b/i.test(line)) return 'not found';
+  return '';
+}
+
+type ConcWorld = { at: number; ver?: number; pipelines: Map<string, Pipeline>; clusters?: Map<string, Cluster> };
+const concCache = new WeakMap<object, { k: string; v: Concentration | null }>();
+
+/** The repo (or one repo's crons) holding ≥ 60 % (and ≥ 2) of the failures that finished in
+ *  (now − windowMs, now], else null. A run's time is finished ?? started ?? created. O(pipelines). */
+export function concentration(world: ConcWorld, now: number, windowMs: number): Concentration | null {
+  const ck = `${world.ver ?? -1}|${Math.floor(now / 1000)}|${windowMs}`;
+  const hit = concCache.get(world);
+  if (hit && hit.k === ck) return hit.v;
+  const from = now - windowMs;
+  let total = 0, fleetRuns = 0;
+  const per = new Map<string, { fails: number; runs: number; crons: number; shapes: Map<string, number>; classes: Map<string, number>; steps: Set<string> }>();
+  for (const p of world.pipelines.values()) {
+    if (!DONE(p.state)) continue;
+    const at = p.finished ?? p.started ?? p.created;
+    if (!(at > from && at <= now)) continue;
+    fleetRuns++;
+    let r = per.get(p.repo);
+    if (!r) per.set(p.repo, (r = { fails: 0, runs: 0, crons: 0, shapes: new Map(), classes: new Map(), steps: new Set() }));
+    r.runs++;
+    if (!FAILED(p.state)) continue;
+    total++; r.fails++;
+    if (p.event === 'cron') r.crons++;
+    let shape = '', cls = '', step = '';
+    for (const wf of p.workflows ?? []) for (const s of wf.steps ?? []) {
+      if (step || !FAILED(s.state)) continue;
+      step = s.name;
+      const c = s.cluster ? world.clusters?.get(s.cluster) : undefined;
+      if (c) { shape = errorShape(c.line); cls = c.class; }
+    }
+    if (!step) for (const wf of p.workflows ?? []) if (!step && FAILED(wf.state)) step = wf.name;
+    if (shape) r.shapes.set(shape, (r.shapes.get(shape) ?? 0) + 1);
+    if (cls) r.classes.set(cls, (r.classes.get(cls) ?? 0) + 1);
+    if (step) r.steps.add(step);
+  }
+  let top: string | null = null;
+  for (const [repo, r] of per) {
+    const t = top ? per.get(top)! : null;
+    if (!t || r.fails > t.fails || (r.fails === t.fails && repo < top!)) top = repo;
+  }
+  let v: Concentration | null = null;
+  const r = top ? per.get(top)! : null;
+  if (top && r && r.fails >= CONC_MIN && total > 0 && r.fails / total >= CONC_SHARE) {
+    const most = (m: Map<string, number>): string => { let b = '', n = 0; for (const [k, c] of m) if (c > n || (c === n && k < b)) { b = k; n = c; } return b; };
+    const crons = r.crons * 2 > r.fails;
+    const name = top.slice(top.lastIndexOf('/') + 1);
+    v = {
+      key: `${crons ? 'crons' : 'repo'}:${top}`, label: crons ? `${name} crons` : name, repo: top,
+      fails: r.fails, total, share: r.fails / total, runs: r.runs, fleetRuns,
+      error: most(r.shapes) || most(r.classes), jobs: Math.max(1, r.steps.size),
+    };
+  }
+  concCache.set(world, { k: ck, v });
+  return v;
 }
