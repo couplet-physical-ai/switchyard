@@ -17,6 +17,12 @@ keyframes nowBeat
 keyframes nowHot
   from opacity=1
   to opacity=0.55
+// a chain arrives (a new event, a job that started; a finished one sliding into "just finished")
+keyframes nowIn
+  from opacity=0 translate="0px -6px"
+// a chain that ends leaves "now"
+keyframes nowOut
+  to opacity=0 translate="0px 8px" animation-timing-function="ease-in"
 
 shape NowLink
   id: string
@@ -290,15 +296,15 @@ component NowView
           if d.ok and d.idle
             text d.idleText font-size=12 color="zr.ink2" padding=(narrow ? "14px 0" : "10px 0 10px 64px") border-top="1px solid zr.rule" testId="now-idle"
           for b, bi in d.now key=b.id
-            NowBlock(b=b, p=p, log=log, sel=sel, narrow=narrow, testKey=`${bi}`, select=select, only=only, close=close)
+            NowBlock(b=b, p=p, log=log, sel=sel, narrow=narrow, reduced=reduced, testKey=`${bi}`, select=select, only=only, close=close)
           if d.just.length > 0
             NowHeading(word="just finished", count="", note="last 15 min", narrow=narrow, testKey="just")
             for b, bi in d.just key=b.id
-              NowDone(b=b, p=p, log=log, sel=sel, open=open, dim=false, narrow=narrow, testKey=`just-${bi}`, select=select, expand=expand, only=only, close=close)
+              NowDone(b=b, p=p, log=log, sel=sel, open=open, dim=false, narrow=narrow, reduced=reduced, testKey=`just-${bi}`, select=select, expand=expand, only=only, close=close)
           if d.earlier.length > 0
             NowHeading(word="earlier", count="", note="last 2 h", narrow=narrow, testKey="earlier")
             for b, bi in d.earlier key=b.id
-              NowDone(b=b, p=p, log=log, sel=sel, open=open, dim=true, narrow=narrow, testKey=`earlier-${bi}`, select=select, expand=expand, only=only, close=close)
+              NowDone(b=b, p=p, log=log, sel=sel, open=open, dim=true, narrow=narrow, reduced=reduced, testKey=`earlier-${bi}`, select=select, expand=expand, only=only, close=close)
 
 // The status line: LIVE and the clock, what runs and waits, each machine's slots, the filter.
 component NowStatus
@@ -439,12 +445,13 @@ component NowBlock
     log: NowLog
     sel: string
     narrow: bool
+    reduced: bool
     testKey: string
     select: action
     only: action
     close: action
   view
-    row align-items="flex-start" gap=12 padding="8px 0 6px" border-top="1px solid zr.rule" testId=`now-ev-${testKey}`
+    row align-items="flex-start" gap=12 padding="8px 0 6px" border-top="1px solid zr.rule" testId=`now-ev-${testKey}` animation=(reduced ? "none" : "nowIn 360ms ease-out both") -exact-layout-transition=(reduced ? "none" : "320ms ease") -exact-exit-animation=(reduced ? "none" : "nowOut 260ms ease-in both")
       if not narrow
         column width=52 flex-shrink=0 gap=1 padding-top=2
           text b.time font-size=11.5 font-variant-numeric="tabular-nums"
@@ -457,7 +464,7 @@ component NowBlock
             text "○" font-size=11 color="zr.ink3" width=14 text-align="center"
             text "pushed · no CI run has started yet" font-size=11.5 color="zr.ink3"
         for j, ji in b.jobs key=j.id
-          NowJobLine(j=j, narrow=narrow, sel=sel, testKey=`${testKey}-${ji}`, select=select)
+          NowJobLine(j=j, narrow=narrow, reduced=reduced, sel=sel, testKey=`${testKey}-${ji}`, select=select)
           if sel == j.sel
             NowDetail(p=p, log=log, narrow=narrow, select=select, close=close)
         if b.more != ""
@@ -491,11 +498,12 @@ component NowJobLine
   props
     j: NowJob
     narrow: bool
+    reduced: bool
     sel: string
     testKey: string
     select: action
   view
-    column testId=`now-job-${testKey}`
+    column testId=`now-job-${testKey}` animation=(reduced ? "none" : "nowIn 300ms ease-out both")
       row min-height=24 flex-wrap="wrap" align-items="center" column-gap=4 row-gap=4
         text (j.last ? "└" : "├") font-size=11.5 color="zr.ink4" width=14 flex-shrink=0 aria-hidden=true
         text j.glyph font-size=11 font-weight=700 color=toneInk(j.tone) width=14 text-align="center" flex-shrink=0 aria-label=j.state
@@ -516,9 +524,9 @@ component NowJobLine
             button appearance="none" press=select(j.machineSel) testId=`now-where-${testKey}` aria-label=`Runs on ${j.where}. What else runs there.` padding=0 border-radius=3
               :hover
                 background-color="zr.raise"
-              NowChipBox(c=c, reduced=false)
+              NowChipBox(c=c, reduced=reduced)
           else
-            NowChipBox(c=c, reduced=false)
+            NowChipBox(c=c, reduced=reduced)
         if j.state == "running" or j.state == "queued" or j.state == "waiting"
           if j.state == "running"
             NowArrow(long=true)
@@ -549,13 +557,14 @@ component NowDone
     open: string
     dim: bool
     narrow: bool
+    reduced: bool
     testKey: string
     select: action
     expand: action
     only: action
     close: action
   view
-    column border-top="1px solid zr.rule" opacity=(dim and open != b.sel ? 0.66 : 1) testId=`now-done-${testKey}`
+    column border-top="1px solid zr.rule" opacity=(dim and open != b.sel ? 0.66 : 1) testId=`now-done-${testKey}` animation=(reduced ? "none" : "nowIn 420ms ease-out both") -exact-layout-transition=(reduced ? "none" : "320ms ease")
       row min-height=26 flex-wrap="wrap" align-items="center" column-gap=10 row-gap=2
         button appearance="none" press=expand(b.sel) testId=`now-donepress-${testKey}` aria-expanded=(open == b.sel) aria-label=`${b.kind} ${b.repo} ${b.branch}: ${b.state}. Show its jobs.`
           flex=1 min-width=0 padding="4px 6px" margin-left=-6 border-radius=5 text-align="start" background-color=(open == b.sel ? "zr.raise" : "transparent")
@@ -586,7 +595,7 @@ component NowDone
         column padding=(narrow ? "0 0 10px 0" : "0 0 8px 64px")
           text b.title font-size=11.5 color="zr.ink2" padding="0 0 4px 0"
           for j, ji in b.jobs key=j.id
-            NowJobLine(j=j, narrow=narrow, sel=sel, testKey=`${testKey}-${ji}`, select=select)
+            NowJobLine(j=j, narrow=narrow, reduced=reduced, sel=sel, testKey=`${testKey}-${ji}`, select=select)
             if sel == j.sel
               NowDetail(p=p, log=log, narrow=narrow, select=select, close=close)
 
