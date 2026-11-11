@@ -163,7 +163,11 @@ export function tone(s: FlowState | string): string {
 const live = (s: FlowState) => s === 'running' || s === 'queued' || s === 'waiting';
 
 // ---- the shapes views/now.contract reads ----
-export type Cell = { id: string; on: boolean };
+export type Cell = { id: string; on: boolean; pct: number; known: boolean };
+/** A chip of a chain, in the Yard's grammar (src/yard/gfx.ts chip): ok (green), bad (red),
+ *  active (solid, ink), wait (amber words), skip, idle (dashed, dim). `arrow`: a dashed
+ *  arrow before it (a stage), else a `›` (the next step). */
+export type Chip = { id: string; text: string; st: string; arrow: boolean; hot: boolean };
 export type Mach = { id: string; label: string; text: string; cells: Cell[]; busy: number; slots: number; offline: boolean; url: string };
 export type JobLine = {
   id: string; sel: string; state: string; tone: string; glyph: string; last: boolean;
@@ -171,6 +175,8 @@ export type JobLine = {
   step: string; pct: number; hasPct: boolean; over: boolean; timer: string; usual: string;
   result: string; err: string; app: string; health: string; dur: string;
   links: Link[];
+  /** the chain: where → the steps (lit as they pass) → the result */
+  chain: Chip[]; note: string;
 };
 export type ChainItem = { id: string; glyph: string; tone: string; text: string; app: string; health: string };
 export type EvBlock = {
@@ -197,7 +203,7 @@ export const EMPTY_FEED: NowFeed = {
 
 function kindText(e: FlowEvent): string {
   switch (e.kind) {
-    case 'pr': return e.pr ? `PR #${e.pr}` : 'PR';
+    case 'pr': return e.pr ? `pr #${e.pr}` : 'pr';
     case 'merge': return 'merge';
     case 'deployment': return 'deploy';
     default: return e.kind;
@@ -212,6 +218,47 @@ function whereOf(j: FlowJob): string {
   return `roadrunner · ${m.label.toLowerCase()}${m.slot ? ` · slot ${m.slot}` : ''}`;
 }
 
+const CHAIN_STEPS = 5;
+const trimTo = (t: string, n: number) => (t.length <= n ? t : `${t.slice(0, n - 1)}…`);
+function stepSt(state: string): string {
+  return state === 'success' ? 'ok' : state === 'failure' || state === 'error' ? 'bad' : state === 'running' ? 'active' : state === 'skipped' || state === 'canceled' ? 'skip' : 'idle';
+}
+/** A job's chain in the Yard's words: where it runs, its steps (a window around the live one,
+ *  the rest folded into "+N done" / "+N"), then how it ended. Queued: waiting → where → ~build. */
+function chainOf(w: World, j: FlowJob, now: number): Chip[] {
+  const out: Chip[] = [];
+  const add = (id: string, text: string, st: string, arrow: boolean, hot = false) => out.push({ id, text, st, arrow, hot });
+  const ci = j.ci === 'gha' ? 'github actions' : 'roadrunner';
+  if (j.state === 'queued' || j.state === 'waiting') {
+    const age = now - j.created;
+    add('w', `waiting ${timer(age)}`, age > 3_600_000 ? 'bad' : age > 120_000 ? 'wait' : 'idle', false);
+    add('ci', j.queuePos ? `${ci} · #${j.queuePos} in line` : ci, 'idle', true);
+    add('est', j.expectedMs ? `~${dur(j.expectedMs)} build` : 'then build', 'idle', true);
+    return out;
+  }
+  const m = j.machine;
+  add('where', j.ci === 'gha' ? ci : `${ci}${m ? ` · ${m.label.toLowerCase()}${m.slot ? ` · slot ${m.slot}` : ''}` : ''}`, 'idle', false);
+  const p = w.pipelines.get(j.id);
+  const wfs = p?.workflows ?? [];
+  const wf = wfs.find((x) => x.state === 'running') ?? wfs.find((x) => x.state === 'failure' || x.state === 'error') ?? wfs[0];
+  const steps = wf?.steps ?? [];
+  if (steps.length) {
+    let act = steps.findIndex((x) => x.state === 'running' || x.state === 'failure' || x.state === 'error');
+    if (act < 0) act = Math.max(0, steps.findIndex((x) => x.state !== 'success' && x.state !== 'skipped'));
+    if (act < 0) act = steps.length - 1;
+    let lo = Math.max(0, act - 2), hi = Math.min(steps.length, lo + CHAIN_STEPS);
+    lo = Math.max(0, hi - CHAIN_STEPS);
+    if (lo > 0) add('done', `${lo} done`, 'ok', true);
+    for (let i = lo; i < hi; i++) {
+      const x = steps[i];
+      add(`s${i}`, trimTo(x.name, 16) + (x.cached ? ' ⟳' : ''), stepSt(x.state), i === lo && lo === 0, x.state === 'running');
+    }
+    if (hi < steps.length) add('more', `+${steps.length - hi}`, 'idle', false);
+    if (wfs.length > 1) add('wf', `${wfs.filter((x) => x.state === 'success').length}/${wfs.length} workflows`, 'skip', false);
+  }
+  return out;
+}
+
 function jobLine(w: World, j: FlowJob, last: boolean, now: number): JobLine {
   const p = w.pipelines.get(j.id);
   const r = j.result, d = r.deploy;
@@ -221,7 +268,7 @@ function jobLine(w: World, j: FlowJob, last: boolean, now: number): JobLine {
     const el = now - (j.started ?? j.created);
     tmr = timer(el);
     if (j.step) step = fit(`${j.step.index}/${j.step.count} ${j.step.name}`, 40);
-    if (j.expectedMs) { hasPct = true; pct = Math.min(1, el / j.expectedMs); over = el > j.expectedMs + 1000; usual = over ? `usual ${timer(j.expectedMs)}` : `of ~${timer(j.expectedMs)}`; }
+    if (j.expectedMs) { hasPct = true; pct = Math.min(1, el / j.expectedMs); over = el > j.expectedMs + 1000; usual = `/ ~${timer(j.expectedMs)}`; }
   } else if (j.state === 'queued' || j.state === 'waiting') {
     tmr = timer(now - j.created);
     step = j.state === 'waiting' ? 'waiting for CI' : 'waiting for a slot';
@@ -245,8 +292,22 @@ function jobLine(w: World, j: FlowJob, last: boolean, now: number): JobLine {
     kind: j.kind, name: kindName, where: whereOf(j), machine: j.machine?.label ?? '', machineSel: j.machine ? `machine:${j.machine.id}` : '',
     step, pct, hasPct, over, timer: tmr, usual, result, err, app, health,
     dur: !live(j.state) ? dur(r.durationMs ?? (j.finished && j.started ? j.finished - j.started : undefined)) : '',
-    links,
+    links, chain: chainOf(w, j, now), note: noteOf(w, j, now),
   };
+}
+
+/** Under the chain, the Yard's caption: "2 of 4 steps · typical 13m · 4m over". */
+function noteOf(w: World, j: FlowJob, now: number): string {
+  if (j.state !== 'running') return '';
+  const p = w.pipelines.get(j.id);
+  const wf = p?.workflows?.find((x) => x.state === 'running') ?? p?.workflows?.[0];
+  const steps = wf?.steps ?? [];
+  const done = steps.filter((x) => x.state === 'success').length;
+  const el = now - (j.started ?? j.created);
+  const parts = [steps.length ? `${done} of ${steps.length} steps` : ''];
+  if (j.expectedMs) parts.push(`typical ${dur(j.expectedMs)}`);
+  if (j.expectedMs && el > j.expectedMs * 1.5) parts.push(`${dur(el - j.expectedMs)} over`);
+  return parts.filter(Boolean).join(' · ');
 }
 
 function block(w: World, e: FlowEvent, now: number, off: number): EvBlock {
@@ -373,12 +434,21 @@ export function feedAnswer(d: NowDeps, [tick, repo, app, sha]: FeedArgs): NowFee
   const earlier = v.events.filter((e) => e.band === 'earlier' && keep(e)).map((e) => block(w, e, now, off));
   const all = needs(w, v, now, filter);
   let busy = 0, slots = 0;
+  // each busy slot's ring fills with its job's elapsed / usual (the Yard's progress rings)
+  const pcts = new Map<string, number[]>();
+  for (const e of v.events) if (e.band === 'now') for (const j of e.jobs) {
+    if (j.state !== 'running' || !j.machine) continue;
+    const a = pcts.get(j.machine.id) ?? [];
+    a.push(j.expectedMs ? Math.min(0.98, Math.max(0.02, (now - (j.started ?? j.created)) / j.expectedMs)) : -1);
+    pcts.set(j.machine.id, a);
+  }
   const machines: Mach[] = v.machines.map((m) => {
     const b = m.busy ?? 0, s = m.slots ?? 0;
     if (m.id !== 'm:gha') { busy += b; slots += s; }
+    const pp = pcts.get(m.id) ?? [];
     return {
       id: m.id, label: (m.label === 'GitHub runner' ? 'github actions' : m.label).toLowerCase(), text: s ? `${b}/${s}` : `${b}`,
-      cells: s ? Array.from({ length: Math.min(s, 16) }, (_, i) => ({ id: `${m.id}#${i}`, on: i < b })) : [],
+      cells: s ? Array.from({ length: Math.min(s, 16) }, (_, i) => ({ id: `${m.id}#${i}`, on: i < b, pct: i < b ? Math.max(0, pp[i] ?? -1) : 0, known: i < b && (pp[i] ?? -1) >= 0 })) : [],
       busy: b, slots: s, offline: m.online === false, url: engineUrl(w, m),
     };
   });

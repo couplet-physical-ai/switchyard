@@ -13,6 +13,11 @@ keyframes nowBeat
   from opacity=1
   to opacity=0.3
 
+// the Yard's live step: its frame breathes
+keyframes nowHot
+  from opacity=1
+  to opacity=0.55
+
 shape NowLink
   id: string
   label: string
@@ -21,6 +26,15 @@ shape NowLink
 shape NowCell
   id: string
   on: bool
+  pct: number
+  known: bool
+
+shape NowChip
+  id: string
+  text: string
+  st: string
+  arrow: bool
+  hot: bool
 
 shape NowMach
   id: string
@@ -56,6 +70,8 @@ shape NowJob
   health: string
   dur: string
   links: NowLink[]
+  chain: NowChip[]
+  note: string
 
 shape NowChain
   id: string
@@ -217,6 +233,11 @@ members App
 
 fn toneInk(t: string): string = t == "run" ? "zr.run" : (t == "fail" ? "zr.fail" : (t == "wait" ? "zr.ink3" : (t == "pass" ? "sy.green-ink" : "zr.ink3")))
 fn healthInk(h: string): string = (h == "down" or h == "degraded") ? "zr.fail" : (h == "up" ? "sy.green-ink" : "zr.ink3")
+// the Yard's chips (src/yard/gfx.ts chip): ok green, bad red, active solid, the rest dashed
+fn chipEdge(st: string): string = st == "ok" ? "sy.green-edge" : (st == "bad" ? "sy.red-edge" : (st == "active" ? "#9A9A9C" : "sy.chip-edge"))
+fn chipFill(st: string): string = st == "ok" ? "sy.green-fill" : (st == "bad" ? "sy.red-fill" : "transparent")
+fn chipInk(st: string): string = st == "ok" ? "sy.green-ink" : (st == "bad" ? "sy.red-text" : (st == "active" ? "sy.ink" : (st == "wait" ? "sy.amber-text" : (st == "skip" ? "zr.ink3" : "#8C8C8E"))))
+fn toneSt(t: string): string = t == "pass" ? "ok" : (t == "fail" ? "bad" : (t == "run" ? "active" : (t == "wait" ? "wait" : "skip")))
 fn healthGlyph(h: string): string = h == "up" ? "✓" : ((h == "down" or h == "degraded") ? "✕" : "?")
 
 // The primary view.
@@ -312,9 +333,17 @@ component NowStatus
           row gap=7 align-items="center"
             text m.label font-size=11.5 color=(m.offline ? "zr.fail" : "zr.ink2") white-space="nowrap"
             if m.cells.length > 0
-              row gap=2 align-items="center" aria-hidden=true
-                for c in m.cells key=c.id
-                  column width=6 height=11 border-radius=1 background-color=(c.on ? "zr.run" : "zr.rule2")
+              // the Yard's slots: an empty ring each; a busy one holds its packet and an amber arc
+              // that fills with the job's elapsed time against its usual (dashed when unknown)
+              svg width=(m.cells.length * 16) height=16 viewBox=`0 0 ${m.cells.length * 16} 16` aria-hidden=true
+                for c, ci in m.cells key=c.id
+                  circle cx=(ci * 16 + 8) cy=8 r=4.5 fill="none" stroke="#3A3A3C" stroke-width=1
+                  if c.on
+                    circle cx=(ci * 16 + 8) cy=8 r=2.2 fill="#8A7146"
+                    if c.known
+                      circle cx=(ci * 16 + 8) cy=8 r=6.5 fill="none" stroke="#E5B567" stroke-width=1.3 stroke-dasharray=`${c.pct * 40.84} 40.84` transform=`rotate(-90 ${ci * 16 + 8} 8)`
+                    else
+                      circle cx=(ci * 16 + 8) cy=8 r=6.5 fill="none" stroke="#E5B567" stroke-opacity=0.7 stroke-width=1.2 stroke-dasharray="2 2.5"
             text m.text font-size=11.5 color="zr.ink2" font-variant-numeric="tabular-nums"
 
 // A section heading: the word, a count, a note; a hairline above the first row.
@@ -424,8 +453,8 @@ component NowEventLine
         text b.who font-size=11.5 color="zr.ink3" white-space="nowrap"
       NowLinks(links=b.links, testKey=`ev-${testKey}`)
 
-// One job: tree · state · kind/name (press: its steps and log) · where (press: the machine) ·
-// the live step, progress and timer, or the result · its links.
+// One job as a Yard chain: tree · state · kind (press: its steps and log) --> where (press: the
+// machine) --> its steps, lit as they pass --> the timer against the usual, or how it ended.
 component NowJobLine
   props
     j: NowJob
@@ -435,42 +464,48 @@ component NowJobLine
     select: action
   view
     column testId=`now-job-${testKey}`
-      row min-height=24 flex-wrap="wrap" align-items="center" column-gap=10 row-gap=2
+      row min-height=24 flex-wrap="wrap" align-items="center" column-gap=4 row-gap=4
         text (j.last ? "└" : "├") font-size=11.5 color="zr.ink4" width=14 flex-shrink=0 aria-hidden=true
         text j.glyph font-size=11 font-weight=700 color=toneInk(j.tone) width=14 text-align="center" flex-shrink=0 aria-label=j.state
         button appearance="none" press=select(j.sel) testId=`now-jobpress-${testKey}` aria-expanded=(sel == j.sel) aria-label=`${j.kind} ${j.name}: ${j.state}. Show its steps and log.`
-          padding="2px 6px" margin-left=-6 border-radius=5 background-color=(sel == j.sel ? "zr.raise" : "transparent") width=(narrow ? "auto" : 210) flex-shrink=0 text-align="start"
+          padding="1px 4px" border-radius=3 background-color=(sel == j.sel ? "zr.raise" : "transparent") width=(narrow ? "auto" : 150) flex-shrink=0 text-align="start"
           :hover
             background-color="zr.raise"
-          row gap=8 align-items="baseline" min-width=0
-            text j.kind font-size=12 font-weight=700 white-space="nowrap"
+          row gap=6 align-items="baseline" min-width=0
+            text j.kind font-size=11.5 font-weight=700 white-space="nowrap"
             if j.app != ""
-              text `→ ${j.app}` font-size=12 color="zr.ink" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+              text `→ ${j.app}` font-size=11.5 color="zr.ink2" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
             else
-              text j.name font-size=11.5 color="zr.ink3" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
-        button appearance="none" press=select(j.machineSel) disabled=(j.machineSel == "") testId=`now-where-${testKey}` aria-label=`Runs on ${j.where}. What else runs there.`
-          padding="2px 6px" border-radius=5 width=(narrow ? "auto" : 250) flex-shrink=0 text-align="start"
-          :hover
-            background-color="zr.raise"
-          text j.where font-size=11.5 color="zr.ink2" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+              text j.name font-size=11 color="zr.ink3" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+        for c, ci in j.chain key=c.id
+          if ci > 0
+            NowArrow(long=c.arrow)
+          if ci == 0 and j.machineSel != ""
+            button appearance="none" press=select(j.machineSel) testId=`now-where-${testKey}` aria-label=`Runs on ${j.where}. What else runs there.` padding=0 border-radius=3
+              :hover
+                background-color="zr.raise"
+              NowChipBox(c=c, reduced=false)
+          else
+            NowChipBox(c=c, reduced=false)
         if j.state == "running" or j.state == "queued" or j.state == "waiting"
-          text j.step font-size=11.5 color="zr.ink2" flex="1 1 160px" min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis" testId=`now-step-${testKey}`
-          if j.hasPct and not narrow
-            column width=120 height=3 border-radius=2 background-color="zr.track" flex-shrink=0 overflow="hidden" aria-hidden=true
-              column height=3 width=`${round(j.pct * 1000) / 10}%` background-color="zr.fill" -exact-layout-transition="1000ms linear"
-          row gap=6 align-items="baseline" justify-content="flex-end" width=(narrow ? "auto" : 130) flex-shrink=0
-            text j.timer font-size=11.5 font-weight=700 color=(j.state == "running" ? "zr.run" : "zr.ink3") font-variant-numeric="tabular-nums" testId=`now-timer-${testKey}`
-            if j.usual != ""
-              text j.usual font-size=11 color=(j.over ? "zr.ink2" : "zr.ink3") font-variant-numeric="tabular-nums" white-space="nowrap"
+          if j.state == "running"
+            NowArrow(long=true)
+            row gap=4 align-items="baseline" flex-shrink=0 padding-left=2
+              text j.timer font-size=11.5 font-weight=700 color="zr.run" font-variant-numeric="tabular-nums" testId=`now-timer-${testKey}`
+              if j.usual != ""
+                text j.usual font-size=11 color=(j.over ? "sy.amber-text" : "zr.ink3") font-variant-numeric="tabular-nums" white-space="nowrap"
         else
-          row gap=10 align-items="baseline" flex="1 1 160px" min-width=0
-            text j.result font-size=11.5 color=toneInk(j.tone) white-space="nowrap" testId=`now-result-${testKey}`
-            if j.app != "" and j.health != ""
-              text `${j.app} ${j.health}` font-size=11.5 color=healthInk(j.health) white-space="nowrap"
-            text j.dur font-size=11 color="zr.ink3"
+          NowArrow(long=true)
+          NowTag(text=(j.dur != "" ? `${j.result} ${j.dur}` : j.result), st=toneSt(j.tone), testKey=`now-result-${testKey}`)
+          if j.app != "" and j.health != ""
+            NowArrow(long=true)
+            NowTag(text=`${j.app} · ${j.health}`, st=(j.health == "up" ? "ok" : ((j.health == "down" or j.health == "degraded") ? "bad" : "idle")), testKey=`now-health-${testKey}`)
+        row flex=1 min-width=8
         NowLinks(links=j.links, testKey=`job-${testKey}`)
+      if j.note != "" and not narrow
+        text j.note font-size=11 color="zr.ink3" padding="0 0 2px 186px"
       if j.err != ""
-        text j.err font-size=11 color="zr.ink2" padding="0 0 4px 48px" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+        text j.err font-size=11 color="zr.ink2" padding="0 0 4px 32px" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
 
 // A finished event on one line; a press shows its jobs under it.
 component NowDone
@@ -506,13 +541,11 @@ component NowDone
             if not narrow
               row gap=12 align-items="baseline" flex-shrink=0
                 for c in b.chain key=c.id
-                  row gap=4 align-items="baseline"
-                    text c.glyph font-size=11 font-weight=700 color=toneInk(c.tone)
-                    text c.text font-size=11.5 color="zr.ink2" white-space="nowrap"
-                    if c.app != ""
-                      text `→ ${c.app}` font-size=11.5 color="zr.ink2" white-space="nowrap"
+                  row gap=4 align-items="center"
+                    NowTag(text=(c.app != "" ? `${c.text} → ${c.app}` : c.text), st=toneSt(c.tone), testKey=`now-chain-${c.id}`)
                     if c.health != ""
-                      text c.health font-size=11.5 color=healthInk(c.health) white-space="nowrap"
+                      NowArrow(long=false)
+                      NowTag(text=c.health, st=(c.health == "up" ? "ok" : ((c.health == "down" or c.health == "degraded") ? "bad" : "idle")), testKey=`now-chainh-${c.id}`)
                 if b.chainMore != ""
                   text b.chainMore font-size=11 color="zr.ink3"
             text b.ago font-size=11 color="zr.ink3" white-space="nowrap" width=44 text-align="end" flex-shrink=0
@@ -583,3 +616,32 @@ component NowDetail
                   text r.n color="zr.ink4" width=40 text-align="end" flex-shrink=0 font-variant-numeric="tabular-nums"
                   text (r.hot ? "✕" : " ") color="zr.fail" width=10 flex-shrink=0
                   text r.text color=(r.hot ? "zr.ink" : "zr.ink2") font-weight=(r.hot ? 700 : 400) white-space="pre-wrap" min-width=0
+
+// One chip of a chain, drawn as the Yard draws its step boxes.
+component NowChipBox
+  props
+    c: NowChip
+    reduced: bool
+  view
+    row align-items="center" height=18 padding="0 6px" border-radius=3 border-width=1 border-style=(c.st == "active" ? "solid" : "dashed") border-color=chipEdge(c.st) background-color=chipFill(c.st) flex-shrink=0
+      animation=((c.hot and not reduced) ? "nowHot 0.9s ease-in-out infinite alternate" : "none")
+      text c.text font-size=11 color=chipInk(c.st) white-space="nowrap"
+
+// A result chip (words and a state, no shape behind it).
+component NowTag
+  props
+    text: string
+    st: string
+    testKey: string
+  view
+    row align-items="center" height=18 padding="0 6px" border-radius=3 border-width=1 border-style="dashed" border-color=chipEdge(st) background-color=chipFill(st) flex-shrink=0 testId=testKey
+      text text font-size=11 color=chipInk(st) white-space="nowrap"
+
+// The Yard's dashed connector with its arrowhead.
+component NowArrow
+  props
+    long: bool
+  view
+    svg width=(long ? 20 : 12) height=8 viewBox=(long ? "0 0 20 8" : "0 0 12 8") aria-hidden=true flex-shrink=0
+      line x1=1 y1=4 x2=(long ? 15.5 : 7.5) y2=4 stroke="#6A6A6A" stroke-width=1 stroke-dasharray="2.5 2.5"
+      polyline points=(long ? "15.5,1.5 19,4 15.5,6.5" : "7.5,1.5 11,4 7.5,6.5") fill="none" stroke="#6A6A6A" stroke-width=1
