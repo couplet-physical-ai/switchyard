@@ -17,8 +17,8 @@ font "Commit Mono"
   700 = "assets/fonts/CommitMono-700.ttf"
 
 routes nav
-  factory "/"
-  live "/live"
+  live "/"
+  factory "/factory"
   yard "/yard"
   mainlines "/mainlines"
   prs "/prs"
@@ -221,7 +221,7 @@ component App
   action back
     nav = back(nav)
   action goTo(name: string)
-    nav = go(nav, name == "factory" ? "/" : `/${name}`)
+    nav = go(nav, name == "live" ? "/" : `/${name}`)
 
   // Time controls (DESIGN.md, "Time")
   action pause
@@ -389,11 +389,11 @@ component App
                 text "24 h" color="#00000000" font-size=1
               // Offline or not set up: a card over the floor (the idle floor, or the last fleet
               // it showed, dimmed behind it), never a black void.
-              if not conn.ok and conn.status != "connecting" and not tokCard
+              if not conn.ok and conn.status != "connecting" and not tokCard and e.id == top(nav).id
                 column position="absolute" inset=0 background-color="sy.canvas" opacity=0.7 aria-hidden=true
-              if tokCard
+              if tokCard and e.id == top(nav).id
                 TokenCard(status=tokState, detail=tok.detail, retry=tokRetry, enter=tokEnter)
-              if not conn.ok and conn.status != "connecting" and not tokCard
+              if not conn.ok and conn.status != "connecting" and not tokCard and e.id == top(nav).id
                 column position="absolute" inset=0 align-items="center" justify-content="center" testId="setup"
                   column align-items="center" gap=14 padding="26px 32px" border-radius=12 border="1px solid sy.edge" background-color="sy.raised" max-width=620
                     text (conn.needsSetup ? "Connect Switchyard to a server" : "The server is not answering") font-weight=700 font-size=16
@@ -417,9 +417,9 @@ component App
               button appearance="none" press=startReplay testId="yard-replay" aria-label="Replay the last hour, sped up" disabled=(ov.mode == "replay" or not conn.ok)
                 position="absolute" top=0 right=0 height=(ov.dialH > 0 ? ov.dialH : 26) padding-left=12 padding-right=(ov.dialPad > 0 ? ov.dialPad : 38) display="flex" align-items="center"
                 text (ov.dial != "" ? ov.dial : "1 hour, sped up") font-size=(ov.dialFont > 0 ? ov.dialFont : 11) color=(ov.mode == "replay" or ov.mode == "paused" ? "sy.amber-text" : "sy.ink3")
-              if tokCard
+              if tokCard and e.id == top(nav).id
                 TokenCard(status=tokState, detail=tok.detail, retry=tokRetry, enter=tokEnter)
-              if not conn.ok and conn.status != "connecting" and not tokCard
+              if not conn.ok and conn.status != "connecting" and not tokCard and e.id == top(nav).id
                 column position="absolute" inset=0 align-items="center" justify-content="center" background-color="sy.canvas" gap=14 testId="yard-setup"
                   text (conn.needsSetup ? "Connect Switchyard to a server" : "The server is not answering") font-weight=700 font-size=16
                   text (conn.error != "" ? conn.error : "Its address and a token, or watch the built-in demo fleet.") color="sy.ink3" font-size=13 max-width=560 text-align="center" testId="yard-setup-error"
@@ -435,19 +435,19 @@ component App
           if e.name == "live"
             column flex=1 min-height=0 position="relative"
               LiveFlowView(f=flowData, p=flowPanelData, log=flowLogData, mode=ov.mode, reduced=reduced, repo=flowRepo, team=flowTeam, branch=flowBranch, mine=flowMine, handle=myHandle, sel=(flowKind == "job" ? flowId : ""), pickRepo=flowPickRepo, pickTeam=flowPickTeam, pickBranch=flowPickBranch, toggleMine=flowToggleMine, clear=flowClear, open=flowOpen, close=flowClose, follow=flowFollow, key=flowKey)
-              if tokCard
+              if tokCard and e.id == top(nav).id
                 TokenCard(status=tokState, detail=tok.detail, retry=tokRetry, enter=tokEnter)
-              if not conn.ok and conn.status != "connecting" and not tokCard
-                column position="absolute" inset=0 align-items="center" justify-content="center" background-color="sy.canvas" gap=14 testId="live-setup"
+              if not conn.ok and conn.status != "connecting" and not tokCard and e.id == top(nav).id
+                column position="absolute" inset=0 align-items="center" justify-content="center" background-color="sy.canvas" gap=14 testId="setup"
                   text (conn.needsSetup ? "Connect Switchyard to a server" : "The server is not answering") font-weight=700 font-size=16
-                  text (conn.error != "" ? conn.error : "Its address and a token, or watch the built-in demo fleet.") color="sy.ink3" font-size=13 max-width=560 text-align="center"
+                  text (conn.error != "" ? conn.error : "Its address and a token, or watch the built-in demo fleet.") color="sy.ink3" font-size=13 max-width=560 text-align="center" testId="setup-error"
                   row gap=10
                     if conn.signIn != ""
-                      link href=conn.signIn class=Primary testId="live-setup-signin"
+                      link href=conn.signIn class=Primary testId="setup-signin"
                         text "Sign in on the web…"
-                    button press=openSettings class=(conn.signIn != "" ? Quiet : Primary) testId="live-setup-connect"
+                    button press=openSettings class=(conn.signIn != "" ? Quiet : Primary) testId="setup-connect"
                       text (conn.signIn != "" ? "Use a token…" : "Connect…")
-                    button press=useDemo testId="live-setup-demo" class=Quiet
+                    button press=useDemo testId="setup-demo" class=Quiet
                       text "Watch the demo"
           if e.name == "mainlines"
             MainlinesView(data=mlData, org=mlOrg, filter=mlFilter, q=mlQ, focus=mlFocus, wheel=mlWheel, px=mlPx, py=mlPy, kick=mlKick, active=(e.id == top(nav).id), mode=ov.mode, pickOrg=mlPickOrg, pickFilter=mlPickFilter, typed=mlTyped, press=mlPress, move=mlMove, hover=mlHover, wheeled=mlWheeled, key=mlKey)

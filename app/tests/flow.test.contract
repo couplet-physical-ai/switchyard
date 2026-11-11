@@ -1,11 +1,15 @@
 // LIVE flow (views/flow.contract): the tab opens the flow, a pipeline opens its steps panel, a
 // machine its runs, and a filter that matches nothing says so. Every test runs the built-in demo.
 
-test "the live tab is first but not the default, and opens the flow"
+test "the live tab is first and the default, and opens the flow"
   clock data
+  expect state here == "live"
   tap "setup-demo"
   clock data
   clock +3000
+  expect state here == "live"
+  tap "tab-factory"
+  clock settle
   expect state here == "factory"
   tap "tab-live"
   clock settle

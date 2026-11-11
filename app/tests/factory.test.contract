@@ -1,4 +1,4 @@
-// The factory floor: the default view (DESIGN.md "Factory"). The floor is two canvases
+// The factory floor, one tab over from the default LIVE flow (DESIGN.md "Factory"). The floor is two canvases
 // (factory-floor, factory-live); what they drew is read from the overview (`ov.fac*`), and a
 // press on the floor is a real pointer gesture at a point in the canvas: `drag 1 0 from x y`
 // presses there, moves one point (under the 4 px pan threshold) and lets go, which is a click.
@@ -10,8 +10,12 @@
 
 size 1440x900
 
-test "the factory is the default view, an idle floor behind the setup card"
+test "the live flow is the default view; the factory is one tab over, an idle floor behind the setup card"
   clock data
+  expect state here == "live"
+  expect tree has "setup"
+  type "root" "/factory"
+  clock settle
   expect state here == "factory"
   expect tree has "factory-floor"
   expect tree has "factory-live"
@@ -21,6 +25,8 @@ test "the factory is the default view, an idle floor behind the setup card"
 
 test "the demo fills the floor"
   clock data
+  type "root" "/factory"
+  clock settle
   tap "setup-demo"
   clock data
   clock +1000
@@ -33,6 +39,8 @@ test "the demo fills the floor"
 
 test "the recorded real fleet fills the floor"
   clock data
+  type "root" "/factory"
+  clock settle
   tap "setup-connect"
   clock settle
   type "server-field" "fixtures"
@@ -51,6 +59,8 @@ test "the recorded real fleet fills the floor"
 
 test "the tabs go to the yard and back to the factory; a deep link leaves it"
   clock data
+  type "root" "/factory"
+  clock settle
   tap "setup-demo"
   clock data
   tap "tab-yard"
@@ -73,6 +83,8 @@ test "the tabs go to the yard and back to the factory; a deep link leaves it"
 
 test "a press on a busy bay opens its lens, Escape walks back"
   clock data
+  type "root" "/factory"
+  clock settle
   tap "setup-connect"
   clock settle
   type "server-field" "fixtures"
@@ -92,6 +104,8 @@ test "a press on a busy bay opens its lens, Escape walks back"
 
 test "a press on a car on a main line opens its lens, Backspace walks back"
   clock data
+  type "root" "/factory"
+  clock settle
   tap "setup-connect"
   clock settle
   type "server-field" "fixtures"
@@ -112,6 +126,8 @@ test "a press on a car on a main line opens its lens, Backspace walks back"
 
 test "stress mode puts a 10x fleet on the floor and takes it off"
   clock data
+  type "root" "/factory"
+  clock settle
   tap "setup-demo"
   clock data
   tap "open-settings"
@@ -140,6 +156,8 @@ test "stress mode puts a 10x fleet on the floor and takes it off"
 
 test "the developer HUD turns on over the floor"
   clock data
+  type "root" "/factory"
+  clock settle
   tap "setup-demo"
   clock data
   tap "hud-toggle"

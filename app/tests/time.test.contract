@@ -35,6 +35,8 @@ test "quarter speed plays behind live, then 1× catches up"
 
 test "the hour replay plays history at 60× and comes back live"
   clock data
+  type "root" "/factory"
+  clock settle
   tap "setup-demo"
   clock data
   clock +1000
@@ -55,6 +57,8 @@ test "the hour replay plays history at 60× and comes back live"
 // day's speed, and live leaves it.
 test "the 24 h replay plays the day at its speed, pauses and resumes at it, and comes back live"
   clock data
+  type "root" "/factory"
+  clock settle
   tap "setup-demo"
   clock data
   clock +1000
@@ -90,6 +94,8 @@ test "the 24 h replay plays the day at its speed, pauses and resumes at it, and 
 
 test "the 24 h replay of a server plays at the day's speed, 720×"
   clock data
+  type "root" "/factory"
+  clock settle
   tap "setup-connect"
   clock settle
   type "server-field" "fixtures"
