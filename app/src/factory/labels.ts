@@ -135,6 +135,7 @@ export class Labels implements Layer {
     stage('09', 'apps', CITY_U0 + 20, CITY_V0, 6, `${up} of ${w.apps.size} up`, `${c.districts.length} districts`, '1360,320,2');
     // engines: one label per machine (host · platform · busy/slots · cpu mem)
     c.groups.forEach((gr, gi) => {
+      if (this.f.plant.label(g, gr, gi)) return; // fab-w6: the machine's name on its wall (its numbers are the wall, the lit bays, the gauges)
       const v0 = ENG_V0 + gi * ENG_STEP;
       const ax = cam.x(ENG_U1 - 6, v0 + ENG_DV), ay = cam.y(ENG_U1 - 6, v0 + ENG_DV, 0);
       void ax; void ay;

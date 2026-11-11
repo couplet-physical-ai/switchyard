@@ -25,6 +25,7 @@ export function buildLayers(f: Factory) {
     crates, //    crates.ts: crates in motion, trains, stress crates
     { name: 'groups', live: (g, fr) => { f.w2.over(g, fr.t); return false; } }, // fab-w2 groupfloor.ts: bay stripes, group dock names and hits
     words, //     labels.ts: stage titles, names and counts (the greedy placer)
+    { name: 'job', live: (g, fr) => { plant.jobLive(g, fr); return false; } }, // fab-w6 plant.ts: the job zoom (z ≥ 4 on a machine), over everything
   ];
   return { floor, plant, city, reactions, tracks, crates, words, order };
 }
