@@ -101,7 +101,9 @@ SY_TOKEN_FILE=$T SY_SEED_TOKEN=1 scripts/release/update-e2e-mini.sh P N
 #    Application Support/com.exowatt.switchyard/token (0600, dir 0700). Snapshot in /tmp/sy-shots/.
 SY_TOKEN_FILE=$T SY_SNAPSHOT=1 scripts/release/install-e2e-mini.sh N
 # 3. A live soak of 20 min or more: the process stays alive, and RSS plus the app's `heap:` lines
-#    plateau. Use SY_SOAK_NEED_HEAP=1 once the app logs heap lines. Per-minute CSV: /tmp/sy-soak-N.csv.
+#    plateau, the max heap over the last 10 min stays under the cap, and no crash report appears.
+#    Use SY_SOAK_NEED_HEAP=1 and SY_SOAK_HEAP_CAP_MB once the app logs heap lines.
+#    Per-minute CSV: /tmp/sy-soak-N.csv.
 SY_TOKEN_FILE=$T scripts/release/soak-mini.sh N 25
 ```
 

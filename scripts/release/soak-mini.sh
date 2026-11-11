@@ -8,6 +8,9 @@
 #   - the JS heap must plateau the same way when the app logs `heap:` lines (0.1.5+): RSS alone
 #     does not show the leak (0.1.4 here: RSS flat at 173 MB, then a Hermes OOM at minute 4 — the
 #     JS heap hits its own cap). SY_SOAK_NEED_HEAP=1 fails a run with no heap lines.
+#   - SY_SOAK_HEAP_CAP_MB=<n>: the max heap over the last 10 minutes must be ≤ n;
+#   - no new Switchyard crash report (.ips) in ~/Library/Logs/DiagnosticReports during the run
+#     (a GCBase::oom one is named as such).
 # Numbers in a heap line: the first `<n>MB`/`<n>mb`/`used=<n>` is read as the used heap in MB.
 #
 #   SY_TOKEN_FILE=<local 600 file> scripts/release/soak-mini.sh <version> [minutes]
@@ -43,6 +46,7 @@ v=\$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "\$A/Content
 [[ "\$v" == "$V" ]] || { echo "FAIL: /Applications has \$v, not $V" >&2; exit 1; }
 quit_
 LOG=~/Library/Logs/Switchyard/switchyard.log; mkdir -p ~/Library/Logs/Switchyard; touch \$LOG
+M=\$(mktemp); trap 'rm -f \$M' EXIT
 gui open --env SWITCHYARD_TOKEN_FILE=$TOK_REMOTE "\$A"
 pid=""; for i in \$(seq 1 40); do pid=\$(pgrep -f "\$P" | head -1 || true); [[ -n "\$pid" ]] && break; sleep 0.25; done
 [[ -n "\$pid" ]] || { echo "FAIL: $V did not start" >&2; exit 1; }
@@ -62,6 +66,10 @@ for m in \$(seq 0 $MIN); do
   echo "CSV,\$m,\$((rss / 1024)),\${heap:-}"
 done
 quit_
+for f in \$(find ~/Library/Logs/DiagnosticReports -name 'Switchyard*.ips' -newer \$M 2>/dev/null); do
+  echo "FAIL: crash report during the soak: \$f\$(grep -q 'GCBase::oom' "\$f" && echo ' (GCBase::oom)')" >&2; exit 1
+done
+echo "crash reports during the soak: none"
 echo SOAK-DONE
 EOF
 ) || { echo "$out"; echo "soak: FAILED" >&2; exit 1; }
@@ -69,9 +77,9 @@ echo "$out" | grep -v '^CSV,'
 echo "$out" | grep '^CSV,' | cut -d, -f2- > "$CSV"
 cat "$CSV"
 grep -qx SOAK-DONE <<<"$out" || { echo "soak: did not reach the end" >&2; exit 1; }
-python3 - "$CSV" "$MIN" "$TAIL" "$TAIL_PCT" "$HALF_PCT" "${SY_SOAK_NEED_HEAP:-0}" <<'PY'
+python3 - "$CSV" "$MIN" "$TAIL" "$TAIL_PCT" "$HALF_PCT" "${SY_SOAK_NEED_HEAP:-0}" "${SY_SOAK_HEAP_CAP_MB:-0}" <<'PY'
 import csv, re, sys
-path, n, tail, tail_pct, half_pct, need_heap = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5]), sys.argv[6] == "1"
+path, n, tail, tail_pct, half_pct, need_heap, cap = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5]), sys.argv[6] == "1", float(sys.argv[7])
 rows = [r for r in csv.DictReader(open(path))]
 
 def plateau(name, xs):
@@ -89,7 +97,12 @@ def mb(h):
     return float(m.group(1)) if m else None
 heap = [mb(r["heap"]) for r in rows if r["heap"]]
 heap = [h for h in heap if h is not None]
-if len(heap) >= 3: ok = plateau("JS heap MB", heap) and ok
+if len(heap) >= 3:
+    ok = plateau("JS heap MB", heap) and ok
+    if cap > 0:
+        last10 = max(heap[-11:])
+        print(f"JS heap: max over the last 10 min {last10:g} MB (cap {cap:g})")
+        ok = ok and last10 <= cap
 elif need_heap: print("FAIL: no heap: lines from the app (SY_SOAK_NEED_HEAP=1)"); ok = False
 else: print("JS heap: no heap: lines logged (RSS only; RSS did not show 0.1.4's leak)")
 print(f"soak: alive {n} min, " + ("memory plateaus" if ok else "memory does NOT plateau"))
