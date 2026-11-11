@@ -79,7 +79,7 @@ test "a press on a busy bay opens its lens, Escape walks back"
   clock +1000
   clock +1500 real
   tap "factory-live" drag 1 0 from 870 315 mouse
-  clock data
+  clock settle
   clock +300
   expect state ov.facLens == 1
   type "factory-live" key "Escape"
@@ -98,7 +98,7 @@ test "a press on a car on a main line opens its lens, Backspace walks back"
   clock +1500 real
   // fab-w1: the first org's lane rail's newest car ("factory: newest car … at" on the fixtures)
   tap "factory-live" drag 1 0 from 653 461 mouse
-  clock data
+  clock settle
   clock +300
   expect state ov.facLens == 1
   type "factory-live" key "Backspace"

@@ -34,7 +34,9 @@ test "a parked failure opens its cluster lens and Escape walks back"
   expect state ov.facLens == 0
   expect state facNow.kind == "lens"
 
-test "shift-click compares two groups in the dock, Escape puts it away"
+// On the web only: the macOS agent's synthesized click carries no Shift (a held `key "Shift"`
+// reaches the canvas as a key, not as the click's modifier).
+test "shift-click compares two groups in the dock, Escape puts it away" on web
   clock data
   tap "setup-demo"
   clock data
