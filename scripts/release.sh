@@ -45,6 +45,9 @@ done
 echo "https://github.com/$REPO/actions/runs/$run"
 timeout 9000 gh run watch "$run" -R "$REPO" --exit-status --interval 30 >/dev/null || { echo "release run $run failed" >&2; exit 1; }
 gh release view "v$V" -R "$REPO" --json url --jq .url
+if [[ "$V" == 0.0.* || "$V" == *-* ]]; then
+  echo "v$V is a prerelease: the tap stays on the latest release"; exit 0
+fi
 gh workflow run bump-switchyard.yml -R "$TAP" -f version="$V"
 sleep 15
 brun=$(gh run list -R "$TAP" -w bump-switchyard.yml --limit 1 --json databaseId --jq '.[0].databaseId')
