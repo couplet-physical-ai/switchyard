@@ -4,7 +4,8 @@
 // boot path keeps every turn small: this finds the big ones. A turn ends where the module awaits
 // `scheduler.yield()` or a fetch, and starts when the host calls a source or resumes one.
 //
-//   bun app/tools/turns.ts [demo|<server url>] [--max <ms>]   (default: demo; --max fails over it)
+//   bun app/tools/turns.ts [demo|fixtures|<server url>] [--max <ms>]   (default: demo; --max fails
+//   over it; `fixtures` serves contract/fixtures with server/mock.ts for the run)
 //
 // The budget in Bun's milliseconds: Hermes (an interpreter) runs this code ~10-25x slower than
 // Bun's JIT on the same core, and a slow Mac 2-4x slower again, so a Bun turn of 2 ms is ~80 ms
@@ -81,7 +82,18 @@ export async function measure(server: string, size = { w: 1440, h: 900 }): Promi
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const max = args.includes('--max') ? Number(args[args.indexOf('--max') + 1]) : Infinity;
-  const server = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--max') ?? 'demo';
+  let server = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--max') ?? 'demo';
+  let mock: ReturnType<typeof Bun.spawn> | null = null;
+  if (server === 'fixtures') {
+    const port = 4800 + Math.floor((process.pid % 500));
+    mock = Bun.spawn(['bun', 'server/mock.ts', '--fixtures', '../contract/fixtures', '--frozen', '--port', String(port)], { cwd: new URL('..', import.meta.url).pathname, stdout: 'ignore', stderr: 'inherit' });
+    server = `http://127.0.0.1:${port}`;
+    for (let k = 0; k < 100; k++) {
+      try { if ((await fetch(`${server}/api/v1/meta`)).ok) break; } catch { /* not up yet */ }
+      await Bun.sleep(100);
+    }
+  }
+  process.on('exit', () => mock?.kill());
   // the first run also compiles (Bun's JIT warming up); then the median of three runs, turn by
   // turn (the boot path is deterministic, so turn i is the same work each run), so a GC pause in
   // one run is not taken for the code's cost
@@ -96,5 +108,6 @@ if (import.meta.main) {
   for (const t of top) console.log(`${t.ms.toFixed(2).padStart(8)} ms  ${t.at}`);
   const worst = top[0]?.ms ?? 0;
   console.log(`${turns.length} turns · longest ${worst.toFixed(2)} ms (Bun)`);
-  if (worst > max) { console.log(`FAIL: a turn over ${max} ms`); process.exit(1); }
+  if (worst > max) { console.log(`FAIL: a turn over ${max} ms (Bun); on a slow Mac's Hermes that is over its 100 ms budget`); process.exit(1); }
+  process.exit(0);
 }

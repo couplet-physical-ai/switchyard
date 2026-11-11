@@ -213,7 +213,11 @@ only in the app icon. Status colours are never used as series colours.
   waterfall on a shared time axis (Dagger spans, cached ones hatched) → deploy → the app's
   health after. Each segment says its duration.
 - **Fleet** — apps (health, live vs main SHA and how far behind, last deploy and how, lane
-  mode, latency), engines and runners (slots busy, CPU), queue pressure, the outage watcher,
+  mode, latency; the ones that need attention listed once, above the rest), engines and
+  runners grouped by host as the Yard groups them (each agent's slots as the Yard's machine,
+  busy/total, cpu/mem), a load canvas (slots busy, cpu, mem, load1 per engine: the last five
+  minutes, sampled client-side on the world's clock, `src/enginehist.ts`), deploys over 24 h
+  (a bar an hour), the lane-mode split as a stacked bar, queue pressure, the outage watcher,
   and 24-hour figures.
 - **⌘K** — one field; instant matches from the client's own index, then the server's search
   for commits. Arrow keys move, Return opens, Escape closes.

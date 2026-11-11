@@ -1,0 +1,57 @@
+// The updater (views/update.contract, modules/apple/Updater.swift, README "Updates"). The web has
+// none. On macOS under the agent it is there, never automatic, and its feed is the in-process
+// stub feed (SYStubFeed in Updater.swift; no network): the first check finds this version, the
+// second a 9.9.9 whose zip fails its checksum, the third a 9.9.9 that passes every check
+// (sha256, ditto, bundle id, version, codesign --strict, quarantine) and is ready. The agent's
+// copy is not installed, so pressing "Relaunch to update" is refused and nothing swaps.
+
+test "the web has no updater: no pill, no Check for Updates, no UPDATES in Settings" on web
+  expect state upd.supported == false
+  expect tree missing "update-pill"
+  expect tree missing "update-check"
+  tap "open-settings"
+  clock settle
+  expect tree has "settings-save"
+  expect tree missing "update-settings"
+  expect tree missing "update-check-settings"
+
+test "macOS under the agent: Settings and the pill walk through up to date, failed and ready" on macos
+  expect state upd.supported == true
+  expect state upd.stub == true
+  expect state upd.auto == false
+  expect state upd.canInstall == false
+  expect state upd.autoInstall == false
+  expect state upd.checks == 0
+  expect tree has "update-check"
+  expect tree missing "update-pill"
+  tap "open-settings"
+  clock settle
+  expect tree has "update-settings"
+  expect text "update-status" == "Checks when asked (this copy is not installed in Applications)"
+  tap "update-check-settings"
+  clock until state upd.checks == 1 within 20000
+  expect state upd.state == "current"
+  expect text "update-status" == "Up to date"
+  expect tree missing "update-install-settings"
+  tap "update-check-settings"
+  clock until state upd.state == "error" within 30000
+  expect state upd.latest == "9.9.9"
+  expect state upd.error == "checksum mismatch"
+  expect text "update-status" == "Update failed: checksum mismatch"
+  tap "settings-cancel"
+  clock settle
+  expect tree has "update-pill"
+  expect text "update-line" == "Update failed: checksum mismatch"
+  tap "update-check"
+  clock until state upd.state == "ready" within 30000
+  clock settle
+  expect state upd.progress == 100
+  expect text "update-line" == "Update ready"
+  expect tree has "update-install"
+  tap "open-settings"
+  clock settle
+  expect text "update-status" == "v9.9.9 is ready"
+  expect tree has "update-install-settings"
+  tap "update-install-settings"
+  clock settle
+  expect state upd.state == "ready"

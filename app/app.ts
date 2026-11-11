@@ -11,10 +11,13 @@ const DEFAULT_SERVER = import.meta.env.SWITCHYARD_DEFAULT_SERVER ?? '';
 const WEB_SHA = import.meta.env.SWITCHYARD_WEB_SHA ?? '';
 setDefaultServer(DEFAULT_SERVER);
 import { DEMO_REPLAY, DemoUpstream } from './src/demo.ts';
+import { EngineHistory } from './src/enginehist.ts';
+import { drawFleetLoad } from './src/fleetload.ts';
 import { fleet, journeyView, prDetailView, search } from './src/project.ts';
 import { MainlinesModel, stateWords } from './src/table/mainlines.ts';
 import { PrsModel } from './src/table/prs.ts';
 import { Timeline } from './src/timeline.ts';
+import { updateDo, updateState } from './src/update.ts';
 import type { Frame as WireFrame } from './src/wire.ts';
 import { Yard } from './src/yard/draw.ts';
 import { Factory } from './src/factory/factory.ts';
@@ -47,6 +50,8 @@ const factory = new Factory(tl);
 tl.listener = (e, w) => { yard.pool.onEvent(e, w, clock); factory.onEvent(e, w, clock); };
 /** The canvas tables (src/table/): one per view, alive across visits (scroll and focus kept). */
 const mlTable = new MainlinesModel();
+/** The engines' cpu/mem/load, the last few minutes of it (the Fleet view's sparklines). */
+const engineHist = new EngineHistory();
 const prTable = new PrsModel();
 
 /** `asking`: called from a source's answer, so it may fetch (a fetch started elsewhere, in
@@ -54,6 +59,7 @@ const prTable = new PrsModel();
 function advance(t: number, asking = true): void {
   if (t > clock) clock = t;
   tl.tick(clock);
+  engineHist.sample(tl.world);
   if (demo) {
     // The demo makes frames up to where the playhead needs them; paused, it stands still.
     const target = tl.mode === 'live' ? epochAtZero + clock : tl.mode === 'paused' ? 0 : tl.playhead;
@@ -315,6 +321,8 @@ async function webVersion(): Promise<{ stale: boolean; served: string }> {
 export const sources: Sources = {
   webVersion: () => webVersion(),
   parseLink: ([u, server, token]) => parseLink(u, server, token),
+  updateState: (_a, _store, _storage, native) => updateState(native),
+  updateDo: ([op], _store, _storage, native) => updateDo(op, native),
   loadToken: (_a, store: Store) => {
     const t = store.get(TOKEN) ?? '';
     return { token: t, has: t !== '' };
@@ -403,7 +411,7 @@ export const sources: Sources = {
   tablePick: ([table, x, y]) => safe('tablePick', NO_HIT, () => tablePick(table, x, y)),
   viewOnTop: ([here]) => { topView = String(here ?? ''); return { ok: true, status: topView }; },
   tableKey: ([table, key]) => safe('tableKey', NO_HIT, () => tableKey(table, key)),
-  fleet: () => safe('fleet', EMPTY_FLEET, () => fleet(tl.world, tl.playhead)),
+  fleet: () => safe('fleet', EMPTY_FLEET, () => ({ ...fleet(tl.world, tl.playhead), loadTick: engineHist.ver })),
   journey: async ([_s, _tok, repo, sha, t]) => {
     if (t > 0) advance(t);
     if (!repo || !sha) return journeyView(null, tl.playhead, ' ');
@@ -441,7 +449,10 @@ const EMPTY_OV: Result<'overview'> = {
   building: 0, queued: 0, red: 0, appsUp: 0, appsTotal: 0, behind: '', seq: 0,
   tick: 0, host: '', dial: '1 hour, sped up', dialPad: 38, dialFont: 11, dialH: 34, hud: false, stress: false, quality: 0, facKey: '',
 };
-const EMPTY_FLEET = { apps: [], engines: [], queues: [], stats: [], up: 0, total: 0, down: 0, degraded: 0, attention: [], behindN: 0, never: 0, hasLatency: false, watcher: '', watcherTripped: false };
+const EMPTY_FLEET = {
+  apps: [], engines: [], queues: [], stats: [], up: 0, total: 0, down: 0, degraded: 0, attention: [], behindN: 0, never: 0, hasLatency: false, watcher: '', watcherTripped: false,
+  hosts: [], loadRows: 0, loadH: 0, deploysN: '', deploysText: '', deploysVia: '', deployBars: [], deployMax: 0, lanes: [], lanesTotal: 0, lanesNote: '', loadTick: 0,
+};
 
 /** A source that throws answers its empty value instead (and says so once in the log): a sparse
  *  or surprising entity costs a view its rows, never the app. */
@@ -525,12 +536,12 @@ function cached<T>(key: string, get: () => Promise<T>): Promise<T> {
 }
 
 /** The host's entry: one function for every source, as `sources` names them. */
-export const answer: Answer = ((source: keyof Sources, args: unknown, store: Store, storage: unknown) =>
-  (sources[source] as (a: unknown, s: Store, st: unknown) => unknown)(args, store, storage)) as Answer;
+export const answer: Answer = ((source: keyof Sources, args: unknown, store: Store, storage: unknown, native?: unknown) =>
+  (sources[source] as (a: unknown, s: Store, st: unknown, n: unknown) => unknown)(args, store, storage, native)) as Answer;
 
 // ---- canvases ------------------------------------------------------------------------------
 /** Surface → its arity (Contract passes that many arguments); the tables' lifetime is 9. */
-export const surfaces: Record<string, number> = { factoryFloor: 3, factoryLive: 4, yardStatic: 2, yardInfo: 2, yardLive: 3, yardTop: 2, mainlinesTable: 9, prsTable: 9 };
+export const surfaces: Record<string, number> = { factoryFloor: 3, factoryLive: 4, yardStatic: 2, yardInfo: 2, yardLive: 3, yardTop: 2, mainlinesTable: 9, prsTable: 9, fleetLoad: 2 };
 
 /** The route on top (`viewOnTop`). The yard stays mounted under every other view; its live
  *  layer animating there cost 3-4× the ops of the view on top. Covered, it is not drawn (the
@@ -594,6 +605,10 @@ function drawSurface(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
     t.pointer(Number(px), Number(py));
     t.setFocus(String(focus ?? ''));
     return mlTable.draw(ctx, frame, tl.playhead, tl.world.loaded);
+  }
+  if (surface === 'fleetLoad') {
+    advance(frame.time, false);
+    return drawFleetLoad(ctx, frame, tl.world, engineHist);
   }
   if (surface === 'prsTable') {
     // (tick, focus, wheel, px, py, filter, q, repo, kick)

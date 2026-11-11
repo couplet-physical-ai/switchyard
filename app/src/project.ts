@@ -3,7 +3,8 @@
 
 import type { Journey, Pr, PrDetail, PrPhase, Repo, SearchHit } from './wire.ts';
 import type { World } from './world.ts';
-import { isRed } from './yard/layout.ts';
+import type { Engine } from './wire.ts';
+import { engineGroups, GHA, isRed } from './yard/layout.ts';
 import { fmtClock, fmtDur } from './yard/paint.ts';
 
 export const PHASES: PrPhase[] = ['draft', 'checks', 'review', 'mergeable', 'merged', 'deployed'];
@@ -106,16 +107,17 @@ export function fleet(w: World, now: number) {
   }));
   const hOrder: Record<string, number> = { down: 0, degraded: 1, unknown: 2, up: 3 };
   apps.sort((a, b) => (hOrder[a.health] ?? 2) - (hOrder[b.health] ?? 2) || b.behind - a.behind || a.id.localeCompare(b.id));
-  const engines = Array.from(w.engines.values()).filter((e) => e && typeof e === 'object')
-    .sort((a, b) => str(a.kind).localeCompare(str(b.kind)) || str(a.id).localeCompare(str(b.id))).map((e) => {
-      const running = arr(e.running);
-      return {
-        id: str(e.id), kind: e.kind === 'dagger' ? 'dagger engine' : e.kind === 'wp_agent' ? 'woodpecker agent' : 'gha runner',
-        slots: num(e.slots), busy: running.length, cpu: e.cpu != null ? `${Math.round(e.cpu <= 1 ? e.cpu * 100 : e.cpu)}%` : '–',
-        mem: e.mem != null ? `${Math.round(e.mem <= 1 ? e.mem * 100 : e.mem)}%` : '–',
-        running: running.map((id) => { const p = w.pipelines.get(id); return p ? `${str(p.repo).split('/')[1] ?? p.repo} #${p.number}` : str(id); }).slice(0, 8).join(', '),
-      };
-    });
+  // Engines as the Yard groups them: a host (VM 153) with its agents under it, Dagger engine
+  // hosts, GitHub Actions' runners (or the hosted pool when none are reported).
+  const hosts = engineGroups(w).map((g) => {
+    const engines = g.engines.map((e) => engineRow(w, e));
+    const stat = g.stats.length ? g.stats.map((id) => w.engines.get(id)).filter((e): e is Engine => !!e) : g.engines;
+    let busy = 0, slots = 0;
+    for (const e of engines) { busy += e.busy; slots += e.slots; }
+    // One engine is its own host (a Dagger VM): its row says its load, not the header too.
+    return { id: g.id, title: g.title, sub: g.sub, busy, slots, load: g.engines.length > 1 ? loadWords(stat) : '', offline: g.engines.length > 0 && g.engines.every((e) => e.online === false), engines };
+  });
+  const engines = hosts.flatMap((h) => h.engines);
   const queues = Array.from(w.queues.values()).filter((q) => q && typeof q === 'object').map((q) => ({ id: str(q.id), pending: num(q.pending), running: num(q.running), oldest: q.pending ? fmtDur(num(q.oldest_wait_ms)) : '–' }));
   const s = w.stats ?? ({} as World['stats']);
   const pct = (v: number) => `${Math.round(v <= 1 ? v * 100 : v)}%`;
@@ -130,16 +132,124 @@ export function fleet(w: World, now: number) {
   const up = apps.filter((a) => a.health === 'up').length;
   const wt = w.watcher ?? { id: 'outage', tripped: false, gh_status: 'unknown' };
   const gh = str(wt.gh_status) || 'unknown';
-  const attention = apps.filter((a) => a.health === 'down' || a.health === 'degraded' || a.behind > 0 || a.deployBad);
+  const attention = apps.filter((a) => a.health === 'down' || a.health === 'degraded' || a.behind > 0 || a.deployBad).slice(0, 40);
+  // The apps that need attention are listed once, above; the table holds the others.
+  const above = new Set(attention.map((a) => a.id));
   const never = apps.filter((a) => !a.live).length;
+  const loadRows = loadOrder(w).length;
   return {
-    apps, engines, queues, stats, up, total: apps.length, down: apps.filter((a) => a.health === 'down').length,
+    apps: apps.filter((a) => !above.has(a.id)), engines, hosts, queues, stats, up, total: apps.length, down: apps.filter((a) => a.health === 'down').length,
     degraded: apps.filter((a) => a.health === 'degraded').length,
-    attention: attention.slice(0, 40), behindN: apps.filter((a) => a.behind > 0).length, never,
+    attention, behindN: apps.filter((a) => a.behind > 0).length, never,
     hasLatency: apps.some((a) => a.latency !== '–'),
-    watcher: wt.tripped ? `outage watcher tripped ${ago(now, wt.since)} · github ${gh}${wt.note ? ` · ${wt.note}` : ''}` : `outage watcher calm · github ${gh}`,
+    watcher: wt.tripped ? `tripped ${ago(now, wt.since)} · github ${gh}${wt.note ? ` · ${wt.note}` : ''}` : `calm · github ${gh}`,
     watcherTripped: !!wt.tripped,
+    loadRows, loadH: loadRows ? 22 + loadRows * LOAD_ROW : 0,
+    ...deploys24(w, now, num(s.deploys_24h)),
+    ...laneSplit(w),
   };
+}
+
+/** One engine as the Fleet lists it: "wp-agent-1 · vm 153", its slots, cpu/mem, what runs. */
+function engineRow(w: World, e: Engine) {
+  const running = arr(e.running);
+  const id = str(e.id);
+  const host = str(e.host).toLowerCase();
+  const label = id === GHA ? 'hosted runners'
+    : e.kind === 'dagger' ? `${str(e.label ?? e.id).toLowerCase()} · dagger`
+    : host ? `${id} · ${host}` : id;
+  const slots = Math.max(1, num(e.slots));
+  const cpu = pctText(e.cpu), mem = pctText(e.mem);
+  // A GitHub Actions run's id is eleven digits that say nothing: "(actions)", as the Yard has it.
+  const runningText = running.map((rid) => { const p = w.pipelines.get(rid); const name = p ? str(p.repo).split('/')[1] ?? p.repo : ''; return p ? (p.lane === 'gha' ? `${name} (actions)` : `${name} #${p.number}`) : str(rid); }).slice(0, 8).join(', ');
+  const sub = [cpu !== '–' ? `cpu ${cpu}` : '', mem !== '–' ? `mem ${mem}` : '', e.online === false ? 'offline' : '', runningText].filter(Boolean).join(' · ');
+  return {
+    id, label, kind: e.kind === 'dagger' ? 'dagger engine' : e.kind === 'wp_agent' ? 'woodpecker agent' : 'gha runner',
+    slots, busy: Math.min(slots, running.length), online: e.online !== false, cpu, mem, running: runningText, sub,
+  };
+}
+
+const pctText = (v: number | undefined): string => (typeof v === 'number' && Number.isFinite(v) ? `${Math.round(v <= 1 ? v * 100 : v)}%` : '–');
+
+/** A host's load in words: its Dagger engine's, else its agents' average. */
+function loadWords(list: Engine[]): string {
+  const avg = (f: (e: Engine) => number | undefined) => {
+    let t = 0, n = 0;
+    for (const e of list) { const v = f(e); if (typeof v === 'number' && Number.isFinite(v)) { t += v <= 1 && f !== loadOf ? v * 100 : v; n++; } }
+    return n ? t / n : NaN;
+  };
+  const cpu = avg((e) => e.cpu), mem = avg((e) => e.mem), load = avg(loadOf);
+  const out: string[] = [];
+  if (!Number.isNaN(cpu)) out.push(`cpu ${Math.round(cpu)}%`);
+  if (!Number.isNaN(mem)) out.push(`mem ${Math.round(mem)}%`);
+  if (!Number.isNaN(load)) out.push(`load ${load.toFixed(1)}`);
+  return out.join(' · ');
+}
+const loadOf = (e: Engine) => e.load;
+
+/** The load canvas's rows: every engine, in the Yard's order (each has its slots busy; cpu,
+ *  mem and load where the engine reports them). */
+export const LOAD_ROW = 32;
+export function loadOrder(w: World): Engine[] {
+  const out: Engine[] = [];
+  for (const g of engineGroups(w)) for (const e of g.engines) out.push(e);
+  return out;
+}
+
+/** Deploys over 24 h: the server's count, the last hour, a bar an hour (ok / failed), by lane. */
+function deploys24(w: World, now: number, total: number) {
+  const H = 3_600_000;
+  const ok = new Array<number>(24).fill(0), bad = new Array<number>(24).fill(0);
+  let hour = 0, deploying = 0, rr = 0, gha = 0, fb = 0, failed = 0;
+  for (const d of w.deploys.values()) {
+    if (!d) continue;
+    if (d.state === 'running' || d.state === 'pending') deploying++;
+    const t = num(d.started ?? d.finished);
+    const age = now - t;
+    if (!t || age < 0 || age >= 24 * H) continue;
+    const b = 23 - Math.floor(age / H);
+    if (d.state === 'failure') { bad[b]++; failed++; } else ok[b]++;
+    if (age < H) hour++;
+    if (d.via === 'roadrunner') rr++; else if (d.via === 'gha') gha++; else if (d.via === 'gha_fallback') fb++;
+  }
+  let mx = 1;
+  for (let i = 0; i < 24; i++) mx = Math.max(mx, ok[i] + bad[i]);
+  const BAR = 38;
+  const n24 = total || ok.reduce((a, b) => a + b, 0) + failed;
+  return {
+    deploysN: fmtNum(n24),
+    deploysText: `${(n24 / 24).toFixed(1)}/h avg · ${hour} in the last hour${deploying ? ` · ${deploying} deploying` : ''}`,
+    deploysVia: `roadrunner ${rr} · gha ${gha} · fallback ${fb}${failed ? ` · ${failed} failed` : ''}`,
+    deployBars: ok.map((o, i) => ({ id: i, ok: o ? Math.max(2, Math.round((o / mx) * BAR)) : 0, bad: bad[i] ? Math.max(2, Math.round((bad[i] / mx) * BAR)) : 0 })),
+    deployMax: mx,
+  };
+}
+
+const LANE_ORDER: [string, string, string][] = [
+  ['roadrunner_first', 'roadrunner first', 'sy.amber'], ['primary', 'roadrunner', 'sy.amber-text'], ['ci', 'roadrunner ci', 'sy.ink2'],
+  ['ci_only', 'ci only', 'sy.ink3'], ['failsafe', 'failsafe', 'sy.red'], ['gha_first', 'gha first', 'sy.green'], ['none', 'no lane', 'sy.machine'],
+];
+
+/** How many repos deploy on each lane mode (the lane's own record, else the repo's), as a
+ *  stacked bar's segments. */
+function laneSplit(w: World) {
+  const n = new Map<string, number>();
+  let fallback = 0, held = 0;
+  for (const [id, r] of w.repos) {
+    const l = w.lanes.get(id);
+    const m = str(l?.mode ?? r?.lane) || 'none';
+    const k = LANE_ORDER.some((o) => o[0] === m) ? m : 'none';
+    n.set(k, (n.get(k) ?? 0) + 1);
+    if (l?.fallback) fallback++;
+    if (l?.held) held++;
+  }
+  const total = Math.max(1, w.repos.size);
+  const lanes = LANE_ORDER.filter(([k]) => (n.get(k) ?? 0) > 0).map(([k, label, color]) => {
+    const c = n.get(k) ?? 0;
+    return { id: k, label, n: c, color, width: `${((c / total) * 100).toFixed(2)}%` };
+  });
+  const notes = [fallback ? `${fallback} on fallback` : '', held ? `${held} held` : ''].filter(Boolean).join(' · ');
+  return { lanes, lanesTotal: w.repos.size, lanesNote: notes };
 }
 
 function deployText(w: World, id: string, now: number): string {

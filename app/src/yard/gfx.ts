@@ -8,6 +8,19 @@ import type { Ctx2D } from '../../app.contract.d.ts';
 import { C, TAU, font } from './theme.ts';
 
 export type Align = 'left' | 'center' | 'right';
+/** A run: text, colour, bold, priority (higher stays longer), cuttable (a commit message). */
+export type Tok = readonly [string, string, boolean?, number?, boolean?];
+
+/** Where a new token starts in a run of text: ` · `, ` → `, the space after a comma, a double
+ *  space. */
+function boundaryAt(s: string, i: number): boolean {
+  const ch = s.charCodeAt(i);
+  if (ch !== 32) return false;
+  const nx = s.charCodeAt(i + 1);
+  if ((nx === 0xb7 || nx === 0x2192) && s.charCodeAt(i + 2) === 32) return true;
+  if (i > 0 && s.charCodeAt(i - 1) === 44) return true;
+  return nx === 32 && (i === 0 || s.charCodeAt(i - 1) !== 32);
+}
 
 export class Gfx {
   ctx!: Ctx2D;
@@ -39,8 +52,14 @@ export class Gfx {
     const key = bold ? -px : px;
     let a = this.adv.get(key);
     if (a === undefined) {
+      // Measured without letter spacing: an eyebrow (1 px tracking) asking first must not
+      // make every caption of its size 1 px a glyph wider (the gaps between runs, the early
+      // ellipses).
+      const ls = this.ctx.letterSpacing;
+      if (ls && ls !== '0px') this.ctx.letterSpacing = '0px';
       this.ctx.font = font(px, bold);
       a = this.ctx.measureText('0000000000').width / 10;
+      if (ls && ls !== '0px') this.ctx.letterSpacing = ls;
       if (!(a > 0)) a = px * 0.6;
       this.adv.set(key, a);
     }
@@ -84,21 +103,22 @@ export class Gfx {
     return this.width(s, px, bold);
   }
 
-  /** Runs of text on one line, each its own colour; returns the end x. Cut to `maxW`. */
-  runs(parts: readonly (readonly [string, string, boolean?])[], x: number, y: number, px: number, maxW = 1e9): number {
+  /** Runs of text on one line, each its own colour; returns the end x. Fitted to `maxW` at
+   *  token boundaries (`fitTokens`): never a number, sha or handle cut in half. */
+  runs(parts: readonly Tok[], x: number, y: number, px: number, maxW = 1e9): number {
+    let total = 0;
+    for (let i = 0; i < parts.length; i++) { const p = parts[i]; if (p[0]) total += this.width(p[0], px, !!p[2]); }
+    return this.paint(total <= maxW + 0.01 ? parts : this.fitTokens(parts, px, maxW), x, y, px);
+  }
+
+  private paint(parts: readonly Tok[], x: number, y: number, px: number): number {
     const ctx = this.ctx;
     ctx.textAlign = 'left';
-    const x0 = x;
     for (let i = 0; i < parts.length; i++) {
       const p = parts[i];
-      const bold = !!p[2];
-      let s = p[0];
+      const s = p[0];
       if (!s) continue;
-      const room = maxW - (x - x0);
-      if (room <= 0) break;
-      const w = this.width(s, px, bold);
-      if (w > room) s = this.fit(s, px, room, bold);
-      if (!s) break;
+      const bold = !!p[2];
       ctx.font = font(px, bold);
       ctx.fillStyle = p[1];
       ctx.fillText(s, x, y);
@@ -107,6 +127,86 @@ export class Gfx {
       x += this.width(s, px, bold);
     }
     return x;
+  }
+
+  /**
+   * Fits runs into `maxW` (measured advances, so the web's wider face and the Mac's each fit
+   * their own) by whole tokens. A token starts at a ` · `, ` → `, `, ` or a double space, at a
+   * run that begins with one, and at every run that names its own priority (a run that names
+   * none and starts with no separator continues the token before it). The lowest
+   * priority goes first: by default the later a token, the lower (explicit priorities are
+   * the 4th element). A token marked cuttable (5th element, e.g. a commit message) is cut
+   * with an ellipsis when that leaves ≥ 6 characters, else dropped with its separator. Nothing
+   * else is ever cut: a number, a sha, a handle shows whole or not at all.
+   */
+  fitTokens(parts: readonly Tok[], px: number, maxW: number): Tok[] {
+    type Tk = { segs: [string, string, boolean][]; w: number; pri: number; cut: boolean; drop: boolean };
+    const toks: Tk[] = [];
+    let cur: Tk | null = null;
+    for (let i = 0; i < parts.length; i++) {
+      const [s, c, b0, pr, cut] = parts[i];
+      if (!s) continue;
+      const bold = !!b0;
+      const explicit = pr !== undefined;
+      let a = 0, q = 0;
+      for (let j = 1; j <= s.length; j++) {
+        if (j < s.length && !boundaryAt(s, j)) continue;
+        const piece = s.slice(a, j);
+        const fresh = !cur || q > 0 || explicit || boundaryAt(s, 0);
+        if (fresh) {
+          cur = { segs: [], w: 0, pri: explicit ? (pr as number) - q * 0.001 : -toks.length, cut: !!cut, drop: false };
+          toks.push(cur);
+        }
+        cur!.segs.push([piece, c, bold]);
+        cur!.w += this.width(piece, px, bold);
+        a = j; q++;
+      }
+    }
+    let total = 0;
+    for (const t of toks) total += t.w;
+    const order = toks.map((_, i) => i).sort((i, j) => toks[i].pri - toks[j].pri || j - i);
+    for (const i of order) {
+      if (total <= maxW + 0.01) break;
+      const t = toks[i];
+      if (t.cut) {
+        const adv = this.advance(px, t.segs[0][2]);
+        const n = Math.floor((maxW - (total - t.w)) / adv) - 1;
+        const text = t.segs.map((z) => z[0]).join('');
+        const lead = text.length - text.replace(/^[\s·→,]+/, '').length;
+        if (n - lead >= 6) {
+          let left = n;
+          const segs: [string, string, boolean][] = [];
+          for (const z of t.segs) {
+            if (left <= 0) break;
+            const piece = z[0].length > left ? z[0].slice(0, left) : z[0];
+            left -= piece.length;
+            segs.push([piece, z[1], z[2]]);
+          }
+          const last = segs[segs.length - 1];
+          last[0] = `${last[0].replace(/[\s·]+$/, '')}…`;
+          t.segs = segs;
+          let w = 0;
+          for (const z of segs) w += this.width(z[0], px, z[2]);
+          total += w - t.w;
+          t.w = w;
+          continue;
+        }
+      }
+      t.drop = true;
+      total -= t.w;
+    }
+    const out: Tok[] = [];
+    let before = false;
+    for (const t of toks) {
+      if (t.drop) { before = true; continue; }
+      for (const z of t.segs) {
+        // The line's new first token, after a dropped one, loses its leading separator.
+        if (before && !out.length) { const s = z[0].replace(/^[\s·→,]+/, ''); if (s) out.push([s, z[1], z[2]]); }
+        else out.push(z);
+      }
+      before = false;
+    }
+    return out;
   }
 
   /** Uppercase tracked eyebrow runs (the inspiration's `LIVE · RUNNING TONIGHT`). */

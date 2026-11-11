@@ -20,6 +20,15 @@ case "${1:-}" in
     export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
     timeout 3600 bun exact.mjs mac ${SWITCHYARD_MAC_FLAGS:---release} >&2
     find "$here/target/clients" -maxdepth 5 -type d -name Switchyard.app -path '*/macos/*' | head -1 ;;
-  test) timeout 3600 bun exact.mjs test "${2:-web}" 'tests/*.test.contract' --size 1440x900 ;;
+  test)
+    # Every data turn of the boot path small enough for a slow Mac (tools/turns.ts: 4 ms in Bun is
+    # ~40 ms on GitHub's 3-core M1 runner, whose Hermes refuses a turn over 100 ms).
+    # The max is in Bun ms on THIS machine: 4 locally, 8 on a CI runner (CI set: GitHub Actions, Woodpecker; GitHub's 3-core
+    # M1 runs Bun ~2x slower, and 8 ms there is still >= 10x under Hermes' 100 ms). Each turn is
+    # the median of 3 runs. TURNS_MAX overrides.
+    case "${CI:-}" in ''|false|0) max=${TURNS_MAX:-4} ;; *) max=${TURNS_MAX:-8} ;; esac
+    timeout 300 bun tools/turns.ts demo --max "$max"
+    timeout 300 bun tools/turns.ts fixtures --max "$max"
+    timeout 3600 bun exact.mjs test "${2:-web}" 'tests/*.test.contract' --size 1440x900 ;;
   *) echo "usage: app/scripts/build.sh web [outdir] | mac | test web|macos" >&2; exit 2 ;;
 esac

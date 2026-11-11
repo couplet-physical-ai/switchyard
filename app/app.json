@@ -21,6 +21,11 @@
       }
     }
   },
+  "moduleConfig": {
+    "updater": {
+      "repo": "couplet-physical-ai/switchyard"
+    }
+  },
   "deploy": {
     "store": {
       "web": "0",
