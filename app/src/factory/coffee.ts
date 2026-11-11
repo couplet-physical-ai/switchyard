@@ -464,7 +464,7 @@ export class Coffee {
     const sz = clamp(f.cam.s * 1.3, 0.7, 3);
     // reduced motion: the marks hold still (no rising smoke, no breathing), rims only
     const tm = f.reduced ? 0 : t;
-    this.lookVeil(g, t); // wow 4: off the worst path the floor dims
+    this.liveG = g; this.lookVeil(g, t); // wow 4: off the worst path the floor dims · fx-demo: the live canvas remembered for look()
     gate(this.mEmber, 5, T, this.sEmber); embers(g, this.sEmber, tm);
     cracks(g, this.mCrack);
     gate(this.mSmoke, 8, T, this.sSmoke); smoke(g, this.sSmoke, tm, 1, f.labels);
@@ -591,6 +591,7 @@ export class Coffee {
   /** The veil's holes on screen: quads (8 numbers each), wound against the veil. */
   private lookHoles: number[] = [];
   private lookFrom = -1;
+  private liveG: Gfx | null = null; // fx-demo: the live canvas's Gfx (under() draws there); the walking light goes on it, not on the retained top canvas it re-sent every frame (PERF.md, "The demo's last misses")
 
   private layoutLook(): void {
     const f = this.f, cam = f.cam, P = f.plan, m = this.dg.marks;
@@ -647,7 +648,7 @@ export class Coffee {
 
   /** The light walking the worst path (on top), every 6 beats, eased; the path faintly drawn. */
   look(g: Gfx, t: number): void {
-    if (!this.looking(t) || this.lookFrom < 0) return;
+    if (!this.looking(t) || this.lookFrom < 0) return; g = this.liveG ?? g; // fx-demo: drawn on the live canvas (above its layers, under the words)
     const xy = this.lookXY, ln = this.lookLen, total = ln[ln.length - 1];
     if (!(total > 0)) return;
     const fade = clamp((t - this.lookFrom) / 1000, 0, 1);
