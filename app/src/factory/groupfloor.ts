@@ -268,7 +268,7 @@ export class GroupFloor {
       const xr = cam.x(-ROAD_DU, gg.v1) - 5, yr = cam.y(-ROAD_DU, gg.v1) + 1;
       const x = cam.x(P.DOCK_U0, gg.v1) - 5, y = cam.y(P.DOCK_U0, gg.v1) + 1;
       const at = (f.floor.on ? fx.placeAt(xr - wv, yr, wv, 12, 0, false) : null) ?? fx.placeAt(x - wv, y, wv, 12, 0, false);
-      if (at) g.text(name, at[0], at[1], kind === 'bots' || kind === 'other' ? C.ink3 : C.ink2, 12);
+      if (at) { g.fillRect(at[0] - 2, at[1] - 10, wv + 4, 13, withAlpha(C.canvas, 0.78)); g.text(name, at[0], at[1], kind === 'bots' || kind === 'other' ? C.ink3 : C.ink2, 12); } // fab-w1: a backing over the roads' bars
     }
   }
 
