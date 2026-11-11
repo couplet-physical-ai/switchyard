@@ -167,8 +167,10 @@ export function severity(m: Metric | null, key: string, metric: MetricKey, at = 
 // ───────────────────────────── the painters ─────────────────────────────
 
 export type Pt = [number, number];
-/** The ember's warm glow: between amber (in flight) and red (failing), at low alpha only. */
-export const EMBER = '#E2733F';
+/** The ember: a smouldering red-brown (OKLCH 0.46 0.075 28), low in lightness and chroma, so it
+ *  is neither amber (in flight) nor the failure red, and always quieter than a failure
+ *  (fx-engine, REVIEW-iter2 #6; it was #E2733F, an orange between the two). */
+export const EMBER = '#7D4740';
 const CURB = '#6E6E74';
 const CURB_NOW = '#A3A3A8';
 const CURB_RULE = '#34343A';
@@ -288,44 +290,111 @@ export function curb(g: Gfx, cam: Cam, m: Metric | null, a: Pt, b: Pt, o: CurbOp
   }
 }
 
-/** A warm glow on the floor quad (u0, v0)–(u1, v1) at height z, `k` 0..1 (severity): a radial
- *  gradient from the quad's centre and a faint hot rim. Static (the floor layer paints it). */
-export function ember(g: Gfx, cam: Cam, u0: number, v0: number, u1: number, v1: number, k: number, z = 0, rim = true): void {
-  if (!(k > 0)) return;
+/** An ember asked for on the floor: a stage's zone (u0, v0)–(u1, v1), or a spot (u0, v0) of
+ *  radius r (under one object: a dock, a district); `k` 0..1 its severity, at height z. */
+export type EmberAsk = {
+  zone: boolean; u0: number; v0: number; u1: number; v1: number; r: number; k: number; z: number;
+  /** Set by a gate: the glow becomes a HALO hugging each of these floor rectangles (u0, v0, u1, v1
+   *  quads: the busy machines of a stage whose zone they fill, so a pool under them would hide). */
+  rects?: number[];
+};
+/** A halo's reach beyond its rectangle (world units) and its rings. */
+export const HALO_D = 30, HALO_RINGS = 5;
+
+/** The floor pass's embers (fx-engine, REVIEW-iter2 #6). While a pass is open (`begin`), `ember`
+ *  and `emberAt` only ASK; `flush` then paints them under one rule set: an ember on an empty stage
+ *  is dropped (the caller's gate), and at most ONE burns at full strength in the view (the
+ *  hottest), every other at half. Closed (no pass: a test, a one-off), they paint at once.
+ *  The factory opens it in the plant's census hook and flushes it in the plant's floor hook, which
+ *  runs right after the floor layer's (where groupfloor.ts asks for the stage's and the docks'):
+ *  embers land over the floor's flat ground and under every extruded thing, as before. */
+export class EmberPass {
+  open = false;
+  asks: EmberAsk[] = [];
+  /** What the last flush painted (after the gate and the strength rule), for the hits. */
+  painted: EmberAsk[] = [];
+  begin(): void { this.open = true; this.asks.length = 0; }
+  /** Paints the asks: `gate` may drop one (null) or reshape it; the hottest one on screen keeps
+   *  its strength, the rest burn at half. Closes the pass. */
+  flush(g: Gfx, cam: Cam, gate: (a: EmberAsk) => EmberAsk | null): void {
+    this.open = false;
+    const keep: EmberAsk[] = [];
+    for (const a of this.asks) { const b = gate(a); if (b && b.k > 0 && onScreen(cam, b)) keep.push(b); }
+    this.asks.length = 0;
+    let hot = -1;
+    keep.forEach((a, i) => { if (hot < 0 || a.k > keep[hot]!.k) hot = i; });
+    keep.forEach((a, i) => paintEmber(g, cam, a, strength(a.k) * (i === hot ? 1 : 0.5)));
+    this.painted = keep;
+  }
+}
+export const emberPass = new EmberPass();
+
+/** Is the ember's footprint on screen? */
+function onScreen(cam: Cam, a: EmberAsk): boolean {
+  const pts: Pt[] = a.zone ? [[a.u0, a.v0], [a.u1, a.v0], [a.u1, a.v1], [a.u0, a.v1]] : [[a.u0 - a.r, a.v0 - a.r], [a.u0 + a.r, a.v0 - a.r], [a.u0 + a.r, a.v0 + a.r], [a.u0 - a.r, a.v0 + a.r]];
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const [u, v] of pts) { const x = cam.x(u, v), y = cam.y(u, v, a.z); x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+  return x1 > 0 && x0 < cam.W && y1 > 0 && y0 < cam.H;
+}
+
+/** The ember's glow: a pool of light lying ON the floor, an ellipse inscribed in its zone (the
+ *  floor plane as the canvas matrix: iso.ts floorMatrix), brightest at the centre and fading to
+ *  nothing at its edge. No rim (a rim reads as "selected"), no hard edge. */
+/** An ember's strength from its severity: never so faint it is not read (a worse-than-usual
+ *  stage must show), never past the full glow. */
+function strength(k: number): number { return k > 0 ? 0.4 + 0.6 * clamp(k, 0, 1) : 0; }
+
+function paintEmber(g: Gfx, cam: Cam, a: EmberAsk, k = strength(a.k)): void {
   const ctx = g.ctx as Ctx2D;
-  const cu = (u0 + u1) / 2, cv = (v0 + v1) / 2;
-  const cx = cam.x(cu, cv), cy = cam.y(cu, cv, z);
-  const corners: [number, number][] = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
-  let R = 1;
-  for (const [u, v] of corners) R = Math.max(R, Math.hypot(cam.x(u, v) - cx, cam.y(u, v, z) - cy));
-  const a = clamp(k, 0, 1);
-  const gr = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
-  gr.addColorStop(0, withAlpha(EMBER, 0.34 * a));
-  gr.addColorStop(0.5, withAlpha(EMBER, 0.15 * a));
-  gr.addColorStop(1, withAlpha(EMBER, 0.04 * a));
-  g.begin_();
-  corners.forEach(([u, v], i) => { const x = cam.x(u, v), y = cam.y(u, v, z); if (i) g.line(x, y); else g.move(x, y); });
-  g.ctx.closePath();
+  if (a.rects) {
+    // a halo: nested chamfered rings around each rectangle, the light pooled against its base and
+    // fading outward (the rectangle itself is drawn over it: the floor layer paints this first)
+    const R = a.rects;
+    for (let ring = 1; ring <= HALO_RINGS; ring++) {
+      const d = (HALO_D * ring) / HALO_RINGS, c = d * 0.55;
+      g.begin_();
+      for (let i = 0; i + 3 < R.length; i += 4) {
+        const u0 = R[i]! - d, v0 = R[i + 1]! - d, u1 = R[i + 2]! + d, v1 = R[i + 3]! + d;
+        const pts: Pt[] = [[u0 + c, v0], [u1 - c, v0], [u1, v0 + c], [u1, v1 - c], [u1 - c, v1], [u0 + c, v1], [u0, v1 - c], [u0, v0 + c]];
+        pts.forEach(([u, v], j) => { const x = cam.x(u, v), y = cam.y(u, v, a.z); if (j) g.line(x, y); else g.move(x, y); });
+        g.ctx.closePath();
+      }
+      g.fill(withAlpha(EMBER, 0.2 * k));
+    }
+    return;
+  }
+  const cu = a.zone ? (a.u0 + a.u1) / 2 : a.u0, cv = a.zone ? (a.v0 + a.v1) / 2 : a.v0;
+  const ru = a.zone ? Math.max(1, (a.u1 - a.u0) / 2) : a.r, rv = a.zone ? Math.max(1, (a.v1 - a.v0) / 2) : a.r * 0.8;
+  const m = cam.floorMatrix(a.z);
+  ctx.save();
+  ctx.transform(m[0], m[1], m[2], m[3], m[4], m[5]);
+  ctx.transform(ru, 0, 0, rv, cu, cv);
+  const gr = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+  gr.addColorStop(0, withAlpha(EMBER, 0.6 * k));
+  gr.addColorStop(0.45, withAlpha(EMBER, 0.34 * k));
+  gr.addColorStop(0.8, withAlpha(EMBER, 0.1 * k));
+  gr.addColorStop(1, withAlpha(EMBER, 0));
   ctx.fillStyle = gr as unknown as string;
-  ctx.fill();
-  g.ops += 4; g.arcs++;
-  if (rim) g.stroke(withAlpha(EMBER, 0.18 + 0.4 * a), Math.max(1, g.hair * 2));
+  ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+  g.ops += 12; g.arcs++;
+}
+
+/** An ember over a stage's floor zone (u0, v0)–(u1, v1) at height z, `k` 0..1 (severity): a
+ *  red-brown glow lying on the zone, no rim. Static (the floor layer paints it). In a floor pass
+ *  (`emberPass` open) it is asked for and painted at the pass's flush. */
+export function ember(g: Gfx, cam: Cam, u0: number, v0: number, u1: number, v1: number, k: number, z = 0): void {
+  if (!(k > 0)) return;
+  const a: EmberAsk = { zone: true, u0, v0, u1, v1, r: 0, k, z };
+  if (emberPass.open) emberPass.asks.push(a); else paintEmber(g, cam, a);
 }
 
 /** A soft round glow on the floor around (u, v), `r` world units, no edge: the ember under one
- *  object (a dock, a district) rather than a stage's zone. */
+ *  object (a dock, a district) rather than a stage's zone. Asked for in a floor pass, as `ember`. */
 export function emberAt(g: Gfx, cam: Cam, u: number, v: number, r: number, k: number, z = 0): void {
   if (!(k > 0)) return;
-  const ctx = g.ctx as Ctx2D;
-  const x = cam.x(u, v), y = cam.y(u, v, z), R = r * cam.s;
-  const a = clamp(k, 0, 1);
-  const gr = ctx.createRadialGradient(x, y, 0, x, y, R);
-  gr.addColorStop(0, withAlpha(EMBER, 0.42 * a));
-  gr.addColorStop(0.45, withAlpha(EMBER, 0.2 * a));
-  gr.addColorStop(1, withAlpha(EMBER, 0));
-  ctx.save(); ctx.translate(x, y); ctx.scale(1, 0.62); ctx.translate(-x, -y);
-  ctx.fillStyle = gr as unknown as string; ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.fill(); ctx.restore();
-  g.ops += 12; g.arcs++;
+  const a: EmberAsk = { zone: false, u0: u, v0: v, u1: u, v1: v, r, k, z };
+  if (emberPass.open) emberPass.asks.push(a); else paintEmber(g, cam, a);
 }
 
 /** ▲ / ▼ at screen (x, baseline y), `s` px half-width: up/down vs typical (`dir`), red when that

@@ -44,6 +44,7 @@ import { drawLegend } from './legend.ts'; // fab-w1
 import { appHist, appHist7, engineSeries, healthSegs, machineEngines, wantAppHistory, wantEngineHistory } from './lenses.ts';
 import { classGlyph, clusterBody, clusterFacts, groupApps, groupFlow, groupForApps, groupForOrg, groupTrend, parkByCluster, ribbonW, trendRows } from './lenses.ts';
 import type { ClusterFacts, GroupFlow, ParkGroup, Parked } from './lenses.ts';
+import { heapUp, heapsOf } from './clusters.ts'; // fx-engine: the return conveyor's heaps (drawParked)
 
 /** What the lens system reaches inside the floor (indexed access: a rename fails the build). */
 export type FactoryFx = {
@@ -662,52 +663,71 @@ export class Lenses {
     this.parkGroups = r.groups;
   }
 
-  /** fab-w3: parked failures, grouped. Each cluster of ≥ 2 a thin bracket on the conveyor's front
-   *  edge with a tiny count (the nearest open one also names its step); open clusters red, those
-   *  that recovered (`open` 0) muted; a flaky failure hatched. */
+  /** fab-w3 → fx-engine (REVIEW-iter2 #9): the last hour's failures on the return conveyor as ONE
+   *  HEAP per failure signature (clusters.ts heapUp, in parkByCluster's order: the biggest open one
+   *  nearest the scanner): its height ∝ the failures it holds, its width ∝ the repos it reached,
+   *  a layer per failure (seams when a layer is ≥ 3 px; a flaky one hatched: it passed on the same
+   *  sha). A healed cluster is not failing now: it leaves the belt (no gray crates). The tallest
+   *  heap's name and the biggest one's arcs to its docks on the beat are the plant's (plant.ts
+   *  `heapMarks`, after the label placer resets). A hit per heap, per layer up close. */
   private drawParked(g: Gfx): void {
     const f = this.f, P = f.plan, cam = f.cam, fx = this.fx, V = P.RETURN_V;
     if (!this.parked.length) return;
-    // perf: small on screen (fleet zoom), parked failures are squares in one path per colour (on
-    // native every canvas call is a host round trip); zoomed in, crates
+    const heaps = heapUp(this.parked, this.parkGroups, P.SCAN_U - 22, 40);
+    if (!heaps.length) return;
+    const v0 = V - 4, v1 = V + 4, z0 = 1.2, b = f.bD;
+    for (const h of heaps) b.add(h.u0, v0, h.u1 - h.u0, v1 - v0, h.h, z0);
+    // perf: small on screen (fleet zoom), a heap is its silhouette and top, no edges (half the calls)
     const small = 8 * cam.s < 11;
-    const r = Math.max(2.5, 4 * cam.s);
-    if (small) {
-      for (const open of [true, false]) {
-        let any = false;
-        g.begin_();
-        for (const x of this.parked) if (x.open === open) { g.ctx.rect(cam.x(x.u, V) - r, cam.y(x.u, V, 6) - r, r * 2, r * 2); any = true; }
-        if (any) g.fill(open ? F_RED : F_HEALED);
+    if (small) b.flush(g, cam, F_RED, '#9A4040', '#9A4040', '', 1, 2);
+    else b.flush(g, cam, F_RED, '#8A3838', '#B04848', withAlpha('#3A1717', 0.9), Math.max(1, g.hair * 1.2), 3);
+    const unitPx = (heaps[0]?.unit ?? 0) * cam.s;
+    // the layers' seams across the front and the side (one failure each), and flaky layers hatched
+    if (unitPx >= 3) {
+      g.begin_();
+      let any = false;
+      for (const h of heaps) for (let i = 1; i < h.n; i++) {
+        const z = z0 + i * h.unit;
+        g.move(cam.x(h.u0, v1), cam.y(h.u0, v1, z)); g.line(cam.x(h.u1, v1), cam.y(h.u1, v1, z)); g.line(cam.x(h.u1, v0), cam.y(h.u1, v0, z));
+        any = true;
       }
-    } else for (const x of this.parked) this.parkedCrate(g, x);
-    // flaky: hatched (it passed on the same sha: noise, not breakage)
-    let fl = false;
-    g.begin_();
-    for (const x of this.parked) {
-      if (!x.flaky) continue;
-      fl = true;
-      if (small) {
-        const cx = cam.x(x.u, V), cy = cam.y(x.u, V, 6);
-        g.move(cx - r, cy + r * 0.2); g.line(cx - r * 0.2, cy - r);
-        g.move(cx - r * 0.6, cy + r); g.line(cx + r, cy - r * 0.6);
-        g.move(cx + r * 0.2, cy + r); g.line(cx + r, cy + r * 0.2);
-      } else {
-        const z = 2 + 6.4, u0 = x.u - 4, v0 = V - 4;
-        for (const k of [0.45, 0.95, 1.45]) {
-          const a: Pt = k <= 1 ? [u0 + 8 * k, v0] : [u0 + 8, v0 + 8 * (k - 1)], b: Pt = k <= 1 ? [u0, v0 + 8 * k] : [u0 + 8 * (k - 1), v0 + 8];
-          g.move(cam.x(a[0], a[1]), cam.y(a[0], a[1], z)); g.line(cam.x(b[0], b[1]), cam.y(b[0], b[1], z));
-        }
+      if (any) g.stroke(withAlpha('#5A2020', 0.85), Math.max(1, g.hair));
+      g.begin_();
+      let fl = false;
+      for (const h of heaps) {
+        if (!h.flaky.size) continue;
+        h.ids.forEach((id, j) => {
+          if (!h.flaky.has(id)) return;
+          const i = h.n - 1 - j, za = z0 + i * h.unit, zb = za + h.unit;
+          for (let u = h.u0 + 2; u < h.u1; u += 4) { g.move(cam.x(u, v1), cam.y(u, v1, za)); g.line(cam.x(Math.min(h.u1, u + 2.5), v1), cam.y(Math.min(h.u1, u + 2.5), v1, zb)); }
+          fl = true;
+        });
       }
+      if (fl) g.stroke(withAlpha(C.canvas, 0.8), Math.max(1, g.hair * 1.4));
     }
-    if (fl) g.stroke(withAlpha(C.canvas, 0.85), Math.max(1, r * 0.32));
-    this.brackets(g, -1);
-    for (const x of this.parked) fx.hit(cam.x(x.u, V) - 5, cam.y(x.u, V, 8) - 7, 10, 14, 'failure', x.id, `${repoName(x.repo)} · ${x.step}`);
+    // hits: a layer each when a layer is a target (≥ 6 px), else the heap
+    for (const h of heaps) {
+      const x0 = cam.x(h.u0, v1) - 2, x1 = cam.x(h.u1, v0) + 2, yb = cam.y(h.u1, v1, 0) + 2;
+      const yt = Math.min(cam.y(h.u0, v0, z0 + h.h), yb - 14) - 3;
+      if (unitPx >= 6) {
+        h.ids.forEach((id, j) => {
+          const i = h.n - 1 - j, ya = cam.y(h.u0, v0, z0 + (i + 1) * h.unit), yc = cam.y(h.u1, v1, z0 + i * h.unit);
+          const x = this.parked.find((q) => q.id === id);
+          fx.hit(x0, Math.min(ya, yc), x1 - x0, Math.abs(yc - ya), 'failure', id, `${repoName(x?.repo ?? '')} · ${h.step}`);
+        });
+      } else fx.hit(x0, yt, x1 - x0, yb - yt, 'failure', h.newest, `${short2(h.step)} · ${h.n} failed · ${h.repos} repo${h.repos === 1 ? '' : 's'}`);
+    }
   }
 
-  /** A parked failure, zoomed in: a red crate, or (its cluster healed) a muted maroon one. */
+  /** A parked failure over the lens's veil: its own layer of its heap (fx-engine: as the floor
+   *  draws it; a healed one is off the belt). */
   private parkedCrate(g: Gfx, x: Parked): void {
-    if (x.open) { this.fx.crate(g, x.u, this.f.plan.RETURN_V, 8, true, false); return; }
-    this.fx.box(g, x.u - 4, this.f.plan.RETURN_V - 4, 8, 8, 6.4, F_HEALED, '#4A3E3F', '#3E3435', '#7A6A6B', g.hair);
+    const h = heapsOf(this.parked)?.find((q) => q.k === x.k);
+    const j = h ? h.ids.indexOf(x.id) : -1;
+    if (!h || j < 0) return;
+    const V = this.f.plan.RETURN_V, b = this.f.bD;
+    b.add(h.u0, V - 4, h.u1 - h.u0, 8, h.unit, 1.2 + (h.n - 1 - j) * h.unit);
+    b.flush(g, this.f.cam, F_RED, '#8A3838', '#B04848', withAlpha('#3A1717', 0.9), Math.max(1, g.hair * 1.2), 3);
   }
 
   /** The clusters' brackets on the conveyor's front edge and their counts; `only` ≥ 0 draws that
@@ -785,7 +805,7 @@ export class Lenses {
     this.boxHit(P.GATE_U - 2, P.AISLE_V - 38, 12, 76, 40, 'gate', 'gate', 'merge gate');
     c.groups.forEach((_g, gi) => {
       const v0 = P.ENG_V0 + gi * P.ENG_STEP;
-      this.boxHit(P.ENG_U0, v0, P.ENG_U1 - P.ENG_U0, P.ENG_DV, P.ENG_H, 'machine', String(gi), c.groups[gi].name);
+      { const [mu, mv, mdu, mdv] = f.plant.shell(gi); this.boxHit(mu, mv, mdu, mdv, P.ENG_H, 'machine', String(gi), c.groups[gi].name); } // fx-engine: the machine's footprint (the hosted edge is one bay deep)
       this.boxHit(P.ENG_U1 + 12, v0 + 34, 22, 9, 64, 'gauge', String(gi), c.groups[gi].name);
     });
     this.segHits([P.SCAN_U, 30], [P.SCAN_U, 598], 6, 56, 40, 'scanner', 'tests', 'tests');

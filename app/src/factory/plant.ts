@@ -14,9 +14,17 @@
 //             the cpu ribbon (red ≥ 90 %) and the mem ribbon (dashed); offline minutes and the
 //             time before the record are GAPS. The label is just the machine's name.
 //   gauges    cpu and mem towers at the machine's end: the wall's ribbons, now.
-//   GHA       a ghost machine (dashed: not ours). With no runners reported we know of no slots: a
-//             bay for each RUNNING job only, never an empty one, and no wall; runners the fleet
-//             reports (census folds them in) bring their real slots and their wall.
+//   GHA       hosted runners are not ours and we know of no slots: an EDGE one bay deep (fx-engine,
+//             REVIEW-iter2 #5), as long as GitHub Actions' share of the jobs the floor holds
+//             (24 h at most), a dashed outline; a bay on it only while a hosted job RUNS, never an
+//             empty one, no wall. Runners the fleet reports (census folds them in) bring their
+//             real slots and their wall: a machine like the others.
+//   bays      busy bays in LANE order (fx-engine, #1's engine half): a machine's jobs packed from
+//             its left by their group's lane rank (floorGroups().lanes(), the docks' order), so
+//             the hues follow the docks; each lip carries a tick of its group's hue.
+//   embers    the trend embers (trendmarks.ts) the floor asks for are painted here (`floor`), under
+//             trendmarks' rules (no ember on an empty stage; one at full strength in the view),
+//             and explained on hover (`hits`).
 //   scanner   a SPLIT BEAM: its crossbar lit in two parts, pass (green-gray, back) and fail (red,
 //             front, over the return conveyor), each ∝ its share of the last hour's finishes.
 //   return    failures ride the front edge to the RISER beside the docks and up a SPUR into their
@@ -42,6 +50,10 @@ import { R_BEAM, R_DOOR, R_RING, beltSpeedPx, breathe } from './motion.ts';
 import { DAY_MS, PlantHist, dataRuns, historyIds, type Tide } from './planthist.ts';
 import { F, SMALL, box, dur, pipeWords, poly, quad, ring } from './prims.ts';
 import type { Bay, FloorPass, Layer, LiveFrame, Pt } from './types.ts';
+import { heapsOf, tallest, type Heap } from './clusters.ts';
+import { beat } from './motion.ts';
+import { HALO_D, emberPass, metricOf, typical as typicalOf, type EmberAsk, type MetricKey } from './trendmarks.ts';
+import { insights } from '../insights.ts';
 
 const {
   DOCK_U1, RAIL_U1, INTAKE_U0, INTAKE_U1, LANE_V, DIST_U, ENG_U0, ENG_U1, ENG_V0, ENG_STEP, ENG_DV, ENG_H,
@@ -65,6 +77,19 @@ const WALL_FACE = '#18181B', WALL_TOP = '#2C2C30', WALL_EDGE = '#3A3A3F', GAP = 
 /** The wall's scale (ticks at 50 % / 100 %), its baseline under data, and the typical's ghost. */
 const SCALE = '#4A4A50', BASE = '#46464C', GHOST = 'rgba(216, 186, 146, 0.72)'; // C.amberText ghosted: the tide's own colour
 const OK_BEAM = '#7E9784';
+/** The hosted EDGE (GitHub Actions without runners): one bay deep (v), its bays' recess and the
+ *  outline (dashed: not ours). */
+const EDGE_DV = 42, EDGE_BAY_V = 4, EDGE_BAY_DV = 24, EDGE_TOP = '#161618', EDGE_LINE = '#4A4A4F';
+/** A machine's bay pitch with six slots (the edge's bays match it). */
+const BAY_PITCH = (ENG_U1 - ENG_U0 - 28) / 6;
+/** A bay lip's hue tick (world u). */
+const TICK_DU = 4.5;
+/** An ember gate's flip (a stage emptying or filling) is held this long before the floor repaints. */
+const GATE_HOLD_MS = 5000;
+/** The stage words and metrics an ember explains (groupfloor.ts's STAGE_METRIC). */
+const EMBER_STAGE: Record<string, [string, MetricKey]> = {
+  '02': ['pr yard', 'pr_age_ms'], '04': ['main lines', 'red'], '05': ['intake', 'intake_ms'], '06': ['consumption engine', 'run_ms'], '07': ['tests', 'pass_rate'], '08': ['deploy', 'deploys'],
+};
 const typicals = new WeakMap<Tide, number>();
 /** A tide's typical busy/slots: the median of its buckets with data (NaN: none). Cached per fold. */
 export function typical(t: Tide): number {
@@ -117,8 +142,32 @@ export class Plant implements Layer {
 
   constructor(readonly f: Factory) {}
 
-  /** The static floor's key part: the walls' histories. */
-  get sig(): string { return `h${this.hist.ver}`; }
+  /** The hosted edge's length (world u, quantized: a 48th of the span) and the jobs it stands for
+   *  (fx-engine #5), laid with the bays. */
+  edgeDu = 0;
+  /** The length its running bays need (the live layer extends the edge to it). */
+  edgeNeed = 0;
+  edgeJobs = { gha: 0, all: 0, spanH: 0 };
+  /** The embers' gate bits (which stages are empty, which machines busy), with the bays. */
+  private emberBits = '';
+
+  /** The static floor's key part: the walls' histories, the hosted edge's length, the embers'
+   *  gate (each changes on a stage emptying or filling, a machine idling; never per tick). */
+  get sig(): string { return `h${this.hist.ver}|e${Math.round(this.edgeDu)}|${this.emberBits}`; }
+
+  /** The machine's footprint on the floor (u0, v0, du, dv): the hosted edge is one bay deep and as
+   *  long as its share of the jobs (fx-engine; lens.ts hits it). */
+  shell(gi: number): [number, number, number, number] {
+    const v0 = ENG_V0 + gi * ENG_STEP;
+    return this.isEdge(gi) ? [ENG_U0, v0, Math.max(10, this.edgeDu, this.edgeNeed), EDGE_DV] : [ENG_U0, v0, ENG_U1 - ENG_U0, ENG_DV];
+  }
+
+  /** Machine `gi` is the hosted EDGE (GitHub Actions: its runners' real slots when the fleet
+   *  reports runners, else a bay per running job only). */
+  isEdge(gi: number): boolean { return !!this.f.census.groups[gi]?.hosted; }
+
+  /** Where machine `gi`'s top ends (u): the hosted edge's length, else the machines' span. */
+  uEnd(gi: number): number { return this.isEdge(gi) ? ENG_U0 + Math.max(10, this.edgeDu) : ENG_U1; }
 
   /** From a source (app.ts's overview tick, never a draw): asks the machines' 24 h histories
    *  when due (once a minute each). */
@@ -131,7 +180,10 @@ export class Plant implements Layer {
     this.hist.pump(ms, clock);
   }
 
-  census(w: World): void { this.layoutBays(w); }
+  census(w: World): void {
+    this.layoutBays(w);
+    emberPass.begin(); // the floor pass (if one follows) asks for its embers; `floor` paints them
+  }
 
   // ---- events: a run queues at the intake, starts in its bay, finishes through the scanner
   // (a failure turns red there and rides the return conveyor up its spur to its group dock) ----
@@ -210,29 +262,101 @@ export class Plant implements Layer {
    *  we know of no slots, so a bay for each running job only, packed from the left (honest
    *  capacity: never an invented empty hosted bay). */
   private layoutBays(w: World): void {
-    void w;
     const c = this.f.census;
     if (this.layGroups === c.groups && this.layAt === c.at && this.layF === c.factor) return;
     this.layGroups = c.groups; this.layAt = c.at; this.layF = c.factor;
     const out: Bay[] = [];
     const span = ENG_U1 - ENG_U0 - 28;
+    // fx-engine (#1): a machine's busy bays in lane order (the docks', back → front), then by start
+    const G = this.f.w2.on ? floorGroups() : null;
+    const rank = new Map<string, number>();
+    if (G) G.lanes().forEach((l, i) => rank.set(l.id, i));
+    const rk = (id: string) => { const p = w.pipelines.get(id); return p && G ? rank.get(G.laneOfPipeline(p)) ?? 99 : 99; };
+    const st = (id: string) => { const p = w.pipelines.get(id); return p ? p.started ?? p.created : 0; };
+    const lane = (ids: string[]) => ids.slice().sort((a, b) => rk(a) - rk(b) || st(a) - st(b) || (a < b ? -1 : 1));
+    this.edgeDu = 0;
     c.groups.forEach((g, gi) => {
       const v0 = ENG_V0 + gi * ENG_STEP;
-      const ghost = g.hosted && !g.engines.length;
-      const n = ghost ? g.running.length : Math.max(1, g.slots, g.running.length);
-      const du = ghost ? Math.min(span / 6, span / Math.max(1, n)) : span / n;
+      const running = lane(g.running);
+      if (g.hosted) {
+        // the hosted edge, one bay deep: its runners' real slots (idle ones recede, as anywhere)
+        // when the fleet reports runners, else a bay per running job only, packed from its left;
+        // as long as GitHub Actions' share of the day's jobs, and as its slots need
+        const runners = g.engines.length > 0;
+        const n = runners ? Math.max(1, g.slots, running.length) : running.length;
+        const pitch = n > 0 ? Math.min(BAY_PITCH, (ENG_U1 - ENG_U0 - 12) / n) : BAY_PITCH;
+        for (let k = 0; k < n; k++) out.push({ u: ENG_U0 + 6 + k * pitch + 3, v: v0 + EDGE_BAY_V, du: pitch - 6, dv: EDGE_BAY_DV, group: gi, slot: k, pid: running[k] ?? '' });
+        const need = n ? 12 + n * pitch : 0;
+        this.edgeDu = Math.max(this.edgeLength(w), runners ? need : 0);
+        this.edgeNeed = runners ? 0 : need;
+        return;
+      }
+      const n = Math.max(1, g.slots, running.length);
+      const du = span / n;
       for (let k = 0; k < n; k++) {
-        out.push({ u: ENG_U0 + 14 + k * du + 3, v: v0 + 16, du: du - 6, dv: ENG_DV - 40, group: gi, slot: k, pid: g.running[k] ?? '' });
+        out.push({ u: ENG_U0 + 14 + k * du + 3, v: v0 + 16, du: du - 6, dv: ENG_DV - 40, group: gi, slot: k, pid: running[k] ?? '' });
       }
     });
     this.bays = out;
     for (const b of out) if (b.pid) this.lastBay.set(b.pid, b);
+    this.emberBits = this.gateBits();
+  }
+
+  /** The hosted edge's length on the static floor: GitHub Actions' share of the jobs the world
+   *  holds over the last 24 h, of the machines' span, in 48ths (a repaint only when the share moves
+   *  by one). Its running bays may need more: the live layer extends it (`edgeNeed`), so a job
+   *  starting never repaints the floor. */
+  private edgeLength(w: World): number {
+    const now = this.f.census.now, span = ENG_U1 - ENG_U0;
+    let all = 0, gha = 0, oldest = now;
+    for (const p of w.pipelines.values()) {
+      if (p.created < now - DAY_MS || p.created > now) continue;
+      all++;
+      if (p.lane === 'gha') gha++;
+      if (p.created < oldest) oldest = p.created;
+    }
+    this.edgeJobs = { gha, all, spanH: Math.max(1, Math.round((now - oldest) / 3_600_000)) };
+    const q = span / 48;
+    const share = all ? Math.round(((span * gha) / all) / q) * q : 0;
+    return Math.min(span, Math.max(share, gha ? q * 2 : 0));
+  }
+
+  /** The embers' gate as a key: only what the worst stage's ember reads (is the stage empty;
+   *  for the engine, which machines are busy), each flip held for GATE_HOLD_MS first, so a queue
+   *  that blinks between 0 and 1 never repaints the floor more than once in that time. */
+  private gateBits(): string {
+    const stage = this.f.w2.worst.stage;
+    let raw = stage ? `${stage}${this.stageEmpty(stage, true) ? '0' : '1'}` : '';
+    if (stage === '06') { raw += '.'; for (const g of this.f.census.groups) raw += g.running.length ? '1' : '0'; }
+    const now = this.f.census.at, h = this.gateHold;
+    if (raw !== h.want) { h.want = raw; h.since = now; }
+    if (h.want !== h.held && (now - h.since >= GATE_HOLD_MS || !h.held)) h.held = h.want;
+    return h.held;
+  }
+  private gateHold = { want: '', held: '', since: 0 };
+
+  /** A stage holds nothing (no ember may burn on it, REVIEW-iter2 #5/#6): as of the held gate
+   *  (the floor's last word), or `raw` now. */
+  private stageEmpty(n: string, raw = false): boolean {
+    if (!raw) { const h = this.gateHold.held; return h.startsWith(n) ? h[2] === '0' : this.stageEmpty(n, true); }
+    const c = this.f.census;
+    switch (n) {
+      case '02': return !c.phaseN.some((x) => x > 0);
+      case '04': return !c.rails.length;
+      case '05': return c.waiting <= 0;
+      case '06': return !c.groups.some((g) => g.running.length > 0);
+      case '07': return c.flow.finished <= 0;
+      case '08': return c.flow.deploys <= 0 && !c.deploying.length;
+      default: return false;
+    }
   }
 
   // ---- the static floor: the intake's frame, the machines and their walls, the gauges' bases,
   // the scanner, the return riser and spurs ----
   floor(fp: FloorPass): void {
     const g = fp.g, cam = this.f.cam, lo = fp.lo, add = fp.add;
+    // the trend embers the floor layer asked for (groupfloor.ts), under every extruded thing
+    emberPass.flush(g, cam, (a) => this.emberGate(a));
     // intake: the holding belt's frame (two rails along it), the gate's posts at the mouth
     add(INTAKE_U0, 256, () => {
       box(cam, g, INTAKE_U0, 258, INTAKE_U1 - INTAKE_U0, 4, 6);
@@ -246,6 +370,7 @@ export class Plant implements Layer {
     // the consumption engine: one machine per host, its wall on its back
     this.f.census.groups.forEach((gr, gi) => {
       const v0 = ENG_V0 + gi * ENG_STEP;
+      if (this.isEdge(gi)) { if (this.edgeDu > 0) add(ENG_U0, v0, () => this.hostedBlock(g, gr, v0, gi, lo), ENG_U0 + this.edgeDu, v0 + EDGE_DV, ENG_H + (gr.engines.length ? WALL_H : 0)); return; }
       add(ENG_U0, v0, () => this.engineBlock(g, gr, v0, gi, lo), ENG_U1 + 4, v0 + ENG_DV + 4, ENG_H + (gr.engines.length ? WALL_H : 0));
       if (gr.hosted) return;
       // cpu / mem gauges: two towers at the machine's right end
@@ -290,29 +415,51 @@ export class Plant implements Layer {
 
   private spurAt(l: { v: number; v1: number }): number { return Math.min(l.v1 - 2, l.v + Math.max(4, (l.v1 - l.v) * 0.55)); }
 
+  /** The hosted edge (fx-engine #5) from u0 to u1: a slim slab one bay deep, dark; GitHub-hosted
+   *  (not ours) its top edged dashed, self-hosted runners a machine's solid edge. */
+  private edgeBlock(g: Gfx, v0: number, u0: number, u1: number, ours = false): void {
+    const cam = this.f.cam;
+    if (u1 - u0 < 1) return;
+    box(cam, g, u0, v0, u1 - u0, EDGE_DV, ENG_H, ours ? M_TOP : EDGE_TOP, ours ? M_SIDE : '#111113', ours ? M_FRONT : '#0F0F11', ours ? M_EDGE : '#232326', g.hair * (ours ? 1.5 : 1));
+    if (ours) return;
+    g.dash(true, 4, 3);
+    g.begin_(); quad(cam, g, u0, v0, u1, v0 + EDGE_DV, ENG_H); g.stroke(EDGE_LINE, Math.max(1, g.hair * 1.5));
+    g.dash(false);
+  }
+
+  /** The hosted edge on the static floor: the slab; with runners, their idle slots receded and
+   *  their wall along the edge's back. Busy bays are the live layer's. */
+  private hostedBlock(g: Gfx, gr: Group, v0: number, gi: number, lo: boolean): void {
+    const ue = ENG_U0 + this.edgeDu, ours = gr.engines.length > 0;
+    this.edgeBlock(g, v0, ENG_U0, ue, ours);
+    if (!ours) return;
+    const rec = this.f.bA;
+    for (const b of this.bays) if (b.group === gi) rec.add(b.u, b.v, b.du, b.dv, 0, ENG_H);
+    rec.flushQuads(g, this.f.cam, IDLE_BAY);
+    this.wall(g, gr, v0, lo, ue);
+  }
+
+  /** The embers' gate (trendmarks.ts EmberPass): the stage's ember is dropped when the stage holds
+   *  nothing now; the engine's is a HALO hugging its busy machines only (a pool under them would
+   *  hide; never round an idle machine or the hosted edge's empty floor). A dock's ember stands. */
+  private emberGate(a: EmberAsk): EmberAsk | null {
+    if (!a.zone) return a;
+    const stage = this.f.w2.worst.stage;
+    if (!stage || this.stageEmpty(stage)) return null;
+    if (stage !== '06') return a;
+    const rects: number[] = [];
+    const busy = this.gateHold.held.split('.')[1] ?? '';
+    this.f.census.groups.forEach((g, gi) => {
+      if (busy ? busy[gi] !== '1' : !g.running.length) return;
+      const [mu, mv, mdu, mdv] = this.shell(gi);
+      // the static floor's footprint (the edge's live extension is not on it)
+      rects.push(mu, mv, this.isEdge(gi) ? ENG_U0 + Math.max(10, this.edgeDu) : mu + mdu, mv + mdv);
+    });
+    return rects.length ? { ...a, rects } : null;
+  }
+
   private engineBlock(g: Gfx, gr: Group, v0: number, gi: number, lo = false): void {
     const cam = this.f.cam;
-    if (gr.hosted) {
-      // hosted runners: a ghost machine (we know of no slots): dark, unfilled, a dashed outline;
-      // its bays are its running jobs only (the live layer)
-      box(cam, g, ENG_U0, v0, ENG_U1 - ENG_U0, ENG_DV, ENG_H, '#121214', '#0F0F11', '#0E0E10', '#1E1E21', g.hair);
-      g.dash(true, 4, 4);
-      g.begin_(); quad(cam, g, ENG_U0, v0, ENG_U1, v0 + ENG_DV, ENG_H); g.stroke('#4A4A4F', g.hair * 1.5);
-      g.begin_();
-      g.move(cam.x(ENG_U0, v0 + ENG_DV), cam.y(ENG_U0, v0 + ENG_DV, ENG_H)); g.line(cam.x(ENG_U0, v0 + ENG_DV), cam.y(ENG_U0, v0 + ENG_DV, 0));
-      g.line(cam.x(ENG_U1, v0 + ENG_DV), cam.y(ENG_U1, v0 + ENG_DV, 0)); g.line(cam.x(ENG_U1, v0), cam.y(ENG_U1, v0, 0)); g.line(cam.x(ENG_U1, v0), cam.y(ENG_U1, v0, ENG_H));
-      g.move(cam.x(ENG_U1, v0 + ENG_DV), cam.y(ENG_U1, v0 + ENG_DV, 0)); g.line(cam.x(ENG_U1, v0 + ENG_DV), cam.y(ENG_U1, v0 + ENG_DV, ENG_H));
-      g.stroke('#38383C', g.hair * 1.5);
-      g.dash(false);
-      // runners the fleet reports: their slots are real, idle ones recede as anywhere; and a wall
-      if (gr.engines.length) {
-        const rec = this.f.bA;
-        for (const b of this.bays) if (b.group === gi) rec.add(b.u, b.v, b.du, b.dv, 0, ENG_H);
-        rec.flushQuads(g, cam, '#131315');
-        this.wall(g, gr, v0, lo);
-      }
-      return;
-    }
     // the plinth, then the machine: calm faces, a red edge when the host is offline
     box(cam, g, ENG_U0 - 4, v0 - 4, ENG_U1 - ENG_U0 + 8, ENG_DV + 8, 3, '#131315', '#101012', '#0E0E10', F.floorEdge);
     box(cam, g, ENG_U0, v0, ENG_U1 - ENG_U0, ENG_DV, ENG_H, M_TOP, M_SIDE, M_FRONT, gr.online ? M_EDGE : M_OFF, g.hair * (gr.online ? 1.5 : 2.5));
@@ -323,19 +470,20 @@ export class Plant implements Layer {
     this.wall(g, gr, v0, lo);
   }
 
-  /** The machine's wall: a slab on its back edge, its face the last 24 h (planthist.ts). */
-  private wall(g: Gfx, gr: Group, v0: number, lo: boolean): void {
+  /** The machine's wall: a slab on its back edge, its face the last 24 h (planthist.ts); `ue`
+   *  where it ends (the hosted edge's is as long as the edge). */
+  private wall(g: Gfx, gr: Group, v0: number, lo: boolean, ue = ENG_U1): void {
     const cam = this.f.cam;
     const vf = v0 + WALL_V, z0 = ENG_H, z1 = ENG_H + WALL_H;
     // the slab: its top edge and right end, then the face
-    g.begin_(); poly(cam, g, [ENG_U0, v0, z1, ENG_U1, v0, z1, ENG_U1, vf, z1, ENG_U0, vf, z1]); g.fill(WALL_TOP);
-    g.begin_(); poly(cam, g, [ENG_U1, v0, z0, ENG_U1, vf, z0, ENG_U1, vf, z1, ENG_U1, v0, z1]); g.fill('#141416');
-    g.begin_(); poly(cam, g, [ENG_U0, vf, z0, ENG_U1, vf, z0, ENG_U1, vf, z1, ENG_U0, vf, z1]); g.fill(WALL_FACE);
-    g.begin_(); poly(cam, g, [ENG_U0, vf, z0, ENG_U1, vf, z0, ENG_U1, vf, z1, ENG_U0, vf, z1]); g.stroke(gr.online ? WALL_EDGE : M_OFF, g.hair * (gr.online ? 1.2 : 2.2));
+    g.begin_(); poly(cam, g, [ENG_U0, v0, z1, ue, v0, z1, ue, vf, z1, ENG_U0, vf, z1]); g.fill(WALL_TOP);
+    g.begin_(); poly(cam, g, [ue, v0, z0, ue, vf, z0, ue, vf, z1, ue, v0, z1]); g.fill('#141416');
+    g.begin_(); poly(cam, g, [ENG_U0, vf, z0, ue, vf, z0, ue, vf, z1, ENG_U0, vf, z1]); g.fill(WALL_FACE);
+    g.begin_(); poly(cam, g, [ENG_U0, vf, z0, ue, vf, z0, ue, vf, z1, ENG_U0, vf, z1]); g.stroke(gr.online ? WALL_EDGE : M_OFF, g.hair * (gr.online ? 1.2 : 2.2));
     const t = this.hist.tide(gr.id);
     // the chart takes the whole face (the slab cannot grow: past WALL_H it would hide the top of
     // the machine behind it)
-    const ua = ENG_U0 + 3, ub = ENG_U1 - 3, za = z0 + 1.1, zb = z1 - 1.1;
+    const ua = ENG_U0 + 3, ub = ue - 3, za = z0 + 1.1, zb = z1 - 1.1;
     const U = (x: number) => ua + (ub - ua) * x, Z = (y: number) => za + (zb - za) * y;
     const P = (x: number, y: number): [number, number] => [cam.x(U(x), vf), cam.y(U(x), vf, Z(y))];
     // the time axis: a tick every 6 h (the right end is now); the base solid under data, dotted
@@ -445,19 +593,101 @@ export class Plant implements Layer {
     if (c.skeleton) return;
     c.groups.forEach((gr, gi) => {
       if (!gr.engines.length) return;
-      const vf = ENG_V0 + gi * ENG_STEP + WALL_V;
+      const vf = ENG_V0 + gi * ENG_STEP + WALL_V, ue = this.uEnd(gi);
       // the wall as 8 boxes along it (a sheared panel: one box would cover the machine behind)
       for (let k = 0; k < 8; k++) {
-        const ua = ENG_U0 + ((ENG_U1 - ENG_U0) * k) / 8, ub = ENG_U0 + ((ENG_U1 - ENG_U0) * (k + 1)) / 8;
+        const ua = ENG_U0 + ((ue - ENG_U0) * k) / 8, ub = ENG_U0 + ((ue - ENG_U0) * (k + 1)) / 8;
         const x0 = cam.x(ua, vf), x1 = cam.x(ub, vf), y0 = cam.y(ua, vf, ENG_H + WALL_H), y1 = cam.y(ub, vf, ENG_H);
         this.f.hit(x0, Math.min(y0, y1), x1 - x0, Math.abs(y1 - y0), 'machine', String(gi), `${gr.name} · 24 h`);
       }
     });
+    this.emberHits();
+  }
+
+  // ---- the embers' hover (fx-engine #6): each glow says what is worse than usual ----
+  private ehKey = '';
+  private ehBoxes: { x: number; y: number; w: number; h: number; kind: string; id: string; label: string }[] = [];
+
+  /** Hit boxes over each painted ember's glow, at the BOTTOM of the hit list (anything standing
+   *  on the glow answers first; the bare glowing floor says why it glows). */
+  private emberHits(): void {
+    const P = emberPass.painted, cam = this.f.cam;
+    if (!P.length) return;
+    const key = `${cam.ver}|${P.length}|${P[0]!.k}|${this.gateHold.held}|${this.edgeDu}|${insights().ver('trends')}`;
+    if (key !== this.ehKey) {
+      this.ehKey = key;
+      this.ehBoxes = [];
+      for (const a of P) {
+        const [id, label] = this.emberWords(a);
+        if (!label) continue;
+        if (a.rects) {
+          // a halo: its band round each rectangle, as slices along v (the machine's own hit is over
+          // its middle, so the bare glowing floor round it answers)
+          const R = a.rects, d = HALO_D;
+          for (let i = 0; i + 3 < R.length; i += 4) {
+            const u0 = R[i]! - d, v0 = R[i + 1]! - d, u1 = R[i + 2]! + d, v1 = R[i + 3]! + d;
+            for (let s = 0; s < 6; s++) {
+              const va = v0 + ((v1 - v0) * s) / 6, vb = v0 + ((v1 - v0) * (s + 1)) / 6;
+              const xs = [cam.x(u0, va), cam.x(u1, va), cam.x(u0, vb), cam.x(u1, vb)], ys = [cam.y(u0, va, a.z), cam.y(u1, va, a.z), cam.y(u0, vb, a.z), cam.y(u1, vb, a.z)];
+              const x0 = Math.min(...xs), y0 = Math.min(...ys);
+              this.ehBoxes.push({ x: x0, y: y0, w: Math.max(...xs) - x0, h: Math.max(...ys) - y0, kind: 'ember', id, label });
+            }
+          }
+          continue;
+        }
+        const cu = a.zone ? (a.u0 + a.u1) / 2 : a.u0, cv = a.zone ? (a.v0 + a.v1) / 2 : a.v0;
+        const ru = (a.zone ? (a.u1 - a.u0) / 2 : a.r) * 0.8, rv = (a.zone ? (a.v1 - a.v0) / 2 : a.r * 0.8) * 0.8;
+        // the glow's inner ellipse as slices along v, each a floor rectangle's screen box
+        for (let i = 0; i < 5; i++) {
+          const va = cv - rv + (2 * rv * i) / 5, vb = va + (2 * rv) / 5, vm = (va + vb) / 2;
+          const hw = ru * Math.sqrt(Math.max(0, 1 - ((vm - cv) / rv) ** 2));
+          if (hw < 2) continue;
+          const xs = [cam.x(cu - hw, va), cam.x(cu + hw, va), cam.x(cu - hw, vb), cam.x(cu + hw, vb)], ys = [cam.y(cu - hw, va, a.z), cam.y(cu + hw, va, a.z), cam.y(cu - hw, vb, a.z), cam.y(cu + hw, vb, a.z)];
+          const x0 = Math.min(...xs), y0 = Math.min(...ys);
+          this.ehBoxes.push({ x: x0, y: y0, w: Math.max(...xs) - x0, h: Math.max(...ys) - y0, kind: 'ember', id, label });
+        }
+      }
+    }
+    // the bottom of the frame's hit list (Factory keeps it private; `hitAt` reads it from the end,
+    // so the first entries answer last): reached by name, and skipped if it is ever not there
+    const list = (this.f as unknown as { hits?: unknown }).hits;
+    if (this.ehBoxes.length && Array.isArray(list)) list.unshift(...this.ehBoxes);
+  }
+
+  /** What an ember says: [its id, one line]: the stage's metric now against its typical, or the
+   *  dock's group's failures an hour. */
+  private emberWords(a: EmberAsk): [string, string] {
+    const ins = insights();
+    const fmt = (key: MetricKey, v: number | null): string => {
+      if (v === null || v === undefined || v !== v) return '?';
+      switch (key) {
+        case 'red': return `${Math.round(v)} red`;
+        case 'pass_rate': return `${Math.round(v * 100)} % pass`;
+        case 'intake_ms': case 'run_ms': case 'pr_age_ms': return dur(v);
+        case 'failures': return `${Math.round(v * 10) / 10} failed/h`;
+        default: return `${Math.round(v * 10) / 10}/h`;
+      }
+    };
+    if (a.zone) {
+      const st = this.f.w2.worst.stage, s = EMBER_STAGE[st];
+      if (!s) return ['', ''];
+      const m = metricOf(ins.trend('fleet'), s[1]);
+      const now = m ? m.h1 ?? m.h24 : null, ty = typicalOf(m, 'fleet', s[1]);
+      return [`stage:${st}`, `${s[0]} worse than usual: ${fmt(s[1], now)} vs ~${fmt(s[1], ty)} (7 d)`];
+    }
+    // a dock's: its lane, by where the glow sits
+    let best: { id: string; v: number } | null = null;
+    for (const l of this.lanes()) if (!best || Math.abs(l.v - a.v0) < Math.abs(best.v - a.v0)) best = l;
+    if (!best) return ['', ''];
+    const lane = this.f.w2.on ? floorGroups().lane(best.id) : undefined;
+    const m = metricOf(lane ? floorGroups().counts().lanes.get(best.id)?.trend : null, 'failures');
+    const ty = typicalOf(m, best.id, 'failures');
+    return [`lane:${best.id}`, `${lane?.short ?? best.id} failing more than usual: ${fmt('failures', m ? m.h1 ?? m.h24 : null)} vs ~${fmt('failures', ty)}`];
   }
 
   // ---- the live layer: the intake's queue and gate, the lit bays, the gauges, the split beam,
   // the spurs' returns ----
-  private litB = new Map<string, { floor: BoxBatch; rim: BoxBatch }>();
+  private litB = new Map<string, { floor: BoxBatch; rim: BoxBatch; tick: BoxBatch }>();
   private spurKey = -1;
   private spurN = new Map<string, number>();
 
@@ -474,7 +704,12 @@ export class Plant implements Layer {
     st.bays = 0;
     const F_ = c.factor;
     const G = this.f.w2.on ? floorGroups() : null;
-    for (const v of this.litB.values()) { v.floor.n = 0; v.rim.n = 0; }
+    for (const v of this.litB.values()) { v.floor.n = 0; v.rim.n = 0; v.tick.n = 0; }
+    // the hosted edge, longer while its running bays need it (fx-engine #5: the floor keeps its
+    // share's length, so a job starting never repaints the static floor)
+    c.groups.forEach((_gr, gi) => {
+      if (this.isEdge(gi) && this.edgeNeed > this.edgeDu) this.edgeBlock(g, ENG_V0 + gi * ENG_STEP, ENG_U0 + this.edgeDu, ENG_U0 + this.edgeNeed);
+    });
     for (const b of this.bays) {
       const gr = c.groups[b.group];
       const virtual = F_ > 1 && !b.pid && !gr?.hosted && b.slot >= Math.round((gr?.slots ?? 0) / F_) && this.f.stress.busy(b.group, b.slot, t);
@@ -484,9 +719,13 @@ export class Plant implements Layer {
       const p = b.pid ? w.pipelines.get(b.pid) : undefined;
       const hex = p && G ? G.hex(G.laneOfPipeline(p)) : '#8A7146';
       let L = this.litB.get(hex);
-      if (!L) this.litB.set(hex, (L = { floor: new BoxBatch(), rim: new BoxBatch() }));
+      if (!L) this.litB.set(hex, (L = { floor: new BoxBatch(), rim: new BoxBatch(), tick: new BoxBatch() }));
       L.floor.add(b.u, b.v, b.du, b.dv, 0, ENG_H);
       L.rim.add(b.u, b.v, b.du, b.dv, 0, ENG_H);
+      // fx-engine (#1): the lip's hue tick (its group), the progress rail after it
+      const tk = p && G ? Math.min(TICK_DU, b.du * 0.22) : 0;
+      if (tk) L.tick.add(b.u, b.v + b.dv + 4, tk, 5, 0, ENG_H);
+      const pu = b.u + (tk ? tk + 1 : 0), pdu = b.du - (tk ? tk + 1 : 0);
       let u01: number, over = false;
       if (virtual) u01 = this.f.stress.progress(b.group, b.slot, t);
       else {
@@ -495,8 +734,8 @@ export class Plant implements Layer {
         u01 = exp > 0 ? clamp(el / exp, 0.03, 1) : 0.5;
         over = exp > 0 && el > exp * 1.5;
       }
-      if (over) { progRed.push(b.u, b.v + b.dv + 4, b.du * u01); lips.add(b.u, b.v + b.dv - 1.2, b.du, 1.2, 0, ENG_H); }
-      else if (!virtual || q < 4) prog.add(b.u, b.v + b.dv + 4, b.du * u01, 5, 0, ENG_H);
+      if (over) { progRed.push(pu, b.v + b.dv + 4, pdu * u01); lips.add(b.u, b.v + b.dv - 1.2, b.du, 1.2, 0, ENG_H); }
+      else if (!virtual || q < 4) prog.add(pu, b.v + b.dv + 4, pdu * u01, 5, 0, ENG_H);
       // the job's crate rides the bay with its progress
       crates.crate(b.u + 6 + (b.du - 12) * u01, b.v + b.dv / 2, Math.min(10, b.du * 0.8), ENG_H - 3);
       if (!virtual) {
@@ -512,6 +751,7 @@ export class Plant implements Layer {
       if (!lt) this.litCache.set(hex, (lt = lit(hex)));
       L.floor.flushQuads(g, cam, lt.floor);
       if (bayFine) L.rim.flushQuads(g, cam, withAlpha(lt.rim, rimA), true, g.hair * 2); else L.rim.n = 0;
+      L.tick.flushQuads(g, cam, hex);
     }
     // the progress rails: a dark track under each busy bay's lip, amber elapsed / expected, red over
     prog.flushQuads(g, cam, C.packet);
@@ -524,6 +764,74 @@ export class Plant implements Layer {
     this.drawGauges(g);
     this.drawBeam(g);
     this.drawReturns(g, q, t);
+    this.heapMarks(g, fr);
+  }
+
+  // ---- the return conveyor's heaps: the tallest named, the biggest's arcs to its docks ----
+  private arcEnds: number[] = [];
+  private arcKey = '';
+
+  /** fx-engine (REVIEW-iter2 #9, wow 3): the conveyor's heaps are lens.ts's (`drawParked` lays and
+   *  paints them); here, after the label placer resets, the tallest is named (`signature · N
+   *  repos`: the same words and number as the coffee check's cluster callout; the others on hover),
+   *  and on every beat it fires thin red arcs to every group dock it hit: one lane lit is a team's
+   *  hotspot, many lanes a shared cause. No click needed. Not under a lens (it tells its own). */
+  private heapMarks(g: Gfx, fr: LiveFrame): void {
+    const f = this.f, cam = f.cam;
+    const heaps = heapsOf(f.lens.parked);
+    if (!heaps?.length || f.lens.topLens || f.census.skeleton) return;
+    const top = tallest(heaps);
+    if (!top) return;
+    const mid = (top.u0 + top.u1) / 2;
+    const hx = cam.x(mid, RETURN_V - 4), hy = cam.y(mid, RETURN_V - 4, 1.2 + top.h);
+    if (fr.q < 4) this.arcs(g, top, hx, hy, fr.t);
+    const name = `${shortStep(top.step)} · ${top.repos} repo${top.repos === 1 ? '' : 's'}`;
+    const wv = g.width(name, SMALL);
+    const at = f.placeAt(Math.round(hx - wv / 2), Math.round(hy - 7), wv, 13, 4, true);
+    if (!at) return;
+    const [x, y] = at;
+    if (y < hy - 22 || Math.abs(x + wv / 2 - hx) > wv / 2 + 6) { g.begin_(); g.move(hx, hy - 2); g.line(Math.min(Math.max(hx, x + 2), x + wv - 2), y + 3); g.stroke(withAlpha(C.red, 0.6), 1); }
+    g.fillRect(x - 3, y - 11, wv + 6, 15, withAlpha(C.canvas, 0.82));
+    g.text(name, x, y, C.redText, SMALL);
+  }
+
+  /** The biggest heap's arcs: one per group dock its repos belong to, from the heap's top to the
+   *  dock's door, standing faint; on each beat a bright stretch runs along them heap → dock over
+   *  the beat's first 0.6 s (reduced motion: the standing arcs only). */
+  private arcs(g: Gfx, h: Heap, x0: number, y0: number, t: number): void {
+    const f = this.f, cam = f.cam, w = f.world;
+    const key = `${cam.ver}|${h.cl}|${h.repoList.length}|${this.f.floor.lanes.ver}`;
+    if (key !== this.arcKey) {
+      this.arcKey = key;
+      const G = f.w2.on ? floorGroups() : null;
+      const keys = new Set<string>();
+      for (const r of h.repoList) keys.add(G ? G.laneOfRepo(r) : w.orgOf(r));
+      this.arcEnds = [];
+      for (const l of this.lanes()) if (keys.has(l.id)) this.arcEnds.push(cam.x(DOCK_U1 + 1, l.v), cam.y(DOCK_U1 + 1, l.v, 6));
+    }
+    const E = this.arcEnds;
+    if (!E.length) return;
+    // each arc one quadratic Bézier (two calls); its s0..s1 stretch is a Bézier too (de Casteljau)
+    const path = (x1: number, y1: number, s0: number, s1: number) => {
+      const lift = clamp(Math.hypot(x1 - x0, y1 - y0) * 0.22, 24, 150);
+      const cx = (x0 + x1) / 2, cy = Math.max(84, Math.min(y0, y1) - lift);
+      const at = (s: number, p0: number, p1: number, p2: number) => (1 - s) * (1 - s) * p0 + 2 * (1 - s) * s * p1 + s * s * p2;
+      const ax = at(s0, x0, cx, x1), ay = at(s0, y0, cy, y1), bx = at(s1, x0, cx, x1), by = at(s1, y0, cy, y1);
+      // the control point of the stretch: the tangent at s0 met with the one at s1
+      const qx = (1 - s0) * ((1 - s1) * x0 + s1 * cx) + s0 * ((1 - s1) * cx + s1 * x1);
+      const qy = (1 - s0) * ((1 - s1) * y0 + s1 * cy) + s0 * ((1 - s1) * cy + s1 * y1);
+      g.move(ax, ay); g.ctx.quadraticCurveTo(qx, qy, bx, by); g.ops++;
+    };
+    g.begin_();
+    for (let i = 0; i < E.length; i += 2) path(E[i]!, E[i + 1]!, 0, 1);
+    g.stroke(withAlpha(C.red, f.reduced ? 0.34 : 0.18), 1);
+    if (f.reduced) return;
+    const b = beat(t);
+    if (b >= 0.6) return;
+    const k = b / 0.6, e1 = 1 - (1 - k) * (1 - k), e0 = Math.max(0, e1 - 0.3);
+    g.begin_();
+    for (let i = 0; i < E.length; i += 2) path(E[i]!, E[i + 1]!, e0, e1);
+    g.stroke(withAlpha(C.red, 0.9 - 0.45 * k), 1.4);
   }
 
   /** The intake: a ribbon per lane under its queued crates (one per waiting run, the oldest at
@@ -650,6 +958,7 @@ export class Plant implements Layer {
    *  floated. True: handled (drawn or dropped). */
   label(g: Gfx, gr: Group, gi: number): boolean {
     const v0 = ENG_V0 + gi * ENG_STEP;
+    if (this.isEdge(gi) && !this.edgeDu && !this.edgeNeed) return true; // no hosted job in the day: no edge, no name
     const name = gr.hosted ? 'GitHub Actions' : gr.name;
     const wv = g.width(name, SMALL, true);
     const at = this.nameSpots(gi, wv, NAME_H).find(([x, y]) => this.f.placeAt(x, y, wv, NAME_H, 0, false));
@@ -669,7 +978,7 @@ export class Plant implements Layer {
    *  edge. Every box stays on the shell and inside the floor's visible area; none: []. */
   nameSpots(gi: number, w: number, h: number): [number, number][] {
     const cam = this.f.cam, c = this.f.census;
-    const v0 = ENG_V0 + gi * ENG_STEP, vf = v0 + ENG_DV;
+    const v0 = ENG_V0 + gi * ENG_STEP, vf = v0 + (this.isEdge(gi) ? EDGE_DV : ENG_DV); // fx-engine: the hosted edge's front (its name may run on past its end)
     const slope = UY / UX; // the front edges fall this much (px per px) to the right
     const xl = cam.x(ENG_U0, vf), xr = cam.x(ENG_U1, vf);
     const faceTop = cam.y(ENG_U0, vf, ENG_H);
@@ -737,7 +1046,7 @@ export class Plant implements Layer {
     const v0 = ENG_V0 + gi * ENG_STEP, gr = c.groups[gi]!;
     // everything else dims to ~15 %; the machine's wall comes back crisp
     g.fillRect(0, 0, cam.W, cam.H, withAlpha(C.canvas, 0.85));
-    if (gr.engines.length) this.wall(g, gr, v0, false);
+    if (gr.engines.length) this.wall(g, gr, v0, false, this.uEnd(gi));
     // the opened bay: the machine's top as one panel, edged and banded in the job's group hue
     const hex = this.f.w2.on ? floorGroups().hex(floorGroups().laneOfPipeline(p)) : '#8A7146';
     // the time axis: the run's start → now (or its expected end, or its last step), a margin
@@ -900,6 +1209,13 @@ export class Tracks implements Layer {
     if (rings) g.stroke(withAlpha(C.packet, 0.9), 1);
     dep.flush(g, cam, F.crateTop, F.crateSide, F.crateFront, '', 1, q >= 2 ? 1 : 3);
   }
+}
+
+/** A failure signature, short enough to sit over its heap (≤ 22 characters, cut at a word). */
+function shortStep(step: string): string {
+  if (step.length <= 22) return step;
+  const cut = Math.max(step.lastIndexOf(' / ', 22), step.lastIndexOf('/', 22), step.lastIndexOf(' ', 22));
+  return cut > 6 ? `${step.slice(0, cut).trim()}…` : `${step.slice(0, 21)}…`;
 }
 
 /** The plant's 24 h histories reach back this far (the wall's span). */
