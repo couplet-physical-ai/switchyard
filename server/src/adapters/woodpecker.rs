@@ -40,6 +40,9 @@ pub struct WpRepo {
 pub struct WpStep {
     #[serde(default)]
     pub id: u64,
+    /// Position in the pipeline (Woodpecker's step URLs use it).
+    #[serde(default)]
+    pub pid: u64,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -58,6 +61,8 @@ pub struct WpStep {
 pub struct WpWorkflow {
     #[serde(default)]
     pub id: u64,
+    #[serde(default)]
+    pub pid: u64,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -250,11 +255,7 @@ impl Mapper {
         } else {
             None
         };
-        let branch = if event == PipelineEvent::Tag {
-            crate::links::tag_of(&p.git_ref)
-                .map(str::to_string)
-                .unwrap_or_else(|| p.branch.clone())
-        } else if event == PipelineEvent::PullRequest {
+        let branch = if event == PipelineEvent::PullRequest {
             p.refspec
                 .split(':')
                 .next()
@@ -292,9 +293,18 @@ impl Mapper {
                             .then_some(s.exit_code),
                         cached: None,
                         cluster: None,
-                        url: (s.id != 0).then(|| crate::links::rr_step(repo_id, p.number, s.id)),
+                        url: (s.pid != 0).then(|| crate::links::wp_step(repo_id, p.number, s.pid)),
                     })
                     .collect(),
+                url: Some(
+                    w.children
+                        .iter()
+                        .flatten()
+                        .map(|s| s.pid)
+                        .find(|&pid| pid != 0)
+                        .map(|pid| crate::links::wp_step(repo_id, p.number, pid))
+                        .unwrap_or_else(|| crate::links::wp_run(repo_id, p.number)),
+                ),
             })
             .collect();
         let state = map_state(&p.status);
@@ -320,6 +330,9 @@ impl Mapper {
             number: p.number,
             sha: p.commit.clone(),
             branch,
+            git_ref: (event == PipelineEvent::Tag)
+                .then(|| crate::links::tag_of(&p.git_ref).map(str::to_string))
+                .flatten(),
             event,
             state,
             created: p.created * 1000,
@@ -413,7 +426,7 @@ pub fn engines_fact(
                     && !a.no_schedule,
                 running: r,
                 agents: Vec::new(),
-                url: Some(crate::links::wp_agents()),
+                url: Some(crate::links::engine_page(agent_host(&a.name).as_deref())),
             }
         })
         .collect();

@@ -118,10 +118,12 @@ fn pipeline() -> impl Strategy<Value = Fact> {
                                 cluster: None,
                                 url: None,
                             }],
+                            url: None,
                         })
                         .collect(),
                     url: "https://ci.example/x".into(),
                     links: Default::default(),
+                    git_ref: None,
                 })
             },
         )
@@ -594,6 +596,7 @@ fn expected_durations() {
             workflows: vec![],
             url: String::new(),
             links: Default::default(),
+            git_ref: None,
         })
     };
     // Flush; if `id` was re-sent (upsert or patch), its current value.

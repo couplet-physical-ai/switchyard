@@ -307,6 +307,7 @@ pub fn engines_from_cicd(v: &Value, now: Ms) -> Vec<Fact> {
                         .collect()
                 })
                 .unwrap_or_default();
+            let url = Some(crate::links::engine_page(Some(&label)));
             Some(Engine {
                 id: format!("dagger:{label}"),
                 kind: EngineKind::Dagger,
@@ -326,7 +327,7 @@ pub fn engines_from_cicd(v: &Value, now: Ms) -> Vec<Fact> {
                 last_seen: Some(now),
                 running: Vec::new(),
                 agents,
-                url: Some(crate::links::rr_engine()),
+                url,
             })
         })
         .collect();

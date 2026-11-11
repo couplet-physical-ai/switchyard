@@ -1662,14 +1662,13 @@ impl Store {
         if !p.sha.is_empty() {
             out.commit = Some(l::gh_commit(&p.repo, &p.sha));
         }
-        let real_branch = !p.branch.is_empty() && !p.branch.starts_with("pull/");
-        match p.event {
-            PipelineEvent::Tag if real_branch => {
-                out.release = Some(l::gh_release(&p.repo, &p.branch))
-            }
-            PipelineEvent::Tag => {}
-            _ if real_branch => out.branch = Some(l::gh_branch(&p.repo, &p.branch)),
-            _ => {}
+        if let Some(t) = p.git_ref.as_deref().filter(|t| !t.is_empty()) {
+            out.release = Some(l::gh_release(&p.repo, t));
+        } else if p.event != PipelineEvent::Tag
+            && !p.branch.is_empty()
+            && !p.branch.starts_with("pull/")
+        {
+            out.branch = Some(l::gh_branch(&p.repo, &p.branch));
         }
         if let Some(n) = p.pr {
             out.pr = Some(l::gh_pr(&p.repo, n));
@@ -1722,7 +1721,7 @@ impl Store {
         let mut p = p.clone();
         p.queue_pos = None;
         p.expected_ms = None;
-        p.links = self.pipeline_links(&p);
+        p.links = Box::new(self.pipeline_links(&p));
         self.mark_failures(&mut p);
         if p.state.is_active() {
             let (event, deploy) = (p.event, p.deploy);
@@ -2251,8 +2250,8 @@ impl Store {
             runtime: meta.runtime.clone(),
             team: meta.team.clone(),
             note: health.and_then(|h| h.note.clone()),
+            status_url: meta.status_url.clone(),
             links: AppLinks {
-                status: meta.status_url.clone(),
                 logs: meta.logs_url.clone(),
                 repo: meta.repo.as_deref().map(crate::links::gh_repo),
             },

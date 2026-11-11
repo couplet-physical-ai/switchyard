@@ -618,3 +618,54 @@ fn rfc3339_formats_and_round_trips() {
         assert_eq!(parse_time(&rfc3339(t)), Some(t), "{t}");
     }
 }
+
+#[test]
+fn deep_links_open_roadrunner_on_the_step() {
+    // ember-api #53: repo 38; workflow `ci` (pid 1) has clone (pid 3), tests (4), …
+    let e = &wp_events()[2];
+    let facts = wp_mapper().facts(&e.repo.full_name, e.repo.id, &e.pipeline);
+    let p = pipeline(&facts);
+    let ci = wf(p, "ci");
+    assert_eq!(
+        step(ci, "tests").url.as_deref(),
+        Some("https://ci.dev.example.com/repos/38/pipeline/53/4")
+    );
+    assert_eq!(
+        ci.url.as_deref(),
+        Some("https://ci.dev.example.com/repos/38/pipeline/53/3"),
+        "a workflow opens on its first step"
+    );
+    assert_eq!(p.git_ref, None, "only tag runs carry a ref");
+    // A tag run: the tag, and the branch as Woodpecker reports it.
+    let mut tag = e.pipeline.clone();
+    tag.event = "tag".into();
+    tag.git_ref = "refs/tags/v1.4.0".into();
+    let facts = wp_mapper().facts(&e.repo.full_name, e.repo.id, &tag);
+    let t = pipeline(&facts);
+    assert_eq!(t.event, PipelineEvent::Tag);
+    assert_eq!(t.git_ref.as_deref(), Some("v1.4.0"));
+    assert_eq!(t.branch, e.pipeline.branch);
+}
+
+#[test]
+fn engines_link_to_their_machine_page() {
+    let agents: Vec<WpAgent> = serde_json::from_value(serde_json::json!([
+        {"id": 1, "name": "dagger-ci-153-1", "capacity": 3, "last_contact": 1},
+        {"id": 3, "name": "dagger-ci-154-1", "capacity": 3, "last_contact": 1},
+        {"id": 9, "name": "rr-mac-mini-1", "capacity": 1, "last_contact": 1}
+    ]))
+    .unwrap();
+    let q: WpQueueInfo = serde_json::from_value(serde_json::json!({})).unwrap();
+    let l = engines_fact(&agents, &q, &BTreeMap::new(), 2_000);
+    let url = |id: &str| {
+        l.engines
+            .iter()
+            .find(|e| e.id == id)
+            .and_then(|e| e.url.clone())
+            .unwrap()
+    };
+    // The console's engine page shows VM 153 (its engine and the agents on it).
+    assert_eq!(url("wp-agent-1"), "https://cicd.apps.example.com/engine");
+    assert_eq!(url("wp-agent-3"), "https://ci.dev.example.com/admin/agents");
+    assert_eq!(url("wp-agent-9"), "https://ci.dev.example.com/admin/agents");
+}

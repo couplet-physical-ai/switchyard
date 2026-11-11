@@ -1,6 +1,7 @@
 //! Deep links: every URL a client opens is built here, from configured bases, so the
 //! client never hardcodes a host. Bases come from the environment (`GITHUB_WEB_URL`,
-//! `WOODPECKER_PUBLIC_URL`, `CICD_URL`) and are reported in `meta.links`.
+//! `WOODPECKER_PUBLIC_URL`, `CICD_URL`, `CICD_ENGINE_HOST`) and are reported in
+//! `meta.links`.
 
 use std::sync::OnceLock;
 
@@ -12,8 +13,13 @@ pub struct Bases {
     pub github: String,
     /// The Woodpecker web UI.
     pub woodpecker: String,
+    /// Roadrunner (= the Woodpecker web UI; the name clients show).
+    pub roadrunner: String,
     /// The Roadrunner console (cicd).
     pub cicd: String,
+    /// The machine the console's `/engine` page shows (`Engine.host`).
+    #[serde(skip)]
+    pub engine_host: String,
 }
 
 impl Default for Bases {
@@ -21,7 +27,9 @@ impl Default for Bases {
         Bases {
             github: "https://github.com".into(),
             woodpecker: "https://ci.dev.example.com".into(),
+            roadrunner: "https://ci.dev.example.com".into(),
             cicd: "https://cicd.apps.example.com".into(),
+            engine_host: "VM 153".into(),
         }
     }
 }
@@ -31,10 +39,13 @@ static BASES: OnceLock<Bases> = OnceLock::new();
 /// Set the bases once, at boot (later calls are ignored).
 pub fn set(b: Bases) {
     let trim = |s: String| s.trim_end_matches('/').to_string();
+    let woodpecker = trim(b.woodpecker);
     let _ = BASES.set(Bases {
         github: trim(b.github),
-        woodpecker: trim(b.woodpecker),
+        roadrunner: woodpecker.clone(),
+        woodpecker,
         cicd: trim(b.cicd),
+        engine_host: b.engine_host,
     });
 }
 
@@ -87,6 +98,22 @@ pub fn gh_run(repo: &str, run: u64) -> String {
     format!("{}/{repo}/actions/runs/{run}", bases().github)
 }
 
+/// The id of a GitHub Actions job page (`…/actions/runs/{run}/job/{id}`).
+pub fn gh_job_id(url: &str) -> Option<u64> {
+    let i = url.find("/job/")? + "/job/".len();
+    url[i..]
+        .split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// A job page opened on one of its steps (1-based, GitHub's numbering).
+pub fn gh_job_step(job_url: &str, step: u32) -> String {
+    let base = job_url.split('#').next().unwrap_or(job_url);
+    format!("{base}#step:{step}:1")
+}
+
 // ---------------------------------------------------------------- Roadrunner
 
 /// The Roadrunner console's page for one run.
@@ -94,18 +121,18 @@ pub fn rr_run(repo_id: u64, number: u64) -> String {
     format!("{}/pipelines/{repo_id}/{number}", bases().cicd)
 }
 
-/// The run page opened on one step (its log).
-pub fn rr_step(repo_id: u64, number: u64, step_id: u64) -> String {
-    format!("{}?tab=steps&step={step_id}", rr_run(repo_id, number))
-}
-
 pub fn rr_repo(repo_id: u64) -> String {
     format!("{}/repos/{repo_id}", bases().cicd)
 }
 
-/// The Dagger engine VM page.
-pub fn rr_engine() -> String {
-    format!("{}/engine", bases().cicd)
+/// A machine's page: the console's engine page for the machine it shows (its Dagger
+/// engine and the agents on it), else Woodpecker's agents (it has no page per agent).
+pub fn engine_page(host: Option<&str>) -> String {
+    if host.is_some_and(|h| !h.is_empty() && h == bases().engine_host) {
+        format!("{}/engine", bases().cicd)
+    } else {
+        wp_agents()
+    }
 }
 
 /// GitHub Actions runner scale sets.
@@ -115,6 +142,11 @@ pub fn rr_runners() -> String {
 
 pub fn wp_run(repo_id: u64, number: u64) -> String {
     format!("{}/repos/{repo_id}/pipeline/{number}", bases().woodpecker)
+}
+
+/// Roadrunner's page for one step (its log): Woodpecker selects a step by its `pid`.
+pub fn wp_step(repo_id: u64, number: u64, pid: u64) -> String {
+    format!("{}/{pid}", wp_run(repo_id, number))
 }
 
 pub fn wp_repo(repo_id: u64) -> String {
@@ -156,7 +188,31 @@ mod tests {
             gh_pr_checks("acme/api", 7),
             "https://github.com/acme/api/pull/7/checks"
         );
-        assert!(rr_step(413, 135, 9001).ends_with("/pipelines/413/135?tab=steps&step=9001"));
+        assert_eq!(
+            wp_step(413, 135, 4),
+            "https://ci.dev.example.com/repos/413/pipeline/135/4"
+        );
+        let job = "https://github.com/acme/api/actions/runs/1/job/22";
+        assert_eq!(gh_job_id(job), Some(22));
+        assert_eq!(gh_job_id(&gh_job_step(job, 3)), Some(22));
+        assert_eq!(gh_job_step(job, 3), format!("{job}#step:3:1"));
+        assert_eq!(
+            gh_job_step(&gh_job_step(job, 3), 4),
+            format!("{job}#step:4:1")
+        );
+        assert_eq!(
+            gh_job_id("https://github.com/acme/api/actions/runs/1"),
+            None
+        );
+        assert_eq!(
+            engine_page(Some("VM 153")),
+            "https://cicd.apps.example.com/engine"
+        );
+        assert_eq!(
+            engine_page(Some("VM 154")),
+            "https://ci.dev.example.com/admin/agents"
+        );
+        assert_eq!(engine_page(None), "https://ci.dev.example.com/admin/agents");
         assert_eq!(tag_of("refs/tags/v1"), Some("v1"));
         assert_eq!(tag_of("refs/heads/main"), None);
     }

@@ -52,6 +52,7 @@ fn run(
                         finished: Some(finished),
                         engine: None,
                         steps: vec![],
+                        url: None,
                     });
                 }
                 wfs.last_mut().unwrap().steps.push(Step {
@@ -69,6 +70,7 @@ fn run(
         },
         url: "https://ci.example/x".into(),
         links: Default::default(),
+        git_ref: None,
     })
 }
 

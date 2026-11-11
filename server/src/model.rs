@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Wire protocol version (`contract/CONTRACT.md`). Minor bumps are additive.
-pub const PROTOCOL: &str = "0.5";
+pub const PROTOCOL: &str = "0.6";
 
 pub type Ms = i64;
 
@@ -385,6 +385,9 @@ pub struct Pipeline {
     pub number: u64,
     pub sha: String,
     pub branch: String,
+    /// Tag runs: the tag.
+    #[serde(rename = "ref", default, skip_serializing_if = "Option::is_none")]
+    pub git_ref: Option<String>,
     pub event: PipelineEvent,
     pub state: CiState,
     pub created: Ms,
@@ -417,7 +420,7 @@ pub struct Pipeline {
     pub url: String,
     /// Deep links (server-built from configured bases).
     #[serde(default, skip_serializing_if = "PipelineLinks::is_empty")]
-    pub links: PipelineLinks,
+    pub links: Box<PipelineLinks>,
 }
 
 /// Where a pipeline can be opened.
@@ -463,6 +466,9 @@ pub struct Workflow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub engine: Option<String>,
     pub steps: Vec<Step>,
+    /// Where the workflow opens: Roadrunner on its first step, or the GitHub Actions run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -683,15 +689,15 @@ pub struct App {
     pub team: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// The app's status page (health, latency, resources), from the apps catalog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_url: Option<String>,
     #[serde(default, skip_serializing_if = "AppLinks::is_empty")]
     pub links: AppLinks,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 pub struct AppLinks {
-    /// The app's status dashboard (health, latency, resources), from the apps catalog.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub status: Option<String>,
     /// Its runtime logs, from the apps catalog.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logs: Option<String>,

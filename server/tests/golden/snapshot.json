@@ -11,13 +11,13 @@
       },
       "links": {
         "logs": "https://github.com/Northwind-Labs/aurora-api/actions/workflows/app-logs.yml",
-        "repo": "https://github.com/Northwind-Labs/aurora-api",
-        "status": "https://grafana.example/d/fleet-overview/?var-app=aurora-api"
+        "repo": "https://github.com/Northwind-Labs/aurora-api"
       },
       "live_sha": "eed5b2a3b817f288f79cd4a0c9b015e008e6b452",
       "main_sha": "cba1fed1817599ede1b917712f1ac8d2e629e690",
       "repo": "Northwind-Labs/aurora-api",
       "runtime": "lxc",
+      "status_url": "https://grafana.example/d/fleet-overview/?var-app=aurora-api",
       "team": "software",
       "url": "https://aurora-api.apps.example.com/"
     },
@@ -32,13 +32,13 @@
       },
       "links": {
         "logs": "https://github.com/Northwind-Labs/borealis-web/actions/workflows/app-logs.yml",
-        "repo": "https://github.com/Northwind-Labs/borealis-web",
-        "status": "https://grafana.example/d/fleet-overview/?var-app=borealis-web"
+        "repo": "https://github.com/Northwind-Labs/borealis-web"
       },
       "live_sha": "be13021ca83449d513f82b9ab0708be58e876780",
       "main_sha": "be13021ca83449d513f82b9ab0708be58e876780",
       "repo": "Northwind-Labs/borealis-web",
       "runtime": "lxc",
+      "status_url": "https://grafana.example/d/fleet-overview/?var-app=borealis-web",
       "team": "npi-scm",
       "url": "https://borealis-web.apps.example.com/"
     },
@@ -53,13 +53,13 @@
       },
       "links": {
         "logs": "https://github.com/Northwind-Labs/cirrus-hub/actions/workflows/app-logs.yml",
-        "repo": "https://github.com/Northwind-Labs/cirrus-hub",
-        "status": "https://grafana.example/d/fleet-overview/?var-app=cirrus-hub"
+        "repo": "https://github.com/Northwind-Labs/cirrus-hub"
       },
       "live_sha": "f917c191816f60e33bd397e5c528f3ed7b1f8c9f",
       "main_sha": "f917c191816f60e33bd397e5c528f3ed7b1f8c9f",
       "repo": "Northwind-Labs/cirrus-hub",
       "runtime": "lxc",
+      "status_url": "https://grafana.example/d/fleet-overview/?var-app=cirrus-hub",
       "team": "software",
       "url": "https://cirrus-hub.apps.example.com/"
     },
@@ -71,14 +71,14 @@
       "latency_ms": 840,
       "links": {
         "logs": "https://github.com/Northwind-Labs/delta-stock/actions/workflows/app-logs.yml",
-        "repo": "https://github.com/Northwind-Labs/delta-stock",
-        "status": "https://grafana.example/d/fleet-overview/?var-app=delta-stock"
+        "repo": "https://github.com/Northwind-Labs/delta-stock"
       },
       "live_sha": "be9ecc4",
       "main_sha": "be9ecc432e0e797ef223aa4c2d49757cb46f9de6",
       "note": "slow /healthz",
       "repo": "Northwind-Labs/delta-stock",
       "runtime": "lxc",
+      "status_url": "https://grafana.example/d/fleet-overview/?var-app=delta-stock",
       "team": "software",
       "url": "https://delta-stock.apps.example.com/"
     },
@@ -91,12 +91,12 @@
         "state": "success"
       },
       "links": {
-        "repo": "https://github.com/Northwind-Labs/harbor-board",
-        "status": "https://grafana.example/d/fleet-overview/?var-app=harbor"
+        "repo": "https://github.com/Northwind-Labs/harbor-board"
       },
       "live_sha": "0d5c96bb2b8a1dce9783ebf4323614e694cb3209",
       "repo": "Northwind-Labs/harbor-board",
       "runtime": "external",
+      "status_url": "https://grafana.example/d/fleet-overview/?var-app=harbor",
       "team": "software",
       "url": "https://harbor.example/"
     },
@@ -110,12 +110,12 @@
       },
       "links": {
         "logs": "https://github.com/Northwind-Labs/meridian-shop/actions/workflows/app-logs.yml",
-        "repo": "https://github.com/Northwind-Labs/meridian-shop",
-        "status": "https://grafana.example/d/fleet-overview/?var-app=meridian-shop"
+        "repo": "https://github.com/Northwind-Labs/meridian-shop"
       },
       "main_sha": "a988b12d5807cc1250dae2eae8b63ed942a3c59c",
       "repo": "Northwind-Labs/meridian-shop",
       "runtime": "lxc",
+      "status_url": "https://grafana.example/d/fleet-overview/?var-app=meridian-shop",
       "team": "software",
       "url": "https://meridian-shop.apps.example.com/"
     },
@@ -123,10 +123,8 @@
       "checked": 1794339000000,
       "health": "up",
       "id": "static-site-01",
-      "links": {
-        "status": "https://grafana.example/d/fleet-overview/?var-app=static-site-01"
-      },
       "runtime": "static",
+      "status_url": "https://grafana.example/d/fleet-overview/?var-app=static-site-01",
       "team": "software",
       "url": "https://static-site-01.apps.example.com/"
     }
@@ -706,7 +704,7 @@
       "platform": "linux/amd64",
       "running": [],
       "slots": 6,
-      "url": "https://cicd.apps.example.com/engine"
+      "url": "https://ci.dev.example.com/admin/agents"
     },
     {
       "busy": 0,
@@ -719,7 +717,7 @@
       "platform": "linux/amd64",
       "running": [],
       "slots": 6,
-      "url": "https://cicd.apps.example.com/engine"
+      "url": "https://ci.dev.example.com/admin/agents"
     },
     {
       "busy": 1,
@@ -940,7 +938,8 @@
               "state": "success",
               "url": "https://github.com/Northwind-Labs/aurora-api/actions/runs/42871000001/job/130000000002"
             }
-          ]
+          ],
+          "url": "https://github.com/Northwind-Labs/aurora-api/actions/runs/42871000001"
         }
       ]
     },
@@ -979,7 +978,8 @@
               "state": "skipped",
               "url": "https://github.com/Northwind-Labs/ridge-code/actions/runs/42875219269/job/130036683102"
             }
-          ]
+          ],
+          "url": "https://github.com/Northwind-Labs/ridge-code/actions/runs/42875219269"
         }
       ]
     },
@@ -1018,7 +1018,8 @@
               "state": "success",
               "url": "https://github.com/Northwind-Labs/ridge-code/actions/runs/42882258502/job/130061301201"
             }
-          ]
+          ],
+          "url": "https://github.com/Northwind-Labs/ridge-code/actions/runs/42882258502"
         }
       ]
     },
@@ -1057,7 +1058,8 @@
               "state": "skipped",
               "url": "https://github.com/Northwind-Labs/ridge-code/actions/runs/42882258547/job/130061303315"
             }
-          ]
+          ],
+          "url": "https://github.com/Northwind-Labs/ridge-code/actions/runs/42882258547"
         }
       ]
     },
@@ -1099,7 +1101,7 @@
               "name": "clone",
               "started": 1794339469000,
               "state": "success",
-              "url": "https://cicd.apps.example.com/pipelines/38/53?tab=steps&step=43073"
+              "url": "https://ci.dev.example.com/repos/38/pipeline/53/3"
             },
             {
               "exit_code": 0,
@@ -1107,7 +1109,7 @@
               "name": "tests",
               "started": 1794339471000,
               "state": "success",
-              "url": "https://cicd.apps.example.com/pipelines/38/53?tab=steps&step=43074"
+              "url": "https://ci.dev.example.com/repos/38/pipeline/53/4"
             },
             {
               "exit_code": 0,
@@ -1115,9 +1117,10 @@
               "name": "db-migrations",
               "started": 1794339471000,
               "state": "success",
-              "url": "https://cicd.apps.example.com/pipelines/38/53?tab=steps&step=43075"
+              "url": "https://ci.dev.example.com/repos/38/pipeline/53/5"
             }
-          ]
+          ],
+          "url": "https://ci.dev.example.com/repos/38/pipeline/53/3"
         },
         {
           "engine": "dagger-ci-102-2",
@@ -1132,7 +1135,7 @@
               "name": "clone",
               "started": 1794339470000,
               "state": "success",
-              "url": "https://cicd.apps.example.com/pipelines/38/53?tab=steps&step=43076"
+              "url": "https://ci.dev.example.com/repos/38/pipeline/53/6"
             },
             {
               "exit_code": 0,
@@ -1140,9 +1143,10 @@
               "name": "security-scan",
               "started": 1794339472000,
               "state": "success",
-              "url": "https://cicd.apps.example.com/pipelines/38/53?tab=steps&step=43077"
+              "url": "https://ci.dev.example.com/repos/38/pipeline/53/7"
             }
-          ]
+          ],
+          "url": "https://ci.dev.example.com/repos/38/pipeline/53/6"
         }
       ]
     },
@@ -1180,13 +1184,13 @@
               "name": "clone",
               "started": 1794339648000,
               "state": "success",
-              "url": "https://cicd.apps.example.com/pipelines/38/54?tab=steps&step=43099"
+              "url": "https://ci.dev.example.com/repos/38/pipeline/54/2"
             },
             {
               "name": "tests",
               "started": 1794339650000,
               "state": "running",
-              "url": "https://cicd.apps.example.com/pipelines/38/54?tab=steps&step=43100"
+              "url": "https://ci.dev.example.com/repos/38/pipeline/54/3"
             },
             {
               "exit_code": 0,
@@ -1194,9 +1198,10 @@
               "name": "db-migrations",
               "started": 1794339650000,
               "state": "success",
-              "url": "https://cicd.apps.example.com/pipelines/38/54?tab=steps&step=43101"
+              "url": "https://ci.dev.example.com/repos/38/pipeline/54/4"
             }
-          ]
+          ],
+          "url": "https://ci.dev.example.com/repos/38/pipeline/54/2"
         }
       ]
     },
@@ -1304,21 +1309,22 @@
               "name": "clone",
               "started": 1794339620000,
               "state": "success",
-              "url": "https://cicd.apps.example.com/pipelines/64/28?tab=steps&step=43082"
+              "url": "https://ci.dev.example.com/repos/64/pipeline/28/4"
             },
             {
               "name": "backend",
               "started": 1794339623000,
               "state": "running",
-              "url": "https://cicd.apps.example.com/pipelines/64/28?tab=steps&step=43083"
+              "url": "https://ci.dev.example.com/repos/64/pipeline/28/5"
             },
             {
               "name": "frontend",
               "started": 1794339623000,
               "state": "running",
-              "url": "https://cicd.apps.example.com/pipelines/64/28?tab=steps&step=43084"
+              "url": "https://ci.dev.example.com/repos/64/pipeline/28/6"
             }
-          ]
+          ],
+          "url": "https://ci.dev.example.com/repos/64/pipeline/28/4"
         },
         {
           "name": "deploy",
@@ -1327,14 +1333,15 @@
             {
               "name": "clone",
               "state": "pending",
-              "url": "https://cicd.apps.example.com/pipelines/64/28?tab=steps&step=43085"
+              "url": "https://ci.dev.example.com/repos/64/pipeline/28/7"
             },
             {
               "name": "failsafe-deploy",
               "state": "pending",
-              "url": "https://cicd.apps.example.com/pipelines/64/28?tab=steps&step=43086"
+              "url": "https://ci.dev.example.com/repos/64/pipeline/28/8"
             }
-          ]
+          ],
+          "url": "https://ci.dev.example.com/repos/64/pipeline/28/7"
         },
         {
           "engine": "dagger-ci-102-1",
@@ -1349,7 +1356,7 @@
               "name": "clone",
               "started": 1794339619000,
               "state": "success",
-              "url": "https://cicd.apps.example.com/pipelines/64/28?tab=steps&step=43087"
+              "url": "https://ci.dev.example.com/repos/64/pipeline/28/9"
             },
             {
               "exit_code": 0,
@@ -1357,9 +1364,10 @@
               "name": "docs",
               "started": 1794339621000,
               "state": "success",
-              "url": "https://cicd.apps.example.com/pipelines/64/28?tab=steps&step=43088"
+              "url": "https://ci.dev.example.com/repos/64/pipeline/28/10"
             }
-          ]
+          ],
+          "url": "https://ci.dev.example.com/repos/64/pipeline/28/9"
         }
       ]
     },
@@ -1495,7 +1503,7 @@
               "name": "clone",
               "started": 1794339110000,
               "state": "success",
-              "url": "https://cicd.apps.example.com/pipelines/47/112?tab=steps&step=42981"
+              "url": "https://ci.dev.example.com/repos/47/pipeline/112/3"
             },
             {
               "exit_code": 0,
@@ -1503,7 +1511,7 @@
               "name": "backend",
               "started": 1794339112000,
               "state": "success",
-              "url": "https://cicd.apps.example.com/pipelines/47/112?tab=steps&step=42982"
+              "url": "https://ci.dev.example.com/repos/47/pipeline/112/4"
             },
             {
               "cluster": "f:ade02e03d804",
@@ -1512,9 +1520,10 @@
               "name": "frontend",
               "started": 1794339112000,
               "state": "failure",
-              "url": "https://cicd.apps.example.com/pipelines/47/112?tab=steps&step=42983"
+              "url": "https://ci.dev.example.com/repos/47/pipeline/112/5"
             }
-          ]
+          ],
+          "url": "https://ci.dev.example.com/repos/47/pipeline/112/3"
         },
         {
           "engine": "dagger-ci-101-2",
@@ -1529,7 +1538,7 @@
               "name": "clone",
               "started": 1794339110000,
               "state": "success",
-              "url": "https://cicd.apps.example.com/pipelines/47/112?tab=steps&step=42984"
+              "url": "https://ci.dev.example.com/repos/47/pipeline/112/6"
             },
             {
               "exit_code": 0,
@@ -1537,14 +1546,15 @@
               "name": "security-scan",
               "started": 1794339112000,
               "state": "success",
-              "url": "https://cicd.apps.example.com/pipelines/47/112?tab=steps&step=42985"
+              "url": "https://ci.dev.example.com/repos/47/pipeline/112/7"
             }
-          ]
+          ],
+          "url": "https://ci.dev.example.com/repos/47/pipeline/112/6"
         }
       ]
     }
   ],
-  "protocol": "0.5",
+  "protocol": "0.6",
   "prs": [
     {
       "author": "dependabot",

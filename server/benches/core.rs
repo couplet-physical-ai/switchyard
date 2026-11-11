@@ -75,6 +75,7 @@ fn pipeline(n: usize, k: usize) -> Fact {
                     }
                 })
                 .collect(),
+            url: None,
         })
         .collect();
     Fact::Pipeline(Pipeline {
@@ -100,6 +101,7 @@ fn pipeline(n: usize, k: usize) -> Fact {
         workflows,
         url: format!("https://ci.example/repos/{}/pipeline/{n}", n % REPOS),
         links: Default::default(),
+        git_ref: None,
     })
 }
 

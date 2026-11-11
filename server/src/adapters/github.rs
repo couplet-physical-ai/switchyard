@@ -12,7 +12,7 @@
 //!
 //! Roadrunner pipelines come from Woodpecker's event stream, not from here.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -294,6 +294,7 @@ pub fn contexts_to_facts(
             number: id,
             sha: sha.into(),
             branch: branch.into(),
+            git_ref: None,
             event,
             state,
             created,
@@ -314,6 +315,7 @@ pub fn contexts_to_facts(
                 finished,
                 engine: None,
                 steps,
+                url: Some(url.clone()),
             }],
             url,
             links: Default::default(),
@@ -492,12 +494,35 @@ pub fn repo_page_facts(nodes: &[Value], with_heads: bool, now: Ms) -> (Vec<RepoM
     (metas, facts)
 }
 
+/// The number (1-based) of a GitHub Actions job's failed step, from the REST job
+/// (`GET /repos/{repo}/actions/jobs/{id}`): the first that failed or timed out.
+pub fn failed_step_of(job: &Value) -> Option<u32> {
+    job.get("steps")?
+        .as_array()?
+        .iter()
+        .find(|s| {
+            matches!(
+                s.get("conclusion").and_then(Value::as_str),
+                Some("failure" | "timed_out")
+            )
+        })?
+        .get("number")?
+        .as_u64()
+        .map(|n| n as u32)
+}
+
+/// Failed-step lookups per batch of facts (the rest follow on the next poll).
+const STEP_LOOKUPS: usize = 8;
+
 pub struct GithubAdapter {
     pub api: String,
     pub token: String,
     pub orgs: Vec<String>,
     pub http: reqwest::Client,
     pub tx: mpsc::Sender<Ingest>,
+    /// Failed jobs: their failed step (`None`: none failed, e.g. setup), by job id, so a
+    /// failed job's `Step.url` opens on that step. A finished job never changes.
+    pub failed_steps: parking_lot::Mutex<HashMap<u64, Option<u32>>>,
     pub adapters: Arc<Adapters>,
     pub clock: Clock,
 }
@@ -537,7 +562,77 @@ impl GithubAdapter {
         Ok(v)
     }
 
-    async fn send(&self, facts: Vec<Fact>, live: bool) {
+    /// The failed step of one job (REST, one call per failed job, cached).
+    async fn failed_step(&self, repo: &str, job: u64) -> anyhow::Result<Option<u32>> {
+        self.adapters.request(NAME, 1);
+        let r = self
+            .http
+            .get(format!(
+                "{}/repos/{repo}/actions/jobs/{job}",
+                self.api.trim_end_matches('/')
+            ))
+            .bearer_auth(&self.token)
+            .header("accept", "application/vnd.github+json")
+            .timeout(Duration::from_secs(20))
+            .send()
+            .await?;
+        if r.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !r.status().is_success() {
+            anyhow::bail!("job HTTP {}", r.status());
+        }
+        Ok(failed_step_of(&r.json::<Value>().await?))
+    }
+
+    /// Point each failed GitHub Actions job's `Step.url` at its failed step
+    /// (`…/job/{id}#step:{n}:1`).
+    pub async fn anchor_failed_steps(&self, facts: &mut [Fact]) {
+        let mut budget = STEP_LOOKUPS;
+        for f in facts.iter_mut() {
+            let Fact::Pipeline(p) = f else { continue };
+            if p.lane != LaneKind::Gha {
+                continue;
+            }
+            for st in p.workflows.iter_mut().flat_map(|w| w.steps.iter_mut()) {
+                if !matches!(st.state, CiState::Failure | CiState::Error) || st.finished.is_none() {
+                    continue;
+                }
+                let Some(u) = st.url.clone() else { continue };
+                let Some(job) = crate::links::gh_job_id(&u) else {
+                    continue;
+                };
+                let known = self.failed_steps.lock().get(&job).copied();
+                let n = match known {
+                    Some(n) => n,
+                    None if budget > 0 => {
+                        budget -= 1;
+                        match self.failed_step(&p.repo, job).await {
+                            Ok(n) => {
+                                let mut c = self.failed_steps.lock();
+                                if c.len() >= 4096 {
+                                    c.clear();
+                                }
+                                c.insert(job, n);
+                                n
+                            }
+                            Err(e) => {
+                                debug!(job, error = %e, "github job lookup failed");
+                                None
+                            }
+                        }
+                    }
+                    None => None,
+                };
+                if let Some(n) = n {
+                    st.url = Some(crate::links::gh_job_step(&u, n));
+                }
+            }
+        }
+    }
+
+    async fn send(&self, mut facts: Vec<Fact>, live: bool) {
+        self.anchor_failed_steps(&mut facts).await;
         if !facts.is_empty() {
             let _ = self.tx.send(Ingest { facts, live }).await;
         }
