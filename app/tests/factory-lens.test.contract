@@ -106,8 +106,10 @@ test "a lane's PR cell, the merge gate, a main line and a district each open the
   expect state ov.facLens == 0
   clock +1000
   clock +500 real
-  // fx-city: the calm city moved; the software district (its anchor: "fab-w5: city anchors … district0")
-  tap "factory-live" drag 1 0 from 1276 480 mouse
+  // the software district's plate, between its buildings (w2-chrome: the fixtures deployed in the
+  // last hour, so the city is not calm and keeps the whole plot; its buildings stand tall to
+  // short, so the plate's open ground is near its anchor "fab-w5: city anchors … district0")
+  tap "factory-live" drag 1 0 from 1236 462 mouse
   clock settle
   clock +300
   clock +500 real

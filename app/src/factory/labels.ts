@@ -53,20 +53,27 @@ const WALL_AT: Record<string, [number, number, number]> = {
   '07': [ENG_U1 + 18, 0, WALL_Z], '08': [SCAN_U + 18, 0, WALL_Z], '09': [CITY_U0 + 6, 0, WALL_Z],
 };
 // fx-front: the boards stand taller now (front.ts BOARDS): a zoomed-in title sits on its board's top
-for (const b of BOARDS) { const at = WALL_AT[b.stage]; if (at) at[2] = b.z1; }
+// (w2-chrome #12: every stage with a board, at its left end)
+for (const b of BOARDS) WALL_AT[b.stage] = [b.u0 + 4, 0, b.z1];
 if (WALL_AT['08']) WALL_AT['08'][2] = BOARDS.find((b) => b.stage === '07')?.z1 ?? WALL_Z;
 /** fx-front: the fleet zoom's ONE title row (review iter-2 #7): each title over its stage, on one
  *  baseline, a leader down to its board (or, with none, to the stage). `parts`: [words, stage]. */
 const TITLE_ROW: { n: string; parts: [string, string][]; at?: [number, number, number] }[] = [
   { n: '01', parts: [['sources', '01']] },
   { n: '02', parts: [['pr yard', '02']] },
-  { n: '03', parts: [['merge gate', '03']], at: [GATE_U + 3, LANE_V0, 24] },
+  { n: '03', parts: [['merge gate', '03']] },
   { n: '04', parts: [['main lines', '04']] },
   { n: '05', parts: [['intake', '05']] },
-  { n: '06', parts: [['consumption engine', '06']], at: [ENG_U1 - 40, ENG_V0, ENG_H] },
+  { n: '06', parts: [['consumption engine', '06']] },
   { n: '07', parts: [['tests', '07'], ['· deploy', '08']] },
   { n: '09', parts: [['apps', '09']] },
 ];
+/** w2-chrome (REVIEW-iter3 #8): the glance row's band, the factory canvas's top BAND_H px (the
+ *  camera's buttons and the coffee glance, y 46–68, glance.ts / strip.ts `controls`): opaque, so
+ *  the floor never paints through it at any zoom, and a press there never reaches the floor. No
+ *  label is placed in it. */
+export const BAND_H = 74;
+
 /** The fleet trend metric a stage's hover sparkline reads. */
 const STAGE_SPARK: Record<string, 'pushes' | 'prs_open' | 'red' | 'intake_ms' | 'pipelines' | 'failures' | 'deploys' | ''> = {
   '01': '', '02': 'prs_open', '03': '', '04': 'red', '05': 'intake_ms', '06': 'pipelines', '07': 'failures', '08': 'deploys', '09': '',
@@ -85,7 +92,18 @@ export class Labels implements Layer {
   /** A new frame: nothing placed yet. */
   reset(): void { this.list = []; this.hov.clear(); }
 
-  live(g: Gfx, fr: LiveFrame): void { this.draw(g, fr.now); }
+  live(g: Gfx, fr: LiveFrame): void { this.band(g); this.draw(g, fr.now); }
+
+  /** w2-chrome (#8): the glance row's band, over every layer of the floor (this layer is the last,
+   *  on the top canvas): the glance, the buttons, the lenses' cards and the hover draw after it.
+   *  Its hit shadows every floor object under it (the last hit wins: factory.ts `hitAt`); a
+   *  'drawer' hit is inert (no hover card, a click does nothing). */
+  private band(g: Gfx): void {
+    const W = this.f.cam.W;
+    g.fillRect(0, 0, W, BAND_H, C.canvas);
+    g.hline(0, W, g.crisp(BAND_H), '#1F1F21');
+    this.f.hit(0, 0, W, BAND_H, 'drawer', '', '');
+  }
 
   // ---- hover lines (overseer note 3: the numbers left the floor for the hover card) -----------
   private hov = new Map<HitBox, string[]>();
@@ -169,7 +187,7 @@ export class Labels implements Layer {
   placeAt(x: number, y: number, w: number, h: number, maxUp: number, slide: boolean): [number, number] | null {
     const G = 12;
     const free = (xx: number, yy: number) => {
-      if (yy - h < 40 || xx < 4 || xx + w > this.f.cam.W - 4) return false;
+      if (yy - h < BAND_H + 2 || xx < 4 || xx + w > this.f.cam.W - 4) return false; // w2-chrome: never in the glance's band
       for (const l of this.list) if (xx < l.x + l.w + G && xx + w + G > l.x && yy - h - 3 < l.y && yy + 3 > l.y - l.h) return false;
       return true;
     };
@@ -274,27 +292,29 @@ export class Labels implements Layer {
     this.places(g, q);
   }
 
-  /** fx-front: the fleet zoom's stage titles, ONE row (review iter-2 #7): each at its stage's x,
-   *  pushed apart on one baseline (the least total shift: pool-adjacent-violators over the order),
-   *  a leader from under it straight down to its board's top (or the stage), with a short level
-   *  jog when the title had to move off its board. Nothing collides: one row, ordered, gapped. */
+  /** fx-front: the fleet zoom's stage titles, ONE row (review iter-2 #7) on one baseline.
+   *  w2-chrome (REVIEW-iter3 #12): each title is centred over its OWN board (every stage has one,
+   *  front.ts BOARDS), pushed apart only as much as the order needs (the least total shift:
+   *  pool-adjacent-violators), and its leader runs to its board's LEFT FOOT: from the title's left
+   *  end (a level jog when the board starts left of it) down the board's left edge to its base,
+   *  never to a now pillar (every board's right edge). `titleSpans` keeps where they went. */
+  titleSpans: { n: string; s: string; x: number; w: number; y: number }[] = [];
   private titleRow(g: Gfx): void {
     const f = this.f, cam = f.cam;
-    const yT = Math.round(Math.max(80, cam.y(0, 0, TITLE_Z)));
+    const yT = Math.round(Math.max(BAND_H + 12, cam.y(0, 0, TITLE_Z)));
     const NOTCH = 12, GAP = 16;
-    type T = { n: string; parts: [string, string][]; w: number; ws: number[]; p: number; x: number; ax0: number; ax1: number; ay: (x: number) => number };
+    type T = { n: string; parts: [string, string][]; w: number; ws: number[]; p: number; x: number; fx: number; fy0: number; fy1: number };
     const ts: T[] = [];
     for (const r of TITLE_ROW) {
       const ws = r.parts.map(([s]) => g.width(s, TITLE, true) + NOTCH);
       const w = ws.reduce((a, b) => a + b, 0) + (ws.length - 1) * 4;
       const b = BOARDS.find((x) => x.stage === r.n);
       if (b) {
-        const ua = b.u0 + 2, ub = b.u1 - 6;
-        const ax0 = cam.x(ua, 0), ax1 = cam.x(ub, 0);
-        ts.push({ n: r.n, parts: r.parts, w, ws, p: ax0 - 2, x: 0, ax0, ax1, ay: (x) => cam.y(ua + ((x - ax0) / Math.max(1e-6, ax1 - ax0)) * (ub - ua), 0, b.z1) });
+        const x0 = cam.x(b.u0, 0), x1 = cam.x(b.u1, 0);
+        ts.push({ n: r.n, parts: r.parts, w, ws, p: (x0 + x1) / 2 - w / 2, x: 0, fx: x0, fy0: cam.y(b.u0, 0, b.z1), fy1: cam.y(b.u0, 0, b.z0) });
       } else if (r.at) {
         const [u, v, z] = r.at, ax = cam.x(u, v), ay = cam.y(u, v, z);
-        ts.push({ n: r.n, parts: r.parts, w, ws, p: ax - Math.min(24, w / 4), x: 0, ax0: ax, ax1: ax, ay: () => ay });
+        ts.push({ n: r.n, parts: r.parts, w, ws, p: ax - w / 2, x: 0, fx: ax, fy0: ay, fy1: ay });
       }
     }
     // pool adjacent violators on p − offset: the least-squares placement that keeps the order
@@ -313,15 +333,18 @@ export class Labels implements Layer {
     // inside the canvas
     const lo = 6 - Math.min(0, ...ts.map((t) => t.x - 6)), hi = Math.max(0, ...ts.map((t) => t.x + t.w - (cam.W - 40)));
     for (const t of ts) t.x += lo > 6 ? lo - 6 : -hi;
+    this.titleSpans = [];
+    const LEAD = '#3E3E43';
     for (const t of ts) {
       const x = Math.round(t.x), yl = yT + 5;
-      // the leader: straight down from under the title where it stands over its anchor, else
-      // from the anchor's nearest end, with a level jog to the title
-      const lx = Math.min(Math.max(x + 6, t.ax0), t.ax1), ay = t.ay(lx);
-      if (ay > yl + 2) {
-        g.vline(g.crisp(lx), yl, ay - 1, '#3E3E43');
-        if (lx < x || lx > x + t.w) { const xa = Math.min(lx, x + 6), xb = Math.max(lx, x + t.w - 6); g.begin_(); g.move(xa, yl + 0.5); g.line(xb, yl + 0.5); g.stroke('#3E3E43', g.hair); }
-        g.begin_(); g.circle(lx, ay, 1.6); g.fill('#6A6A6E');
+      // the leader: from the title's left end (or straight down, when the board starts under the
+      // title) to the board's left foot, along the board's left edge
+      const lx = g.crisp(t.fx);
+      if (t.fy1 > yl + 2) {
+        const xa = Math.min(lx, x + 2), xb = Math.max(lx, x + 2);
+        if (xb - xa > 1) { g.begin_(); g.move(xa, yl + 0.5); g.line(xb, yl + 0.5); g.stroke(LEAD, g.hair); }
+        g.vline(lx, yl, t.fy1, LEAD);
+        g.begin_(); g.circle(t.fx, t.fy1, 1.6); g.fill('#6A6A6E');
       }
       g.fillRect(x - 4, yT - TITLE, t.w + 8, TITLE + 6, withAlpha(C.canvas, 0.8));
       let cx = x;
@@ -333,6 +356,7 @@ export class Labels implements Layer {
       });
       const A = STAGE_AT[t.n]!;
       this.list.push({ x: x - 2, y: yT, w: t.w + 4, h: TITLE + 3 });
+      this.titleSpans.push({ n: t.n, s: t.parts.map(([s]) => s).join(' '), x, w: t.w, y: yT });
       this.stageHit(g, x - 3, yT - 14, t.w + 6, 20, t.n, A.fly, t.parts.map(([s]) => s).join(' '));
     }
   }

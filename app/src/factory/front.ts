@@ -50,24 +50,32 @@ import { F, box, poly } from './prims.ts';
 import { failuresOf, threshold, trendOfLane } from './trendmarks.ts';
 import type { FloorPass, HitBox, Layer, LiveFrame } from './types.ts';
 
-const { DOCK_U0, YARD_U0, YARD_U1, GATE_U, RAIL_U1, INTAKE_U0, ENG_U1, TRACK_U1, CITY_U0, CITY_U1 } = PLAN;
+const { DOCK_U0, YARD_U0, YARD_U1, GATE_U, RAIL_U1, INTAKE_U0, ENG_U0, ENG_U1, TRACK_U1, CITY_U0, CITY_U1 } = PLAN;
 const HOUR = 3_600_000;
 /** A failure before the current hour: a muted, darker red (red itself means failing now). */
 const RUST = '#8E5A5C';
+/** w2-chrome (#2): failures no worse than yesterday's same hour: gray-red, quieter than rust. */
+const GRAY_RED = '#6A5456';
 type Series = (number | null)[];
 type Pt = [number, number];
 
 /** A back-wall board: its stage, title, span along the wall (u) and height (z0 → z1). */
-export type Board = { id: 'pushes' | 'opened' | 'landed' | 'intake' | 'tests' | 'apps'; stage: string; title: string; u0: number; u1: number; z0: number; z1: number };
+export type Board = { id: 'pushes' | 'opened' | 'merges' | 'landed' | 'intake' | 'busy' | 'tests' | 'apps'; stage: string; title: string; u0: number; u1: number; z0: number; z1: number };
 
 /** The boards, left → right. Each is as tall as the band over it allows (the titles' row stays
- *  clear: labels.ts `titleRow`); the apps board stands over the city's back row. */
+ *  clear: labels.ts `titleRow`); the apps board stands over the city's back row.
+ *  w2-chrome (REVIEW-iter3 #12): every stage title has a board of its own, wide enough for its
+ *  title to stand centred over it (a title spills over no other board by more than 20 %): the
+ *  merge gate a slim one (PRs merged an hour), the consumption engine a slim one (its busy share
+ *  an hour), the intake's own over the intake. */
 export const BOARDS: readonly Board[] = [
   { id: 'pushes', stage: '01', title: 'sources', u0: DOCK_U0, u1: YARD_U0 - 8, z0: 4, z1: 60 },
-  { id: 'opened', stage: '02', title: 'pr yard', u0: YARD_U0, u1: YARD_U1, z0: 4, z1: 82 },
-  { id: 'landed', stage: '04', title: 'main lines', u0: GATE_U + 12, u1: RAIL_U1 - 12, z0: 4, z1: 122 },
-  { id: 'intake', stage: '05', title: 'intake', u0: INTAKE_U0 - 14, u1: ENG_U1 - 72, z0: 10, z1: 176 },
-  { id: 'tests', stage: '07', title: 'tests · deploy', u0: ENG_U1 + 14, u1: TRACK_U1, z0: 6, z1: 244 },
+  { id: 'opened', stage: '02', title: 'pr yard', u0: YARD_U0, u1: YARD_U1 - 114, z0: 4, z1: 82 },
+  { id: 'merges', stage: '03', title: 'merge gate', u0: YARD_U1 - 106, u1: GATE_U - 2, z0: 4, z1: 62 },
+  { id: 'landed', stage: '04', title: 'main lines', u0: GATE_U + 14, u1: RAIL_U1, z0: 4, z1: 122 },
+  { id: 'intake', stage: '05', title: 'intake', u0: INTAKE_U0 - 14, u1: ENG_U0 - 24, z0: 10, z1: 176 },
+  { id: 'busy', stage: '06', title: 'consumption engine', u0: ENG_U0 - 14, u1: ENG_U1 - 22, z0: 10, z1: 132 },
+  { id: 'tests', stage: '07', title: 'tests · deploy', u0: ENG_U1 + 14, u1: TRACK_U1 + 4, z0: 6, z1: 244 },
   { id: 'apps', stage: '09', title: 'apps', u0: CITY_U0 + 4, u1: CITY_U1 - 4, z0: 30, z1: 272 },
 ];
 /** The tests · deploy board's split: runs stand above it, deploys hang below (share of height). */
@@ -120,6 +128,11 @@ type BoardData = {
   over?: number | null;
   /** how a series was approximated (hover), '' when it was not */
   note?: string;
+  /** w2-chrome: a share (0..1), its scale 1 (the engine's busy share) */
+  lin?: boolean;
+  /** w2-chrome (#2): tests, yesterday's failures in the same hours (else the 7-d typical hour):
+   *  only a failure bar's part above it is red-family; below it, gray-red */
+  failUsual?: Series | null; failFlat?: number | null;
 };
 
 export class Front implements Layer {
@@ -147,7 +160,7 @@ export class Front implements Layer {
   census(): void {
     if (!this.on) { if (this.key) { this.key = ''; this.lanes = []; this.boards = []; } return; }
     const fl = this.f.floor, G = floorGroups(), ins = insights();
-    const key = `${fl.data.ver}|${fl.lanes.ver}|${G.ver}|${ins.ver('trends')}`;
+    const key = `${fl.data.ver}|${fl.lanes.ver}|${G.ver}|${ins.ver('trends')}|${this.f.plant.hist.ver}`; // w2-chrome: + the machines' 24 h (the engine's board)
     if (key === this.key) return;
     this.key = key;
     const cov = this.coverage();
@@ -252,6 +265,17 @@ export class Front implements Layer {
       case 'pushes': out.up = A(W.pushes, cov); out.upWhat = 'pushes'; [out.ghost, out.flat] = ghost('pushes', null); break;
       case 'opened': out.up = A(W.opened); out.upBad = A(W.openedRed); out.upWhat = 'PRs opened'; [out.ghost, out.flat] = ghost('opened', null); break;
       case 'landed': out.up = A(W.landed); out.upBad = A(W.landedRed); out.upWhat = 'commits landed'; [out.ghost, out.flat] = ghost('landed', null); break;
+      case 'merges': out.up = this.mergesOfWorld(cnt.at); out.upWhat = 'PRs merged'; break;
+      case 'busy': {
+        // w2-chrome (#12): the engine's busy share an hour (busy slots / slots), from the machines'
+        // own 24 h (planthist.ts); hours none of them recorded: the runs an hour × p50 run time
+        // over the slots, said on hover
+        out.lin = true; out.upWhat = 'busy share'; // (a share of 1: √ like every board, never over its top)
+        const [up, est] = this.busyOfMachines(cnt.at, W.runs);
+        out.up = up; out.mx = 1;
+        if (est) out.note = est;
+        break;
+      }
       case 'intake': {
         // the wait for a slot (p50, seconds) an hour: the trend's (v0.5: the server's day)
         // (v0.4: the approximation covers the held runs only, ~2 h: before them, no record)
@@ -278,6 +302,8 @@ export class Front implements Layer {
         out.down = deps ?? A(W.deploys); out.downBad = A(W.deploysRed);
         [out.ghost, out.flat] = ghost('pipelines', typ(ft?.pipelines));
         [out.dGhost, out.dFlat] = ghost('deploys', typ(ft?.deploys));
+        // w2-chrome (#2): the failures' own yesterday, else their typical hour
+        [out.failUsual, out.failFlat] = ghost('failures', ft ? typ(failuresOf(ft)) : null);
         break;
       }
       case 'apps': {
@@ -303,7 +329,7 @@ export class Front implements Layer {
       for (const s of xs) { if (typeof s === 'number') m = Math.max(m, s); else if (s) for (const v of s) if (v !== null && v > m) m = v; }
       return m;
     };
-    out.mx = mxOf(out.up, out.ghost, out.flat ?? 0);
+    out.mx = out.lin ? 1 : mxOf(out.up, out.ghost, out.flat ?? 0);
     if (out.down) out.dmx = mxOf(out.down, out.dGhost, out.dFlat ?? 0);
     return out;
   }
@@ -318,6 +344,56 @@ export class Front implements Layer {
     cr.sort((a, b) => a - b);
     const oldest = cr.length ? cr[Math.floor(cr.length * 0.05)]! : at;
     return [oldest <= at - 23 * HOUR ? 0 : clamp(23 - Math.floor((at - oldest) / HOUR), 0, 23), oldest];
+  }
+
+  /** w2-chrome (#12): PRs merged an hour over the last 24 h (the world's PRs' `merged_at`). */
+  private mergesOfWorld(at: number): Series {
+    const out: Series = new Array<number | null>(24).fill(0);
+    for (const p of this.f.world.prs.values()) {
+      const m = p.merged_at ?? (p.phase === 'merged' || p.phase === 'deployed' ? p.updated : 0); // (as insights counts prs_merged)
+      if (!m || m > at || m <= at - 24 * HOUR) continue;
+      const k = 23 - Math.min(23, Math.floor((at - m) / HOUR));
+      out[k] = (out[k] ?? 0) + 1;
+    }
+    return out;
+  }
+
+  /** w2-chrome (#12): the engine's busy share an hour (0..1), its self-hosted machines' folded
+   *  24 h weighted by their slots; an hour none recorded: runs × p50 run time / (slots × 1 h),
+   *  and the words that say so ('' when every hour is the machines' own). */
+  private busyOfMachines(at: number, runs: Int16Array): [Series, string] {
+    const c = this.f.census, hist = this.f.plant.hist;
+    const sum = new Float64Array(24), wt = new Float64Array(24);
+    let slots = 0;
+    for (const gr of c.groups) {
+      if (gr.hosted || gr.slots <= 0) continue;
+      slots += gr.slots;
+      const t = hist.tide(gr.id);
+      if (!t || !t.n) continue;
+      for (let i = 0; i < t.n; i++) {
+        const b = t.busy[i]!;
+        if (b !== b) continue;
+        const mid = t.from + (i + 0.5) * t.bw;
+        if (mid > at || mid <= at - 24 * HOUR) continue;
+        const k = 23 - Math.min(23, Math.floor((at - mid) / HOUR));
+        sum[k] += b * gr.slots; wt[k] += gr.slots;
+      }
+    }
+    // the estimate: the fleet trend's runs and run time an hour (a v0.5 server's day), else the
+    // world's held runs × p50 (none before the oldest of them: no record)
+    const ft = insights().trend('fleet'), v05 = this.f.world.v05;
+    const tr = v05 ? full(ft?.pipelines.spark) : null, tm = v05 ? full(ft?.run_ms.spark) : null;
+    const p50 = this.f.world.stats.p50_build_ms || 0, from = this.runsFrom(at)[0];
+    let est = 0;
+    const out: Series = Array.from({ length: 24 }, (_, k) => {
+      if (wt[k]! > 0) return Math.min(1, sum[k]! / wt[k]!);
+      if (!slots) return null;
+      const n = tr ? tr[k] : k >= from ? runs[k]! : null, ms = (tm ? tm[k] : null) ?? p50;
+      if (n === null || n === undefined || !ms) return null;
+      est++;
+      return Math.min(1, (n * ms) / (slots * HOUR));
+    });
+    return [out, est ? `${est} h estimated: runs × run time / slots` : ''];
   }
 
   private runsOfWorld(at: number): [Series, Series] {
@@ -355,7 +431,7 @@ export class Front implements Layer {
     const tests = !!d.down;
     const zBase = tests ? b.z0 + (b.z1 - b.z0) * SPLIT : b.z0;
     const H = b.z1 - zBase, Hd = zBase - b.z0;
-    const sc = (n: number, mx: number, h: number) => h * Math.sqrt(Math.max(0, n) / mx);
+    const sc = (n: number, mx: number, h: number) => h * Math.sqrt(Math.min(1, Math.max(0, n) / mx));
     const any = d.up.some((x) => (x ?? 0) > 0) || (d.down?.some((x) => (x ?? 0) > 0) ?? false);
     if (any) { g.begin_(); const q = [P(b.u0, b.z0), P(b.u1, b.z0), P(b.u1, b.z1), P(b.u0, b.z1)]; g.move(q[0]![0], q[0]![1]); for (const p of q.slice(1)) g.line(p[0], p[1]); g.ctx.closePath(); g.fill('#0F0F11'); }
     // the base rule: solid over recorded hours, dotted over the rest (a board with nothing in its
@@ -385,7 +461,10 @@ export class Front implements Layer {
       g.fill(col);
     };
     // the failed share: red only in the current hour (red is "failing now"); before it, rust
-    const gray: number[] = [], red: number[] = [], rust: number[] = [], ok: number[] = [];
+    // w2-chrome (REVIEW-iter3 #2): on the tests board only the failures over yesterday's same hour
+    // (else the typical hour) are red-family; the usual ones are gray-red
+    const gray: number[] = [], red: number[] = [], rust: number[] = [], ok: number[] = [], usual: number[] = [];
+    const fu = d.failUsual !== undefined ? (k: number) => d.failUsual?.[k] ?? d.failFlat ?? null : null;
     const hue: number[][] = (d.stack ?? []).map(() => []);
     for (let k = 0; k < 24; k++) {
       const u = uAt(k), n = d.up[k] ?? 0;
@@ -401,7 +480,13 @@ export class Front implements Layer {
           let z = zBase;
           d.stack.forEach((s, j) => { const m = s.n[k] ?? 0; if (m <= 0) return; const dz = ((h - r) * m) / n; bars(hue[j]!, u, z, z + dz); z += dz; });
         } else bars(gray, u, zBase, zBase + h - r);
-        if (r > 0) bars(k === 23 ? red : rust, u, zBase + h - r, zBase + h);
+        if (r > 0 && fu) {
+          // the failures' usual part (bottom) and their excess (top, red-family)
+          const nf = d.upBad?.[k] ?? 0, us = fu(k);
+          const ex = us === null ? 1 : clamp((nf - us) / Math.max(1e-6, nf), 0, 1);
+          bars(usual, u, zBase + h - r, zBase + h - r * ex);
+          if (ex > 0) bars(k === 23 ? red : rust, u, zBase + h - r * ex, zBase + h);
+        } else if (r > 0) bars(k === 23 ? red : rust, u, zBase + h - r, zBase + h);
       }
       const m = d.down?.[k] ?? 0;
       if (m > 0) {
@@ -411,7 +496,7 @@ export class Front implements Layer {
       }
     }
     d.stack?.forEach((s, j) => flush(hue[j]!, withAlpha(s.hex, 0.92)));
-    flush(gray, '#5A5A60'); flush(ok, '#6F8A76'); flush(rust, RUST); flush(red, F.redTop);
+    flush(gray, '#5A5A60'); flush(ok, '#6F8A76'); flush(usual, GRAY_RED); flush(rust, RUST); flush(red, F.redTop);
     // yesterday's same hours (a dashed step line), else the typical hour (flat), on the bars' scale
     if (lo) return;
     const ghostLine = (ys: Series | null | undefined, flat: number | null | undefined, mx: number, h: number, down: boolean) => {
@@ -686,7 +771,15 @@ export class Front implements Layer {
       case 'opened': return ['pr yard · PRs opened an hour', `${num(sum(d.up))} opened · ${num(sum(d.upBad))} failing CI (red)`, why];
       case 'landed': return ['main lines · commits landed an hour', `${num(sum(d.up))} landed · ${num(sum(d.upBad))} failed (red)`, why];
       case 'intake': return ['intake · the wait for a slot (p50), an hour', `now ${d.up[23] ?? '—'} s · worst ${Math.max(0, ...d.up.map((x) => x ?? 0))} s${d.over !== null && d.over !== undefined ? ` · usual ≤ ${Math.round(d.over)} s` : ''}`, d.up.some((x) => x === null) ? `${d.up.filter((x) => x === null).length} h not on record (dotted) · ${why}` : why];
-      case 'tests': return ['tests ↑ runs · deploy ↓ deploys, an hour', `${num(sum(d.up))} runs, ${num(sum(d.upBad))} failed · ${num(sum(d.down))} deploys`, d.note && !d.ghost && d.flat === null ? d.note : why];
+      case 'merges': return ['merge gate · PRs merged an hour', `${num(sum(d.up))} merged in 24 h · this hour ${now(d.up)} · busiest hour ${num(Math.max(0, ...d.up.map((x) => x ?? 0)))}`, why];
+      case 'busy': {
+        const xs = d.up.filter((x): x is number => x !== null), pct = (x: number) => `${Math.round(x * 100)} %`;
+        return ['consumption engine · busy share an hour', xs.length ? `now ${pct(d.up[23] ?? 0)} · 24 h mean ${pct(xs.reduce((a, b) => a + b, 0) / xs.length)} · peak ${pct(Math.max(...xs))}` : 'no busy record yet', d.note || 'busy slots / slots, the machines\' own record'];
+      }
+      case 'tests': {
+        const ex = (d.upBad ?? []).reduce<number>((a, x, k) => { const us = d.failUsual?.[k] ?? d.failFlat ?? null; return a + (x === null ? 0 : us === null ? x : Math.max(0, x - us)); }, 0);
+        return ['tests ↑ runs · deploy ↓ deploys, an hour', `${num(sum(d.up))} runs, ${num(sum(d.upBad))} failed (${num(ex)} over yesterday's, red) · ${num(sum(d.down))} deploys`, d.note && !d.ghost && d.flat === null ? d.note : why];
+      }
       case 'apps': return ['apps · deploys an hour, by team', `${num(sum(d.up))} deploys · ${d.stack?.length ?? 0} teams${sum(d.upBad) ? ` · ${num(sum(d.upBad))} failed (red)` : ''}`, why];
     }
   }

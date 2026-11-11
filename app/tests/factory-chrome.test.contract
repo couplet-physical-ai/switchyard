@@ -1,0 +1,39 @@
+// The floor's chrome (w2-chrome, REVIEW-iter3 #7, #8). A test cannot read a pixel, so the strip's
+// flat bars after a journey are proven in tools/chrome.test.ts (every strip stroke after a car's
+// journey is `butt`-capped; the journey's round caps are restored); here, the same journey opened
+// and walked back by key, and the glance row's band: zoomed in, the floor runs under it and a
+// press on it reaches nothing of the floor (at 225 % on the fixtures, (300, 20) is on a back-wall
+// board, whose press flies the camera: without the band's hit the press answers "stage").
+
+test "a car's journey walks back by key, and zoomed in, a press on the glance band opens nothing" on web
+  clock data
+  tap "setup-connect"
+  clock settle
+  type "server-field" "fixtures"
+  tap "settings-save"
+  clock data
+  clock +1000
+  clock +1500 real
+  // the first org's lane rail's newest car ("factory: newest car … at" on the fixtures)
+  tap "factory-live" drag 1 0 from 653 461 mouse
+  clock settle
+  clock +300
+  clock +500 real
+  expect state ov.facLens == 1
+  type "factory-live" key "Escape"
+  clock data
+  clock +300
+  expect state ov.facLens == 0
+  // the camera's + twice: 225 %, the floor under the glance row
+  tap "factory-live" drag 1 0 from 28 57 mouse
+  clock settle
+  clock +300
+  tap "factory-live" drag 1 0 from 28 57 mouse
+  clock settle
+  clock +500 real
+  tap "factory-live" drag 1 0 from 300 20 mouse
+  clock settle
+  clock +300
+  clock +500 real
+  expect state ov.facLens == 0
+  expect state facNow.kind == "drawer"

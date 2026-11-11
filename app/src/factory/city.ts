@@ -31,6 +31,14 @@
 //                minute): the city packs compact, its districts start ~30 % of the plot further
 //                from the ladder, and the spurs take that ground: each district's band, its spur
 //                bed and its last 24 h of deploys as hourly ticks along the approach.
+//   night        (w2-chrome, REVIEW-iter3 #10, WOW #2) at the fleet zoom the city is at night:
+//                each district's buildings stand sorted tall to short from its back corner (one
+//                skyline), and a building's storeys deployed in the last 24 h are LIT windows,
+//                the newest brightest (the window of a deploy dims with its age, by the hour);
+//                a building that shipped nothing today stands dark in its hue, and a district
+//                that shipped nothing today goes dark grey. Calm also needs no deploy in the last
+//                hour: a city that is deploying keeps the whole plot. Named at the front edge
+//                (≤ DISTRICT_NAMES_MAX: trouble first, then today's busiest).
 //
 // LOD by a building's size on screen (DESIGN.md "LOD"): LOD0 faces, edges, rings, storeys or
 // windows by zoom; LOD1 faces, rings; LOD2 silhouettes, a light only where not up; LOD3 a
@@ -88,7 +96,7 @@ export const FLEET_GHOSTS = 3;
  *  DISTRICT_NAMES_SURE (trouble first, then the biggest) may step aside to find room, the tail
  *  only takes its own corner, so the placer drops it first when space (or the text budget) is
  *  tight. */
-export const DISTRICT_NAMES_MAX = 3;
+export const DISTRICT_NAMES_MAX = 4; // w2-chrome: trouble, then today's busiest (the fleet text budget: ≤ 40 items, with room for the other layers)
 export const DISTRICT_NAMES_SURE = 4;
 /** A calm city (every app up, held CALM_MS): its districts start this much of the plot's width
  *  further from the ladder, and the deploy spurs (the groups' deploy rates) take that ground. */
@@ -98,6 +106,8 @@ const CALM_MS = 60_000;
 const NAME_SPOTS: [number, number][] = [[0, 0], [0, 5], [0, -5], [16, 0], [16, 6], [16, -6], [0, 12], [16, 14]];
 /** The painted city's sig changes at most this often (each floor repaint is ~44 ms on macOS). */
 const SIG_MS = 2000;
+/** w2-chrome: the districts' tall-to-short order is adopted at most this often. */
+const ORDER_MS = 30_000;
 
 /** `a` over `b` at `t` (hex in, hex out). */
 function mixHex(a: string, b: string, t: number): string {
@@ -105,6 +115,17 @@ function mixHex(a: string, b: string, t: number): string {
   const ch = (s: number) => Math.round(((x >> s) & 255) * t + ((y >> s) & 255) * (1 - t));
   return `#${((ch(16) << 16) | (ch(8) << 8) | ch(0)).toString(16).padStart(6, '0').toUpperCase()}`;
 }
+/** w2-chrome (WOW #2): a building that shipped nothing today, at night: its hue, nearly dark. */
+export function nightOf(hex: string): { top: string; side: string; front: string; edge: string } {
+  return { top: mixHex(hex, '#121214', 0.24), side: mixHex(hex, '#0E0E10', 0.16), front: mixHex(hex, '#0B0B0D', 0.11), edge: mixHex(hex, '#18181A', 0.34) };
+}
+/** w2-chrome (WOW #2): a lit window's light (a warm white leaning to the district's hue; never
+ *  amber, which is in flight) and its strength by the deploy's age in hours: this hour the
+ *  brightest, fading through the day. */
+export function windowLight(hex: string): string { return mixHex(hex, '#FFF6E6', 0.22); }
+export const WINDOW_AGE: readonly [number, number][] = [[1, 1], [4, 0.66], [12, 0.4], [24, 0.24]];
+/** A deploy's window bucket (0 newest … 3) from its age in hours. */
+export function windowBucket(ageH: number): number { for (let k = 0; k < WINDOW_AGE.length; k++) if (ageH < WINDOW_AGE[k]![0]) return k; return WINDOW_AGE.length - 1; }
 /** A district's skyline faces (top, side, front, edge) and its name's ink, from its lane hue. */
 export function skyline(hex: string): { top: string; side: string; front: string; edge: string; ink: string } {
   return { top: mixHex(hex, '#141416', 0.46), side: mixHex(hex, '#0F0F11', 0.3), front: mixHex(hex, '#0C0C0E', 0.2), edge: mixHex(hex, '#18181A', 0.62), ink: mixHex(hex, '#F2F2F0', 0.62) };
@@ -125,6 +146,9 @@ export type CityBlock = Block & {
   ring: [number, number, string][] | null; loud: boolean;
   /** the lane it belongs to, and its lot's v (its row) */
   lane: string; row: number;
+  /** w2-chrome (WOW #2): successful deploys in the last 24 h, and each one's age in whole hours,
+   *  newest first (the lit windows of its top storeys) */
+  day: number; ages: number[];
 };
 /** A district: the shared DistrictBox (team = its lane's short name) and its lane, hue and spur. */
 export type CityDistrict = DistrictBox & { lane: string; hex: string; spurV: number; bed: number; rows: number; cols: number;
@@ -158,6 +182,16 @@ export class City implements Layer {
   private calmU0 = DIST_U0;
   private cityKey = '';
   private skyOf = new Map<string, ReturnType<typeof skyline>>();
+  /** w2-chrome (#10): each app's height rank (7 d storeys, then today's deploys) from the last
+   *  heights, the order the districts were packed in, and when that order last changed (the
+   *  order is adopted at most every ORDER_MS: histories stream in for minutes, and a re-pack
+   *  moves buildings). */
+  private rank = new Map<string, number>();
+  private orderSig = '';
+  private orderAt = -1e12;
+  private nightFaces = new Map<string, ReturnType<typeof nightOf>>();
+  /** w2-chrome: each district shipped something in the last 24 h (lit at night). */
+  private distLit: boolean[] = [];
   private cityRows: CityBlock[][] = [];
   private adopted: unknown = null;
   private laneOfDistrict: string[] = [];
@@ -194,6 +228,11 @@ export class City implements Layer {
     this.calmStep(w);
     this.layoutCity();
     this.layoutHeights(w);
+    // w2-chrome (#10): heights known, the districts' tall-to-short order may be due: adopted in
+    // the same turn (a re-pack, then its heights), so one census leaves the city settled
+    const k = this.cityKey;
+    this.layoutCity();
+    if (this.cityKey !== k) this.layoutHeights(w);
   }
 
   // ---- data: app histories, a few per data turn (app.ts's overview source calls this) ----
@@ -392,7 +431,8 @@ export class City implements Layer {
     this.laneOfDistrict = ids;
   }
 
-  /** fx-city (#11): calm = every app up (none degraded or down, stress copies included). A
+  /** fx-city (#11): calm = every app up (none degraded or down, stress copies included) and
+   *  (w2-chrome, REVIEW-iter3 #10) no deploy started in the last hour. A
    *  trouble makes the city loud at once (full plot); calm returns once it held CALM_MS of the
    *  module clock, so a flapping app never re-packs the city back and forth. The first look is
    *  calm at once when everything is up. */
@@ -403,6 +443,9 @@ export class City implements Layer {
     const sh = this.f.stress.health;
     let up = +deg === 0 && +down === 0;
     if (up && c.factor > 1) for (let i = 0; i < sh.length; i++) if (sh[i] === 1 || sh[i] === 2) { up = false; break; }
+    // w2-chrome (#10): and nothing deployed in the last hour (a city that is deploying keeps the
+    // whole plot: its lit windows are the news)
+    if (up && c.flow.deploys > 0) up = false;
     if (!up) { this.loudAt = clk; this.calm = false; return; }
     if (!this.calm && (this.loudAt < -1e11 || clk - this.loudAt >= CALM_MS || clk < this.loudAt)) this.calm = true;
   }
@@ -412,7 +455,16 @@ export class City implements Layer {
 
   private layoutCity(): void {
     const c = this.f.census;
-    const key = `${this.calm ? 'calm' : 'loud'}|${c.districts.map((d) => `${d.team}:${d.apps.length}`).join(',')}`;
+    // w2-chrome (#10): the districts' tall-to-short order is part of the layout (adopted at most
+    // every ORDER_MS of the module clock, at once the first time heights are known)
+    const clk = this.f.tl.clock;
+    if (this.rank.size && (this.orderAt < -1e11 || clk - this.orderAt >= ORDER_MS || clk < this.orderAt)) {
+      let h = 0;
+      for (const d of c.districts) for (const id of d.apps) h = (Math.imul(h, 31) + (this.rank.get(id) ?? 0)) | 0;
+      const sig = String(h >>> 0);
+      if (sig !== this.orderSig) { this.orderSig = sig; this.orderAt = clk; }
+    }
+    const key = `${this.calm ? 'calm' : 'loud'}|${c.districts.map((d) => `${d.team}:${d.apps.length}`).join(',')}|${this.orderSig}`;
     if (key === this.cityKey) return;
     this.cityKey = key;
     this.hKey = '';
@@ -477,7 +529,10 @@ export class City implements Layer {
       if (dry) continue;
       const lane = this.laneOfDistrict[di] ?? '';
       const hex = lane ? G.hex(lane) : '#55555A';
-      dist.apps.forEach((id, i) => {
+      // w2-chrome (#10): tall to short from the district's back corner (one skyline)
+      const rk = this.rank;
+      const order = rk.size ? dist.apps.slice().sort((x, y) => (rk.get(y) ?? 0) - (rk.get(x) ?? 0) || (x < y ? -1 : x > y ? 1 : 0)) : dist.apps;
+      order.forEach((id, i) => {
         const r = Math.floor(i / cols), col = i % cols;
         const lu = U0 + col * pitch, lv = rowV(r);
         const tilde = id.indexOf('~');
@@ -488,13 +543,14 @@ export class City implements Layer {
         const bd = kind ? Math.round(d * STATIC_LOT * 2) / 2 : d;
         const off = (d - bd) / 2;
         const hv = idleSk ? 4 : tilde > 0 ? -2 - virt++ : -1;
-        const b: CityBlock = { id, u: lu + off, v: lv + off, d: bd, h: BASE, district: di, hv, storeys: 0, behind: 0, ghosts: 0, idle: idleSk, kind, ring: null, loud: false, lane, row: lv };
+        const b: CityBlock = { id, u: lu + off, v: lv + off, d: bd, h: BASE, district: di, hv, storeys: 0, behind: 0, ghosts: 0, idle: idleSk, kind, ring: null, loud: false, lane, row: lv, day: 0, ages: [] };
         this.blocks.push(b);
         this.blockAt.set(id, b);
       });
       const cu = Math.min(n, cols);
       this.districtBox.push({ team: dist.team, u0: U0, v0, u1: U0 + (cu - 1) * pitch + d, v1, n, lane, hex, spurV, bed: 3, rows, cols, day: new Array<number>(24).fill(0) });
       if (!this.skyOf.has(hex)) this.skyOf.set(hex, skyline(hex));
+      if (!this.nightFaces.has(hex)) this.nightFaces.set(hex, nightOf(hex));
     }
     if (!dry) this.f.stress.ensureHealth(virt);
     return v - GAP - street;
@@ -522,13 +578,16 @@ export class City implements Layer {
     }
     // the layout (calm or loud, the districts' sizes) is painted too
     let sig = 0;
+    const rank = new Map<string, number>();
     for (let i = 0; i < this.cityKey.length; i++) sig = (Math.imul(sig, 31) + this.cityKey.charCodeAt(i)) | 0;
     for (const b of this.blocks) {
-      if (b.hv === 4) { b.storeys = 0; b.ghosts = 0; b.behind = 0; b.h = BASE; b.ring = null; b.loud = false; continue; }
+      if (b.hv === 4) { b.storeys = 0; b.ghosts = 0; b.behind = 0; b.h = BASE; b.ring = null; b.loud = false; b.day = 0; b.ages = []; continue; }
       if (b.hv <= -2) {
         // a stress copy: the census's synthesized deploys (stress mode is the renderer's test)
         const n = Math.min(STOREY_CAP, c.deploys24.get(b.id) ?? 0);
         b.storeys = n; b.h = BASE + n * STOREY; b.idle = n === 0; b.ghosts = 0; b.behind = 0; b.ring = null; b.loud = false;
+        b.day = n; b.ages = Array.from({ length: n }, (_, k) => k * 3);
+        rank.set(b.id, n * 100 + n);
         continue;
       }
       const a = w.apps.get(b.id);
@@ -539,6 +598,14 @@ export class City implements Layer {
       if (wl) for (const at of wl.values()) { if (at >= from7 && at <= now) n++; if (at > newest) newest = at; }
       b.storeys = Math.min(STOREY_CAP, n);
       b.h = BASE + b.storeys * STOREY;
+      // w2-chrome (WOW #2): today's deploys, each one's age by the hour (newest first): the lit
+      // windows of the top storeys
+      const ages: number[] = [];
+      if (wl) for (const at of wl.values()) if (at > now - DAY && at <= now) ages.push(Math.floor((now - at) / 3_600_000));
+      ages.sort((x, y) => x - y);
+      b.day = ages.length; b.ages = ages.slice(0, b.storeys);
+      rank.set(b.id, b.storeys * 100 + Math.min(99, b.day));
+      for (const x of b.ages) sig = (Math.imul(sig, 31) + windowBucket(x) + 7) | 0;
       const behind = a?.behind ?? (a?.main_sha && a.live_sha && a.main_sha !== a.live_sha ? 1 : 0);
       b.behind = Math.max(0, behind | 0);
       b.ghosts = Math.min(GHOST_CAP, b.behind);
@@ -561,6 +628,10 @@ export class City implements Layer {
       d.day[Math.min(23, Math.floor((at - (now - DAY)) / 3_600_000))]!++;
     }
     for (const d of this.districtBox) for (let h = 0; h < 24; h++) sig = (Math.imul(sig, 31) + d.day[h]! * (h + 1)) | 0;
+    this.rank = rank;
+    this.distLit = this.districtBox.map(() => false);
+    for (const b of this.blocks) if (b.day > 0) this.distLit[b.district] = true;
+    for (let i = 0; i < this.distLit.length; i++) sig = (Math.imul(sig, 31) + (this.distLit[i] ? i + 1 : 0)) | 0;
     // the districts' spurs: the bed as wide as the group's deploys (the v0.5 trend, per hour over
     // 7 d; the last 24 h until 7 d are known); "other teams" sums its members
     const ins = insights();
@@ -690,7 +761,11 @@ export class City implements Layer {
     if (lo) lod = Math.min(3, lod + 1);
     const hist = this.f.stat.lod;
     hist[0] = hist[1] = hist[2] = hist[3] = 0;
-    const act = this.f.bA, dim = this.f.bB, red = this.f.bC;
+    const act = this.f.bA, dim = this.f.bB, red = this.f.bC, night = this.f.bD;
+    // w2-chrome (WOW #2): at the fleet zoom the city is at night: a building that shipped today
+    // stands in its district's hue, one that did not nearly dark in it, a district that shipped
+    // nothing today dark grey
+    const atNight = fleet && !idle;
     const sPx = STOREY * cam.s;
     const windows = lod === 0 && sPx >= 4.2 && !idle;
     const lines = lod === 0 && !windows && sPx >= 2.4 && !idle;
@@ -707,13 +782,18 @@ export class City implements Layer {
         const x0 = cam.x(b.u, b.v + b.d), x1 = cam.x(b.u + b.d, b.v);
         if (x1 < -10 || x0 > cam.W + 10) { hist[3]++; continue; }
         n++;
-        if (lod < 3) { (b.hv === 4 || idle ? dim : this.healthOf(b) === 2 ? red : b.idle ? dim : act).add(b.u, b.v, b.d, b.d, b.h); continue; }
+        if (lod < 3) {
+          const hl = b.hv === 4 || idle ? -1 : this.healthOf(b);
+          const lit = atNight ? this.distLit[b.district] : true;
+          (hl < 0 ? dim : hl === 2 ? red : b.idle || !lit ? dim : atNight && !b.day ? night : act).add(b.u, b.v, b.d, b.d, b.h);
+          continue;
+        }
         if (runU1 >= 0 && b.district === runD && b.u - runU1 <= this.cityPitch) { runU1 = b.u + b.d; runH += b.h; runK++; continue; }
-        const strip = fleet && !idle ? act : dim;
+        const strip = atNight && this.distLit[b.district] ? act : dim;
         if (runU1 >= 0) strip.add(runU0, v, runU1 - runU0, lot, runH / runK);
         runU0 = b.u; runU1 = b.u + b.d; runH = b.h; runK = 1; runD = b.district;
       }
-      if (lod === 3 && runU1 >= 0) (fleet && !idle ? act : dim).add(runU0, v, runU1 - runU0, lot, runH / runK);
+      if (lod === 3 && runU1 >= 0) (atNight && this.distLit[runD] ? act : dim).add(runU0, v, runU1 - runU0, lot, runH / runK);
       if (!n) continue;
       hist[Math.min(2, lod)] += n;
       const faces = lod === 0 ? 3 : lod === 1 ? 3 : 2;
@@ -723,8 +803,12 @@ export class City implements Layer {
       const sky = fleet && !idle ? this.skyOf.get(this.districtBox[row[0]!.district]?.hex ?? '') : undefined;
       if (sky) act.flush(g, cam, sky.top, sky.side, sky.front, lod === 0 ? sky.edge : '', ew, faces);
       else act.flush(g, cam, '#2B2B2F', '#1D1D20', '#171719', lod === 0 ? '#3C3C41' : '', ew, faces);
+      const nf = atNight ? this.nightFaces.get(this.districtBox[row[0]!.district]?.hex ?? '') : undefined;
+      if (nf) night.flush(g, cam, nf.top, nf.side, nf.front, '', ew, faces); // (no edge: the lights are off, it recedes)
+      else night.flush(g, cam, '#1C1C1E', '#141416', '#111113', '', ew, faces);
       red.flush(g, cam, '#C25252', '#7E3434', '#682C2C', lod === 0 ? '#E06464' : '', ew, faces);
       if (idle) continue;
+      if (atNight && lod <= 2) this.litWindows(g, row);
       if (lines) this.storeyLines(g, row);
       if (windows) this.windows(g, row);
       if (lod <= 1) {
@@ -740,6 +824,30 @@ export class City implements Layer {
         }
         for (let k = 1; k < 3; k++) flushLights(cam, g, lights[k]!, LIGHT[k]!, dotR * 1.3, false);
       }
+    }
+  }
+
+  /** w2-chrome (WOW #2): the fleet zoom's night: a building's storeys deployed in the last 24 h
+   *  are lit windows (its top storeys, the newest on top and brightest, dimmer by the hour), one
+   *  band on the front and the side each; a down building's stay dark. One path per strength. */
+  private litWindows(g: Gfx, row: CityBlock[]): void {
+    const cam = this.f.cam, hex = this.districtBox[row[0]!.district]?.hex ?? '#888888';
+    const light = windowLight(hex);
+    for (let k = 0; k < WINDOW_AGE.length; k++) {
+      g.begin_();
+      let n = 0;
+      for (const b of row) {
+        if (!b.ages.length || b.hv === 4 || this.healthOf(b) === 2) continue;
+        const u0 = b.u, u1 = b.u + b.d, v0 = b.v, v1 = b.v + b.d, ins = b.d * 0.14;
+        b.ages.forEach((age, j) => {
+          if (windowBucket(age) !== k) return;
+          const zf = BASE + (b.storeys - 1 - j) * STOREY, za = zf + STOREY * 0.28, zb = zf + STOREY * 0.78;
+          poly(cam, g, [u0 + ins, v1, za, u1 - ins, v1, za, u1 - ins, v1, zb, u0 + ins, v1, zb]);
+          poly(cam, g, [u1, v1 - ins, za, u1, v0 + ins, za, u1, v0 + ins, zb, u1, v1 - ins, zb]);
+          n++;
+        });
+      }
+      if (n) g.fill(withAlpha(light, WINDOW_AGE[k]![1]));
     }
   }
 
@@ -958,10 +1066,12 @@ export class City implements Layer {
   fleetNames(): CityDistrict[] {
     const trouble = new Set<number>();
     for (const b of this.troubleBlocks()) trouble.add(b.district);
-    const order = this.districtBox.map((d, i) => ({ d, i })).sort((a, b) => (trouble.has(b.i) ? 1 : 0) - (trouble.has(a.i) ? 1 : 0) || b.d.n - a.d.n || a.i - b.i);
-    // sy-client (text budget): at the fleet zoom the lane names (left, same hue) already name the
-    // teams, so a district is named here only when it is in trouble (an app down or degraded)
-    return order.filter((x) => trouble.has(x.i)).slice(0, DISTRICT_NAMES_MAX).map((x) => x.d);
+    // w2-chrome (#10): trouble first, then the districts that shipped most today (their lit
+    // skyline), then the biggest; a district that shipped nothing and is all up stays unnamed
+    // (its lane's name on the left names it), within the fleet's text budget
+    const today = (d: CityDistrict) => d.day.reduce((a, x) => a + x, 0);
+    const order = this.districtBox.map((d, i) => ({ d, i, n: today(d) })).sort((a, b) => (trouble.has(b.i) ? 1 : 0) - (trouble.has(a.i) ? 1 : 0) || b.n - a.n || b.d.n - a.d.n || a.i - b.i);
+    return order.filter((x) => trouble.has(x.i) || x.n > 0).slice(0, DISTRICT_NAMES_MAX).map((x) => x.d);
   }
 
   /** Each named district's name, in its lane's light hue, just outside its front-left corner

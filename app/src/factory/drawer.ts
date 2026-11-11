@@ -115,10 +115,14 @@ export class Drawer {
     const { pts, red, stops } = this.journeyPath(p);
     const col = red ? C.red : C.packet;
     const trace = () => { g.begin_(); pts.forEach(([u, v], i) => { const x = cam.x(u, v), y = cam.y(u, v, 1); if (i) g.line(x, y); else g.move(x, y); }); };
+    // w2-chrome (REVIEW-iter3 #7): the round joins and caps are this path's own; they used to leak
+    // into the time strip, whose hour-wide bars then stroked as 26 discs
+    ctx.save();
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     trace(); g.stroke(withAlpha(col, 0.18), 9);
     trace(); g.stroke(withAlpha(col, 0.35), 4);
     trace(); g.stroke(col, 1.5);
+    ctx.restore();
     // a travelling spark along the lit path (where the selection is now)
     let total = 0;
     for (let i = 1; i < pts.length; i++) total += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
