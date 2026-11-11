@@ -88,11 +88,11 @@ type Cols = {
   state: number; stateW: number; dots0: number; dots1: number; head: number; headW: number; right: number;
   open1: number; prsR: number;
   /** The 11 px columns as character cells from `org` (monospace): one fillText paints them all. */
-  a: number; a12b: number; cOrg: number; cLane: number; cState: number; cHead: number; cPrs: number; cEnd: number;
+  a: number; a12b: number; a10: number; cOrg: number; cLane: number; cState: number; cHead: number; cPrs: number; cEnd: number;
 };
 
 /** The columns at width W; the 11 px ones snapped to character cells of advance `a`. */
-function columns(W: number, maxDots: number, a: number, a12b: number): Cols {
+function columns(W: number, maxDots: number, a: number, a12b: number, a10: number): Cols {
   const m = 12;
   const glyph = m;
   const name = m + 12;
@@ -119,7 +119,7 @@ function columns(W: number, maxDots: number, a: number, a12b: number): Cols {
   const open1 = Math.max(dots1, Math.min(at(cPrs) - 70, dots0 + (n - 1) * 15 + 14));
   return {
     W, glyph, name, nameW, org, orgW, lane: at(cLane), laneW, state: at(cState), stateW, dots0, dots1, head: at(cHead), headW: headW >= 120 ? headW : 0,
-    right: at(cEnd), open1, prsR: at(cPrs), a, a12b, cOrg: 0, cLane, cState, cHead, cPrs, cEnd,
+    right: at(cEnd), open1, prsR: at(cPrs), a, a12b, a10, cOrg: 0, cLane, cState, cHead, cPrs, cEnd,
   };
 }
 
@@ -200,7 +200,7 @@ export class MainlinesModel {
   }
 
   draw(ctx: Ctx2D, frame: Frame, now: number, loaded: boolean): boolean {
-    if (!this.cols || this.cols.W !== frame.width) this.cols = columns(frame.width, this.maxDots, advance(ctx, F11), advance(ctx, F12B));
+    if (!this.cols || this.cols.W !== frame.width) this.cols = columns(frame.width, this.maxDots, advance(ctx, F11), advance(ctx, F12B), advance(ctx, F10));
     const cols = this.cols;
     const rows = this.rows, L = this.layers;
     const moving = this.table.draw(ctx, frame, (c, row, rc) => paintRow(c, row, rc, cols, rows[rc.index + 1]?.st, L), now, loaded ? 'No repo matches.' : 'Waiting for the fleet…');
@@ -286,7 +286,17 @@ function paintRow(ctx: Ctx2D, row: MlRow, rc: RowCtx, k: Cols, nextSt: MlState |
     const right = cells(k.cEnd - k.cPrs + 5, [[5, prs ? String(prs) : '', 5, true], [k.cEnd - k.cPrs + 5, age || '–', 8, true]]);
     L.text(F11, TXT3, right, k.prsR - 5 * a11, cy, a);
   }
-  if (!plain) L.text(F11, row.st === 'red' ? C.redText : C.amberText, fit(words, k.stateW, a11), k.state, cy);
+  if (!plain) {
+    // "red 28m" in red; who broke it after, smaller and gray, so the red dots stay the hero
+    const cut = row.st === 'red' ? words.indexOf(' · ') : -1;
+    const lead = cut >= 0 ? words.slice(0, cut) : words;
+    L.text(F11, row.st === 'red' ? C.redText : C.amberText, fit(lead, k.stateW, a11), k.state, cy);
+    if (cut >= 0) {
+      const x = k.state + (lead.length + 1) * a11;
+      const room = k.state + k.stateW - x;
+      if (room > 3 * k.a10) L.text(F10, TXT3, fit(words.slice(cut + 3), room, k.a10), x, cy);
+    }
+  }
   if (e > 0 && e < 1 && headText) {
     ctx.globalAlpha = 1 - e;
     ctx.font = F11;
@@ -482,8 +492,8 @@ function mainLine(ctx: Ctx2D, dots: Dot[], x0: number, x1: number, y: number, pi
     if (e > 0.4) {
       ctx.font = F10;
       ctx.textAlign = 'center';
-      ctx.fillStyle = withAlpha(C.redText, 0.75 * e);
-      ctx.fillText(short(culprit), x, y - r - 5); // the culprit, by its sha, once
+      ctx.fillStyle = withAlpha(TXT3, e);
+      ctx.fillText(short(culprit), x, y - r - 5); // the culprit, by its sha, once, gray
       ctx.textAlign = 'left';
     }
   }
