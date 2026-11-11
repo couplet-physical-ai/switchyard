@@ -105,7 +105,7 @@ test "the coffee header's totals are the status line's, in a replay"
   clock data
   expect state headAgrees == true
 
-// fx-day: and in the day replay ("24 h in 2 min"; the demo's is its last 6 h at 180×), read after
+// fx-day: and in the day replay ("24 h in 2 min"; the demo's is its last 2 h at 120×), read after
 // the intro and held, as the hour's
 test "the coffee header's totals are the status line's, in the day replay"
   clock data
@@ -117,7 +117,7 @@ test "the coffee header's totals are the status line's, in the day replay"
   clock +3000
   clock data
   expect state ov.mode == "replay"
-  expect state ov.speed == 180
+  expect state ov.speed == 120
   tap "pause"
   clock +1000
   clock +500 real
@@ -126,7 +126,7 @@ test "the coffee header's totals are the status line's, in the day replay"
   tap "pause"
   clock data
   expect state ov.mode == "replay"
-  expect state ov.speed == 180
+  expect state ov.speed == 120
   clock +5000
   tap "pause"
   clock +1000

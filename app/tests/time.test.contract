@@ -49,10 +49,10 @@ test "the hour replay plays history at 60× and comes back live"
   expect state ov.mode == "live"
 
 // fx-day: "24 h in 2 min". The built-in demo has no history: it simulates its fleet as the
-// playhead pulls it, so its day is the last 6 h at 180× (app.ts DEMO_DAY_*; a server's is the
-// last 24 h at DAY_SPEED, 720×, below). The playhead runs at the day's speed (the dial counts its
-// hours: 20 s are an hour at 180×), a pause holds it, Play goes on at the day's speed, and live
-// leaves it.
+// playhead pulls it, too slowly for 720× on Hermes, so its day is the last 2 h at 120× (app.ts
+// DEMO_DAY_*; a server's is the last 24 h at DAY_SPEED, 720×, below). The playhead runs at the
+// day's speed (the dial counts it: 20 s are 40 min at 120×), a pause holds it, Play goes on at the
+// day's speed, and live leaves it.
 test "the 24 h replay plays the day at its speed, pauses and resumes at it, and comes back live"
   clock data
   tap "setup-demo"
@@ -62,27 +62,27 @@ test "the 24 h replay plays the day at its speed, pauses and resumes at it, and 
   clock data
   expect state mode == "replay"
   expect state ov.mode == "replay"
-  expect state speed == 180
-  expect state ov.speed == 180
-  expect state ov.dial == "replaying · 0 of 6 h"
+  expect state speed == 120
+  expect state ov.speed == 120
+  expect state ov.dial == "replaying · 0 of 120 min"
   clock +20000
-  expect state ov.dial == "replaying · 1 of 6 h"
-  clock +40000
-  expect state ov.dial == "replaying · 3 of 6 h"
+  expect state ov.dial == "replaying · 40 of 120 min"
+  clock +20000
+  expect state ov.dial == "replaying · 80 of 120 min"
   tap "pause"
   clock data
   expect state ov.mode == "paused"
-  expect state ov.dial == "paused · 3 of 6 h"
+  expect state ov.dial == "paused · 80 of 120 min"
   clock +5000
-  expect state ov.dial == "paused · 3 of 6 h"
+  expect state ov.dial == "paused · 80 of 120 min"
   tap "pause"
   clock data
   expect state mode == "replay"
   expect state ov.mode == "replay"
-  expect state speed == 180
-  expect state ov.speed == 180
-  clock +20000
-  expect state ov.dial == "replaying · 4 of 6 h"
+  expect state speed == 120
+  expect state ov.speed == 120
+  clock +10000
+  expect state ov.dial == "replaying · 100 of 120 min"
   tap "go-live"
   clock data
   expect state ov.mode == "live"

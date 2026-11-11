@@ -113,14 +113,14 @@ export class Strip {
     g.fillRect(0, y0, W, BAR_H, withAlpha(C.canvas, 0.94));
     g.hline(0, W, g.crisp(y0), '#1F1F21');
     // the replay controls (live is the status line's: one control): the last hour at 60×, and the
-    // day (fx-day: the last 24 h at 720×; the demo simulates its fleet as it plays, so its day is
-    // the last 6 h at 180×, and the control says so: "6 h in 2 min"). Each is as wide as its
-    // longer label, so neither moves when one is playing.
+    // day (fx-day: the last 24 h at 720×; the demo simulates its fleet as it plays, too slowly for
+    // 720× on Hermes, so its "day" is the last 2 h at 120×, and the control says so: "2 h at
+    // 120×"). Each is as wide as its longer label, so neither moves when one is playing.
     const mode = tl.mode, replaying = mode === 'replay' || tl.replayPaused;
     const day = replaying && tl.replaySpeed > 60, demo = tl.wallNow !== null;
     const opts: [string, string, string][] = [
       ['last hour at 60×', 'replaying the hour', 'replay'],
-      demo ? ['6 h in 2 min', 'replaying 6 h', 'replay24'] : ['24 h in 2 min', 'replaying 24 h', 'replay24'],
+      demo ? ['2 h at 120×', 'replaying 2 h', 'replay24'] : ['24 h in 2 min', 'replaying 24 h', 'replay24'],
     ];
     const ws = opts.map(([a, b]) => Math.max(g.width(a, 13), g.width(b, 13)) + 22);
     let x = 16;

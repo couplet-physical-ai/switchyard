@@ -112,13 +112,14 @@ const REPLAY_CEILING = 1536 << 10;
 /** The day: the last 24 h at DAY_SPEED (two minutes), then live again. One constant, to retune. */
 const DAY_SPEED = 720;
 const DAY_MS = 24 * 3_600_000;
-/** The built-in demo has no history: its simulation runs forward as the playhead pulls it
- *  (src/demo.ts, at most 5 s of fleet time a call, a call a frame), so ~300× at 60 fps is its
- *  ceiling, and a fleet hour costs it more the longer it has run (Bun: 0.3 s of CPU at hour 1,
- *  1.9 s at hour 24; Hermes 10-25× that). Its day is the last 6 h at 180× (two minutes too:
- *  ~1.4 % of a core in Bun, pumps p99 1.6 ms), and the strip says so. */
-const DEMO_DAY_MS = 6 * 3_600_000;
-const DEMO_DAY_SPEED = 180;
+/** The built-in demo has no history: its simulation runs forward as the playhead pulls it (a
+ *  call a frame), and a fleet hour costs it more the longer it has run (Bun: 0.3 s of CPU at hour
+ *  1, 1.9 s at hour 24). fx-demo measured it at ~4,800 fleet ms per CPU ms without a JIT (Hermes-
+ *  like): 720× (12 s of fleet a frame) is 10-75 ms a frame on Hermes, far over budget. So its
+ *  "day" is the last 2 h at 120× (2 s of fleet a frame, twice the hour replay's), and the strip
+ *  says so: "2 h at 120×". */
+const DEMO_DAY_MS = 2 * 3_600_000;
+const DEMO_DAY_SPEED = 120;
 let chunkMs = 60_000;
 let chunking: Promise<void> | null = null;
 /** A stretch that will not stream at the speed: jump the replay to the fleet at this time. */
@@ -126,7 +127,15 @@ let rebaseAt = 0;
 const refused = (e: unknown) => /refus|ceiling|exceeds/i.test(`${(e as { kind?: string }).kind ?? ''} ${(e as Error).message ?? e}`);
 /** A replay's streaming, measured and logged when it ends (`replayDial`): what it asked and
  *  fetched, its jumps, the most unplayed frames it held; the waits are the timeline's. */
-const rs = { on: false, what: '', speed: 0, t0: 0, bytes: 0, requests: 0, refused: 0, jumps: 0, held: 0 };
+const rs = { on: false, what: '', speed: 0, t0: 0, bytes: 0, requests: 0, refused: 0, jumps: 0, held: 0, heap0: 0, heap: 0 };
+/** The JS heap in use, bytes, where the engine says (Hermes: `HermesInternal.getInstrumentedStats`,
+ *  the native data module's 64 MiB heap); 0 elsewhere. */
+function heapNow(): number {
+  try {
+    const st = (globalThis as { HermesInternal?: { getInstrumentedStats?: () => Record<string, number> } }).HermesInternal?.getInstrumentedStats?.();
+    return Number(st?.js_heapSize ?? st?.js_allocatedBytes ?? 0) || 0;
+  } catch { return 0; }
+}
 function fetchChunk(from: number): Promise<void> {
   if (!up || demo || chunking) return chunking ?? Promise.resolve();
   const z = replaySizing(tl.speed);
@@ -161,7 +170,7 @@ function jump(at: number): void { rebaseAt = Math.min(at, tl.replayTo); rs.jumps
 async function startReplayAt(from: number, to: number, speed: number, what: string): Promise<{ ok: boolean; status: string }> {
   if (!up) return { ok: false, status: 'not connected' };
   if (rs.on) logReplay();
-  Object.assign(rs, { on: false, what, speed, t0: clock, bytes: 0, requests: 0, refused: 0, jumps: 0, held: 0 });
+  Object.assign(rs, { on: false, what, speed, t0: clock, bytes: 0, requests: 0, refused: 0, jumps: 0, held: 0, heap0: heapNow(), heap: 0 });
   try {
     let ok: boolean;
     if (demo) {
@@ -174,8 +183,12 @@ async function startReplayAt(from: number, to: number, speed: number, what: stri
     } else {
       const z = replaySizing(speed);
       chunkMs = z.start; rebaseAt = 0;
+      replayBase = (up as HttpUpstream).base;
       // never a base inside a big window
-      const base = up.snapshotAt ? await up.snapshotAt(from).catch(() => null) : null;
+      let base = up.snapshotAt ? await up.snapshotAt(from).catch(() => null) : null;
+      // a server's first moments hold no fleet (it booted, then read its upstreams): start at the
+      // first with one (a few small asks, a skip apart)
+      for (let k = 0; k < 6 && base && !Object.keys(base.repos ?? {}).length && base.at + z.skip < to; k++) base = await up.snapshotAt!(base.at + z.skip).catch(() => null);
       const h = base ? { from, to: from, base, frames: [] } : await up.history(from, from + 60_000, true, 12 << 20);
       ok = tl.startReplay(h, to, speed);
       if (ok && tl.world.repos.size === 0) jump(tl.playhead + z.skip); // a server's first moments (an empty fleet, then its boot burst): jumped
@@ -188,6 +201,10 @@ async function startReplayAt(from: number, to: number, speed: number, what: stri
   }
 }
 
+/** The server a replay streams from: a reconnect to it mid-replay keeps the replay (connect). */
+let replayBase = '';
+function replayKeeps(base: string): boolean { return (tl.mode === 'replay' || tl.replayPaused) && !tl.replayDone() && replayBase === base; }
+
 /** Now as the replay controls count it: the demo's wall clock, else the server's. */
 const replayNow = () => (demo ? Math.floor((epochAtZero + clock) / 1000) * 1000 : tl.liveNow());
 /** A day replay is playing (or paused): a seek keeps its speed. */
@@ -199,11 +216,12 @@ const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
 function logReplay(): void {
   rs.on = false;
   const real = ((tl.endClock || clock) - rs.t0) / 1000;
-  console.log(`replay: ${rs.what} at ${rs.speed}× ${tl.endClock ? 'ended' : 'left'} after ${real.toFixed(1)} s real · ${rs.requests} chunk requests (${rs.refused} refused), ${(rs.bytes / 1048576).toFixed(1)} MB of frames, ${rs.jumps} jumps · first frames after ${Math.round(tl.startMs)} ms · ${tl.stalls} stalls, ${Math.round(tl.stallMs)} ms in all · at most ${rs.held} frames held`);
+  console.log(`replay: ${rs.what} at ${rs.speed}× ${tl.endClock ? 'ended' : 'left'} after ${real.toFixed(1)} s real · ${rs.requests} chunk requests (${rs.refused} refused), ${(rs.bytes / 1048576).toFixed(1)} MB of frames, ${rs.jumps} jumps · first frames after ${Math.round(tl.startMs)} ms · ${tl.stalls} stalls, ${Math.round(tl.stallMs)} ms in all · at most ${rs.held} frames held${rs.heap ? ` · heap ${(rs.heap0 / 1048576).toFixed(1)} → peak ${(rs.heap / 1048576).toFixed(1)} MB` : ''}`);
 }
 
 /** The yard's dial in words (and, once a replay has ended, its streaming numbers in the log). */
 function replayDial(): string {
+  if (rs.on) rs.heap = Math.max(rs.heap, heapNow()); // (4 times a second: the overview's pulse)
   if (rs.on && tl.mode !== 'replay' && !tl.replayPaused) logReplay();
   if (tl.mode === 'replay' || tl.replayPaused) {
     const span = tl.replayTo - tl.replayFrom, p = clamp01((tl.playhead - tl.replayFrom) / Math.max(1, span));
@@ -268,9 +286,9 @@ async function connect(server: string, token: string, epoch0: number): Promise<C
     }
     up = new HttpUpstream(base, token);
     const snap = await up.snapshot();
-    tl.load(snap, clock);
+    if (!replayKeeps(base)) tl.load(snap, clock); // fx-day: a reconnect mid-replay (a dropped or coalesced stream) leaves the replay playing
     yard.sync(clock);
-    return { ...none, ok: true, status: 'connected', seq: tl.world.seq, label: up.label, kind: 'http' };
+    return { ...none, ok: true, status: 'connected', seq: snap.seq ?? tl.world.seq, label: up.label, kind: 'http' }; // fx-day: the live seq (in a replay the world's is the past's)
   } catch (e) {
     const base = resolveBase(server);
     const msg = String((e as Error).message ?? e);
@@ -469,7 +487,7 @@ export const sources: Sources = {
     const to = replayNow();
     return startReplayAt(to - (demo ? DEMO_REPLAY : 3_600_000), to, 60, 'the last hour');
   },
-  // fx-day: the last 24 h at DAY_SPEED (the demo: its last 6 h at 180×), then live
+  // fx-day: the last 24 h at DAY_SPEED (the demo: its last 2 h at 120×), then live
   replayDay: async ([t]) => {
     if (t > 0) advance(t);
     const to = replayNow();

@@ -333,7 +333,7 @@ component App
               button appearance="none" press=startReplay testId="replay" aria-label="Replay the last hour, sped up" disabled=(ov.mode == "replay" or not conn.ok)
                 position="absolute" bottom=17 left=18 width=160 height=28 background-color="transparent" padding=0
                 text "last hour" color="#00000000" font-size=1
-              // fx-day: and beside it the day's, "24 h in 2 min" (the demo's: "6 h in 2 min", its last 6 h)
+              // fx-day: and beside it the day's, "24 h in 2 min" (the demo's: "2 h at 120×", its last 2 h)
               button appearance="none" press=startDay testId="replay-day" aria-label="Replay the last 24 hours in two minutes" disabled=(ov.mode == "replay" or not conn.ok)
                 position="absolute" bottom=17 left=180 width=130 height=28 background-color="transparent" padding=0
                 text "24 h" color="#00000000" font-size=1

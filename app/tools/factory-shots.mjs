@@ -75,7 +75,7 @@ if (lensMode) {
   if (bay) { await page.mouse.click(box.x + bay.x, box.y + bay.y - 4); await page.waitForTimeout(5000); await page.mouse.click(box.x + box.width - 18, box.y + 40 + 17); }
   await page.waitForTimeout(1200);
   // the last hour at 60×: the floor busy
-  await page.getByTestId('replay').click({ force: true }).catch(() => {});
+  if (process.env.REPLAY_ID) { for (let i = 0; i < 4; i++) { await page.keyboard.press('Escape'); await page.waitForTimeout(200); } await page.mouse.move(1380, 720); } await page.getByTestId(process.env.REPLAY_ID ?? 'replay').click({ force: true }).catch(() => {}); console.log('replay pressed at', Date.now()); if (process.env.REPLAY_WAIT) await page.waitForTimeout(Number(process.env.REPLAY_WAIT)); // fx-day: REPLAY_ID=replay-day REPLAY_WAIT=<ms> records the day replay (the key and any lens closed first, the pointer on an empty corner)
   await page.waitForTimeout(11000);
 }
 const v = page.video();
