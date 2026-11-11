@@ -615,8 +615,8 @@ component NowDetail
         text p.sub font-size=11.5 color="zr.ink3"
         row flex=1
         NowLinks(links=p.links, testKey="detail")
-        button appearance="none" press=close testId="now-detail-close" aria-label="Close" padding="2px 8px" border-radius=5
-          text "Close" font-size=11 color="zr.ink3"
+        button appearance="none" press=close testId="now-detail-close" aria-label="Close" height=18 padding="0 5px" border-radius=3 border="1px dashed sy.chip-edge"
+          text "close ×" font-size=11 color="#8C8C8E"
       if p.empty != ""
         text p.empty font-size=11.5 color="zr.ink3"
       if p.steps.length > 0
@@ -644,11 +644,11 @@ component NowDetail
               text r.step font-size=11.5 color="zr.ink2" flex=1 min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
               text r.timer font-size=11.5 color="zr.run"
               link href=r.url padding="2px 8px" border-radius=5 border="1px solid zr.rule2" text-decoration="none"
-                text "Roadrunner ↗" font-size=11 font-weight=700 color="zr.ink2"
+                text "roadrunner ↗" font-size=11 color="#8C8C8E"
       if p.logCap and p.logStep != ""
         column gap=4 testId="now-log"
           row gap=10 align-items="baseline"
-            text `Log · ${p.logStep}` font-size=11 font-weight=700 color="zr.ink2"
+            text `log · ${p.logStep}` font-size=11.5 font-weight=700 color="zr.ink"
             text log.note font-size=11 color="zr.ink3" testId="now-log-note"
           if log.rows.length > 0
             column padding="8px 10px" border="1px solid zr.rule" border-radius=6 max-height=420 overflow-y="auto" font-size=11

@@ -532,7 +532,7 @@ export function panelAnswer(d: NowDeps, [sel]: [string, number]): NowPanel {
     ];
     return {
       ok: true, kind, id, title: `${j.kind}${j.name && j.name !== j.kind ? ` · ${fit(j.name, 40)}` : ''}`,
-      sub: `${ciWord(j.ci)}${m ? ` · ${m.label}${m.slot ? ` slot ${m.slot}` : ''}${m.agent ? ` (${m.agent})` : ''}` : ''}${p?.number ? ` · #${p.number}` : ''}`,
+      sub: `${j.ci === 'gha' ? 'github actions' : 'roadrunner'}${m ? ` · ${m.label.toLowerCase()}${m.slot ? ` · slot ${m.slot}` : ''}${m.agent ? ` · ${m.agent}` : ''}` : ''}${p?.number ? ` · #${p.number}` : ''}`,
       links, steps, runs: [], empty: '', logCap: logCapable(d.upstream()), logStep, logWorkflow, logLive: j.state === 'running', logFail: !!j.result.failStep,
     };
   }
@@ -544,7 +544,7 @@ export function panelAnswer(d: NowDeps, [sel]: [string, number]): NowPanel {
       return { id: j.id, sel: `job:${j.id}`, glyph: glyph(j.state), tone: tone(j.state), repo: repoName(p?.repo ?? ''), kind: j.kind, step: j.step ? fit(`${j.step.index}/${j.step.count} ${j.step.name}`, 32) : '', timer: j.state === 'running' ? timer(now - (j.started ?? j.created)) : '', url: runUrl(w, j.id, j.url) };
     });
     const busy = r.machine.busy ?? r.running.length;
-    return { ...EMPTY_PANEL, ok: true, kind, id, title: r.machine.label, sub: r.machine.slots ? `${busy} of ${r.machine.slots} slots busy` : `${busy} running`, links: L('machine', 'Open in Roadrunner', engineUrl(w, r.machine)), runs, empty: runs.length ? '' : 'Nothing runs here right now.' };
+    return { ...EMPTY_PANEL, ok: true, kind, id, title: r.machine.label.toLowerCase(), sub: r.machine.slots ? `${busy} of ${r.machine.slots} slots busy` : `${busy} running`, links: L('machine', 'Open in Roadrunner', engineUrl(w, r.machine)), runs, empty: runs.length ? '' : 'nothing runs here right now' };
   }
   return EMPTY_PANEL;
 }

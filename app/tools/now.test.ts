@@ -88,7 +88,7 @@ eq(fit('short', 20), 'short', 'fit keeps what fits');
   eq(p.steps.map((s) => `${s.depth}${s.glyph}${s.name}`), ['0●ci · VM 153', '1✓clone', '1●test'], 'detail: workflow then its steps');
   eq(p.links.map((l) => l.label), ['roadrunner', 'step', 'vm 153', 'commit'], 'detail links: run, step, machine, commit');
   const m = panelAnswer(deps(w), ['machine:m:VM 153', 1]);
-  eq([m.kind, m.title, m.runs.length, m.runs[0]?.repo], ['machine', 'VM 153', 1, 'a'], 'machine detail: what runs there');
+  eq([m.kind, m.title, m.runs.length, m.runs[0]?.repo], ['machine', 'vm 153', 1, 'a'], 'machine detail: what runs there');
 }
 
 // ── finished: just + earlier one-liners, results, deploy → app → health ──
