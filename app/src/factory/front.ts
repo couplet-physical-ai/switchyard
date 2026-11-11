@@ -20,7 +20,7 @@
 //                    the road in the lane's hue; an hour whose failures ran over the lane's p90
 //                    gets red tips (≤ 30 % of the bar): bright for the last hour, desaturated after.
 //                    fx-polish (overseer note 10): the fan runs on its own APRON, the dark band
-//                    left of the slab (the roads' hull, edged like the slab), and every road
+//                    left of the slab (the roads' hull, lipped like the slab; p3: no hairline), and every road
 //                    starts 24 h back at an ORIGIN MARK inside it: a curb stub across the road
 //                    and a post, in the lane's hue. Nothing runs off into the void.
 //   lane curbs       §E: along the front strip, in front of the PR yard and the main lines (p3:
@@ -532,8 +532,8 @@ export class Front implements Layer {
   private paintRoads(g: Gfx, lo: boolean): void {
     const cam = this.f.cam;
     const capNow: number[] = [], capOld: number[] = [];
-    // fx-polish: the apron first (the dark band the fan runs on), edged like the slab, its rim
-    // along the slab's left edge left open (the slab's own edge is there)
+    // fx-polish: the apron first (the dark band the fan runs on), its camera-facing edges lipped
+    // like the slab's (its seams with the slab, u 0 and v LV, are no edges)
     for (const A of this.apron) {
       if (A.length < 3) continue;
       // a seam with the slab (u 0 or v LV, both ends on it) is no edge
@@ -546,17 +546,10 @@ export class Front implements Layer {
         poly(cam, g, [a[0], a[1], 0, b[0], b[1], 0, b[0], b[1], -4, a[0], a[1], -4]);
       }
       g.fill('#0A0A0B');
+      // p3: no hairline round it (it read as a stray outline about the fan): the surface is its
+      // fill and the lip alone
       g.begin_(); A.forEach(([u, v], k) => (k ? g.line(cam.x(u, v), cam.y(u, v)) : g.move(cam.x(u, v), cam.y(u, v)))); g.ctx.closePath(); g.fill(F.floor);
-      g.begin_();
-      let pen = false;
-      for (let k = 0; k < A.length; k++) {
-        const a = A[k]!, b = A[(k + 1) % A.length]!;
-        if (seam(a, b)) { pen = false; continue; }
-        if (!pen) g.move(cam.x(a[0], a[1]), cam.y(a[0], a[1]));
-        g.line(cam.x(b[0], b[1]), cam.y(b[0], b[1])); pen = true;
-      }
-      g.stroke('#2A2A2E', g.hair * 1.5);
-      g.ops += A.length * 7;
+      g.ops += A.length * 5;
     }
     for (const L of this.lanes) {
       const pts = L.road;
