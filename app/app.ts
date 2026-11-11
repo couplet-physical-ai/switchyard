@@ -273,8 +273,47 @@ export function memStats(): Record<string, number> {
 }
 /** oom: from a data turn (the overview's): the heap line every `memLog.every` ms, and a census
  *  walked a slice a turn every `memLog.census` ms, diffed with the last. */
+// TEMP EXPERIMENT (not committed): SWITCHYARD_HEAPLOG=1:<mode> turns one draw path off
+let expMode = '';
+function expApply(): void {
+  const F = Factory as unknown as { floorDirect: boolean; floorFreeze: boolean; floorWhole: boolean };
+  if (expMode.includes('direct')) F.floorDirect = true;
+  if (expMode.includes('freeze')) F.floorFreeze = true;
+  if (expMode.includes('whole')) F.floorWhole = true;
+  memLog.every = 15_000;
+  if (expMode) console.log(`exp: ${expMode}`);
+}
+// TEMP EXPERIMENT: Exact's recorder's per-frame pattern (canvas/recorder.js Writer, take, base64)
+const B64C = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+let expSink2: unknown = null;
+function expWriter(): void {
+  const m = expMode;
+  if (!m.includes('writer') && !m.includes('views') && !m.includes('b64')) return;
+  for (let k = 0; k < 4; k++) {
+    let buf = new ArrayBuffer(256), view = new DataView(buf), len = 8;
+    if (m.includes('writer') || m.includes('views')) {
+      for (let i = 0; i < 4000; i++) {
+        const need = len + 8 + 2 * 8;
+        if (need > buf.byteLength) {
+          const grown = new ArrayBuffer(Math.max(need, buf.byteLength * 2));
+          if (m.includes('views')) new Uint8Array(grown).set(new Uint8Array(buf, 0, len));
+          buf = grown; view = new DataView(grown);
+        }
+        view.setUint32(len, 3, true); view.setUint32(len + 4, 2, true); view.setFloat64(len + 8, i, true); view.setFloat64(len + 16, -i, true);
+        len = need;
+      }
+    } else len = 64 << 10;
+    const bytes = m.includes('b64') ? new Uint8Array(m.includes('writer') || m.includes('views') ? buf : new ArrayBuffer(len), 0, len) : null;
+    if (bytes) {
+      let out = '', i = 0;
+      for (; i + 2 < bytes.length; i += 3) { const n = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2]; out += B64C[n >> 18] + B64C[(n >> 12) & 63] + B64C[(n >> 6) & 63] + B64C[n & 63]; }
+      expSink2 = JSON.stringify({ lists: [out], frame: true, error: null, notes: [] }).length;
+    } else expSink2 = len;
+  }
+}
 function memTick(native: Native): void {
-  if (memEnvAsked !== native) { memEnvAsked = native; try { memLog.env = native?.available ? native.call({ op: 'heapLog' }).on === true : false; } catch { memLog.env = false; } }
+  expWriter();
+  if (memEnvAsked !== native) { memEnvAsked = native; try { const r = native?.available ? native.call({ op: 'heapLog' }) : null; memLog.env = r?.on === true; expMode = String(r?.mode ?? ''); expApply(); } catch { memLog.env = false; } }
   const h = heapNow();
   if (h > memPeak) memPeak = h;
   memLog.hud = yard.hud.on;
@@ -913,6 +952,9 @@ export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
   // Covered, the floor's live layer sleeps; the 250 ms tick (a surface argument) wakes it when
   // it is on top again.
   if ((surface === 'factoryLive' || surface === 'factoryTop' /* fab-w7 */) && topView !== '' && topView !== 'factory') return false;
+  if (expMode.includes('notop') && surface === 'factoryTop') return false;
+  if (expMode.includes('nolive') && surface === 'factoryLive') return false;
+  if (expMode.includes('nofloor') && surface === 'factoryFloor') return false;
   try {
     turnStart(); // oom
     const more = drawSurface(surface, args, ctx, frame);
