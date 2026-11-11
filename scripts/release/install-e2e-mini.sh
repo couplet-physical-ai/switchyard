@@ -7,7 +7,10 @@
 #
 # Token: SY_TOKEN_FILE=<local path, mode 600> is copied to the mini as a 600 file (never in argv
 # or a URL), handed to the app as SWITCHYARD_TOKEN_FILE, and deleted afterwards. SY_SNAPSHOT=1
-# asks the app for SWITCHYARD_SNAPSHOT (Exact's own render; screencapture is blocked over ssh).
+# asks the app for SWITCHYARD_SNAPSHOT. With a token, the run fails if the token's value appears
+# anywhere under the app's Application Support, Logs or Preferences (it must live only in the
+# Keychain). The script only ever quits /Applications' copy (dev builds share the bundle id).
+# (Exact's own render; screencapture is blocked over ssh).
 # brew on the mini belongs to felipearce; the app runs in mini-user's GUI session.
 set -euo pipefail
 V=${1:?version}; KEEP=${2:-}
@@ -58,6 +61,16 @@ echo "running: \${pid:-none}"; [[ -n "\$pid" ]]
 echo "--- brew info"; ($B info --cask switchyard 2>&1 | head -2)
 echo "--- app log (this launch)"; grep -h "pid \$pid " ~/Library/Logs/Switchyard/*.log 2>/dev/null | grep -v "download: [0-9]*%" | tail -n 12 | cut -c1-240 || true
 ls -la $DIR/shots/install-$V.png 2>/dev/null || true
+TOKF="$TOK_REMOTE"
+if [[ -n "\$TOKF" ]]; then
+  # The token must live only in the Keychain: grep its value (read from the file, never argv)
+  # through the app's files, while it runs and again after it quits (kept state is flushed then).
+  leak() { grep -rlF -f "\$TOKF" ~/Library/Application\ Support/com.exowatt.switchyard ~/Library/Logs/Switchyard ~/Library/Preferences/com.exowatt.switchyard.plist 2>/dev/null || true; }
+  l=\$(leak); [[ -z "\$l" ]] && echo "token at rest (running): none" || { echo "FAIL: token found in: \$l" >&2; exit 1; }
+  pkill -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true; sleep 3
+  l=\$(leak); [[ -z "\$l" ]] && echo "token at rest (after quit): none" || { echo "FAIL: token found in: \$l" >&2; exit 1; }
+  if [[ "$KEEP" == --keep ]]; then sudo -n launchctl asuser \$(id -u) sudo -n -u \$(id -un) open "\$A"; fi
+fi
 if [[ "$KEEP" != --keep ]]; then pkill -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true; fi
 echo E2E-PASS
 EOF
