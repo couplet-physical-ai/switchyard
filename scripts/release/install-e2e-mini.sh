@@ -37,6 +37,9 @@ ENV=()
 [[ -n "$TOK_REMOTE" ]] && ENV+=(--env "SWITCHYARD_TOKEN_FILE=$TOK_REMOTE")
 [[ -n "${SY_SNAPSHOT:-}" ]] && ENV+=(--env "SWITCHYARD_SNAPSHOT=$DIR/shots/install-$V.png:12")
 
+# The on-screen window lister (scripts/release/windows.swift), built once on the mini.
+timeout 300 "${SSH[@]}" "mkdir -p '$DIR' && cat > '$DIR/windows.swift' && { [[ -x '$DIR/sy-windows' && '$DIR/sy-windows' -nt '$DIR/windows.swift' ]] || swiftc -O -o '$DIR/sy-windows' '$DIR/windows.swift' 2>&1 | tail -3; }" < "$(dirname "$0")/windows.swift"
+
 out=$(timeout 1800 "${SSH[@]}" 'f=$(mktemp); cat > "$f"; bash "$f" </dev/null 2>&1; rc=$?; rm -f "$f"; exit $rc' <<EOF
 set -euo pipefail
 A=/Applications/Switchyard.app
@@ -48,6 +51,11 @@ quit_() {
   echo "WARN: Switchyard ignored SIGTERM for 15 s; SIGKILL" >&2
   pkill -KILL -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true; sleep 1
 }
+W=$DIR/sy-windows
+gui() { sudo -n launchctl asuser \$(id -u) sudo -n -u \$(id -un) "\$@"; }
+age_() { ps -o etime= -p "\$1" 2>/dev/null | awk -F'[-:]' '{n=NF; s=\$n+60*\$(n-1); if(n>=3)s+=3600*\$(n-2); if(n>=4)s+=86400*\$(n-3); print s}' | grep . || echo 99; }
+prompt_() { gui \$W SecurityAgent 2>/dev/null | grep -c '^window' || true; }
+deny_() { [[ "\$(prompt_)" == 0 ]] || { sudo -n pkill -9 -x SecurityAgent || true; echo "denied the Keychain prompt (cleanup)"; }; }
 LSR=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 quit_
 ($B uninstall --cask switchyard >/dev/null 2>&1 || true)
@@ -63,11 +71,21 @@ xattr -p com.apple.quarantine "\$A" >/dev/null 2>&1 && { echo "FAIL: quarantine 
 codesign --verify --deep --strict "\$A" && echo "signature: ok"
 \$LSR -f "\$A"
 mkdir -p $DIR/shots ~/Library/Logs/Switchyard; rm -f $DIR/shots/install-$V.png
-sudo -n launchctl asuser \$(id -u) sudo -n -u \$(id -un) open ${ENV[*]:-} "\$A"
+deny_
+# A reinstall keeps the Keychain item an earlier build wrote (\$(security find-generic-password … && echo yes)):
+# the window must be up within 5 s of launch, and no Keychain prompt (SY_KC_PROMPT_OK=1 allows one).
+had=\$(security find-generic-password -s com.exowatt.switchyard -a switchyard.token >/dev/null 2>&1 && echo "an earlier build's" || echo none)
+gui open ${ENV[*]:-} "\$A"
+np=""; for i in \$(seq 1 20); do np=\$(pgrep -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' | head -1 || true); [[ -n "\$np" ]] && break; sleep 0.25; done
+win=""; while [[ -n "\$np" && \$(age_ \$np) -le 5 ]]; do gui \$W Switchyard >/dev/null 2>&1 && { win=\$(age_ \$np); break; }; sleep 0.25; done
+pr=\$(prompt_)
+echo "launch: window at \${win:-none} s (≤ 5 required); Keychain item before launch: \$had; prompt: \$([[ \$pr == 0 ]] && echo none || echo SHOWN)"
+if [[ "\$pr" != 0 ]]; then deny_; [[ "${SY_KC_PROMPT_OK:-}" == 1 ]] || { quit_; echo "FAIL: Keychain prompt at launch" >&2; exit 1; }; fi
+[[ -n "\$win" ]] || { quit_; echo "FAIL: no window within 5 s of launch" >&2; exit 1; }
 sleep 20
 pid=\$(pgrep -f '/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true)
 echo "running: \${pid:-none}"; [[ -n "\$pid" ]]
-[[ -x /tmp/sy-windows ]] && sudo -n launchctl asuser \$(id -u) sudo -n -u \$(id -un) /tmp/sy-windows Switchyard | tail -1
+gui \$W Switchyard | tail -1
 echo "--- brew info"; ($B info --cask switchyard 2>&1 | head -2)
 echo "--- app log (this launch)"; grep -h "pid \$pid " ~/Library/Logs/Switchyard/*.log 2>/dev/null | grep -v "download: [0-9]*%" | tail -n 12 | cut -c1-240 || true
 TOKF="$TOK_REMOTE"

@@ -14,6 +14,11 @@
 # SY_FROM_TAP=1: <from> is already installed from the tap (brew install before <to> was cut);
 # otherwise the <from> release zip is installed directly. SY_SEED_TOKEN=1 seeds a fake token into
 # kv/exact.kept before the update and requires <to> to scrub it (and log it) at its first launch.
+# SY_TOKEN_FILE=<local 600 file>: the Keychain case. <from> connects with that token first (so the
+# token is in the Keychain, written by <from>), then the update: <to>'s window must be on screen
+# within 5 s of its launch and no Keychain prompt (a SecurityAgent window) may appear. SY_KC_PROMPT_OK=1
+# allows the prompt (a version whose Keychain item cannot be read silently by the next, e.g.
+# 0.1.2 → 0.1.3) but still requires the window.
 set -euo pipefail
 FROM=${1:?from-version}; TO=${2:?to-version}; KEEP=${3:-}
 HOST=${SY_MINI:-mini-user@192.0.2.1}
@@ -28,6 +33,19 @@ OPEN_ENV=(); [[ -n "${SY_UPDATE_FEED:-}" ]] && OPEN_ENV=(--env "SWITCHYARD_UPDAT
 if [[ "${SY_UPDATE_MODE:-headless}" == ui ]]; then ARG=""; OPEN_ENV+=(--env SWITCHYARD_UPDATE_AUTOINSTALL=1); fi
 feed=$(curl -fsSL --retry 3 "$FEED" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')
 [[ "$feed" == "$TO" ]] || { echo "latest.json names $feed, not $TO" >&2; exit 1; }
+
+DIR=/Users/${HOST%@*}/.switchyard-e2e
+TOK_REMOTE=""
+if [[ -n "${SY_TOKEN_FILE:-}" ]]; then
+  [[ "$(stat -c %a "$SY_TOKEN_FILE")" == 600 ]] || { echo "$SY_TOKEN_FILE must be mode 600" >&2; exit 1; }
+  TOK_REMOTE=$DIR/secret/token
+  tar -C "$(dirname "$SY_TOKEN_FILE")" -cf - "$(basename "$SY_TOKEN_FILE")" \
+    | timeout 60 "${SSH[@]}" "umask 077 && mkdir -p '$DIR/secret' && tar -C '$DIR/secret' -xOf - > '$TOK_REMOTE' && chmod 600 '$TOK_REMOTE'"
+fi
+cleanup() { [[ -z "$TOK_REMOTE" ]] || timeout 60 "${SSH[@]}" "rm -P '$TOK_REMOTE' 2>/dev/null || rm -f '$TOK_REMOTE'; rmdir '$DIR/secret' 2>/dev/null || true"; }
+trap cleanup EXIT
+# The on-screen window lister (scripts/release/windows.swift), built once on the mini.
+timeout 300 "${SSH[@]}" "mkdir -p '$DIR' && cat > '$DIR/windows.swift' && { [[ -x '$DIR/sy-windows' && '$DIR/sy-windows' -nt '$DIR/windows.swift' ]] || swiftc -O -o '$DIR/sy-windows' '$DIR/windows.swift' 2>&1 | tail -3; }" < "$(dirname "$0")/windows.swift"
 
 # The script goes to a file first: run from stdin, a command that reads stdin (sudo, brew) would
 # swallow the rest of it and the run would "pass" having done nothing. PASS must be printed.
@@ -45,6 +63,14 @@ quit_() {
   echo "WARN: Switchyard ignored SIGTERM for 15 s; SIGKILL" >&2
   pkill -KILL -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true; sleep 1
 }
+W=$DIR/sy-windows
+gui() { sudo -n launchctl asuser \$(id -u) sudo -n -u \$(id -un) "\$@"; }
+# a Keychain prompt is a SecurityAgent window (any layer); none = no prompt
+# a process's age in seconds (macOS ps has etime, not etimes); 99 when it is gone
+age_() { ps -o etime= -p "\$1" 2>/dev/null | awk -F'[-:]' '{n=NF; s=\$n+60*\$(n-1); if(n>=3)s+=3600*\$(n-2); if(n>=4)s+=86400*\$(n-3); print s}' | grep . || echo 99; }
+prompt_() { gui \$W SecurityAgent 2>/dev/null | grep -c '^window' || true; }
+# deny a prompt left on screen (the mini has nobody to answer it)
+deny_() { [[ "\$(prompt_)" == 0 ]] || { sudo -n pkill -9 -x SecurityAgent || true; echo "denied the Keychain prompt (cleanup)"; }; }
 v() { /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "\$A/Contents/Info.plist"; }
 quit_
 # Dev builds registered with LaunchServices (sy-client's targets, old release dirs) would take
@@ -67,6 +93,19 @@ echo "installed: \$(v)"; [[ "\$(v)" == "$FROM" ]]
 if [[ "\$(stat -f %Su "\$A")" != "\$(id -un)" ]]; then
   sudo -n chown -R "\$(id -un)" "\$A"; echo "owner: \$(id -un) (was the brew user)"
 fi
+LOG=~/Library/Logs/Switchyard/switchyard.log; mkdir -p ~/Library/Logs/Switchyard; touch \$LOG
+if [[ -n "$TOK_REMOTE" ]]; then
+  # <from> writes the token to the Keychain (a fresh item: the one an earlier build made is gone)
+  security delete-generic-password -s com.exowatt.switchyard -a switchyard.token >/dev/null 2>&1 || true
+  deny_
+  L1=\$(wc -l < \$LOG)
+  gui open --env SWITCHYARD_TOKEN_FILE=$TOK_REMOTE "\$A"
+  for i in \$(seq 1 40); do sleep 1; tail -n +\$((L1+1)) \$LOG | grep -q "token-file: connected" && break; done
+  tail -n +\$((L1+1)) \$LOG | grep "token-file:" | tail -1
+  tail -n +\$((L1+1)) \$LOG | grep -q "token-file: connected" || { echo "FAIL: $FROM did not connect with the token file" >&2; exit 1; }
+  sleep 2; quit_
+  security find-generic-password -s com.exowatt.switchyard -a switchyard.token >/dev/null 2>&1 && echo "keychain: token stored by $FROM" || { echo "FAIL: no Keychain item after $FROM connected" >&2; exit 1; }
+fi
 # SY_SEED_TOKEN=1: a kept answer holding a fake syd_ token, as 0.1.0 and earlier left real ones in
 # kv/exact.kept; the updated app must scrub it at its first launch (and log it under its pid).
 K="\$HOME/Library/Application Support/com.exowatt.switchyard/kv/exact.kept"
@@ -83,6 +122,20 @@ for i in \$(seq 1 120); do
   sleep 2
   [[ "\$(v)" == "$TO" ]] && pgrep -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' >/dev/null && break
 done
+if [[ -n "$TOK_REMOTE" ]]; then
+  # The Keychain case: <to>'s window within 5 s of its launch, and no prompt.
+  np=\$(pgrep -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' | head -1 || true)
+  [[ -n "\$np" ]] || { echo "FAIL: $TO is not running" >&2; exit 1; }
+  up=\$(age_ \$np); win=""
+  while [[ \$(age_ \$np) -le 5 ]]; do
+    gui \$W Switchyard >/dev/null 2>&1 && { win=\$(age_ \$np); break; }; sleep 0.25
+  done
+  [[ -z "\$win" ]] && gui \$W Switchyard >/dev/null 2>&1 && [[ \$up -gt 5 ]] && win="≤\$up (seen late)"
+  pr=\$(prompt_)
+  echo "keychain case: $TO pid \$np window at \${win:-none} s; Keychain prompt: \$([[ \$pr == 0 ]] && echo none || echo SHOWN)"
+  if [[ "\$pr" != 0 ]]; then deny_; [[ "${SY_KC_PROMPT_OK:-}" == 1 ]] || { quit_; echo "FAIL: Keychain prompt after the update" >&2; exit 1; }; fi
+  [[ -n "\$win" && "\$win" != ≤* ]] || { quit_; echo "FAIL: no window within 5 s of $TO's launch" >&2; exit 1; }
+fi
 echo "other Switchyard processes: \$(pgrep -fl 'Switchyard.app/Contents/MacOS/Switchyard' | grep -v '^[0-9]* /Applications/' || echo none)"
 echo "after update: \$(v) (running: \$(pgrep -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || echo none))"
 echo "--- update.log"; tail -20 ~/Library/Logs/Switchyard/update.log || true
