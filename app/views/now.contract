@@ -384,6 +384,11 @@ component NowBlock
           text b.ago font-size=12 color="zr.ink3"
       column flex=1 min-width=0 gap=2
         NowEventLine(b=b, narrow=narrow, testKey=testKey, only=only)
+        if b.jobs.length == 0
+          row min-height=30 gap=10 align-items="center" testId=`now-nojobs-${testKey}`
+            text "└" font-family="Commit Mono" font-size=13 color="zr.ink4" width=14 aria-hidden=true
+            text "○" font-size=12 color="zr.ink3" width=14 text-align="center"
+            text "pushed · no CI run has started yet" font-size=13 color="zr.ink3"
         for j, ji in b.jobs key=j.id
           NowJobLine(j=j, narrow=narrow, sel=sel, testKey=`${testKey}-${ji}`, select=select)
           if sel == j.sel

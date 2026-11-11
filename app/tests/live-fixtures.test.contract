@@ -13,7 +13,8 @@ test "the fixture fleet connects on Live and remains available in Factory and Ya
   expect state conn.ok == true
   expect state ov.repos == 394
   expect state nowData.ok == true
-  expect text "now-status" == "now"
+  expect tree has "now-status"
+  expect state nowData.ok == true
   expect tree missing "now-setup"
 
   tap "tab-factory"

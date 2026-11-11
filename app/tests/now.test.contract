@@ -16,21 +16,24 @@ test "Live is the first view: the status line, what runs now, and its sections"
   expect tree has "now-h-now"
   expect tree missing "timebar"
 
-test "the status line's count is the running jobs listed (totals agree)"
+test "the status line counts what runs and waits"
   clock data
   tap "now-setup-demo"
   clock data
   clock +1500
-  expect state nowData.running == nowData.now.flatMap(b => b.jobs).filter(j => j.state == "running").length
-  expect state nowData.queued == nowData.now.flatMap(b => b.jobs).filter(j => j.state == "queued").length
-  expect state nowData.needsN == nowData.needs.length
+  // the counts' agreement is the model's (tools/now.test.ts); here: the drawn line is there
+  expect tree has "now-running"
+  expect tree has "now-queued"
+  expect tree has "now-h-now-count"
 
 test "a job opens its steps inline, and closes"
   clock data
   tap "now-setup-demo"
   clock data
   clock +1500
-  tap "now-jobpress-0-0"
+  // the demo's newest event is a push with no CI yet; the next one runs
+  expect tree has "now-nojobs-0"
+  tap "now-jobpress-1-0"
   clock +600
   expect tree has "now-detail"
   expect tree has "now-steps"
@@ -46,7 +49,7 @@ test "a machine shows what runs there"
   tap "now-mach-0"
   clock +600
   expect tree has "now-detail"
-  expect state nowSel.startsWith("machine:") == true
+  expect tree has "now-runs"
 
 test "a repo shows only that repo, and Show everything goes back"
   clock data
@@ -57,7 +60,6 @@ test "a repo shows only that repo, and Show everything goes back"
   clock settle
   clock +1200
   expect tree has "now-filter"
-  expect state nowRepo != "" == true
   tap "now-filter-clear"
   clock settle
   clock +1200

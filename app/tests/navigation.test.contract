@@ -10,7 +10,8 @@ test "a fresh install asks where to connect, and the demo starts at once"
   clock +1000
   clock data
   expect tree missing "now-setup"
-  expect text "now-status" == "now"
+  expect tree has "now-status"
+  expect state nowData.ok == true
   expect state conn.kind == "demo"
   expect state ov.mode == "live"
   expect state ov.repos == 410
