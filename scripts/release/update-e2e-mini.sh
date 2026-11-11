@@ -9,7 +9,8 @@
 # SY_UPDATE_FEED=<url> (passed to the app as SWITCHYARD_UPDATE_FEED, e.g. a prerelease's
 # …/releases/download/vX/latest.json). The hook is the app's headless trigger: launch argument
 # --update-now (check → download → verify → swap → relaunch, no UI; override with SY_UPDATE_ARG).
-# Its log is read from ~/Library/Logs/Switchyard/update.log. --keep leaves the app installed afterwards.
+# Its log is read from ~/Library/Logs/Switchyard/update.log. SY_UPDATE_MODE=ui takes the UI path
+# (AUTOINSTALL) instead of the headless hook. --keep leaves the app installed afterwards.
 # SY_FROM_TAP=1: <from> is already installed from the tap (brew install before <to> was cut);
 # otherwise the <from> release zip is installed directly.
 set -euo pipefail
@@ -22,6 +23,9 @@ BREW='(cd /tmp && sudo -n -Hu felipearce env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_
 
 FEED=${SY_UPDATE_FEED:-https://github.com/$REPO/releases/latest/download/latest.json}
 OPEN_ENV=(); [[ -n "${SY_UPDATE_FEED:-}" ]] && OPEN_ENV=(--env "SWITCHYARD_UPDATE_FEED=$SY_UPDATE_FEED")
+# SY_UPDATE_MODE=ui: no --update-now; the app checks at launch and SWITCHYARD_UPDATE_AUTOINSTALL=1
+# presses Relaunch through the same UI path a person uses.
+if [[ "${SY_UPDATE_MODE:-headless}" == ui ]]; then ARG=""; OPEN_ENV+=(--env SWITCHYARD_UPDATE_AUTOINSTALL=1); fi
 feed=$(curl -fsSL --retry 3 "$FEED" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')
 [[ "$feed" == "$TO" ]] || { echo "latest.json names $feed, not $TO" >&2; exit 1; }
 
@@ -48,7 +52,7 @@ fi
 echo "installed: \$(v)"; [[ "\$(v)" == "$FROM" ]]
 mkdir -p ~/Library/Logs/Switchyard; : > ~/Library/Logs/Switchyard/update.log
 \$LSR -f "\$A"
-sudo -n launchctl asuser \$(id -u) sudo -n -u \$(id -un) open ${OPEN_ENV[*]:-} "\$A" --args $ARG
+sudo -n launchctl asuser \$(id -u) sudo -n -u \$(id -un) open ${OPEN_ENV[*]:-} "\$A" ${ARG:+--args $ARG}
 for i in \$(seq 1 120); do
   sleep 2
   [[ "\$(v)" == "$TO" ]] && pgrep -f 'Switchyard.app/Contents/MacOS/Switchyard' >/dev/null && break
