@@ -72,6 +72,9 @@ export const RISER_U = DOCK_U1 + 7;
 /** The intake's mouth gate (u), at the distributor: W4's jam crates bunch behind it. */
 const GATE_U = DIST_U - 3;
 /** Machine paint: calm, so the lit bays and the queue carry the plant. */
+/** ZERO (Felipe): the named heap keeps one leader to its name, no fan of arcs across the floor. */
+const HEAP_ARCS = false;
+const RING_GREY = '#8A8A90'; // ZERO: the holding yard's p90 ring (a neutral hairline)
 const M_TOP = '#212124', M_SIDE = '#19191B', M_FRONT = '#151517', M_EDGE = '#38383C', M_OFF = '#6B3A3F', IDLE_BAY = '#18181A';
 // the wall's chart speaks the machine lens's language (lens.ts vmStory): busy an amber tide, cpu an
 // ink line, mem a blue-gray one, a red tick under every stretch with every slot taken
@@ -982,7 +985,7 @@ export class Plant implements Layer {
     const gh = Math.max(...grp.heaps.map((h) => h.h));
     const mid = (ga + gb) / 2;
     const hx = cam.x(mid, RETURN_V - 4), hy = cam.y(mid, RETURN_V - 4, 1.2 + gh);
-    if (fr.q < 4) this.arcs(g, top, hx, hy, fr.t);
+    if (HEAP_ARCS && fr.q < 4) this.arcs(g, top, hx, hy, fr.t);
     const what = grp.label ? `${grp.label}${grp.error ? ` · ${grp.error}` : ''}` : shortStep(top.step);
     const name = fl ? `${what} · flaky` : `${what} · ${heapFact(grp, fr.now)}`;
     const wv = g.width(name, SMALL);
@@ -1169,8 +1172,9 @@ export class Plant implements Layer {
       g.line(cam.x(u, v), cam.y(u, v, 0.3));
       left -= seg;
     }
-    g.stroke(over ? C.packet : withAlpha(C.amberText, 0.55), Math.max(1, g.hair * (over ? 2 : 1.4)));
-    if (over && oldest) { g.begin_(); quad(cam, g, oldest[0] - oldest[2] / 2 - 1, oldest[1] - oldest[2] / 2 - 1, oldest[0] + oldest[2] / 2 + 1, oldest[1] + oldest[2] / 2 + 1, 0.4 + oldest[2] * 0.8); g.stroke(C.packet, Math.max(1, g.hair * 2)); }
+    // ZERO (Felipe): no coloured frame; the ring is a grey hairline, brighter once past the p90
+    g.stroke(withAlpha(RING_GREY, over ? 0.9 : 0.5), Math.max(1, g.hair));
+    if (over && oldest) { g.begin_(); quad(cam, g, oldest[0] - oldest[2] / 2 - 1, oldest[1] - oldest[2] / 2 - 1, oldest[0] + oldest[2] / 2 + 1, oldest[1] + oldest[2] / 2 + 1, 0.4 + oldest[2] * 0.8); g.stroke(withAlpha(RING_GREY, 0.9), Math.max(1, g.hair)); }
   }
 
   /** w2-engine2 (#11): the yard's hover: a box per lane and 4 hours (the arrivals in them, the lane's
