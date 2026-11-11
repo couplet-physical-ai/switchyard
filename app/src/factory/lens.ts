@@ -106,8 +106,6 @@ export class Lenses {
   down = false;
   private lastKey = '';
   private lastKeyT = -1;
-  private lastKeyF = -1;
-  private frames = 0;
   /** Failures of the last hour parked on the return conveyor by CLUSTER (fab-w3, overseer note 4):
    *  the same signature together, the biggest open cluster nearest the scanner. */
   parked: Parked[] = [];
@@ -179,11 +177,12 @@ export class Lenses {
   // ---- input -------------------------------------------------------------------------------------
   /** A key on the floor: Esc / Backspace walk back up the stack, ? toggles the key. */
   key(k: string, t: number): Hit | null {
-    // fab-w3: one key press reaches both the canvas and the floor's column (both take `key`), in
-    // one dispatch at one clock: act on it once, or Esc walks back two steps
-    // (a second press always comes after a frame: the floor draws at least on its 125 ms pulse)
-    const dup = k === this.lastKey && t === this.lastKeyT && this.frames === this.lastKeyF;
-    this.lastKey = k; this.lastKeyT = t; this.lastKeyF = this.frames;
+    // fab-w3: one key press reaches both the canvas and the floor's column (both take `key`) at
+    // one clock: act on it once, or Esc walks back two steps. A second press comes at a later
+    // clock: every live frame advances it (app.ts draws), and the floor draws at least on its
+    // 125 ms pulse.
+    const dup = k === this.lastKey && t === this.lastKeyT;
+    this.lastKey = k; this.lastKeyT = t;
     if (dup) { /* already handled */ } else if (k === 'Escape' || k === 'Backspace') {
       if (this.legend) this.legend = false;
       else if (this.stack.length || this.cmp) this.pop(t);
@@ -794,7 +793,6 @@ export class Lenses {
   /** After the floor's labels: the rest dims to ~25 % and desaturates, the relation is lit and the
    *  lens's story is drawn where its things are. A run's lens is the floor's own journey. */
   draw(g: Gfx, ctx: Ctx2D, fr: Frame, t: number): void {
-    this.frames++;
     const top = this.topLens;
     if (!top || top.kind === 'pipeline') return;
     this.refresh();
