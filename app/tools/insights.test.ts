@@ -122,6 +122,7 @@ eq(i5.groupOf(r5.id), r5.group, 'v0.5 groupOf: Repo.group');
 eq(i5.groups().length, tl5.world.groups.size, 'v0.5 groups: the server\'s table');
 const c5 = i5.clusters();
 ok(c5[0]?.line === CLUSTER_LINE && c5[0].repo_count >= 4 && c5[0].repo_count <= 6 && c5[0].groups.length >= 2 && c5[0].groups.length <= 3, `v0.5 clusters: the story cluster leads (${c5[0]?.signature}, ${c5[0]?.repo_count} repos, ${c5[0]?.groups.length} groups)`);
+ok(c5[0]!.open < c5[0]!.repo_count && tl5.world.repos.get(sim.cast!.cluster[0]!)!.main.state !== 'failure', `the demo opens with one cluster repo fixed already (open ${c5[0]!.open} of ${c5[0]!.repo_count})`);
 const ex = c5[0]!.examples[0]!;
 eq(i5.clusterOf(ex)?.id, c5[0]!.id, 'v0.5 clusterOf: Step.cluster');
 ok(i5.flakes().length >= 1 && i5.flakes()[0]!.flips_24h >= 2, `v0.5 flakes: ${i5.flakes()[0]?.id} ${i5.flakes()[0]?.flips_24h} flips`);
@@ -131,7 +132,7 @@ const upg = i5.groups().filter((g) => i5.trend(g.id)?.pass_rate.dir === 1).map((
 ok(down.includes(sim.cast!.down) && upg.includes(sim.cast!.up), `v0.5 trends: ${sim.cast!.down} trending down (bad), ${sim.cast!.up} up`);
 ok(!i5.groupHue(sim.cast!.down).folded && !i5.groupHue(sim.cast!.up).folded, 'the demo\'s trending groups are hued (not folded)');
 const c = await i5.changesSince(E - 9 * 3600_000);
-ok(c.complete && c.red.some((x) => x.cluster === c5[0]!.id) && c.recovered.some((x) => x.repo === sim.cast!.recovers), `v0.5 changesSince (the server's): ${c.red.length} red (the cluster's among them), ${c.recovered.length} recovered (${sim.cast!.recovers.split('/')[1]} among them)`);
+ok(c.complete && c.red.some((x) => x.cluster === c5[0]!.id) && c.recovered.some((x) => x.repo === sim.cast!.recovers) && c.recovered.some((x) => x.repo === sim.cast!.cluster[0]), `v0.5 changesSince (the server's): ${c.red.length} red (the cluster's among them), ${c.recovered.length} recovered (${sim.cast!.recovers.split('/')[1]} and the fixed cluster repo among them)`);
 const kv = i5.ver('trends');
 tl5.world.apply({ t: 'delta', seq: tl5.world.seq + 1, at: tl5.world.at + 1, ops: [{ op: 'upsert', kind: 'trend', id: 'fleet', v: tl5.world.trends.get('fleet') }] } as any);
 ok(i5.ver('trends') !== kv, 'v0.5 ver: bumps on the table\'s ops');

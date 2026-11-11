@@ -7,7 +7,8 @@
 //
 //   - a failure cluster across 5 repos in 3 groups: "test-web-# · test · TypeError: cannot read
 //     properties of undefined (reading 'id')", the first failures ~9 min before the demo's now,
-//     one of them fixed since (a recent recovery); it keeps going while the demo runs;
+//     the first repo fixed since (a recent recovery), the others failing again; it keeps going
+//     while the demo runs;
 //   - a flaky step: "e2e" in one repo fails and passes on the same sha (re-runs), with earlier
 //     flips today;
 //   - a group whose pass rate trends down (the cluster's main group: its past bends down over the
@@ -117,10 +118,12 @@ export function* floorSeedSteps(s: Sim): Generator<void, void, void> {
   if (A) for (const rx of members.get(A) ?? []) if (!inCluster.has(rx)) s.storyBias.set(rx.r.id, 0.14);
   const titles = ['bump @exowatt/ui to 4.2', 'move session lookup into useAccount', 'drop legacy id shim from api client', 'adopt shared fetcher from @exowatt/ui', 'tighten Account type'];
   const at = (t: number) => Math.max(T0 + SEC, t);
-  // each cluster repo fails, and tries again (and fails) ~4 min later; the last one is fixed
-  cluster.forEach((rx, i) => s.storyPush(at(E - 9.5 * MIN + i * 50 * SEC), rx, ['failure'], titles[i % titles.length]!));
-  cluster.slice(0, 4).forEach((rx, i) => s.storyPush(at(E - 5.2 * MIN + i * 40 * SEC), rx, ['failure'], 'retry: guard undefined account'));
-  if (cluster[4]) s.storyPush(at(E - 5 * MIN), cluster[4], ['success'], 'fix: guard undefined account in useAccount');
+  // each cluster repo fails (the first ~9 min before now); the first is fixed ~6 min before now
+  // (a recent recovery by the time the demo opens), the others try again ~5 min before now and
+  // fail again
+  cluster.forEach((rx, i) => s.storyPush(at(E - 9.5 * MIN + i * 40 * SEC), rx, ['failure'], titles[i % titles.length]!));
+  if (cluster[0]) s.storyPush(at(E - 6.5 * MIN), cluster[0], ['success'], 'fix: guard undefined account in useAccount');
+  cluster.slice(1).forEach((rx, i) => s.storyPush(at(E - 5.2 * MIN + i * 40 * SEC), rx, ['failure'], 'retry: guard undefined account'));
   if (recovers) s.storyPush(at(E - 8 * MIN), recovers, ['success'], 'fix flaky fixture path');
   if (flaky) {
     s.storyPush(at(E - 9 * MIN), flaky, ['failure', 'success'], 'wire checkout e2e to staging');
