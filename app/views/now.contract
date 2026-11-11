@@ -245,7 +245,9 @@ component NowView
         column padding=(narrow ? "4px 14px 40px" : "4px 28px 48px") gap=0
           if sel.startsWith("machine:")
             NowDetail(p=p, log=log, narrow=narrow, select=select, close=close)
-          if d.needs.length > 0
+          if not d.ok
+            text "Waiting for the server’s first snapshot…" font-size=15 color="zr.ink2" padding=(narrow ? "24px 0" : "28px 0 28px 80px") testId="now-loading"
+          if d.ok and d.needs.length > 0
             NowHeading(word="Needs a human", count=`${d.needsN}`, note="", narrow=narrow, testKey="needs")
             for n, ni in d.needs key=n.id
               if more or ni < 3
@@ -253,8 +255,9 @@ component NowView
             if d.needsMore != ""
               button appearance="none" press=toggleMore testId="now-needs-more" text-align="start" padding=(narrow ? "8px 0" : "8px 0 8px 80px") border-top="1px solid zr.rule"
                 text (more ? "Show fewer" : d.needsMore) font-size=13 color="zr.ink2"
-          NowHeading(word="Running now", count=(d.idle ? "" : `${d.now.length}`), note=(d.idle ? "" : (d.now.length == 1 ? "event in flight" : "events in flight")), narrow=narrow, testKey="now")
-          if d.idle
+          if d.ok
+            NowHeading(word="Running now", count=(d.idle ? "" : `${d.now.length}`), note=(d.idle ? "" : (d.now.length == 1 ? "event in flight" : "events in flight")), narrow=narrow, testKey="now")
+          if d.ok and d.idle
             text d.idleText font-size=15 color="zr.ink2" padding=(narrow ? "14px 0" : "14px 0 14px 80px") border-top="1px solid zr.rule" testId="now-idle"
           for b, bi in d.now key=b.id
             NowBlock(b=b, p=p, log=log, sel=sel, narrow=narrow, testKey=`${bi}`, select=select, only=only, close=close)

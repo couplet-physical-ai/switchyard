@@ -296,7 +296,7 @@ function needs(w: World, v: FlowView, now: number, filter: Filter): Need[] {
     const a = w.apps.get(d.app) as App | undefined;
     const p = d.pipeline ? w.pipelines.get(d.pipeline) : undefined;
     const at = d.finished ?? d.started;
-    out.push({ id: `deploy:${d.app}`, kind: 'deploy', what: d.app, word: 'deploy failed', detail: `${repoName(d.repo)} ${sha7(d.sha)}`, ago: ago(Math.max(0, now - at)), at, rank: 1,
+    out.push({ id: `deploy:${d.app}`, kind: 'deploy', what: d.app, word: 'deploy failed', detail: repoName(d.repo) === d.app ? `commit ${sha7(d.sha)}` : `${repoName(d.repo)} ${sha7(d.sha)}`, ago: ago(Math.max(0, now - at)), at, rank: 1,
       links: [...L('ci', d.via === 'roadrunner' ? 'Roadrunner' : 'GitHub Actions', (d as { links?: { cicd?: string } }).links?.cicd || d.url || (p ? runUrl(w, String(p.id)) : '') || ''), ...L('app', 'Open app', a?.url), ...L('status', 'Status', statusUrl(w, d.app))] });
   }
   for (const e of v.events) {
@@ -305,7 +305,7 @@ function needs(w: World, v: FlowView, now: number, filter: Filter): Need[] {
       if (j.state !== 'running' || !j.expectedMs || !j.started) continue;
       const el = now - j.started;
       if (el < STUCK_MIN_MS || el < STUCK_X * j.expectedMs) continue;
-      out.push({ id: `stuck:${j.id}`, kind: 'stuck', what: `${repoName(e.repo)} ${j.kind}`, word: 'stuck', detail: `running ${dur(el)}, usually ${dur(j.expectedMs)}${j.machine ? ` · ${j.machine.label}` : ''}`, ago: ago(el), at: j.started, rank: 2,
+      out.push({ id: `stuck:${j.id}`, kind: 'stuck', what: `${repoName(e.repo)} ${j.kind}`, word: 'stuck', detail: `usually ${dur(j.expectedMs)}${j.machine ? ` · ${j.machine.label}${j.machine.slot ? ` slot ${j.machine.slot}` : ''}` : ''}`, ago: ago(el), at: j.started, rank: 2,
         links: [...L('ci', ciWord(j.ci), runUrl(w, j.id, j.url)), ...L('machine', j.machine?.label ?? 'Machine', engineUrl(w, j.machine))] });
     }
   }
