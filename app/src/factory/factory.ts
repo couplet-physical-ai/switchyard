@@ -24,6 +24,7 @@ import { BoxBatch, TrainTable } from './batch.ts';
 import { AGES, AGE_WORDS, Census, PHASES, failingStep, short } from './census.ts';
 import { FacHud } from './hud.ts';
 import { Cam, LU, LV } from './iso.ts';
+import { CalmGate, R_BEAM, R_DOOR, R_RING, Ripples, arrival, beltSpeedPx, blink, breathe, flash } from './motion.ts';
 import { FACTOR, FactoryStress } from './stress.ts';
 
 // ---- palette (canvas-only shades of the app's ramp) ------------------------------------------
@@ -41,7 +42,7 @@ const F = {
   edgeHi: '#4E4E53',
   belt: '#121214',
   beltEdge: '#2B2B2F',
-  slat: '#1F1F22',
+  slat: '#2A2A2E',
   slatHot: '#2E2C28',
   rail: '#3A3A3E',
   sleeper: '#1D1D20',
@@ -110,7 +111,9 @@ export class Factory {
   private gf = new Gfx();
   private gl = new Gfx();
   private crates: Crate[] = [];
-  private pulses = new Map<string, { t: number; red: boolean }>();
+  /** Reactions scheduled for when a crate arrives (motion.ts). */
+  private ripples = new Ripples();
+  private calm = new CalmGate();
   private bays: Bay[] = [];
   private blocks: Block[] = [];
   private blockAt = new Map<string, Block>();
@@ -158,6 +161,13 @@ export class Factory {
 
   get world(): World { return this.tl.world; }
 
+  /** What the floor holds (tests read these): city blocks, cars on the rails, busy bays. */
+  counts(): { facCity: number; facCars: number; facBays: number } {
+    let bays = 0;
+    for (const b of this.bays) if (b.pid) bays++;
+    return { facCity: this.blocks.length, facCars: this.stat.cars, facBays: bays };
+  }
+
   /** One line of what the renderer did (drives read it as `state ov.facStats`). */
   statsLine(): string {
     const st = this.stat, b = this.budget, s = b.stats();
@@ -177,10 +187,16 @@ export class Factory {
   }
 
   // ---- events → crates -----------------------------------------------------------------------
+  // Each event sends its crate along its path; every reaction on the way (motion.ts) fires when
+  // the crate ARRIVES there: a push flashes its dock's door as it leaves and rings the gate and
+  // its rail (or the yard's cell) as it gets there; a finish lights the scanner's beam when its
+  // crate passes it, and a failure's red door at its dock 9 s later; a deploy rings its
+  // building when the crate reaches it.
   onEvent(e: Event, w: World, t: number): void {
     if (this.reduced) return;
     if (this.crates.length > 160) this.crates.splice(0, this.crates.length - 160);
     const orgOf = (repo: string) => w.orgOf(repo);
+    const R = this.ripples;
     switch (e.k) {
       case 'push': {
         const org = e.bot || e.author?.endsWith('[bot]') ? BOTS : orgOf(e.repo);
@@ -189,27 +205,36 @@ export class Factory {
         const route: Pt[] = [[DOCK_U1 - 6, dv], [COLLECT_U, dv], [COLLECT_U, AISLE_V]];
         if (main) route.push([YARD_U1, AISLE_V], [GATE_U + 10, AISLE_V], [RAIL_U0 + 10, this.railV(orgOf(e.repo))]);
         else route.push([ROW_U[1], AISLE_V], [ROW_U[1], AGE_V[0]]);
-        this.spawn(`${e.repo}@${e.sha}`, 'commit', route, t, main ? 4200 : 2600, false, '', org);
+        const cr = this.spawn(`${e.repo}@${e.sha}`, 'commit', route, t, main ? 4200 : 2600, false, '', org);
+        R.add(R_DOOR, DOCK_U1, dv, 6, cr.t0, false, 700);
+        if (main) { R.add(R_RING, GATE_U + 4, AISLE_V, 40, this.arrives(cr, 4), false); R.add(R_RING, RAIL_U0 + 10, this.railV(orgOf(e.repo)), 4, this.arrives(cr, 5), false); }
+        else R.add(R_RING, ROW_U[1], AGE_V[0] + STACK_DV / 2, 4, this.arrives(cr, 4), false, 900);
         break;
       }
       case 'merge': {
         const org = orgOf(e.repo);
-        this.spawn(`${e.repo}@${e.sha}`, 'commit', [[ROW_U[3], AGE_V[1]], [ROW_U[3], AISLE_V], [YARD_U1, AISLE_V], [GATE_U + 10, AISLE_V], [RAIL_U0 + 10, this.railV(org)], [RAIL_U0 + 60, this.railV(org)]], t, 2600, false, '', org);
-        this.pulses.set('gate', { t, red: false });
+        const cr = this.spawn(`${e.repo}@${e.sha}`, 'commit', [[ROW_U[3], AGE_V[1]], [ROW_U[3], AISLE_V], [YARD_U1, AISLE_V], [GATE_U + 10, AISLE_V], [RAIL_U0 + 10, this.railV(org)], [RAIL_U0 + 60, this.railV(org)]], t, 2600, false, '', org);
+        R.add(R_RING, GATE_U + 4, AISLE_V, 40, this.arrives(cr, 3), false);
+        R.add(R_RING, RAIL_U0 + 10, this.railV(org), 4, this.arrives(cr, 4), false);
         break;
       }
       case 'enqueue': {
         const org = orgOf(e.repo);
         const lane = e.lane === 'gha' ? 1 : 0;
         const q = lane ? this.census.gha.length : this.census.rr.length;
-        this.spawn(e.pipeline, 'pipeline', [[RAIL_U1 - 10, this.railV(org)], [RAIL_U1 + 12, this.railV(org)], [INTAKE_U0, LANE_V[lane]], [Math.max(INTAKE_U0 + 8, INTAKE_U1 - 8 - q * 11), LANE_V[lane]]], t, 1800, false, '', org);
+        const end = Math.max(INTAKE_U0 + 8, INTAKE_U1 - 8 - q * 11);
+        const cr = this.spawn(e.pipeline, 'pipeline', [[RAIL_U1 - 10, this.railV(org)], [RAIL_U1 + 12, this.railV(org)], [INTAKE_U0, LANE_V[lane]], [end, LANE_V[lane]]], t, 1800, false, '', org);
+        R.add(R_RING, end, LANE_V[lane], 4, this.arrives(cr, 3), false, 900);
         break;
       }
       case 'start': {
         const p = w.pipelines.get(e.pipeline);
         const bay = this.bayOf(e.pipeline, w);
         const lane = p?.lane === 'gha' ? 1 : 0;
-        if (bay) this.spawn(e.pipeline, 'pipeline', [[INTAKE_U1 - 6, LANE_V[lane]], [DIST_U, LANE_V[lane]], [DIST_U, bay.v + bay.dv / 2], [bay.u + 6, bay.v + bay.dv / 2]], t, 1600, false, '', p ? orgOf(p.repo) : '');
+        if (bay) {
+          const cr = this.spawn(e.pipeline, 'pipeline', [[INTAKE_U1 - 6, LANE_V[lane]], [DIST_U, LANE_V[lane]], [DIST_U, bay.v + bay.dv / 2], [bay.u + 6, bay.v + bay.dv / 2]], t, 1600, false, '', p ? orgOf(p.repo) : '');
+          R.add(R_RING, bay.u + bay.du / 2, bay.v + bay.dv / 2, ENG_H, this.arrives(cr, 3), false, 1000);
+        }
         break;
       }
       case 'finish': {
@@ -227,8 +252,9 @@ export class Factory {
           route.push([SCAN_U, RETURN_V], [24, RETURN_V], [24, this.dockV(org)], [DOCK_U0 + 8, this.dockV(org)]);
           dur = 9000;
         } else route.push([SCAN_U + 14, v0]);
-        this.spawn(e.pipeline, 'pipeline', route, t, dur, red, red ? `${p.repo.split('/')[1]} · ${failingStep(p)}` : '', org);
-        this.pulses.set('scan', { t, red });
+        const cr = this.spawn(e.pipeline, 'pipeline', route, t, dur, red, red ? `${p.repo.split('/')[1]} · ${failingStep(p)}` : '', org);
+        R.add(R_BEAM, SCAN_U, v0, 56, this.arrives(cr, 2), red, 700);
+        if (red) { R.add(R_DOOR, DOCK_U1, this.dockV(org), 6, this.arrives(cr, 6), true, 1400); R.add(R_RING, DOCK_U0 + 8, this.dockV(org), 8, this.arrives(cr, 6), true, 1400); }
         break;
       }
       case 'deploy': {
@@ -236,29 +262,40 @@ export class Factory {
         const b = this.blockAt.get(e.app);
         const vi = Math.max(0, VIAS.indexOf((e.via === 'manual' ? 'gha_fallback' : e.via) as typeof VIAS[number]));
         if (e.state === 'running' && b) {
-          this.spawn(`${e.app}@${e.sha}`, 'deploy', [[SCAN_U + 14, TRACK_V[vi]], [TRACK_U1, TRACK_V[vi]], [CITY_U0 - 4, b.v + b.d / 2], [b.u + b.d / 2, b.v + b.d / 2]], t, 2400, false, '', '');
+          const cr = this.spawn(`${e.app}@${e.sha}`, 'deploy', [[SCAN_U + 14, TRACK_V[vi]], [TRACK_U1, TRACK_V[vi]], [CITY_U0 - 4, b.v + b.d / 2], [b.u + b.d / 2, b.v + b.d / 2]], t, 2400, false, '', '');
+          R.add(R_RING, b.u + b.d / 2, b.v + b.d / 2, b.h + 1.5, this.arrives(cr, 3), false, 1200);
         }
-        if (e.state !== 'running') this.pulses.set(`app:${e.app}`, { t: t + (e.state === 'success' ? 0 : 0), red: e.state === 'failure' });
+        if (e.state !== 'running' && b) R.add(R_RING, b.u + b.d / 2, b.v + b.d / 2, b.h + 1.5, t, e.state === 'failure', 1600, e.state === 'success');
         break;
       }
-      case 'health':
-        this.pulses.set(`app:${e.app}`, { t, red: e.to === 'down' || e.to === 'degraded' });
+      case 'health': {
+        const b = this.blockAt.get(e.app);
+        if (b) R.add(R_RING, b.u + b.d / 2, b.v + b.d / 2, b.h + 1.5, t, e.to === 'down' || e.to === 'degraded', 1600, e.to === 'up');
         break;
+      }
       default: break;
     }
+  }
+
+  /** When crate `cr` reaches its route's point `k` (the frame clock). */
+  private arrives(cr: Crate, k: number): number {
+    const i = Math.min(k, cr.cum.length - 1);
+    return cr.t0 + cr.dur * arrival(cr.len ? cr.cum[i] / cr.len : 1);
   }
 
   private lastBay = new Map<string, Bay>();
   private flown = false;
 
-  private spawn(id: string, kind: Crate['kind'], route: Pt[], t: number, dur: number, red: boolean, label: string, org: string): void {
+  private spawn(id: string, kind: Crate['kind'], route: Pt[], t: number, dur: number, red: boolean, label: string, org: string): Crate {
     const cum = [0];
     let len = 0;
     for (let i = 1; i < route.length; i++) { len += Math.hypot(route[i][0] - route[i - 1][0], route[i][1] - route[i - 1][1]); cum.push(len); }
     // a crate waits its turn on the same route start so bursts read as a line, not a blob
     let hold = 0;
     for (const c of this.crates) if (c.route[0][0] === route[0][0] && c.route[0][1] === route[0][1] && t - c.t0 < 400) hold = Math.max(hold, c.t0 + 260 - t);
-    this.crates.push({ id, kind, route, len, cum, t0: t + Math.max(0, hold), dur, red, label, org, hold: 0, rid: -1 });
+    const cr: Crate = { id, kind, route, len, cum, t0: t + Math.max(0, hold), dur, red, label, org, hold: 0, rid: -1 };
+    this.crates.push(cr);
+    return cr;
   }
 
   private dockV(org: string): number {
@@ -708,7 +745,7 @@ export class Factory {
    *  face and state (settled gray, running amber, red), edges only zoomed in. */
   private drawCars(g: Gfx, lo: boolean): void {
     const cam = this.cam, c = this.census;
-    const carG = this.bA, carA = this.bB, carR = this.bC, lamps = this.bD;
+    const carG = this.bA, carA = this.bB, carR = this.bC;
     let cars = 0;
     c.rails.forEach((r, i) => {
       const v = RAIL_V[i];
@@ -720,7 +757,6 @@ export class Factory {
         if (x < -24 || x > cam.W + 24 || y < -24 || y > cam.H + 24) return;
         const run = car.state === 'running' || car.state === 'pending';
         (car.culprit ? carR : run ? carA : carG).add(u - 4, v - 4, 8, 8, 5);
-        if (run) lamps.add(u, v, 0, 0, 0, 9);
         cars++;
       });
     });
@@ -729,7 +765,6 @@ export class Factory {
     carG.flush(g, cam, '#6E6A62', '#4A4844', '#3E3C38', edge ? '#8A867E' : '', g.hair, 3);
     carA.flush(g, cam, F.crateTop, F.crateSide, F.crateFront, edge ? '#F0CC8A' : '', g.hair, 3);
     carR.flush(g, cam, F.redTop, F.redSide, F.redFront, edge ? '#E08088' : '', g.hair, 3);
-    this.flushLights(g, lamps, C.packet, 1.6, true);
     this.stat.cars = cars;
   }
 
@@ -775,7 +810,6 @@ export class Factory {
     const LIGHT = ['#6FA27C', C.packet, C.red];
     const r = Math.max(1.1, Math.min(2.6, cam.s * 1.9));
     const sq = Math.max(1, Math.min(2.2, cam.s * 1.4));
-    const glows: Block[] = [];
     for (const row of this.cityRows) {
       const v = row[0].v;
       const d = row[0].d;
@@ -808,16 +842,10 @@ export class Factory {
         const lx = cam.x(b.u + b.d / 2, b.v + b.d / 2);
         if (lx < -10 || lx > cam.W + 10) continue;
         lights[hl].add(b.u + b.d / 2, b.v + b.d / 2, 0, 0, 0, b.h + 1.5);
-        if (hl) glows.push(b);
       }
       for (let k = 0; k < 3; k++) this.flushLights(g, lights[k], LIGHT[k], lod === 0 ? r : lod === 1 ? sq : sq * 1.4, lod === 0);
     }
-    // a glow under trouble (degraded, down): the floor's loud spots
-    for (const b of glows) {
-      const hl = this.healthOf(b);
-      const x = cam.x(b.u + b.d / 2, b.v + b.d / 2), y = cam.y(b.u + b.d / 2, b.v + b.d / 2, b.h + 2);
-      g.begin_(); g.circle(x, y, Math.max(r, sq) * 5); g.fill(withAlpha(hl === 2 ? C.red : C.packet, 0.16));
-    }
+    // the glow under trouble breathes on the live layer (motion.ts's beat)
   }
 
   /** Health lights collected in `b` (points in its u, v, z): round, or squares (cheaper). */
@@ -934,6 +962,15 @@ export class Factory {
     if (this.ensure(f, t)) return true;
     const g = this.gl, cam = this.cam, w = this.world, c = this.census;
     const now = this.tl.playhead;
+    // Calm (nothing travelling, no reaction showing, nobody pointing): the frame is drawn only
+    // when the belts' slats moved a pixel or the beat an eighth (motion.ts), at most 9 a second.
+    let travelling = false;
+    for (const cr of this.crates) if (t - cr.t0 < cr.dur) { travelling = true; break; }
+    const loud = travelling || this.ripples.busy(t) || flying || !!this.drag || this.hoverId !== '' || !!this.hud?.on || this.stress.on
+      || this.tl.mode === 'replay' || this.tl.mode === 'behind' || f.cause !== 'frame' || c.skeleton;
+    const fl = c.flow;
+    const beltPx = this.reduced ? 0 : beltSpeedPx(Math.max(fl.pushes, fl.merges, fl.enqueued, fl.started, fl.finished)) * cam.zoom;
+    if (!this.calm.wants(t, (t / 1000) * beltPx, loud)) { this.stat.slept++; this.awake = true; return true; }
     g.begin(ctx, f.scale);
     if (f.cause === 'font') g.resetFonts();
     ctx.resetTransform();
@@ -957,7 +994,7 @@ export class Factory {
       const [u, v, r] = at[c.bottleneck] ?? [0, 0, 0];
       if (r) {
         const x = cam.x(u, v), y = cam.y(u, v), R = r * cam.s;
-        const heat = clamp(c.heat[c.bottleneck], 0.3, 1.4);
+        const heat = clamp(c.heat[c.bottleneck], 0.3, 1.4) * (0.8 + 0.2 * breathe(t, 4));
         const gr = ctx.createRadialGradient(x, y, 0, x, y, R);
         gr.addColorStop(0, withAlpha('#E5934F', 0.16 * heat));
         gr.addColorStop(0.55, withAlpha('#E5934F', 0.06 * heat));
@@ -967,13 +1004,14 @@ export class Factory {
         g.ops += 12; g.arcs++;
       }
     }
-    // 2. belts: slats drift at a speed set by the belt's last-hour throughput (rate, not decoration)
+    // 2. belts: slats drift at a speed set by the belt's last-hour throughput, logarithmically
+    //    (motion.ts: 6 + 10·log₂(1 + rate/min) px/s at the fit; a belt with nothing on it stands)
     if (q < 2 && !this.reduced) {
       g.begin_();
       for (const b of this.belts()) {
         if (!b.n) continue;
         const hw = this.laneW(b.n) / 2;
-        const speed = 4 + Math.min(26, b.n / 4);
+        const speed = beltSpeedPx(b.n) / cam.fitS;
         const off = ((t / 1000) * speed) % 12;
         for (let i = 1; i < b.pts.length; i++) {
           const [a, e] = [b.pts[i - 1], b.pts[i]];
@@ -988,11 +1026,12 @@ export class Factory {
           }
         }
       }
-      g.stroke(F.slat, Math.max(1, cam.s * 1.2));
+      g.stroke(F.slat, Math.max(1, cam.s * 1.4));
     }
     // 3. cars on the main-line rails (the static floor paints them, redrawn when one changes):
     //    here, their hits and the selection's ring
     let selCar: Pt | null = null;
+    const lamps = this.bD;
     c.rails.forEach((r, i) => {
       const v = RAIL_V[i];
       const n = r.cars.length;
@@ -1004,8 +1043,22 @@ export class Factory {
         const id = `${car.repo}@${car.sha}`;
         this.hit(x - 6, cam.y(u, v, 8) - 6, 12, 12, 'commit', id, `${car.repo.split('/')[1]} · ${car.title}`);
         if (this.selected === id) selCar = [u, v];
+        if (car.state === 'running' || car.state === 'pending') lamps.add(u, v, 0, 0, 0, 9);
       });
     });
+    // a running car's lamp blinks on the beat; the newest culprit's beacon flashes on it
+    if (blink(t)) this.flushLights(g, lamps, C.packet, 1.8, q < 2); else lamps.n = 0;
+    if (c.focal && !this.selected) {
+      const ri = c.rails.findIndex((r) => r.org === w.orgOf(c.focal!.repo));
+      const rail = c.rails[ri];
+      const k = rail ? rail.cars.findIndex((x) => x.sha === c.focal!.sha && x.repo === c.focal!.repo) : -1;
+      if (rail && k >= 0) {
+        const u = RAIL_U1 - 12 - (rail.cars.length - 1 - k) * 10, v = RAIL_V[ri];
+        const x = cam.x(u, v), y = cam.y(u, v, 11), fx = flash(t);
+        g.begin_(); g.circle(x, y, (3 + 5 * fx) * Math.max(1, cam.s)); g.fill(withAlpha(C.red, 0.12 + 0.3 * fx));
+        g.begin_(); g.circle(x, y, 1.8 * Math.max(1, cam.s)); g.fill(C.red);
+      }
+    }
     if (selCar) this.ring(g, selCar[0], selCar[1], 8);
     // 4. intake: queued crates in a visible line, the oldest nearest the engines
     const dim = this.bA;
@@ -1053,7 +1106,7 @@ export class Factory {
     }
     const bayFine = (this.bays[0]?.du ?? 0) * cam.s >= 6;
     lit.flushQuads(g, cam, F.bayLit);
-    if (bayFine) rim.flushQuads(g, cam, withAlpha(C.packet, 0.7), true, g.hair * 2); else rim.n = 0;
+    if (bayFine) rim.flushQuads(g, cam, withAlpha(C.packet, 0.45 + 0.4 * breathe(t)), true, g.hair * 2); else rim.n = 0;
     prog.flushQuads(g, cam, C.packet);
     for (let i = 0; i < progRed.length; i += 3) prog.add(progRed[i], progRed[i + 1], progRed[i + 2], 5, 0, ENG_H);
     prog.flushQuads(g, cam, C.red);
@@ -1068,28 +1121,43 @@ export class Factory {
         this.hit(x, cam.y(b.u, b.v, b.h) - 2, b.d * 1.3 * cam.s, (b.d * 0.75 + b.h) * cam.s + 4, 'app', b.id, b.id);
       }
     }
-    // pulses: a ring expanding from what just landed
-    let pulsing = false;
-    for (const [k, p] of this.pulses) {
-      const age = t - p.t;
-      if (age > 1600) { this.pulses.delete(k); continue; }
-      if (age < 0) { pulsing = true; continue; }
-      pulsing = true;
-      if (q >= 4) continue;
-      const e = age / 1600;
-      let x = 0, y = 0;
-      if (k.startsWith('app:')) {
-        const b = this.blockAt.get(k.slice(4));
-        if (!b) continue;
-        x = cam.x(b.u + b.d / 2, b.v + b.d / 2); y = cam.y(b.u + b.d / 2, b.v + b.d / 2, b.h + 1.5);
-      } else if (k === 'scan') { x = cam.x(SCAN_U, 320); y = cam.y(SCAN_U, 320, 56); }
-      else if (k === 'gate') { x = cam.x(GATE_U + 4, AISLE_V); y = cam.y(GATE_U + 4, AISLE_V, 40); }
-      g.begin_(); g.circle(x, y, 3 + e * 18 * Math.max(0.8, cam.s)); g.stroke(withAlpha(p.red ? C.red : k.startsWith('app:') ? C.green : C.packet, 0.8 * (1 - e)), 1.2);
+    // trouble in the city breathes on the beat (degraded amber, down red): the loud spots
+    if (q < 4) {
+      const trouble = this.troubleBlocks();
+      const br = breathe(t);
+      for (const b of trouble) {
+        const x = cam.x(b.u + b.d / 2, b.v + b.d / 2);
+        if (offX(x)) continue;
+        const y = cam.y(b.u + b.d / 2, b.v + b.d / 2, b.h + 2);
+        g.begin_(); g.circle(x, y, Math.max(2.4, cam.s * 2) * (4 + br)); g.fill(withAlpha(this.healthOf(b) === 2 ? C.red : C.packet, 0.08 + 0.14 * br));
+      }
     }
-    // the scanner's beam: lit for a moment as a crate passes; red when it failed one
-    const sc = this.pulses.get('scan');
-    if (sc && t - sc.t < 700) {
-      g.begin_(); this.quad(g, SCAN_U - 1, 36, SCAN_U + 1, 594, 54); g.fill(withAlpha(sc.red ? C.red : C.packet, 0.55 * (1 - (t - sc.t) / 700)));
+    // reactions (motion.ts), each where and when its crate arrived: rings, the scanner's beam,
+    // a dock's door
+    let pulsing = false;
+    {
+      const Rp = this.ripples;
+      for (let i = 0; i < Rp.dur.length; i++) {
+        const d = Rp.dur[i];
+        if (!d) continue;
+        const age = t - Rp.at[i];
+        if (age > d) continue;
+        pulsing = true;
+        if (age < 0 || q >= 4) continue;
+        const e = age / d;
+        const col = Rp.red[i] ? C.red : Rp.green[i] ? C.green : C.packet;
+        const u = Rp.u[i], v = Rp.v[i], zz = Rp.z[i];
+        if (Rp.kind[i] === R_BEAM) {
+          g.begin_(); this.quad(g, SCAN_U - 1, 36, SCAN_U + 1, 594, 54); g.fill(withAlpha(col, 0.55 * (1 - e)));
+          g.begin_(); g.circle(cam.x(u, v), cam.y(u, v, zz * 0.5), 4 + 10 * e); g.stroke(withAlpha(col, 0.7 * (1 - e)), 1.2);
+        } else if (Rp.kind[i] === R_DOOR) {
+          g.begin_(); this.poly(g, [DOCK_U1, v - 12, 1, DOCK_U1, v + 12, 1, DOCK_U1, v + 12, 10, DOCK_U1, v - 12, 10]); g.fill(withAlpha(col, 0.85 * (1 - e)));
+        } else {
+          const x = cam.x(u, v), y = cam.y(u, v, zz);
+          if (offX(x) || offY(y)) continue;
+          g.begin_(); g.circle(x, y, 3 + e * 18 * Math.max(0.8, cam.s)); g.stroke(withAlpha(col, 0.8 * (1 - e)), 1.2);
+        }
+      }
     }
     // deploys in flight sit on their track, nearer the city the longer they have run
     const lanes = [0, 0, 0];
@@ -1172,7 +1240,11 @@ export class Factory {
     // Sleep when nothing moves (a game's idle frame): the canvas keeps its last picture and the
     // 250 ms tick (a surface argument) redraws it, enough for the slow progress bars. The HUD
     // and stress mode keep frames coming; so do flights, drags, hovers and replays.
-    const awake = moving || pulsing || flying || !!this.drag || this.hoverId !== '' || hudOn || this.stress.on || this.tl.mode === 'replay' || this.tl.mode === 'behind';
+    // Calm, the belts still move and the beat still breathes (running bays, lamps, the culprit's
+    // beacon, trouble in the city): frames keep coming and the calm gate skips the unchanged ones.
+    const beatLive = st.bays > 0 || !!c.focal || this.trouble.length > 0;
+    const awake = moving || pulsing || flying || !!this.drag || this.hoverId !== '' || hudOn || this.stress.on || this.tl.mode === 'replay' || this.tl.mode === 'behind'
+      || (!this.reduced && (beltPx > 0 || beatLive));
     if (!awake) st.slept++;
     this.awake = awake;
     return awake;
@@ -1190,6 +1262,23 @@ export class Factory {
     const bin = q >= 4 ? 56 : 32;
     let moving = false, crates = 0, sprites = 0;
     this.computed = 0;
+    // the wake: the belt brightens under each travelling crate, a short stretch behind it
+    if (q < 3 && !this.reduced) {
+      g.begin_();
+      let any = false;
+      for (const cr of this.crates) {
+        const u = (t - cr.t0) / cr.dur;
+        if (u < 0 || u > 1 || !cr.len) continue;
+        const d = easeInOut(u) * cr.len;
+        for (let k = 0; k < 4; k++) {
+          const [wu, wv] = this.along(cr, Math.max(0, d - k * 9) / cr.len);
+          const x = cam.x(wu, wv), y = cam.y(wu, wv, 0.7);
+          if (k) g.line(x, y); else g.move(x, y);
+        }
+        any = true;
+      }
+      if (any) { g.ctx.lineCap = 'round'; g.ctx.lineJoin = 'round'; g.stroke(cr0Wake, Math.max(2, 5 * cam.s)); g.ctx.lineCap = 'butt'; }
+    }
     for (let i = this.crates.length - 1; i >= 0; i--) {
       const cr = this.crates[i];
       const u = (t - cr.t0) / cr.dur;
@@ -1268,6 +1357,18 @@ export class Factory {
   }
 
   private top = new Int32Array(16);
+  private trouble: Block[] = [];
+  private troubleAt = '';
+
+  /** The city's blocks that are degraded or down (recomputed when the health or the city moved). */
+  private troubleBlocks(): Block[] {
+    const key = `${this.census.healthSig}|${this.cityKey}|${this.blocks.length}`;
+    if (key !== this.troubleAt) {
+      this.troubleAt = key;
+      this.trouble = this.blocks.filter((b) => { const h = this.healthOf(b); return h === 1 || h === 2; });
+    }
+    return this.trouble;
+  }
   /** Crates whose position this frame computed (the cost model's packets). */
   private computed = 0;
   private nameOrder: Block[] = [];
@@ -1896,6 +1997,8 @@ export class Factory {
 }
 
 const HOUR_MS = 3_600_000;
+/** A crate's wake on its belt: a step lighter than the slats. */
+const cr0Wake = '#38383E';
 
 function runningStep(p: Pipeline): string {
   for (const wf of p.workflows ?? []) for (const s of wf.steps ?? []) if (s.state === 'running') return s.name;

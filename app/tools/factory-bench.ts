@@ -110,7 +110,7 @@ const ftop = Object.entries(floorCtx.counts).sort((a, b) => b[1] - a[1]).slice(0
 console.log(JSON.stringify({
   source: server.startsWith('http') && mock ? 'fixtures' : server, stress: flag('--stress'), zoom: ZOOM, size: `${W}x${H}`, frames: FRAMES,
   liveMs: { median: +q(live, 0.5).toFixed(3), p95: +q(live, 0.95).toFixed(3), max: +Math.max(...live).toFixed(3) },
-  liveCalls: { median: q(ops, 0.5), max: Math.max(...ops) },
+  liveCalls: { median: q(ops, 0.5), max: Math.max(...ops), mean: Math.round(ops.reduce((a, b) => a + b, 0) / ops.length), framesDrawn: ops.filter((n) => n > 0).length },
   floorMs: { median: +q(floor, 0.5).toFixed(3), max: +Math.max(...floor).toFixed(3) }, floorCalls: floorCtx.total(),
   floorRedrawsInWindow: floorDraws, quality: o.quality, stats: o.facStats ?? '',
 }));

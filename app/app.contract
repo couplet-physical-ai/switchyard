@@ -259,14 +259,18 @@ component App
               canvas surface=factoryFloor(ov.facKey, facNow.route, facWheel) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="factory-floor"
               canvas surface=factoryLive(reduced ? "reduced" : "full", facNow.route, facWheel, ov.tick) position="absolute" left=0 top=0 width="100%" height="100%"
                 tabindex=0 role="img" aria-label=ov.summary pointerdown=facDown pointermove=facMove pointerup=facUp wheel=facWheeled key=facKey touch-action="none" testId="factory-live"
-              // The strip's "last hour" is this button too (its words and its press, for tests and keyboards).
+              // The strip's "replay last hour" (the canvas draws its words) is this button too: its press
+              // for tests and keyboards, laid over the drawn words (a fully transparent button is
+              // still a target on every host, an opacity 0 one is not on macOS).
               button appearance="none" press=startReplay testId="replay" aria-label="Replay the last hour, sped up" disabled=(ov.mode == "replay" or not conn.ok)
-                position="absolute" bottom=0 left=0 width=1 height=1 opacity=0
-                text "last hour"
+                position="absolute" bottom=17 left=80 width=120 height=28 background-color="transparent" padding=0
+                text "last hour" color="#00000000" font-size=1
               // Offline or not set up: a card over the floor (the idle floor, or the last fleet
               // it showed, dimmed behind it), never a black void.
               if not conn.ok and conn.status != "connecting"
-                column position="absolute" inset=0 align-items="center" justify-content="center" background-color="#0E0E0EB3" testId="setup"
+                column position="absolute" inset=0 background-color="sy.canvas" opacity=0.7 aria-hidden=true
+              if not conn.ok and conn.status != "connecting"
+                column position="absolute" inset=0 align-items="center" justify-content="center" testId="setup"
                   column align-items="center" gap=14 padding="26px 32px" border-radius=12 border="1px solid sy.edge" background-color="sy.raised" max-width=620
                     text (conn.needsSetup ? "Connect Switchyard to a server" : "The server is not answering") font-weight=700 font-size=16
                     text (conn.error != "" ? conn.error : "Its address and a token, or watch the built-in demo fleet.") color="sy.ink3" font-size=13 max-width=560 text-align="center" testId="setup-error"

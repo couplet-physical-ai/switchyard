@@ -65,6 +65,9 @@ shape Overview
   facQ: number
   facStress: bool
   facStats: string
+  facCity: number
+  facCars: number
+  facBays: number
 
 shape SearchHit
   kind: string

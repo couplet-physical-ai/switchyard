@@ -265,7 +265,7 @@ function overview(): Result<'overview'> {
     building, queued, red, appsUp, appsTotal: w.apps.size, behind, seq: w.seq,
     tick: Math.floor(clock / 250), host: hostLabel(), dial, dialPad: Math.round(((S?.m ?? 16) + 22) * k), dialFont: Math.round(11 * k), dialH: Math.round(34 * k),
     hud: yard.hud.on, stress: stressOn, quality: yard.budget.quality, facKey: factory.floorKey,
-    facDrawer: factory.selected !== '', facQ: factory.budget.quality, facStress: factory.stress.on, facStats: factory.statsLine(),
+    facDrawer: factory.selected !== '', facQ: factory.budget.quality, facStress: factory.stress.on, facStats: factory.statsLine(), ...factory.counts(),
   };
 }
 
@@ -461,7 +461,7 @@ const NO_HIT = { kind: '', id: '', label: '', route: '' };
 const EMPTY_OV: Result<'overview'> = {
   status: 'waiting', mode: 'live', speed: 1, sentence: 'waiting for the fleet', summary: 'The delivery yard, waiting for data.', layoutKey: '', repos: 0,
   building: 0, queued: 0, red: 0, appsUp: 0, appsTotal: 0, behind: '', seq: 0,
-  tick: 0, host: '', dial: '1 hour, sped up', dialPad: 38, dialFont: 11, dialH: 34, hud: false, stress: false, quality: 0, facKey: '', facDrawer: false, facQ: 0, facStress: false, facStats: '',
+  tick: 0, host: '', dial: '1 hour, sped up', dialPad: 38, dialFont: 11, dialH: 34, hud: false, stress: false, quality: 0, facKey: '', facDrawer: false, facQ: 0, facStress: false, facStats: '', facCity: 0, facCars: 0, facBays: 0,
 };
 const EMPTY_FLEET = {
   apps: [], engines: [], queues: [], stats: [], up: 0, total: 0, down: 0, degraded: 0, attention: [], behindN: 0, never: 0, hasLatency: false, watcher: '', watcherTripped: false,
