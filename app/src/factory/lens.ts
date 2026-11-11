@@ -38,6 +38,7 @@ import type { Census } from './census.ts';
 import type { Factory } from './factory.ts';
 import { clusterOf, groupOf as insGroupOf, insights, insightsVer } from '../insights.ts';
 import { Hover } from './hover.ts';
+import { BOTS_LANE, floorGroups } from './groups.ts';
 import { drawCompare } from './compare.ts';
 import { appHist, appHist7, engineSeries, healthSegs, machineEngines, wantAppHistory, wantEngineHistory } from './lenses.ts';
 import { classGlyph, clusterBody, clusterFacts, groupApps, groupFlow, groupForApps, groupForOrg, groupTrend, parkByCluster, ribbonW, trendRows } from './lenses.ts';
@@ -291,7 +292,7 @@ export class Lenses {
       case 'district': case 'districtArea': {
         // fab-w3: a district opens the same group lens as its team's dock ("other teams": the district)
         const team = h.label.replace(/ \d+$/, '');
-        const gr = groupForApps(w, c.districts.find((x) => x.team === team)?.apps ?? []);
+        const gr = team === 'other teams' ? null : groupForApps(w, c.districts.find((x) => x.team === team)?.apps ?? []);
         if (gr) return { kind: 'group', id: gr.id, name: gr.name, sub: 'district' };
         return { kind: 'district', id: team, name: team, sub: '' };
       }
@@ -769,7 +770,7 @@ export class Lenses {
   private floorHits(): void {
     const f = this.f, c = f.census, P = f.plan, fx = this.fx;
     for (const d of fx.districtBox) this.boxHit(d.u0 - 4, d.v0 - 4, d.u1 - d.u0 + 8, d.v1 - d.v0 + 8, 8, 'districtArea', d.team, `${d.team} ${d.n}`);
-    c.docks.forEach((d) => this.boxHit(P.DOCK_U0, fx.dockV(d.org) - 30, P.DOCK_U1 - P.DOCK_U0, 60, 14, 'dock', d.org, `${d.short} dock`));
+    if (!f.w2.on) c.docks.forEach((d) => this.boxHit(P.DOCK_U0, fx.dockV(d.org) - 30, P.DOCK_U1 - P.DOCK_U0, 60, 14, 'dock', d.org, `${d.short} dock`)); // fab-w3: W2 hits its group docks
     c.rails.forEach((r, i) => this.boxHit(P.RAIL_U0, P.RAIL_V[i] - 9, P.RAIL_U1 - P.RAIL_U0, 18, 6, 'rail', r.org, `${r.short} main lines`));
     for (let r = 0; r < 4; r++) for (let b = 0; b < 6; b++) {
       const s = c.stacks[r][b];
@@ -832,15 +833,13 @@ export class Lenses {
     const k = this.topLens?.kind;
     if (k !== 'org' && k !== 'district' && k !== 'repo' && k !== 'fresh' && k !== 'stack' && k !== 'pallet') return;
     const seg: Pt[][] = [];
-    for (const d of c.docks) {
+    // fab-w3: from each lit dock (W2's group lanes, else the org docks) to the aisle; then, past
+    // the gate, onto each lit org's rail
+    for (const dk of this.litDocks(rel)) seg.push([[P.DOCK_U1, dk.v], [P.COLLECT_U, dk.v], [P.COLLECT_U, P.AISLE_V]]);
+    if (k !== 'stack' && k !== 'pallet') for (const d of c.docks) {
       if (!rel.orgs.has(d.org)) continue;
-      const dv = fx.dockV(d.org);
-      const path: Pt[] = [[P.DOCK_U1, dv], [P.COLLECT_U, dv], [P.COLLECT_U, P.AISLE_V]];
-      if (k === 'stack' || k === 'pallet') { seg.push(path); continue; }
-      path.push([P.YARD_U1, P.AISLE_V], [P.GATE_U + 4, P.AISLE_V]);
       const ri = c.rails.findIndex((r) => r.org === d.org);
-      if (ri >= 0) path.push([P.RAIL_U0, P.RAIL_V[ri]], [P.RAIL_U1, P.RAIL_V[ri]], [P.INTAKE_U0, 291]);
-      seg.push(path);
+      if (ri >= 0) seg.push([[P.COLLECT_U, P.AISLE_V], [P.YARD_U1, P.AISLE_V], [P.GATE_U + 4, P.AISLE_V], [P.RAIL_U0, P.RAIL_V[ri]], [P.RAIL_U1, P.RAIL_V[ri]], [P.INTAKE_U0, 291]]);
     }
     if (k !== 'stack' && k !== 'pallet') {
       for (const b of fx.bays) if (b.pid && rel.pipes.has(b.pid)) seg.push([[P.INTAKE_U1, 291], [P.DIST_U, 291], [P.DIST_U, b.v + b.dv / 2], [b.u, b.v + b.dv / 2]]);
@@ -856,6 +855,27 @@ export class Lenses {
     g.dash(false);
   }
 
+  /** fab-w3: the docks a relation lights. With W2's group docks on: the lanes of its repos (and
+   *  the bots siding for a bot org), each at its footprint (v0..v1) and height (groupfloor.ts's
+   *  dockH: 4 + 2.6 √pushes/h, ≤ 24); else the lit orgs' own docks. */
+  private litDocks(rel: Rel): { v: number; v0: number; v1: number; h: number }[] {
+    const f = this.f, c = f.census, fx = this.fx;
+    if (!f.w2.on) return c.docks.filter((d) => rel.orgs.has(d.org)).map((d) => { const v = fx.dockV(d.org); return { v, v0: v - 30, v1: v + 30, h: 14 }; });
+    const G = floorGroups(), lanes = new Set<string>();
+    for (const r of rel.repos) lanes.add(G.laneOfRepo(r));
+    if (rel.orgs.has(BOTS)) lanes.add(BOTS_LANE);
+    const out: { v: number; v0: number; v1: number; h: number }[] = [];
+    for (const gg of f.w2.layout()) {
+      if (!lanes.has(gg.lane.id)) continue;
+      const p = G.stats(gg.lane.id)?.pushes1h ?? 0;
+      out.push({ v: gg.v, v0: gg.v0, v1: gg.v1, h: Math.min(24, 4 + 2.6 * Math.sqrt(Math.max(0, p))) });
+    }
+    return out;
+  }
+
+  /** A repo's dock v: its group lane's (W2) when on, else its org's dock. */
+  private repoDockV(repo: string): number { return this.f.w2.on ? this.fx.dockV(repo) : this.fx.dockV(this.f.world.orgOf(repo)); }
+
   /** The relation, lit: each thing redrawn at full colour over the veil, outlined in the tint. */
   private lit(g: Gfx, rel: Rel, tint: string, t: number): void {
     const f = this.f, fx = this.fx, P = f.plan, cam = f.cam, c = f.census, w = f.world, now = f.tl.playhead;
@@ -863,11 +883,8 @@ export class Lenses {
     const hw = Math.max(1, g.hair * 2.5);
     // a compare's second side writes its counts beside the first's, in its hue
     const side = tint === HUE_B ? 1 : 0, ncol = side ? HUE_B : tint === HUE_A ? HUE_A : C.ink, ndx = side ? 14 : tint === HUE_A ? -14 : 0;
-    // docks
-    for (const d of c.docks) {
-      if (!rel.orgs.has(d.org)) continue;
-      fx.box(g, P.DOCK_U0, fx.dockV(d.org) - 30, P.DOCK_U1 - P.DOCK_U0, 60, 14, '#2C2C2F', '#1E1E21', '#19191B', tint, hw);
-    }
+    // docks: the lit repos' docks (fab-w3: W2's group lanes when on, at their footprint and height)
+    for (const dk of this.litDocks(rel)) fx.box(g, P.DOCK_U0, dk.v0, P.DOCK_U1 - P.DOCK_U0, dk.v1 - dk.v0, dk.h, '#2C2C2F', '#1E1E21', '#19191B', tint, hw);
     // the PR yard (fab-w3, overseer note 2): in each stack, the lens's share of its open PRs as a
     // core as tall as that share of the stack, its outline heavier and its top fuller the more PRs
     // it holds, its red slice (CI failing) on the front; the count on top. The card's key says so.
@@ -1235,7 +1252,7 @@ export class Lenses {
         const u = P.RAIL_U1 - 12 - (rail.cars.length - 1 - k) * 10;
         if (u >= P.RAIL_U0 + 4) { ends.push([cam.x(u, P.RAIL_V[ri]), cam.y(u, P.RAIL_V[ri], 6), it.label]); continue; }
       }
-      const dv = this.fx.dockV(w.orgOf(repo));
+      const dv = this.repoDockV(repo);
       ends.push([cam.x(P.DOCK_U1, dv), cam.y(P.DOCK_U1, dv, 14), it.label]);
     }
     g.begin_();
@@ -1285,11 +1302,14 @@ export class Lenses {
     const MID = 291;
     // a stage the group sent nothing through keeps a hairline thread, so the way stays legible
     const thin = 'thin';
+    // the dock strand(s): from the group's lane (W2's group docks), else from each org's dock
+    if (f.w2.on) for (const dk of this.litDocks(rel)) segs.push([[[P.DOCK_U1, dk.v], [P.COLLECT_U, dk.v], [P.COLLECT_U, P.AISLE_V]], gf.commits ? ribbonW(share(gf.commits, F_.commits), z) : 1.2, gf.commits ? gf.hue : thin]);
+    if (f.w2.on) segs.push([[[P.COLLECT_U, P.AISLE_V], [P.YARD_U1, P.AISLE_V]], gf.prs ? ribbonW(share(gf.prs, F_.prs), z) : 1.2, gf.prs ? gf.hue : thin]);
     for (const [org, o] of gf.byOrg) {
       if (!o.commits && !o.prs && !o.merged) continue;
       const dv = fx.dockV(org), ri = c.rails.findIndex((r) => r.org === org);
-      segs.push([[[P.DOCK_U1, dv], [P.COLLECT_U, dv], [P.COLLECT_U, P.AISLE_V]], o.commits ? ribbonW(share(o.commits, F_.commits), z) : 1.2, o.commits ? gf.hue : thin]);
-      segs.push([[[P.COLLECT_U, P.AISLE_V], [P.YARD_U1, P.AISLE_V]], o.prs ? ribbonW(share(o.prs, F_.prs), z) : 1.2, o.prs ? gf.hue : thin]);
+      if (!f.w2.on) segs.push([[[P.DOCK_U1, dv], [P.COLLECT_U, dv], [P.COLLECT_U, P.AISLE_V]], o.commits ? ribbonW(share(o.commits, F_.commits), z) : 1.2, o.commits ? gf.hue : thin]);
+      if (!f.w2.on) segs.push([[[P.COLLECT_U, P.AISLE_V], [P.YARD_U1, P.AISLE_V]], o.prs ? ribbonW(share(o.prs, F_.prs), z) : 1.2, o.prs ? gf.hue : thin]);
       if (ri >= 0) segs.push([[[P.YARD_U1, P.AISLE_V], [P.GATE_U + 4, P.AISLE_V], [P.RAIL_U0, P.RAIL_V[ri]], [P.RAIL_U1, P.RAIL_V[ri]], [P.INTAKE_U0, MID]], o.merged ? ribbonW(share(o.merged, F_.merged), z) : 1.2, o.merged ? gf.hue : thin]);
     }
     segs.push([[[P.INTAKE_U0, MID], [P.DIST_U, MID], [P.SCAN_U, MID]], gf.runs ? ribbonW(share(gf.runs, F_.runs), z) : 1.2, gf.runs ? gf.hue : thin]);

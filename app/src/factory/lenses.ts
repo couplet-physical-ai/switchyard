@@ -12,9 +12,10 @@
 // Cost: parking runs when the census recounts (≤ 1/s), O(failures in the last hour); the group and
 // cluster facts when a lens is pushed or the relation refreshes (≤ 1/s), O(entities).
 
-import { appHistory, clusterOf, clusters, engineHistory, flakes, groupHue, groupOf, groups, insights, trend } from '../insights.ts';
+import { appHistory, appHistoryAsync, clusterOf, clusters, engineHistory, engineHistoryAsync, flakes, groupHue, groupOf, groups, insights, trend } from '../insights.ts';
+import { clusterOrder } from './clusters.ts';
 import type { AppHistoryView, EngineHistoryView } from '../insights.ts';
-import type { Cluster, FailClass, Group, Metric, Trend } from '../wire.ts';
+import type { AppDetail, Cluster, EngineHistoryDoc, FailClass, Group, Metric, Trend } from '../wire.ts';
 import type { World } from '../world.ts';
 import type { Gfx } from '../yard/gfx.ts';
 import { normTeam } from '../../server/floor.ts';
@@ -37,8 +38,7 @@ type Fail = { id: string; repo: string; at: number; step: string };
 type Bucket = { key: string; cl: Cluster | null; xs: Fail[]; newest: number };
 
 /** Open clusters first, then the most crates parked (this hour), then the most failures in 24 h,
- *  then the newest: the Insights order (server/floor.ts clusterOrder) by what is on the belt.
- *  (fab-w2 exports clusterOrder() in groups.ts: swap to it at merge if it lands.) */
+ *  then the newest: the Insights order (server/floor.ts clusterOrder) by what is on the belt. */
 export function parkOrder(a: Bucket, b: Bucket): number {
   const ao = a.cl ? (a.cl.open > 0 ? 1 : 0) : 1, bo = b.cl ? (b.cl.open > 0 ? 1 : 0) : 1;
   return bo - ao || b.xs.length - a.xs.length || (b.cl?.count ?? 1) - (a.cl?.count ?? 1) || b.newest - a.newest || (a.key < b.key ? -1 : 1);
@@ -48,16 +48,19 @@ export function parkOrder(a: Bucket, b: Bucket): number {
  *  cluster a tight run of crates (newest nearest the scanner), clusters a gap apart, the biggest
  *  open one nearest the scanner at `u1`. Stops at `uMin` (the conveyor's far end). */
 export function parkByCluster(failing: readonly Fail[], w: World, u1: number, uMin: number): { parked: Parked[]; groups: ParkGroup[] } {
-  const by = new Map<string, Bucket>();
-  for (const x of failing) {
-    const c = x.id ? clusterOf(x.id) : null;
-    const key = c?.id ?? `s:${x.step}`;
-    let b = by.get(key);
-    if (!b) by.set(key, (b = { key, cl: c, xs: [], newest: 0 }));
-    b.xs.push(x);
-    if (x.at > b.newest) b.newest = x.at;
+  // the runs: fab-w2's clusterOrder (clusters.ts: one run per signature, the server's cluster or
+  // the same key built from the folded step and class); the order on the belt: open first, then
+  // the most parked, so the biggest open cluster sits nearest the scanner (overseer note 4)
+  const byId = new Map<string, Fail>();
+  for (const x of failing) if (x.id) byId.set(x.id, x);
+  const order: Bucket[] = [];
+  for (const run of clusterOrder(failing)) {
+    const xs: Fail[] = [];
+    for (const id of run.ids) { const x = byId.get(id); if (x) xs.push(x); }
+    if (!xs.length) continue;
+    order.push({ key: run.clusterId, cl: run.clusterId.startsWith('~') ? null : insights().cluster(run.clusterId) ?? clusterOf(xs[0]!.id), xs, newest: run.newest });
   }
-  const order = [...by.values()].sort(parkOrder);
+  order.sort(parkOrder);
   const parked: Parked[] = [], out: ParkGroup[] = [];
   let u = u1;
   for (const b of order) {
@@ -176,53 +179,32 @@ export function groupTrend(id: string): Trend | null { return trend(id); }
 
 // ───────────────────────────── histories (H6 / H7): the server's, else the client seams ─────────────────────────────
 
-/** GET /api/v1/app/{id} (sy-server 73ef168): 7 d of health and the last 10 deploys. */
-export type AppHist7 = {
-  id: string;
-  deploys: { sha: string; via: string; state: string; started: number; at: number; finished?: number; duration_ms?: number }[];
-  health: { from: string; to: string; at: number }[]; // 7 d, newest first
-  health_ms?: { up: number; degraded: number; down: number; unknown: number };
-  since: number; complete?: boolean;
-};
+/** GET /api/v1/app/{id}: 7 d of health and the last 10 deploys (or the client seam in its shape). */
+export type AppHist7 = AppDetail;
 /** GET /api/v1/engine/{id}/history: columnar, one sample a minute over 24 h, null = offline. */
-export type EngineHist24 = {
-  id: string; from: number; step_ms: number; n: number;
-  busy: (number | null)[]; slots: (number | null)[]; cpu: (number | null)[]; mem: (number | null)[]; load: (number | null)[];
-  repos: { repo: string; runs: number }[];
-};
+export type EngineHist24 = EngineHistoryDoc;
 
 type Async<T> = { at: number; v: T | null; pending: boolean };
 const appCache = new Map<string, Async<AppHist7>>();
 const engCache = new Map<string, Async<EngineHist24>>();
 const TTL = 60_000;
 
-/** Asks for an app's / an engine's server history once a minute at most. Call ONLY from a source's
- *  answer (a pointer turn): a fetch started in a draw is never run. The insights seam's own async
- *  fetchers win when present (fab-w2, at merge); else the upstream's JSON getter; a 404 or an
- *  error leaves the client seam to answer. */
-export function wantAppHistory(id: string, now: number): void { want(appCache, id, now, 'appHistoryAsync', `/api/v1/app/${encodeURIComponent(id)}`); }
-export function wantEngineHistory(id: string, now: number): void { want(engCache, id, now, 'engineHistoryAsync', `/api/v1/engine/${encodeURIComponent(id)}/history`); }
+/** Asks for an app's / an engine's history once a minute at most, through fab-w2's
+ *  insights.appHistoryAsync / engineHistoryAsync (the server's, else the client seam in its shape).
+ *  Call ONLY from a source's answer (a pointer turn): a fetch started in a draw is never run. */
+export function wantAppHistory(id: string, now: number): void { want(appCache, id, now, () => appHistoryAsync(id)); }
+export function wantEngineHistory(id: string, now: number): void { want(engCache, id, now, () => engineHistoryAsync(id)); }
 
-function want<T>(cache: Map<string, Async<T>>, id: string, now: number, seam: string, path: string): void {
+function want<T>(cache: Map<string, Async<T>>, id: string, now: number, get: () => Promise<T | null>): void {
   if (!id) return;
   const c = cache.get(id);
-  if (c && (c.pending || now - c.at < TTL)) return;
+  if (c && (c.pending || (now - c.at < TTL && now >= c.at))) return;
   const e: Async<T> = { at: now, v: c?.v ?? null, pending: true };
   cache.set(id, e);
   if (cache.size > 64) { const k = cache.keys().next().value; if (k !== undefined && k !== id) cache.delete(k); }
-  const ins = insights() as unknown as Record<string, unknown> & { upstream?: () => unknown };
-  let p: Promise<unknown> | null = null;
-  try {
-    const f = ins[seam];
-    if (typeof f === 'function') p = (f as (id: string) => Promise<unknown>).call(ins, id);
-    else {
-      // until fab-w2's fetchers land: the HTTP upstream's bounded JSON getter (absent on the demo)
-      const up = typeof ins.upstream === 'function' ? (ins.upstream as () => unknown).call(ins) as { kind?: string; get?: (p: string, t?: number, c?: number) => Promise<unknown> } | null : null;
-      if (up?.kind === 'http' && typeof up.get === 'function') p = up.get.call(up, path, 15000, 4 << 20);
-    }
-  } catch { p = null; }
-  if (!p) { e.pending = false; return; }
-  p.then((v) => { e.pending = false; if (v && typeof v === 'object') e.v = v as T; }, () => { e.pending = false; });
+  let p: Promise<T | null>;
+  try { p = get(); } catch { e.pending = false; return; }
+  p.then((v) => { e.pending = false; if (v && typeof v === 'object') e.v = v; }, () => { e.pending = false; });
 }
 
 /** The server's app history when it answered, else null (the lens then reads `appHist`). */
