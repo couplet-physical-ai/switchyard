@@ -366,7 +366,8 @@ export class Factory {
     // Loud (a crate travelling, a reaction showing, a pointer, a flight, a replay, the HUD,
     // stress): every frame. Calm: sleep; the 125 ms pulse (motion.ts CALM_MS) wakes the layer for
     // the belts and the beat, 8 frames a second.
-    const awake = moving || flying || !!this.drag || this.hoverId !== '' || hudOn || this.stress.on || this.tl.mode === 'replay' || this.tl.mode === 'behind';
+    const awake = moving || flying || !!this.drag || this.hoverId !== '' || hudOn || this.stress.on || this.tl.mode === 'replay' || this.tl.mode === 'behind'
+      || this.coffee.busy(t); // fab-w4: the coffee check's first 10 s draw every frame
     if (!awake) st.slept++;
     this.awake = awake;
     return awake;

@@ -89,12 +89,19 @@ component App
   derive hovering = match hov { case some(h) => h.kind != "", case none => false }
   derive facNow = match fac { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }
   // fab-lens: the coffee check (src/factory/coffee.ts). The last visit per server, kept as the
-  // server is: marked after 2 min of looking at the floor, every minute after, and on leaving it.
+  // server is: marked once 20 s of looking at the floor count as a visit (fab-w4, §E), every
+  // minute after, and on leaving it.
   state visits = "" persist
   state looking = false
   state visitN = 0
   state visitTry = 0
   mutation visit as shape Ack then afterVisit
+  // fab-w2/W4: the hourly baseline ring (src/factory/agg/baseline.ts), ≤ 6 KB, kept like visits:
+  // bound once at launch, saved through the visit mark (every minute while looking)
+  state facBase = "" persist
+  resource baseBind = baselineBind(facBase) as shape Ack else empty(ok=false, status="")
+  mutation baseSave as shape Ack then afterBase
+  derive baseNow = match baseSave { case some(v) => v.status, case none => "" }
   derive visitNow = match visit { case some(v) => v.status, case none => "" }
   resource coffee = coffeeOpen(server, visits, conn.seq, conn.ok, ov.tick) as shape Ack else empty(ok=false, status="")
   members "./views/mainlines.contract"
@@ -130,8 +137,6 @@ component App
   // fab-lens: the coffee check's last visit
   task coffeeLook when conn.ok and here == "factory" and not looking key=server
     after(20000, startLooking)
-  task coffeeFirst when looking and here == "factory" and visitTry == 0 key=server
-    after(100000, markVisit)
   task coffeeAgain when looking and here == "factory" and visitTry > 0 key=`${visitTry}`
     after(60000, markVisit)
   task coffeeLeave when looking and here != "factory"
@@ -148,12 +153,17 @@ component App
     retries = 0
   action startLooking
     looking = true
+    markVisit()
   action markVisit
     visitTry = visitTry + 1
     send visit = coffeeMark(server, visits)
+    send baseSave = baselineSave()
   action leaveFactory
     looking = false
     markVisit()
+  action afterBase
+    if baseNow != ""
+      facBase = baseNow
   action afterVisit
     if visitNow != ""
       visits = visitNow
@@ -211,7 +221,7 @@ component App
     send fac = facPointer("up", e.offsetX, e.offsetY, e.buttons + (e.shiftKey ? 256 : 0))
   // fab-lens: Esc / ⌫ walk back up the lens stack, ? shows the key
   action facKey(k: string)
-    if k == "Escape" or k == "Backspace" or k == "?"
+    if k == "Escape" or k == "Backspace" or k == "?" or k == "s" or k == "S" or k == "w" or k == "W"
       preventDefault()
       send fac = facPointer(`key:${k}`, 0, 0, 0)
   action facWheeled(e: WheelEvent)

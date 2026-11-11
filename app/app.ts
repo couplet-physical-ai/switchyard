@@ -19,6 +19,7 @@ import { fleet, journeyView, prDetailView, search } from './src/project.ts';
 import { MainlinesModel, stateWords } from './src/table/mainlines.ts';
 import { PrsModel } from './src/table/prs.ts';
 import { Timeline } from './src/timeline.ts';
+import { bindBaselineStore } from './src/factory/agg/baseline.ts';
 import { connectedWith, saveTokenFile, scrubKept, takeTokenFile, tokenFileReport } from './src/hooks.ts';
 import { updateDo, updateState } from './src/update.ts';
 import type { Frame as WireFrame } from './src/wire.ts';
@@ -341,6 +342,8 @@ function tokenVer(t: string): string {
   return (h >>> 0).toString(36).padStart(7, '0');
 }
 
+let baseBound = false, basePending = '';
+
 export const sources: Sources = {
   webVersion: () => webVersion(),
   parseLink: ([u, server, token]) => parseLink(u, server, token),
@@ -424,7 +427,12 @@ export const sources: Sources = {
     return h ? { kind: h.kind, id: h.id, label: h.label, route: '' } : { kind: '', id: '', label: '', route: '' };
   },
   facPointer: ([kind, x, y, buttons]) => {
+    // fab-w4: any input skips the coffee check's replay; S replays it, W cycles its window
+    factory.coffee.input(String(kind), clock);
+    const ck = String(kind).startsWith('key:') ? factory.coffee.key(String(kind).slice(4), clock) : null;
+    if (ck) return { kind: ck.kind, id: ck.id, label: ck.label, route: `${factory.cam.key}|${factory.selected}|${factory.coffee.win}` };
     const h = factory.pointer(String(kind), Number(x), Number(y), Number(buttons) || 0, clock);
+    if (kind === 'up') factory.coffee.click(h, clock); // fab-w4: the "since" chip and its menu
     // the HUD's buttons are floor hits too
     if (kind === 'up' && h?.kind === 'stress') setStress(!stressOn);
     else if (kind === 'up' && h?.kind === 'quality') factory.budget.pinned = factory.budget.pinned >= 4 ? -1 : factory.budget.pinned + 1;
@@ -436,10 +444,17 @@ export const sources: Sources = {
       if (cm) void cached(`j:${cm.repo}@${cm.sha}`, () => up!.journey(cm.repo, cm.sha)).then((j) => { if (factory.journeyFor === sel) factory.journey = j; }, () => {});
     }
     factory.offsetMin = yard.offsetMin;
-    return { kind: h?.kind ?? '', id: h?.id ?? '', label: h?.label ?? '', route: `${factory.cam.key}|${factory.selected}` };
+    return { kind: h?.kind ?? '', id: h?.id ?? '', label: h?.label ?? '', route: `${factory.cam.key}|${factory.selected}|${factory.coffee.win}${factory.coffee.menu ? '+' : ''}` };
   },
   // fab-lens: the coffee check's last visit per server (src/factory/coffee.ts), kept by Contract
-  coffeeOpen: ([server, visits, _seq, ok]) => ({ ok: !!ok, status: safe('coffeeOpen', '', () => factory.coffee.open(String(server ?? ''), String(visits ?? ''), !!ok)) }),
+  coffeeOpen: ([server, visits, _seq, ok]) => ({ ok: !!ok, status: safe('coffeeOpen', '', () => factory.coffee.open(String(server ?? ''), String(visits ?? ''), !!ok, clock)) }),
+  // the hourly baseline ring (agg/baseline.ts): bound once to Contract's persisted facBase; its
+  // saves wait in `basePending` until the next visit mark hands them to Contract
+  baselineBind: ([s]) => {
+    if (!baseBound) { baseBound = true; safe('baselineBind', 0, () => { bindBaselineStore({ load: () => String(s ?? ''), save: (v) => { basePending = v; } }); return 0; }); }
+    return { ok: true, status: '' };
+  },
+  baselineSave: () => { const v = basePending; basePending = ''; return { ok: v !== '', status: v }; },
   coffeeMark: ([server, visits]) => {
     const v = safe('coffeeMark', '', () => factory.coffee.mark(String(server ?? ''), String(visits ?? '')));
     return { ok: v !== '', status: v };

@@ -1,0 +1,69 @@
+// The coffee check (src/factory/coffee.ts, anomaly.ts, glance.ts; fab-w4, FACTORY-SPEC §E). A
+// test cannot press a canvas at a point, so these drive the floor's keys and read what it
+// answers: the window (W cycles it, as the "since" chip's menu picks it), the replay (S), and the
+// last visit, kept per server once 20 s of looking count as a visit, every minute after, and on
+// leaving the floor. The data side (the fresh set against a fingerprint, the windows, an
+// all-green world showing no marks): tools/coffee.test.ts.
+
+test "a visit counts after 20 s of looking, then every minute"
+  clock data
+  tap "setup-demo"
+  clock data
+  clock +500
+  expect state coffee.ok == true
+  expect state visitN == 0
+  clock +18000
+  clock data
+  expect state visitN == 0
+  expect state looking == false
+  clock +2000
+  clock data
+  expect state looking == true
+  expect state visitN == 1
+  clock +61000
+  clock data
+  expect state visitN == 2
+
+test "leaving the floor marks the visit"
+  clock data
+  tap "setup-demo"
+  clock data
+  clock +21000
+  clock data
+  expect state looking == true
+  expect state visitN == 1
+  tap "tab-fleet"
+  clock settle
+  clock +500
+  clock data
+  expect state looking == false
+  expect state visitN == 2
+
+test "W cycles the window: since the visit, last hour, 24 h, 7 d"
+  clock data
+  tap "setup-demo"
+  clock data
+  clock +500
+  type "factory" key "w"
+  clock data
+  expect state facNow.kind == "since"
+  expect state facNow.id == "1h"
+  type "factory" key "w"
+  clock data
+  expect state facNow.id == "24h"
+  type "factory" key "w"
+  clock data
+  expect state facNow.id == "7d"
+  type "factory" key "w"
+  clock data
+  expect state facNow.id == "visit"
+
+test "S replays the window"
+  clock data
+  tap "setup-demo"
+  clock data
+  clock +12000
+  type "factory" key "s"
+  clock data
+  expect state facNow.kind == "coffee"
+  expect state facNow.id == "replay"
