@@ -35,7 +35,7 @@ out=$(timeout 1800 "${SSH[@]}" 'f=$(mktemp); cat > "$f"; bash "$f" </dev/null 2>
 set -euo pipefail
 A=/Applications/Switchyard.app
 v() { /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "\$A/Contents/Info.plist"; }
-pkill -f 'Switchyard.app/Contents/MacOS/Switchyard' || true
+pkill -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true
 # Dev builds registered with LaunchServices (sy-client's targets, old release dirs) would take
 # switchyard:// links or be what open(1) finds: unregister every Switchyard.app but /Applications'.
 LSR=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
@@ -64,7 +64,7 @@ echo "--- update.log"; tail -20 ~/Library/Logs/Switchyard/update.log || true
 codesign --verify --deep --strict "\$A" && echo "signature: ok"
 sleep 10; [[ ! -e "\$A.old" ]] && echo ".old: swept" || { ls -ld "\$A.old"; echo "FAIL: .old not swept" >&2; exit 1; }
 echo "--- brew info"; $BREW info --cask switchyard 2>&1 | head -3) || true
-if [[ "$KEEP" != --keep ]]; then pkill -f 'Switchyard.app/Contents/MacOS/Switchyard' || true; rm -rf "\$A"; fi
+if [[ "$KEEP" != --keep ]]; then pkill -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true; rm -rf "\$A"; fi
 echo E2E-PASS
 EOF
 ) || { echo "$out"; echo "update e2e: FAILED" >&2; exit 1; }

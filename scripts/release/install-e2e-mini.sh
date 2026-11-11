@@ -36,7 +36,7 @@ out=$(timeout 1800 "${SSH[@]}" 'f=$(mktemp); cat > "$f"; bash "$f" </dev/null 2>
 set -euo pipefail
 A=/Applications/Switchyard.app
 LSR=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
-pkill -f 'Switchyard.app/Contents/MacOS/Switchyard' || true
+pkill -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true
 ($B uninstall --cask switchyard >/dev/null 2>&1 || true)
 ($B untap couplet-physical-ai/tap >/dev/null 2>&1 || true)
 rm -rf "\$A" "\$A.old"
@@ -58,7 +58,7 @@ echo "running: \${pid:-none}"; [[ -n "\$pid" ]]
 echo "--- brew info"; ($B info --cask switchyard 2>&1 | head -2)
 echo "--- app log (this launch)"; grep -h "pid \$pid " ~/Library/Logs/Switchyard/*.log 2>/dev/null | grep -v "download: [0-9]*%" | tail -n 12 | cut -c1-240 || true
 ls -la $DIR/shots/install-$V.png 2>/dev/null || true
-if [[ "$KEEP" != --keep ]]; then pkill -f 'Switchyard.app/Contents/MacOS/Switchyard' || true; fi
+if [[ "$KEEP" != --keep ]]; then pkill -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true; fi
 echo E2E-PASS
 EOF
 ) || { echo "$out"; echo "install e2e: FAILED" >&2; exit 1; }
