@@ -142,8 +142,13 @@ jobs:
             gh release upload "v$V" dist/*.zip dist/*.dmg dist/SHA256SUMS dist/latest.json --clobber
             gh release edit "v$V" --notes-file "$RUNNER_TEMP/notes.md"
           else
+            # A manual run creates the tag here. GitHub refuses (403) when this commit's
+            # .github/workflows differ from the default branch's (GITHUB_TOKEN may not create refs
+            # that change workflows): then push the tag yourself and publish from the artifact.
             gh release create "v$V" dist/*.zip dist/*.dmg dist/SHA256SUMS dist/latest.json --target "$GITHUB_SHA" \
-              --title "Switchyard $V" --notes-file "$RUNNER_TEMP/notes.md" "${pre[@]}"
+              --title "Switchyard $V" --notes-file "$RUNNER_TEMP/notes.md" "${pre[@]}" || {
+              echo "::error::release create refused. Publish from this run's artifact: gh run download $GITHUB_RUN_ID -n switchyard-$V-$MODE && gh release create v$V <files> --target $GITHUB_SHA (scripts/release.sh pushes the tag first and never hits this)"
+              exit 1; }
           fi
           gh release view "v$V" --json url,assets --jq '.url, (.assets[] | "  \(.name) \(.size)")'
           echo "The tap's bump-switchyard workflow picks this up within 20 min; scripts/release.sh triggers it at once."
