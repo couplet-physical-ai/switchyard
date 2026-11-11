@@ -128,7 +128,7 @@ export function* seedFleetSteps(s: Sim): Generator<void, void, void> {
   const wsum = acc;
   let nSeeded = 0;
   for (const rx of s.repos) {
-    if (++nSeeded % 12 === 0) yield; // a slow Mac's turn: ~12 repos of history
+    if (++nSeeded % 8 === 0) yield; // a slow Mac's turn: ~8 repos of history
     const lam = (0.0002 * 0.72 * 0.55 * rx.w) / wsum; // main pushes per ms, day-averaged
     const times: number[] = [];
     let t = T0 - 8 * MIN - r.exp(1 / lam) * 0.3;

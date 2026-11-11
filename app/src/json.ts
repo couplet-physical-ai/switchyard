@@ -5,10 +5,10 @@
 // about CHUNK bytes, parses each piece on its own and yields between pieces.
 
 /** Bytes of whole elements per JSON.parse (native, fast). */
-const RUN = 48 * 1024;
+const RUN = 32 * 1024;
 /** Bytes the JS scanner (slow on Hermes: an interpreted loop) reads in one turn before it yields.
  *  A slow Mac (GitHub's 3-core M1 runner) ran a 2.2 MB scan in one ~300 ms turn; 48 KB is ~10 ms. */
-const STEP = 48 * 1024;
+const STEP = 32 * 1024;
 
 type Yield = () => Promise<void>;
 
