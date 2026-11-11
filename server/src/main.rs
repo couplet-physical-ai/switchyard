@@ -242,6 +242,15 @@ async fn serve(cli: Cli) -> Result<()> {
         let last = hist.last_seq();
         let hub = Hub::new(epoch, 4096, 8192, hist);
         hub.set_seq(last);
+        // The 7-day log behind /changes and /app (loaded before the stream is observed).
+        let n = hub.ledger.attach(
+            &cli.data_dir.join("ledger.jsonl"),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+        );
+        tracing::info!(records = n, "ledger loaded");
         let cfg = StoreConfig {
             orgs: orgs.clone(),
             ..Default::default()
