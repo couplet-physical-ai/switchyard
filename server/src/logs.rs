@@ -122,15 +122,35 @@ impl Logs {
         if let Some(v) = hit {
             return Ok(v);
         }
-        let (raw, state) = if s.pipeline.starts_with("wp:") {
-            self.wp_lines(s, tail + 1).await?
+        // The same window the failure signatures read, so the decisive line is the one
+        // the step's cluster came from.
+        let window = crate::adapters::woodpecker::LOG_LINES;
+        let (mut raw, state, exit) = if s.pipeline.starts_with("wp:") {
+            self.wp_lines(s, window).await?
         } else if s.pipeline.starts_with("gha:") {
-            self.gh_lines(s, tail + 1).await?
+            let (l, st) = self.gh_lines(s, window).await?;
+            (l, st, None)
         } else {
             return Err(LogError::NotFound("no logs for this pipeline".into()));
         };
         let state = state.unwrap_or(s.state);
+        let decisive = matches!(state, CiState::Failure | CiState::Error)
+            .then(|| crate::signature::extract_at(&s.workflow, &s.step, exit, &raw).1)
+            .flatten();
+        // Keep the tail (+1: a line before it says the log goes on).
+        let drop = raw.len().saturating_sub(tail + 1);
+        raw.drain(..drop);
         let mut v = shape(raw, tail);
+        if let Some(d) = decisive
+            .and_then(|d| d.checked_sub(drop))
+            .and_then(|d| d.checked_sub(v["first"].as_u64().unwrap_or(0) as usize))
+            && d < v["lines"].as_array().map_or(0, Vec::len)
+        {
+            v["decisive"] = d.into();
+        }
+        if let Some(o) = v.as_object_mut() {
+            o.remove("first");
+        }
         v["id"] = s.pipeline.clone().into();
         v["step"] = s.step.clone().into();
         if !s.workflow.is_empty() {
@@ -195,7 +215,7 @@ impl Logs {
         &self,
         s: &StepRef,
         max: usize,
-    ) -> Result<(Vec<String>, Option<CiState>), LogError> {
+    ) -> Result<(Vec<String>, Option<CiState>, Option<i32>), LogError> {
         let (base, token) = self.wp.clone().expect("wp configured");
         let number: u64 = s
             .pipeline
@@ -245,8 +265,9 @@ impl Logs {
             .find(|c| c.name == s.step)
             .ok_or_else(|| LogError::NotFound("unknown step".into()))?;
         let state = crate::adapters::woodpecker::map_state(&step.state);
+        let exit = Some(step.exit_code);
         if step.id == 0 || !started(state) {
-            return Ok((Vec::new(), Some(state)));
+            return Ok((Vec::new(), Some(state), exit));
         }
         let (st, b) = self
             .get(
@@ -256,12 +277,12 @@ impl Logs {
             )
             .await?;
         if st == reqwest::StatusCode::NOT_FOUND {
-            return Ok((Vec::new(), Some(state)));
+            return Ok((Vec::new(), Some(state), exit));
         }
         if !st.is_success() {
             return Err(LogError::Upstream(format!("log: HTTP {st}")));
         }
-        Ok((crate::signature::decode_wp_log(&b, max), Some(state)))
+        Ok((crate::signature::decode_wp_log(&b, max), Some(state), exit))
     }
 
     async fn gh_lines(
@@ -355,7 +376,8 @@ fn strip_gh_time(l: &str) -> &str {
 }
 
 /// Clean, redact and bound raw tail lines (`raw` may hold one more line than `tail`,
-/// which says the log goes on before them).
+/// which says the log goes on before them). `first`: the index in `raw` of the first
+/// line kept.
 pub fn shape(raw: Vec<String>, tail: usize) -> Value {
     let mut truncated = raw.len() > tail;
     let from = raw.len().saturating_sub(tail);
@@ -383,7 +405,7 @@ pub fn shape(raw: Vec<String>, tail: usize) -> Value {
         truncated = true;
         lines.drain(..keep);
     }
-    json!({"lines": lines, "truncated": truncated, "bytes": bytes})
+    json!({"lines": lines, "truncated": truncated, "bytes": bytes, "first": from + keep})
 }
 
 fn clean(l: &str) -> String {

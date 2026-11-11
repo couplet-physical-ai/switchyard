@@ -575,7 +575,7 @@ pub fn rfc3339(ms: Ms) -> String {
 
 /// Lines read from the end of a failed step's log: pytest's `FAILED` lines can sit
 /// thousands of lines before the end (classifying 5,000 lines takes ~3 ms).
-const LOG_LINES: usize = 5_000;
+pub const LOG_LINES: usize = 5_000;
 
 /// One failed step whose log should be read for its failure signature.
 #[derive(Clone, Debug, PartialEq)]

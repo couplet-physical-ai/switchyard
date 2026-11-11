@@ -76,6 +76,7 @@ async fn upstream() -> String {
                     "p", "0123456789abcdefghijABCDEFGHIJ"
                 ));
                 lines.push("FAILED tests/test_api.py::test_login - AssertionError".into());
+                lines.push("==== 1 failed, 300 passed in 2.31s ====".into());
                 axum::Json(wp_entries(&lines))
             }),
         )
@@ -96,7 +97,8 @@ async fn upstream() -> String {
                 format!(
                     "2026-11-11T12:00:00.1234567Z ##[group]Run cargo test\n\
                      2026-11-11T12:00:01.0000000Z curl -H 'Authorization: Bearer {}'\n\
-                     2026-11-11T12:00:02.0000000Z ##[error]Process completed with exit code 101.\n",
+                     2026-11-11T12:00:02.0000000Z error[E0308]: mismatched types\n\
+                     2026-11-11T12:00:03.0000000Z ##[error]Process completed with exit code 101.\n",
                     ["abcdefgh", "ijklmnop"].concat()
                 )
             }),
@@ -178,13 +180,26 @@ async fn step_log_tails() {
     assert_eq!(
         v["lines"],
         json!([
-            "ok 297",
             "ok 298",
             "ok 299",
             "export GITHUB_TOKEN=[redacted]",
-            "FAILED tests/test_api.py::test_login - AssertionError"
+            "FAILED tests/test_api.py::test_login - AssertionError",
+            "==== 1 failed, 300 passed in 2.31s ===="
         ])
     );
+    // The decisive line (the one the step's failure cluster is read from), raw.
+    assert_eq!(v["decisive"], 3);
+    assert!(v.get("first").is_none());
+    // Outside the tail: absent.
+    let (_, one) = get_json(&format!(
+        "{base}/api/v1/pipeline/wp:acme%2Fapi:42/log?step=test&tail=1"
+    ))
+    .await;
+    assert_eq!(
+        one["lines"],
+        json!(["==== 1 failed, 300 passed in 2.31s ===="])
+    );
+    assert!(one.get("decisive").is_none(), "{one}");
     assert_eq!(
         v["bytes"].as_u64().unwrap() as usize,
         v["lines"]
@@ -211,7 +226,8 @@ async fn step_log_tails() {
         "{base}/api/v1/pipeline/wp:acme%2Fapi:42/log?step=test&tail=9999"
     ))
     .await;
-    assert_eq!(m["lines"].as_array().unwrap().len(), 302);
+    assert_eq!(m["lines"].as_array().unwrap().len(), 303);
+    assert_eq!(m["decisive"], 301);
     assert_eq!(m["truncated"], false);
 
     // Not started: an empty tail, no upstream read.
@@ -234,8 +250,13 @@ async fn step_log_tails() {
         json!([
             "##[group]Run cargo test",
             "curl -H 'Authorization: [redacted]",
+            "error[E0308]: mismatched types",
             "##[error]Process completed with exit code 101."
         ])
+    );
+    assert_eq!(
+        g["decisive"], 2,
+        "the compiler error, not the runner's exit line"
     );
 
     // Unknown pipeline / step / missing step: 404 / 404 / 400.

@@ -1865,6 +1865,17 @@ fn strip_decor(s: &str, class: FailClass) -> String {
 /// The signature of one failed step: class + decisive line from its log lines (already
 /// decoded, any order of noise), else from the step name and exit code alone (log empty).
 pub fn extract(workflow: &str, step: &str, exit_code: Option<i32>, log: &[String]) -> Signature {
+    extract_at(workflow, step, exit_code, log).0
+}
+
+/// [`extract`], plus the index in `log` of the decisive line (the line `Signature.line`
+/// was taken from), when the log gave a clear cause.
+pub fn extract_at(
+    workflow: &str,
+    step: &str,
+    exit_code: Option<i32>,
+    log: &[String],
+) -> (Signature, Option<usize>) {
     let names = format!("{} {}", step, workflow).to_ascii_lowercase();
     let lines: Vec<String> = log.iter().map(|l| clean_line(l)).collect();
     let dagger = lines.iter().any(|l| l.contains("dagger"));
@@ -1946,11 +1957,14 @@ pub fn extract(workflow: &str, step: &str, exit_code: Option<i32>, log: &[String
                 .or_else(|| class_from_name(workflow))
                 .unwrap_or(FailClass::Exit)
         };
-        return Signature {
-            class,
-            line: None,
-            exit_code,
-        };
+        return (
+            Signature {
+                class,
+                line: None,
+                exit_code,
+            },
+            None,
+        );
     };
 
     // `could not compile` whose rustc was SIGKILLed: the compiler ran out of memory.
@@ -1972,11 +1986,30 @@ pub fn extract(workflow: &str, step: &str, exit_code: Option<i32>, log: &[String
     }
     let text = display_text(&lines, idx, h);
     let line = normalize(&text);
-    Signature {
-        class: h.class,
-        line: if line.is_empty() { None } else { Some(line) },
-        exit_code,
+    (
+        Signature {
+            class: h.class,
+            line: if line.is_empty() { None } else { Some(line) },
+            exit_code,
+        },
+        Some(display_index(&lines, idx, h)),
+    )
+}
+
+/// The line `display_text` reads (a `could not compile` before a SIGKILL: that line).
+fn display_index(lines: &[String], idx: usize, hit: Hit) -> usize {
+    if let Hint::PrevCompile = hit.hint {
+        let from = idx.saturating_sub(12);
+        if let Some(k) = (from..idx).rev().find(|&k| {
+            lines[k]
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("error: could not compile")
+        }) {
+            return k;
+        }
     }
+    idx
 }
 
 /// The readable grouping key and its id: key = "<folded step> · <class>[ · <line>]",
