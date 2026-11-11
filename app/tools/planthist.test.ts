@@ -140,5 +140,40 @@ const fixture = await Bun.file(new URL('../../contract/fixtures/snapshot.json', 
   near(typical(u), 0.35, 'typical: cached per tide');
 }
 
+// w2-engine2 (REVIEW-iter3 #3): a slot's recent past. Runs dealt to the lowest free slot in start
+// order; the afterimage fades in sixths over 30 min; the lip ticks hold the last hour.
+{
+  const { dealSlots, afterK, laneArrivals, AFTER_MS, TICKS_MS } = await import('../src/factory/planthist.ts');
+  const now = 10 * 3_600_000, M = 60_000;
+  const run = (pid: string, lane: string, s: number, e: number, running = false) => ({ pid, lane, start: now - s * M, end: running ? now : now - e * M, running, red: false });
+  const past = dealSlots([run('a', 'labs', 50, 40), run('b', 'soft', 45, 30), run('c', 'labs', 35, 20), run('d', 'ems', 10, 0, true), run('old', 'ems', 200, 190)], 3, now);
+  eq(past.length, 3, 'dealSlots: one past per slot');
+  // a 50→40 in slot 0; b 45→30 overlaps a → slot 1; c 35→20: slot 0 free again (a ended at 40)
+  eq(past.map((s) => s.last?.pid ?? ''), ['c', 'b', ''], 'dealSlots: each slot keeps its last ENDED job (a running one is not an afterimage)');
+  eq(past[0]!.runs.map((r) => r.pid), ['a', 'c', 'd'], 'dealSlots: slot 0 ran a, c, then d (running, the first slot free at its start)');
+  ok(!past.some((s) => s.runs.some((r) => r.pid === 'old')), 'dealSlots: a job older than an hour leaves no lip tick');
+  eq(dealSlots([], 0, now).length, 1, 'dealSlots: at least one slot');
+  eq([afterK(0), afterK(AFTER_MS / 2), afterK(AFTER_MS - 1), afterK(AFTER_MS), afterK(-5)], [1, 0.5, 1 / 6, 0, 0], 'afterK: 1 → 0 over 30 min, in sixths; nothing after 30 min or for a future end');
+  ok(TICKS_MS === 3_600_000, 'the lip is the last hour');
+  const sparks: Record<string, (number | null)[]> = { 'team:a': [...new Array(22).fill(0), 2, 4], 'team:b': [...new Array(23).fill(null), 1], 'team:c': [3] };
+  const { rows, max } = laneArrivals([{ id: 'A', members: ['team:a', 'team:b'] }, { id: 'C', members: ['team:c', 'team:none'] }], (id) => sparks[id]);
+  eq([Array.from(rows[0]!.slice(22)), max, rows[1]![23]], [[2, 5], 5, 3], 'laneArrivals: a lane sums its groups\' hourly runs, a short spark ends at now');
+}
+
+// w2-engine2 (REVIEW-iter3 #6): a flaky cluster's heap is hatched, never solid red
+{
+  const { flakyCluster } = await import('../src/factory/clusters.ts');
+  eq([flakyCluster({ count: 67, flaky: 27 }), flakyCluster({ count: 19, flaky: 0 }), flakyCluster({ count: 8, flaky: 4 }), flakyCluster({ count: 40, flaky: 3 }), flakyCluster({ count: 4, flaky: 1 })], [true, false, true, false, false], 'flakyCluster: ≥ a quarter of its 24 h failures (and ≥ 2) passed on the same sha');
+  eq([flakyCluster(null, { n: 3, flaky: 2 }), flakyCluster(null, { n: 3, flaky: 1 }), flakyCluster(undefined, { n: 1, flaky: 0 })], [true, false, false], 'flakyCluster: no record → half its parked failures flaky');
+}
+
+// w2-engine2 (WOW #1): a failed run's light packet drops off the scanner into its heap
+{
+  const { cutAtHeap } = await import('../src/factory/packets.ts');
+  const { PLAN } = await import('../src/factory/layout.ts');
+  const R = PLAN.RETURN_V;
+  eq(cutAtHeap([[0, 10], [PLAN.SCAN_U, 10], [PLAN.SCAN_U, R], [24, R], [24, 40]], 900), [[0, 10], [PLAN.SCAN_U, 10], [PLAN.SCAN_U, R], [900, R]], 'cutAtHeap: down the scanner, along the conveyor to the heap, no further');
+}
+
 console.log(fails ? `${fails} FAILED` : 'all planthist tests passed');
 process.exit(fails ? 1 : 0);

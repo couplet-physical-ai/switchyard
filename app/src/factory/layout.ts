@@ -42,6 +42,14 @@ export const PLAN: Plan = {
   VIAS: ['roadrunner', 'gha', 'gha_fallback'],
 };
 
+/** w2-engine2 (REVIEW-iter3 #11): the APRON in front of the intake and the engine, the intake's
+ *  HOLDING YARD (plant.ts `yard`): a grid of floor bays, a row per lane (the docks' order, back →
+ *  front), a column per hour of the last 24 h (now at the right, as every board on the back wall).
+ *  It runs from just right of the rails' merge to the engine's right end, and from the front of
+ *  the frontmost machine (or the intake) to the front lanes' edge; `APRON.V0` is its least back
+ *  edge, `ROW_MAX` a row's deepest. */
+export const APRON = { U0: 670, U1: 1040, V0: 340, V1: 598, GAP: 14, ROW_MAX: 17, ROW_MIN: 5 } as const;
+
 /** A deploy track's name. */
 export const VIA_WORDS: Record<string, string> = { roadrunner: 'roadrunner', gha: 'gha', gha_fallback: 'fallback' };
 
