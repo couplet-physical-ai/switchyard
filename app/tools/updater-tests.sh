@@ -3,6 +3,9 @@
 # HooksTests.swift, README "Updates" and "Test hooks"): compiles UpdaterCore.swift,
 # HooksCore.swift and the two test files with swiftc into a CLI and runs it. Exits
 # nonzero when a case fails or the build does.
+# The signer-pin cases make two throwaway self-signed code-signing certificates in a keychain
+# file of their own (openssl + security; never the login keychain, its search list or trust
+# settings, never sudo) and delete it after the run.
 #   app/tools/updater-tests.sh                  on a Mac
 #   MINI=user@host app/tools/updater-tests.sh   from elsewhere: copies the files to the Mac
 #                                               over ssh and runs them there

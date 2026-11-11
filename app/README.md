@@ -99,8 +99,9 @@ computed from the version). If the API rate-limits it (403/429), it reads
 `releases/latest/download/SHA256SUMS` instead. `app.json` `moduleConfig.updater.repo`
 overrides the repo.
 
-**Trust anchor and host allowlist.** Releases are signed ad hoc, so there is no Team ID to pin.
-Trust rests on these instead:
+**Trust anchor and host allowlist.** Releases are signed ad hoc, so there is no Team ID to pin
+(see *Certificate pinning* below for copies signed with a certificate). Trust rests on these
+instead:
 
 - the feed is https only;
 - the zip URL is on `https://github.com/couplet-physical-ai/switchyard/releases/…`;
@@ -128,6 +129,20 @@ volume. The download is accepted only if all of these hold, in this order:
    | kSecCSCheckNestedCode`, and so does `codesign --verify --deep --strict`. The cdhash
    (`kSecCodeInfoUnique`) is logged.
 6. Any quarantine flag is removed (URLSession downloads carry none).
+7. The pin (below).
+
+**Certificate pinning.** The pin is off unless the running copy is signed with a certificate.
+All releases today are ad hoc, so for them it does nothing. The launch line logs
+`pin: off (running ad-hoc)`, and an update is taken ad hoc or cert-signed, as before. That
+also makes the one-time switch from ad hoc to a certificate a normal update.
+
+A copy signed with a certificate (`kSecCodeInfoCertificates` present, `kSecCodeSignatureAdhoc`
+clear) takes only a build whose leaf certificate is the same. The comparison is the SHA-256 of
+the leaf's DER, from `SecCodeCopySigningInformation`. Anything else is refused with *Update
+failed: update signed by a different certificate*, including an ad-hoc build. A copy that cannot
+read its own signature takes no update. The log names the running leaf hash and the new one:
+hashes of public certificates, never a secret. Going back to ad hoc, or moving to another
+certificate, needs a manual install (the DMG or `brew`).
 
 **Install: Copper's `Swap`.** The pill then reads *Update ready · Relaunch to update*. The same
 button appears in Settings. Pressing it does two sibling renames with `rename(2)`, so it never
@@ -200,7 +215,9 @@ self-updated app alone and does not fight the updater.
 **Tests.**
 
 ```sh
-app/tools/updater-tests.sh                 # native unit tests (on a Mac; MINI=user@host from elsewhere)
+app/tools/updater-tests.sh                 # native unit tests (on a Mac; MINI=user@host from elsewhere); the
+                                           # pin cases sign fixtures with throwaway certificates in a temp
+                                           # keychain, made per run and deleted after
 app/tools/updater-e2e.sh <Switchyard.app>  # end to end on a Mac, outside the agent, local feed
 app/tools/updater-e2e-feed.sh <Switchyard.app> 0.0.2 <latest.json URL>   # a real feed, --update-now
 ```
