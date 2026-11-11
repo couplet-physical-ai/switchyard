@@ -12,7 +12,8 @@
 # Its log is read from ~/Library/Logs/Switchyard/update.log. SY_UPDATE_MODE=ui takes the UI path
 # (AUTOINSTALL) instead of the headless hook. --keep leaves the app installed afterwards.
 # SY_FROM_TAP=1: <from> is already installed from the tap (brew install before <to> was cut);
-# otherwise the <from> release zip is installed directly.
+# otherwise the <from> release zip is installed directly. SY_SEED_TOKEN=1 seeds a fake token into
+# kv/exact.kept before the update and requires <to> to scrub it (and log it) at its first launch.
 set -euo pipefail
 FROM=${1:?from-version}; TO=${2:?to-version}; KEEP=${3:-}
 HOST=${SY_MINI:-mini-user@192.0.2.1}
@@ -52,6 +53,20 @@ ditto -x -k "\$tmp/s.zip" /Applications/ && rm -rf "\$tmp"
 xattr -dr com.apple.quarantine "\$A" 2>/dev/null || true
 fi
 echo "installed: \$(v)"; [[ "\$(v)" == "$FROM" ]]
+# On a person's Mac the brew user is the one who runs the app. On the mini brew belongs to
+# felipearce and the app runs as this user, so a tap-installed bundle is not ours to swap (the
+# updater rightly refuses: "needs admin rights"). Give it to the app's user, as on a real Mac.
+if [[ "\$(stat -f %Su "\$A")" != "\$(id -un)" ]]; then
+  sudo -n chown -R "\$(id -un)" "\$A"; echo "owner: \$(id -un) (was the brew user)"
+fi
+# SY_SEED_TOKEN=1: a kept answer holding a fake syd_ token, as 0.1.0 and earlier left real ones in
+# kv/exact.kept; the updated app must scrub it at its first launch (and log it under its pid).
+K="\$HOME/Library/Application Support/com.exowatt.switchyard/kv/exact.kept"
+if [[ "${SY_SEED_TOKEN:-}" == 1 ]]; then
+  mkdir -p "\$K"
+  printf '%s' '{"a":["https://switchyard.example.com","syd_SEEDEDfake0123456789"],"v":{"token":"syd_SEEDEDfake0123456789","has":true}}' > "\$K/e2e-seeded-token"
+  echo "seeded: fake syd_ token in exact.kept"
+fi
 mkdir -p ~/Library/Logs/Switchyard; : > ~/Library/Logs/Switchyard/update.log
 \$LSR -f "\$A"
 sudo -n launchctl asuser \$(id -u) sudo -n -u \$(id -un) open ${OPEN_ENV[*]:-} "\$A" ${ARG:+--args $ARG}
@@ -64,6 +79,13 @@ echo "after update: \$(v) (running: \$(pgrep -f '^/Applications/Switchyard.app/C
 echo "--- update.log"; tail -20 ~/Library/Logs/Switchyard/update.log || true
 [[ "\$(v)" == "$TO" ]] || { echo "FAIL: bundle is \$(v), expected $TO" >&2; exit 1; }
 codesign --verify --deep --strict "\$A" && echo "signature: ok"
+if [[ "${SY_SEED_TOKEN:-}" == 1 ]]; then
+  pid=\$(pgrep -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' | head -1)
+  for i in \$(seq 1 15); do grep -q "pid \$pid scrub:" ~/Library/Logs/Switchyard/switchyard.log && break; sleep 2; done
+  grep "pid \$pid scrub:" ~/Library/Logs/Switchyard/switchyard.log | tail -1 || { echo "FAIL: $TO (pid \$pid) logged no scrub" >&2; exit 1; }
+  if [[ -e "\$K/e2e-seeded-token" ]] || grep -rqs syd_SEEDED "\$K"; then echo "FAIL: seeded token still in exact.kept" >&2; exit 1; fi
+  echo "token at rest after update: none (scrubbed by $TO)"
+fi
 sleep 10; [[ ! -e "\$A.old" ]] && echo ".old: swept" || { ls -ld "\$A.old"; echo "FAIL: .old not swept" >&2; exit 1; }
 echo "--- brew info"; brew_ info --cask switchyard 2>&1 | head -3 || true
 if [[ "$KEEP" != --keep ]]; then pkill -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true; rm -rf "\$A"; fi
