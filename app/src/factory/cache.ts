@@ -600,6 +600,47 @@ class Replay {
   }
 }
 
-/** A full circle `arc`'s bytes on Exact's recorder: a line to its start and four cubics (272 B). */
-export const ARC_BYTES = 272;
-void TAU;
+// ---- cheaper circles ----------------------------------------------------------------------------
+/** Exact's recorder draws a full circle as a line to its start and four cubics (248 B after the
+ *  caller's moveTo): the live layer's glows, smoke, beacons and lamps were ~40 KB a frame of it.
+ *  `fastArcs` gives a recorder full circles and ellipses of 3 cubics (2 when under 10 device px
+ *  across; worst radial error 0.15 % and 1.8 %: under 0.1 px at those sizes), without the line
+ *  when the path is already at the start: 168 / 112 B. Partial arcs go to the recorder's own. */
+type ArcCtx = Ctx2D & { __syArcs?: boolean; _?: { subpath?: [number[], number[]] | null; state?: { transform?: number[] } } };
+export function fastArcs(ctx: Ctx2D, scale: number): void {
+  const c = ctx as ArcCtx;
+  if (c.__syArcs || typeof c.arc !== 'function') return;
+  const proto = Object.getPrototypeOf(c) as { arc: Ctx2D['arc']; ellipse: Ctx2D['ellipse'] };
+  const arc0 = proto.arc, ell0 = proto.ellipse;
+  const full = (x: number, y: number, rx: number, ry: number, rot: number, s: number, ac: boolean): void => {
+    const cr = Math.cos(rot), sr = Math.sin(rot);
+    const at = (a: number): [number, number] => { const px = rx * Math.cos(a), py = ry * Math.sin(a); return [x + px * cr - py * sr, y + px * sr + py * cr]; };
+    const tan = (a: number): [number, number] => { const px = -rx * Math.sin(a), py = ry * Math.cos(a); return [px * cr - py * sr, px * sr + py * cr]; };
+    const n = Math.max(rx, ry) * 2 * scale < 10 ? 2 : 3;
+    const step = (ac ? -TAU : TAU) / n, k = (4 / 3) * Math.tan(step / 4);
+    const p0 = at(s);
+    // the line to the start, unless the path is already there (the recorder's subpath, in canvas
+    // space: compared through the current transform)
+    const inner = c._, sp = inner?.subpath, m = inner?.state?.transform;
+    let there = false;
+    if (sp && m && m.length === 6) {
+      const X = m[0] * p0[0] + m[2] * p0[1] + m[4], Y = m[1] * p0[0] + m[3] * p0[1] + m[5];
+      there = Math.abs(sp[1][0] - X) < 1e-9 && Math.abs(sp[1][1] - Y) < 1e-9;
+    }
+    if (!there) c.lineTo(p0[0], p0[1]);
+    for (let i = 0; i < n; i++) {
+      const a0 = s + step * i, a1 = s + step * (i + 1);
+      const q0 = at(a0), q1 = at(a1), d0 = tan(a0), d1 = tan(a1);
+      c.bezierCurveTo(q0[0] + k * d0[0], q0[1] + k * d0[1], q1[0] - k * d1[0], q1[1] - k * d1[1], q1[0], q1[1]);
+    }
+  };
+  c.arc = function (x: number, y: number, r: number, s: number, e: number, ac = false): void {
+    if (r > 0 && Math.abs(e - s) >= TAU - 1e-9 && Number.isFinite(x + y + r + s)) { full(x, y, r, r, 0, s, !!ac); return; }
+    arc0.call(c, x, y, r, s, e, ac);
+  };
+  c.ellipse = function (x: number, y: number, rx: number, ry: number, rot: number, s: number, e: number, ac = false): void {
+    if (rx > 0 && ry > 0 && Math.abs(e - s) >= TAU - 1e-9 && Number.isFinite(x + y + rx + ry + rot + s)) { full(x, y, rx, ry, rot, s, !!ac); return; }
+    ell0.call(c, x, y, rx, ry, rot, s, e, ac);
+  };
+  c.__syArcs = true;
+}

@@ -202,7 +202,11 @@ if (flag('--phases')) {
   wrap(fac.budget, 'record', 'budget.record');
   wrap(F.w2, 'over', ' groups: w2.over');
 }
-for (let i = 0; i < WARM * 60; i++) step(false);
+// --trace: the ladder second by second through the warm-up (the coffee check's intro included)
+for (let i = 0; i < WARM * 60; i++) {
+  step(false);
+  if (flag('--trace') && i % 60 === 59) { const b = fac.budget; console.log(`t=${((i + 1) / 60).toFixed(0)}s q${b.quality} est ${b.est.toFixed(2)}ms gain ${b.gain.toFixed(2)} ops ${b.ops} busy ${fac.coffee.busy(t)}`); }
+}
 fac.profReset();
 CALLERS.clear();
 for (const k in T) delete T[k];

@@ -26,7 +26,7 @@ import { Gfx } from '../yard/gfx.ts';
 import type { Hud } from '../yard/hud.ts';
 import { C, clamp } from '../yard/theme.ts';
 import { BoxBatch } from './batch.ts';
-import { Retained } from './cache.ts';
+import { Retained, fastArcs } from './cache.ts';
 import { Census } from './census.ts';
 import { Drawer } from './drawer.ts';
 import { FacHud, type FacHudInfo } from './hud.ts';
@@ -68,6 +68,8 @@ export class Factory {
   /** When the top canvas last drew (it routes nothing until it has: an older Contract has none). */
   private topAt = -1e9;
   private topFresh = true;
+  /** The last live frame was in the coffee check's intro (see drawLive). */
+  private settling = true;
   /** The HUD's numbers, sampled four times a second (its box redraws then, not every frame). */
   private hudSnap: { at: number; b: Budget; info: FacHudInfo; key: string } | null = null;
   // ---- the layers (layers.ts): every stage of the floor, and the registry the loop runs ----
@@ -375,9 +377,18 @@ export class Factory {
     const camMoving = flying || !!this.drag || wheel !== this.lastWheel;
     this.lastWheel = wheel;
     if (heavy === 1 || (heavy === 2 && !camMoving)) interval = 0;
+    // The coffee check's intro (its first 10 s, or a replay of it) is a transient: the fleet
+    // loading, the floor drawn again, a minute's events replayed. Its frames do not teach the
+    // ladder, and when it ends the ladder starts again from full (it used to learn the load's
+    // misses there and sit at its survival rung for good: PERF.md, "Factory B, W7").
+    const settling = this.introHolds(t);
+    if (settling) interval = 0;
+    else if (this.settling && this.budget.pinned < 0) { this.budget.quality = 0; this.budget.gain = 1; }
+    this.settling = settling;
     const g = this.gl, cam = this.cam, c = this.census;
     const now = this.tl.playhead;
     g.begin(ctx, f.scale);
+    fastArcs(ctx, f.scale);
     if (f.cause === 'font') { g.resetFonts(); this.gt.resetFonts(); }
     ctx.resetTransform();
     ctx.clearRect(0, 0, f.width, f.height);
@@ -459,10 +470,23 @@ export class Factory {
     // stress): every frame. Calm: sleep; the 125 ms pulse (motion.ts CALM_MS) wakes the layer for
     // the belts and the beat, 8 frames a second.
     const awake = moving || flying || !!this.drag || this.hoverId !== '' || hudOn || this.stress.on || this.tl.mode === 'replay' || this.tl.mode === 'behind'
-      || this.coffee.busy(t); // fab-w4: the coffee check's first 10 s draw every frame
+      || settling; // fab-w4: the coffee check's first 10 s draw every frame (introHolds)
     if (!awake) st.slept++;
     this.awake = awake;
     return this.gpuClaim('live') || awake;
+  }
+
+  /** The coffee check's intro holds the frames (its first 10 s, or a replay of it, coffee.ts
+   *  `busy`), and only it: before the intro opens (its digest not in yet) `busy` reads "the world
+   *  is loaded", which would keep a calm floor awake for good if the digest never came; that
+   *  wait holds frames 12 s at most. */
+  private loadedAt = -1;
+  private introHolds(t: number): boolean {
+    if (!this.world.loaded) return false;
+    if (this.loadedAt < 0 || t < this.loadedAt) this.loadedAt = t;
+    const c = this.coffee;
+    if (c.openAt >= 0) return c.busy(t);
+    return t - this.loadedAt < 12_000 && c.busy(t);
   }
 
   // ---- the top canvas ---------------------------------------------------------------------------
@@ -476,6 +500,7 @@ export class Factory {
     this.topAt = t;
     // routing starts with the next live frame; until then the live canvas still draws the words
     if (t - was >= 1000) this.ret.invalidate();
+    fastArcs(ctx, f.scale);
     this.ret.flush(ctx, f.width, f.height, f.scale);
     const claim = this.topFresh;
     this.topFresh = false;
