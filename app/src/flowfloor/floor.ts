@@ -65,7 +65,7 @@ export class FlowFloor {
     ctx.beginPath(); ctx.rect(0, headTop + 4, W - right, H - headTop - 4); ctx.clip();
     ctx.translate(this.fitX, this.fitY);
     ctx.scale(sc, sc);
-    const r = drawSwarmFloor(g, S, now, { t, window: a.win, selected: a.sel, failed });
+    const r = drawSwarmFloor(g, S, now, { t, now, window: a.win, selected: a.sel, failed });
     ctx.restore();
     this.hits = r.hits.map((h) => ({ ...h, x: h.x * sc + this.fitX, y: h.y * sc + this.fitY, w: h.w * sc, h: h.h * sc }));
     // for the tests (as the old floor did): where the bin's newest crate is, once per layout

@@ -36,6 +36,8 @@ const BODY = '#161617', TOPB = '#1F1F21', SHADE = '#0A0A0B', WELL = '#0C0C0D', T
 export type SwarmOpts = {
   /** ms since the floor started (frozen at 0 under reduced motion) */
   t: number;
+  /** the world's now (server ms) */
+  now: number;
   window: string;
   selected: string;
   failed: Item[];
@@ -86,7 +88,7 @@ function rnd(s: string, k = 0): number {
 // ---- the lanes: right-angled polylines the swarm runs along ------------------------------------
 
 type Pt = readonly [number, number];
-type Lane = { id: string; pts: Pt[]; len: number; segs: number[]; rate: number; color: string; speed: number; bunch: number; fall?: boolean };
+type Lane = { id: string; pts: Pt[]; len: number; segs: number[]; rate: number; color: string; speed: number; bunch: number; fall?: boolean; after?: string };
 
 function lane(id: string, pts: Pt[], rate: number, color: string, speed = 74, bunch = 1, fall = false): Lane {
   const segs: number[] = [];
@@ -131,6 +133,11 @@ function lanes(S: Stages): Lane[] {
   out.push(lane('press', [[YARD.x1 + 2, yardRowY(5)], [1154, yardRowY(5)], [1154, Y], [PRESS.x - 2, Y]], S.flow.deploy, GREEN, 66));
   out.push(lane('apps', [[PRESS.x + PRESS.w + 2, Y], [1256, Y], [1256, SKY.base + 12], [SKY.x0 + 30, SKY.base + 12]], S.flow.deploy, GREEN, 66));
   // the reject chute: failures fall straight down into the slag pit
+  // through the gate: a run crosses the light curtain amber and leaves it green (scanned)
+  const scan = lane('scan', [[GATE.x - 2, Y], [GATE.x + GATE.w + 2, Y]], S.flow.tests, AMBER, 40);
+  scan.after = GREEN;
+  out.push(scan);
+  // the reject chute: the kicker under the curtain pushes failures down, straight into the pit
   out.push(lane('chute', [[GATE.x + GATE.w / 2, GATE.y1 + 4], [GATE.x + GATE.w / 2, PIT.y0 - 6]], S.tests.failed, RED, 120, 1, true));
   return out;
 }
@@ -163,10 +170,11 @@ function drawSwarm(g: Gfx, ls: Lane[], t: number): number {
       // its trail: a fading rectangle behind it, along its lane
       const tl = 9 + s;
       g.alpha(0.2);
-      if (dx) g.fillRect(dx > 0 ? cx - tl : cx, cy - s / 4, tl, s / 2, l.color);
-      else g.fillRect(cx - s / 4, dy > 0 ? cy - tl : cy, s / 2, tl, l.color);
+      const tc = l.after && p > 0.5 ? l.after : l.color;
+      if (dx) g.fillRect(dx > 0 ? cx - tl : cx, cy - s / 4, tl, s / 2, tc);
+      else g.fillRect(cx - s / 4, dy > 0 ? cy - tl : cy, s / 2, tl, tc);
       g.alpha(1);
-      cube(g, cx, cy, s, l.color, 0.8);
+      cube(g, cx, cy, s, l.after && p > 0.5 ? l.after : l.color, 0.8);
       n++;
     }
   }
@@ -279,7 +287,16 @@ function drawGate(g: Gfx, S: Stages, t: number): void {
     const a = 0.12 + 0.18 * Math.max(0, Math.sin(t / 260 - i * 0.7));
     g.alpha(a); g.fillRect(bx - 0.5, y0 + 2, 1, y1 - y0 - 4, '#F2E6CC'); g.alpha(1);
   }
-  void S;
+  // the scan line: a bright band where the work crosses
+  g.alpha(0.22 + 0.1 * Math.sin(t / 180)); g.fillRect(x + 10, Y - 7, w - 20, 14, '#F2E6CC'); g.alpha(1);
+  // the kicker: a ram at the curtain's foot that strikes as failures fall (their hourly rate)
+  const rate = S.tests.failed;
+  const k = rate > 0 ? Math.max(0, Math.sin((t / 1000) * Math.PI * (0.4 + rate / 30))) : 0;
+  g.fillRect(x + 10, y1 - 14, 8 + k * 12, 10, '#3A3A3D');
+  g.fillRect(x + 18 + k * 12, y1 - 16, 4, 14, k > 0.7 ? '#7A3B3B' : '#4A4A4D');
+  // the lamp on the lintel: green while most passes, amber when the pass rate sags
+  const lamp = S.tests.passRate >= 0.85 ? GREEN : S.tests.passRate >= 0.6 ? AMBER : RED;
+  cube(g, x + w / 2, y0 - 6, 6, lamp, 0.8);
 }
 
 function drawPit(g: Gfx, o: SwarmOpts, hits: Hit[], t: number): void {
@@ -298,11 +315,20 @@ function drawPit(g: Gfx, o: SwarmOpts, hits: Hit[], t: number): void {
   f.slice(0, perRow * rows).forEach((it, i) => {
     const c = i % perRow, r = Math.floor(i / perRow);
     const cx = x0 + 22 + c * pitch, cy = y1 - 22 - r * 30;
-    cube(g, cx, cy, 22, RED, 1);
+    // a fresh one (in the last 2 minutes) still glows hot; older ones cool to a deeper red
+    const fresh = o.now - (it.finished ?? 0) < 120_000;
+    cube(g, cx, cy, 22, fresh ? '#FF7A6E' : RED, fresh ? 1.2 + 0.3 * Math.sin(t / 220) : 0.8);
     if (o.selected === it.id) brackets(g, cx - 15, cy - 15, 30, 30);
     hits.push({ kind: 'failed', id: it.id, x: cx - 15, y: cy - 15, w: 30, h: 30, url: it.url, label: `${it.name} #${it.number}` });
   });
   if (f.length > perRow * rows) g.text(`+${f.length - perRow * rows}`, x1 - 8, y0 + 16, C.redText, 11, true, 'right');
+  // the newest, named over the pile: repo #n · the step it failed at · how long ago
+  const nw = f[0];
+  if (nw) {
+    const age = Math.max(0, Math.round((o.now - (nw.finished ?? o.now)) / 60_000));
+    const tag = `${nw.name} #${nw.number}${nw.step ? ` · ${nw.step}` : ''} · ${age < 1 ? 'just now' : `${age}m ago`}`;
+    g.text(g.fit(tag, 10.5, x1 - x0 - 60), x0 + 10, y0 + 16, C.redText, 10.5);
+  }
   // its head under it: "failed · last 30m · N" and the window chips
   const yb = y1 + 28;
   let x = x0;
