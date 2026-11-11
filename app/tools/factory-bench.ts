@@ -45,9 +45,11 @@ class RecordingCtx {
 }
 
 const args = process.argv.slice(2);
+/** True while a live draw runs (--callers --live-only counts only those). */
+let inLive = false;
 const opt = (name: string, def: string) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : def; };
 const flag = (name: string) => args.includes(name);
-let server = args.find((a, i) => !a.startsWith('--') && !['--zoom', '--frames', '--size', '--quality', '--warm'].includes(args[i - 1] ?? '')) ?? 'demo';
+let server = args.find((a, i) => !a.startsWith('--') && !['--zoom', '--frames', '--size', '--quality', '--warm', '--callers'].includes(args[i - 1] ?? '')) ?? 'demo';
 const TOP = !flag('--no-top');
 //   --hermes prices the frame budget as the macOS data module does (the ladder decides as there)
 const FRAMES = Number(opt('--frames', '600'));
@@ -130,7 +132,9 @@ const step = (measure: boolean): number => {
   let ms = 0;
   if (awake || woken) {
     const a = performance.now();
+    inLive = true;
     awake = drawVia('factoryLive', ['full', route, ZOOM, p], ctx, frame(t, awake ? 'frame' : 'args'));
+    inLive = false;
     ms += performance.now() - a;
   }
   // the top canvas, after the live one in the tree (as the host draws them)
@@ -145,7 +149,20 @@ const step = (measure: boolean): number => {
 for (let i = 0; i < 4; i++) drawVia('factoryFloor', ['', route, ZOOM], floorCtx, frame(t, 'mount'));
 const fac = Factory.last!;
 const CALLERS = new Map<string, number>();
-if (flag('--callers')) (await import('/tmp/sy-w7-callers.ts')).tallyCallers(RecordingCtx.prototype as unknown as Record<string, unknown>, ['arc', 'ellipse', 'font'], CALLERS);
+const LIVE_ONLY = flag('--live-only');
+// --callers [ops] [--depth N] [--live-only]: who calls the given ctx methods (default
+// arc,ellipse,font) a drawn frame, N stack frames deep (2), only in live draws
+if (flag('--callers')) {
+  const want = opt('--callers', '');
+  const names = (want && !want.startsWith('--') ? want : 'arc,ellipse,font').split(',');
+  const proto = RecordingCtx.prototype as unknown as Record<string, unknown>;
+  for (const n of names) {
+    const desc = Object.getOwnPropertyDescriptor(proto, n);
+    const tally = (k: string) => { if (LIVE_ONLY && !inLive) return; const st = (new Error().stack ?? '').split('\n').slice(3, 3 + Number(opt('--depth', '2'))).map((l) => l.trim().replace(/^at /, '').replace(/\(.*\/src\//, '(').replace(/:\d+\)$/, ')')).join(' < '); CALLERS.set(`${k} ${st}`, (CALLERS.get(`${k} ${st}`) ?? 0) + 1); };
+    if (desc?.set) Object.defineProperty(proto, n, { ...desc, set(this: unknown, v: unknown) { tally(n); desc.set!.call(this, v); } });
+    else if (typeof desc?.value === 'function') { const fn = desc.value as (...a: unknown[]) => unknown; proto[n] = function (this: unknown, ...a: unknown[]) { tally(n); return fn.apply(this, a); }; }
+  }
+}
 // --opbytes: which list ops the bytes are, per phase (needs --real)
 const OPB: Record<string, Record<number, number>> = {};
 let opTally: Record<number, number> = {};

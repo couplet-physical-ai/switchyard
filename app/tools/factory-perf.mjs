@@ -40,7 +40,8 @@ for (const [name, source, extra] of [['calm 1×', calm, []], ['loud 1×', loud, 
     liveKBPerFrame: +((bytes.liveBytes.mean * frames) / Math.max(1, bytes.liveBytes.framesDrawn) / 1024).toFixed(1),
     topKBPerFrame: +(bytes.topBytes.mean / 1024).toFixed(1),
     sentKBPerS: Math.round(bytes.sentKBPerFrame * 60),
-    quality: calls.quality,
+    // the floor's rung at the end (the HUD line's first word: ov.quality is the yard's)
+    quality: Number(/^q(\d)/.exec(calls.stats ?? '')?.[1] ?? calls.quality),
   });
 }
 const pad = (s, n) => String(s).padStart(n);

@@ -881,28 +881,34 @@ export class Floor implements Layer {
     }
     // 2. belts: slats drift at a speed set by the belt's last-hour throughput, logarithmically
     //    (motion.ts: 6 + 10·log₂(1 + rate/min) px/s at the fit; a belt with nothing on it stands)
+    //    fab-w7: each belt is one dashed stroke drawn on the floor plane (iso.ts floorMatrix): the
+    //    band 2·hw wide, its dashes the slats (pitch apart, 1.4 px at the fit, centred where the
+    //    slats were), each segment its own subpath so the pattern restarts there as they did.
+    //    One stroke a belt, not two calls a slat: 1,270 calls (33 KB) a demo frame → ~130.
     if (q < 2 && !this.f.reduced) {
-      g.begin_();
+      const m = cam.floorMatrix(0.6);
+      const th = Math.max(1, cam.s * 1.4) / (cam.s * 0.8);
+      ctx.save();
+      ctx.transform(m[0], m[1], m[2], m[3], m[4], m[5]);
+      ctx.strokeStyle = F.slat;
+      ctx.lineCap = 'butt';
+      let pitchNow = 0, n = 6;
       for (const b of this.belts()) {
         if (!b.n) continue;
         const hw = this.hwOf(b);
         const speed = beltSpeedPx(b.n) / cam.fitS;
         const pitch = b.hw !== undefined ? 9 : 12;
         const off = ((t / 1000) * speed) % pitch;
-        for (let i = 1; i < b.pts.length; i++) {
-          const [a, e] = [b.pts[i - 1], b.pts[i]];
-          const len = Math.hypot(e[0] - a[0], e[1] - a[1]);
-          const du = (e[0] - a[0]) / len, dv = (e[1] - a[1]) / len;
-          for (let s = off; s < len; s += pitch) {
-            const u = a[0] + du * s, v = a[1] + dv * s;
-            const x = cam.x(u, v);
-            if (offX(x)) continue;
-            g.move(cam.x(u - dv * hw, v - du * hw), cam.y(u - dv * hw, v - du * hw, 0.6));
-            g.line(cam.x(u + dv * hw, v + du * hw), cam.y(u + dv * hw, v + du * hw, 0.6));
-          }
-        }
+        if (pitch !== pitchNow) { ctx.setLineDash([th, pitch - th]); pitchNow = pitch; n++; }
+        ctx.lineWidth = 2 * hw;
+        ctx.lineDashOffset = (((th / 2 - off) % pitch) + pitch) % pitch;
+        ctx.beginPath();
+        for (let i = 1; i < b.pts.length; i++) { ctx.moveTo(b.pts[i - 1][0], b.pts[i - 1][1]); ctx.lineTo(b.pts[i][0], b.pts[i][1]); }
+        ctx.stroke();
+        n += 4 + 2 * (b.pts.length - 1);
       }
-      g.stroke(F.slat, Math.max(1, cam.s * 1.4));
+      ctx.restore();
+      g.ops += n;
     }
     // 3. the cars (the static floor paints them): their hits, running lamps on the beat, the
     //    newest culprit's beacon, the selection's ring

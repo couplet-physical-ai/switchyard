@@ -57,6 +57,14 @@ export class Cam {
   x(u: number, v: number): number { return this.ox + this.s * (u * UX + v * VX); }
   y(u: number, v: number, z = 0): number { return this.oy + this.s * (u * UY + v * VY - z * ZK); }
 
+  /** The floor plane at height z as a canvas matrix (a, b, c, d, e, f): drawn through it, a path
+   *  in floor units lands where `x`/`y` put it, and its strokes and dashes are measured on the
+   *  floor (the belts' slats: floor.ts). */
+  floorMatrix(z = 0): [number, number, number, number, number, number] {
+    const s = this.s;
+    return [s * UX, s * UY, s * VX, s * VY, this.ox, this.oy - s * z * ZK];
+  }
+
   /** Screen → floor (z = 0). */
   unproject(sx: number, sy: number): [number, number] {
     const a = (sx - this.ox) / this.s, b = (sy - this.oy) / this.s;
