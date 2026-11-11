@@ -135,7 +135,8 @@ jobs:
             dist/latest.json
           retention-days: 14
       - name: GitHub release
-        if: env.MODE != 'exact-probe' && inputs.publish != false
+        # A tag push has no inputs; in an expression '' == false, so test the event, not just the input.
+        if: env.MODE != 'exact-probe' && (github.event_name != 'workflow_dispatch' || inputs.publish)
         env:
           GH_TOKEN: ${{ github.token }}
           V: ${{ steps.v.outputs.version }}
