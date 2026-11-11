@@ -17,6 +17,7 @@
 // Nothing here draws or reads the world.
 
 import { BOTS_HUE, OTHER_HUE, oklchHex } from '../insights.ts';
+import { C as THEME } from '../yard/theme.ts';
 
 // ── colour science (sRGB ↔ OKLab, CIELab D65, CIEDE2000) ──────────────────────────────────────
 
@@ -161,6 +162,62 @@ export function hueViolations(lanes: HueSpec[]): string[] {
   return out;
 }
 
+// ── red means broken NOW (w2-red, REVIEW-iter3 #2, #5) ──────────────────────────────────────────
+//
+// Full-strength red (`C.red`) is ONE story: a main line or an app broken now. Everything else that
+// used to share it takes another role:
+//   - a PR failing its checks is business as usual: a desaturated BRICK cap (`C.redPR`, OKLCH L 0.485)
+//     with a 1-px red top edge, never a solid red fill;
+//   - a red main has an AGE TIER (`redTier`, from `main.since`):
+//       hot   < 1 h     full red, a white-hot core and a white rim, IN the beat (fx.ts `hotRims`);
+//       red   1 h – 7 d full red, still;
+//       rust  ≥ 7 d     brick `C.rust`, half height, a 45° hatch, out of the beat;
+//   - an open PR untouched for more than 14 d desaturates (`PR_OLD_MS`, 60 % of its chroma).
+// The tiers hold on every red-main mark: the signal posts, a red main's newest car, the tally
+// at each rail's end and the dock roof's red gauge.
+
+/** The app's palette plus the red roles (the brief's `C.redPR`; floor.ts and groupfloor.ts paint
+ *  from this one). */
+export const C = {
+  ...THEME,
+  /** a PR failing its checks: the brick cap (OKLCH L 0.485, chroma 0.088; the state red: 0.68, 0.156) */
+  redPR: '#8A4A44',
+  /** the brick cap's faces (darker, for its sides) */
+  redPRSide: '#6A3934', redPRFront: '#74403A',
+  /** a main line red for 7 d or more: rust (and its shaded faces, its hatch) */
+  rust: '#6E3B36', rustSide: '#4E2A27', rustFront: '#5C312D', rustHatch: '#2A1514',
+  /** the white-hot core and rim of a red main under an hour old */
+  hot: '#FFF4EE',
+} as const;
+
+const HOUR = 3_600_000, DAY = 24 * HOUR;
+/** A red main's tiers (ms): hot below RED_HOT_MS, rust from RED_RUST_MS. */
+export const RED_HOT_MS = HOUR, RED_RUST_MS = 7 * DAY;
+/** An open PR untouched longer than this desaturates (60 % of its chroma). */
+export const PR_OLD_MS = 14 * DAY;
+/** 0 hot (< 1 h), 1 red (1 h – 7 d), 2 rust (≥ 7 d). */
+export type RedTier = 0 | 1 | 2;
+export const TIER_HOT = 0, TIER_RED = 1, TIER_RUST = 2;
+/** A red main's tier from how long it has been red (an unknown `since`: red, the middle). */
+export function redTier(ageMs: number): RedTier {
+  if (!(ageMs >= 0) || !Number.isFinite(ageMs)) return TIER_RED;
+  return ageMs < RED_HOT_MS ? TIER_HOT : ageMs < RED_RUST_MS ? TIER_RED : TIER_RUST;
+}
+/** When a red main of age `ageMs` (now) changes tier next: ms from now (Infinity: never again). */
+export function tierFlipIn(ageMs: number): number {
+  if (!(ageMs >= 0)) return Infinity;
+  return ageMs < RED_HOT_MS ? RED_HOT_MS - ageMs : ageMs < RED_RUST_MS ? RED_RUST_MS - ageMs : Infinity;
+}
+/** How long, in words for a hover: `red 106 d`, `red 7 h`, `red 12 min`. */
+export function redFor(ageMs: number): string {
+  if (!(ageMs > 0)) return 'red';
+  const m = Math.round(ageMs / 60_000);
+  if (m < 60) return `red ${Math.max(1, m)} min`;
+  const h = Math.round(ageMs / HOUR);
+  if (h < 48) return `red ${h} h`;
+  return `red ${Math.round(ageMs / DAY)} d`;
+}
+
 /** The colours no group may come near (ΔE_ok ≥ RESERVE.reserveOk): the three states and the
  *  fixed flash. */
 export const RESERVED: Record<string, string> = { red: STATE.fail, amber: STATE.flight, ok: STATE.ok, fixed: FIXED };
@@ -229,14 +286,14 @@ export type Channels = {
 };
 
 export const GRAMMAR: Record<Kind, Channels> = {
-  dock: { word: 'dock', shape: 'slab', state: 'door lamp red: a fresh red main in the group', colour: 'group', group: 'roof fill', height: 'pushes/h (√)', footprint: '∝ √repos (lane depth)', motion: 'door flaps per push', pulse: 'door on the beat while fresh', glow: 'ember: returns > p90; red notches', label: 'group name', says: 'a group · height = pushes' },
+  dock: { word: 'dock', shape: 'slab', state: 'roof = a red gauge: red mains / repos, from the front edge (rust ≥ 7 d, red, hot < 1 h); door lamp: a fresh red', colour: 'group', group: 'roof fill', height: 'pushes/h (√)', footprint: '∝ √repos (lane depth)', motion: 'door flaps per push', pulse: 'door on the beat while fresh', glow: 'ember: returns > p90; a red road edge: red rising', label: 'group name', says: 'group · red roof = share' },
   lane: { word: 'lane', shape: 'carpet', state: '', colour: 'group', group: 'its floor, dock → buffer stop (8–12 %, neighbours alternating)', height: '', footprint: 'depth ∝ √repos', motion: '', pulse: '', glow: 'ember: failures > p90', label: 'name on its road (◇ = an org)', says: 'a group, dock → rail' },
-  stack: { word: 'PR stack', shape: 'stack', state: 'red top: CI failing · crack: conflict · amber rim: checks', colour: 'group', group: 'layers in the lane\'s hue, muted; base stripe', height: 'open PRs (a layer = 5)', footprint: 'fixed cell (group × phase)', motion: 'a layer slides in on a PR', pulse: '', glow: 'dust: stale layers · ghost: 7-d count', label: 'count at group zoom', says: 'open PRs · red: CI failing' },
+  stack: { word: 'PR stack', shape: 'stack', state: 'brick cap (C.redPR, 1-px red edge): CI failing · crack: conflict · amber rim: checks', colour: 'group', group: 'layers in the lane\'s hue, muted; base stripe', height: 'open PRs (a layer = 5)', footprint: 'fixed cell (group × phase)', motion: 'a layer slides in on a PR', pulse: '', glow: 'dust: stale layers · gray: untouched > 14 d', label: 'count at group zoom', says: 'open PRs · brick: CI failing' },
   pallet: { word: 'bot pallet', shape: 'pallet', state: 'red strap: > 50 % failing', colour: 'neutral', group: 'hatch (bots)', height: 'log count', footprint: '∝ repos touched', motion: '', pulse: '', glow: 'dust ∝ stale', label: 'hover', says: 'bot PRs, height = log n' },
   gate: { word: 'merge gate', shape: 'gantry', state: 'amber flash on a merge; red if it broke main', colour: 'group', group: 'lintel per lane', height: 'fixed', footprint: 'one lintel per lane', motion: 'ticks shift', pulse: 'flash per merge', glow: 'dim: no merge for 2 h', label: 'title', says: 'ticks = merges/h' },
-  post: { word: 'signal post', shape: 'post', state: 'lamp: red failing · amber running · gray ok', colour: 'state', group: 'base ring', height: 'log time in state', footprint: 'one per active repo, red first', motion: '', pulse: 'on a main event', glow: 'beacon < 1 h · cracks > 24 h', label: 'repo at group zoom', says: 'a repo\'s main · red first' },
-  car: { word: 'rail car', shape: 'flatcar', state: 'gray settled · amber running · red culprit', colour: 'state', group: '2-px underframe', height: 'culprit ×1.5', footprint: 'flatcar', motion: 'slides in on a merge', pulse: '', glow: 'beacon < 1 h', label: 'culprit callout', says: 'a merged commit' },
-  stop: { word: 'buffer stop', shape: 'tally', state: 'a red notch per red main (bright < 1 h)', colour: 'group', group: 'top and sides', height: '∝ red mains', footprint: 'the rail\'s end', motion: '', pulse: '', glow: '', label: 'hover', says: 'notch = a red main' },
+  post: { word: 'signal post', shape: 'post', state: 'lamp: red failing (hot < 1 h · red · rust ≥ 7 d) · amber running · gray ok', colour: 'state', group: 'base ring', height: 'tier: hot and red full, rust half', footprint: 'one per active repo, red first', motion: '', pulse: 'hot only: white core and rim on the beat', glow: 'beacon < 1 h · cracks > 24 h · rust hatched', label: 'repo at group zoom', says: 'a repo\'s main · red first' },
+  car: { word: 'rail car', shape: 'flatcar', state: 'gray settled · amber running · red: a red main\'s newest (rust ≥ 7 d)', colour: 'state', group: 'underframe in the lane hue', height: 'red ×1.5, rust half', footprint: 'flatcar', motion: 'slides in on a merge', pulse: 'hot: white core on the beat', glow: 'beacon < 1 h', label: 'culprit callout', says: 'a merged commit' },
+  stop: { word: 'red tally', shape: 'tally', state: 'a block per red main: rust ≥ 7 d (half, hatched) at the foot, red, hot < 1 h on top', colour: 'state', group: 'its plinth', height: '∝ red mains', footprint: 'the rail\'s end', motion: '', pulse: 'hot top on the beat', glow: '', label: 'hover', says: 'height = red mains' },
   belt: { word: 'belt', shape: 'band', state: 'red crates only', colour: 'group', group: 'stacked group stripes', height: '', footprint: 'width = flow/h', motion: 'slat speed = rate (log)', pulse: '', glow: 'ember = starved', label: 'hover', says: 'width = flow, speed = rate' },
   intake: { word: 'intake', shape: 'conveyor', state: 'amber queued; red if oldest > 2× p50', colour: 'state', group: 'crate band', height: 'pile on overflow', footprint: '2 lanes', motion: 'stops when slots are full', pulse: '', glow: 'jam', label: 'count if > 0', says: 'what waits for a slot' },
   engine: { word: 'machine', shape: 'machine', state: 'edge red: offline', colour: 'neutral', group: '', height: 'fixed', footprint: '∝ slots', motion: 'wall scrolls', pulse: '', glow: 'shimmer cpu ≥ 90 % · smoke OOM', label: 'name at zoom', says: 'a host · its slots' },

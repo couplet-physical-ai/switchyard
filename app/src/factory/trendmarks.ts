@@ -278,7 +278,7 @@ export function curb(g: Gfx, cam: Cam, m: Metric | null, a: Pt, b: Pt, o: CurbOp
   paint(lists[3]!, o.dim ?? '#38383D');
   paint(lists[0]!, o.ink ?? CURB);
   paint(lists[2]!, o.now ?? CURB_NOW);
-  paint(lists[1]!, C.red);
+  paint(lists[1]!, (o as CurbOpts & { red?: string }).red ?? C.red); // w2-red: a curb's over-threshold colour (a dock roof's: brick, its red is the gauge)
   // the typical level, dashed along the curb
   if (o.typical !== false && ty !== null && ty > 0) {
     const len = (Math.min(ty, max) / max) * o.depth;

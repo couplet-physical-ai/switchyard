@@ -24,13 +24,16 @@ import type { Event } from '../wire.ts';
 import type { World } from '../world.ts';
 import { BOTS } from '../world.ts';
 import type { Gfx } from '../yard/gfx.ts';
-import { C, TAU, clamp, withAlpha } from '../yard/theme.ts';
+import { TAU, clamp, withAlpha } from '../yard/theme.ts';
 import { normTeam } from '../../server/floor.ts';
 import type { Factory } from './factory.ts';
 import { BOTS_LANE, OTHER_LANE, floorGroups, groupLabel, isBot } from './groups.ts';
-import { LU, LV } from './iso.ts';
-import { LaneData, PR_CHECKS, PR_CONFLICT, PR_RED, PR_STALE, type Cell, type LaneCount, type LaneInfo, type LaneRepo } from './lanes.ts';
-import { laneInk, oklch, tone } from './grammar.ts';
+import { LU, LV, UY, VY } from './iso.ts';
+import { LaneData, PR_CHECKS, PR_CONFLICT, PR_RED, PR_STALE, type Cell, type LaneCar, type LaneCount, type LaneInfo, type LaneRepo } from './lanes.ts';
+import { C, PR_OLD_MS, TIER_HOT, TIER_RED, TIER_RUST, laneInk, oklch, redFor, redTier, tierFlipIn, tone } from './grammar.ts'; // w2-red: C = theme + the red roles
+import { Nums, hotRims, inBeat } from './fx.ts'; // w2-red: beat membership
+import { heapsOf, type Heap } from './clusters.ts'; // w2-red: the heaps' lane hue (read only)
+import { metricOf } from './trendmarks.ts'; // w2-red: a group's red trend
 import { frontOf } from './front.ts'; // fx-front: the roads (and their midpoints) live in front.ts
 import { GROUP_Z_IN, GROUP_Z_OUT, LANE_U, LANE_V0, LANE_V1, LaneMap, PLAN, REPO_Z_IN, REPO_Z_OUT, ROAD_DU, SIDING_DV, SUB_ROWS, laneSlots } from './layout.ts';
 import { R_DOOR, R_RING, beltSpeedPx, blink, flash } from './motion.ts';
@@ -63,15 +66,23 @@ export type LaneTint = {
   /** the lane's floor (its carpet), the alpha alternating by lane (neighbours apart in L) */ carpet: number;
   /** a PR cell's fresh layers (top, side, front): the hue, muted, light or dark as its palette L */ top: string; side: string; front: string;
   /** stale layers: the hue nearly gray, lighter (dust) */ dustTop: string; dustSide: string; dustFront: string;
+  /** w2-red: layers of PRs untouched > 14 d, desaturated (60 % of the fresh layers' chroma) and
+   *  darker: the dead weight at the stack's foot */ oldTop: string; oldSide: string; oldFront: string;
   /** the rail cars' underframe sides */ ufSide: string; ufFront: string;
   /** a single PR crate in a sub-row (group level): the hue lighter than the stacks' (one crate on
    *  the dark floor must read), and its stale (dusty) variant, nearly gray */ cTop: string; cSide: string; cFront: string; cdTop: string; cdSide: string; cdFront: string;
 };
-/** The rail cars stand on a 2-px underframe in their lane's hue (world z at the fit: ≈ 2 px). */
-const UF_Z = 2.4;
-/** The buffer stop at each rail's end: its least height and a red notch's pitch (one notch per red
- *  main, at most STOP_N; past that the column's cap goes solid red). */
-const STOP_H = 4, NOTCH = 1.7, STOP_N = 20;
+/** The rail cars stand on an underframe in their lane's hue (w2-red: 3.4 world z, ≈ 3 px at the
+ *  fit, its front face the lane's own hue at its palette lightness: it reads at the fit). */
+const UF_Z = 3.4;
+/** The red tally at each rail's end (w2-red, REVIEW-iter3 #2): a plinth in the lane's hue, on it a
+ *  block per red main (at most STOP_N; past that a solid cap), rust (≥ 7 d) at the foot, red, the
+ *  hot ones (< 1 h) on top; its footprint STOP_DU × 9. */
+const STOP_H = 3, NOTCH = 1.9, STOP_N = 20, STOP_DU = 7;
+/** A lane's red mains by age tier (w2-red, REVIEW-iter3 #5). */
+export type LaneRed = { hot: number; red: number; rust: number; n: number; repos: number; oldest: number };
+/** Old PRs (untouched > 14 d) the scan reads a census check. */
+const OLD_SLICE = 260;
 
 function laneTint(hex: string, i: number, kind: string): LaneTint {
   const L = oklch(hex)[0];
@@ -84,7 +95,8 @@ function laneTint(hex: string, i: number, kind: string): LaneTint {
     carpet: kind === 'bots' ? 0.05 : i % 2 ? 0.08 : 0.12,
     top: tone(hex, cl + 0.05, neutral ? 1 : 0.62), side: tone(hex, cl - 0.07, neutral ? 1 : 0.5), front: tone(hex, cl - 0.04, neutral ? 1 : 0.55),
     dustTop: tone(hex, cl + 0.1, 0.3), dustSide: tone(hex, cl - 0.04, 0.25), dustFront: tone(hex, cl - 0.01, 0.25),
-    ufSide: tone(hex, Math.max(0.3, L - 0.22), 0.8), ufFront: tone(hex, Math.max(0.36, L - 0.15), 0.85),
+    oldTop: tone(hex, cl - 0.02, neutral ? 0.6 : 0.62 * 0.6), oldSide: tone(hex, cl - 0.12, neutral ? 0.6 : 0.5 * 0.6), oldFront: tone(hex, cl - 0.09, neutral ? 0.6 : 0.55 * 0.6),
+    ufSide: tone(hex, Math.max(0.36, L - 0.12), 0.95), ufFront: tone(hex, Math.max(0.42, L - 0.04), 1),
     cTop: tone(hex, 0.66, neutral ? 1 : 0.8), cSide: tone(hex, 0.47, neutral ? 1 : 0.7), cFront: tone(hex, 0.54, neutral ? 1 : 0.75),
     cdTop: tone(hex, 0.6, 0.22), cdSide: tone(hex, 0.43, 0.18), cdFront: tone(hex, 0.5, 0.2),
   };
@@ -119,7 +131,7 @@ export class Floor implements Layer {
   }
 
   /** The static floor's key part: the bands, the lane counts, the zoom level, the focus. */
-  get sig(): string { return `${this.lanes.ver}|${this.data.ver}|${this.level}|${this.focusId}|${this.on ? 1 : 0}`; }
+  get sig(): string { return `${this.lanes.ver}|${this.data.ver}|${this.level}|${this.focusId}|${this.on ? 1 : 0}|${this.tierVer}`; } // w2-red: |tierVer (the red tiers, the old PRs)
 
   /** True while the accordion moves (the static floor keeps redrawing). */
   get animating(): boolean { return this.lanes.animating; }
@@ -130,6 +142,7 @@ export class Floor implements Layer {
       const ls = floorGroups().lanes();
       this.lanes.setLanes(ls.map((l) => ({ id: l.id, w: l.kind === 'bots' ? 0 : Math.sqrt(Math.max(4, l.repos)), fixed: l.kind === 'bots' ? SIDING_DV : 0 })));
       this.data.step(w, f.tl.playhead || w.at);
+      this.tiersStep(w, f.tl.playhead || w.at); // w2-red
     } else {
       const docks = f.census.docks;
       this.lanes.setLanes(docks.map((d) => ({ id: d.org === BOTS ? BOTS_LANE : `org:${d.org}`, w: 1, fixed: d.org === BOTS ? SIDING_DV : 0 })));
@@ -137,6 +150,134 @@ export class Floor implements Layer {
     this.focusStep(f.tl.clock);
     if (this.lanes.tick(f.tl.clock) || this.geoAt !== this.lanes.ver) this.relayout();
   }
+
+  // ---- w2-red: red mains by age tier, PRs by idleness (REVIEW-iter3 #2, #5) --------------------------
+  /** Per lane: its red mains by tier (the posts are red first), its repos, its oldest red. */
+  private reds = new Map<string, LaneRed>();
+  /** Per red repo: its tier (0 hot, 1 red, 2 rust). */
+  private repoTier = new Map<string, number>();
+  private tierCnt = -1;
+  private tierAt = -1e15;
+  private tierNext = Infinity;
+  private tierKey = '';
+  /** Per lane: the open PRs untouched > 14 d in each phase cell (the last complete scan). */
+  private oldN = new Map<string, Int16Array>();
+  private oldJob: Generator<void, Map<string, Int16Array>, void> | null = null;
+  private oldCnt = -1;
+  private oldKey = '';
+  /** Bumps when the tiers or the old PRs change what the floor paints (it is in `sig`). */
+  tierVer = 0;
+
+  /** The tiers from the lane count's red posts (again when the count changes or a red main crosses
+   *  1 h or 7 d), and one slice of the old-PR scan (a new one per count). */
+  private tiersStep(w: World, now: number): void {
+    const cnt = this.data.last;
+    if (cnt.ver !== this.tierCnt || now >= this.tierNext || now < this.tierAt - 60_000) {
+      this.tierCnt = cnt.ver; this.tierAt = now;
+      let next = Infinity, key = '';
+      this.reds.clear(); this.repoTier.clear();
+      for (const [id, info] of cnt.lanes) {
+        const r: LaneRed = { hot: 0, red: 0, rust: 0, n: 0, repos: info.repos.length, oldest: 0 };
+        for (const p of info.posts) {
+          if (p.st !== 0) break;
+          const age = p.since ? now - p.since : -1, t = redTier(age);
+          if (t === TIER_HOT) r.hot++; else if (t === TIER_RUST) r.rust++; else r.red++;
+          r.n++;
+          this.repoTier.set(p.repo, t);
+          if (p.since && (!r.oldest || p.since < r.oldest)) r.oldest = p.since;
+          const flip = tierFlipIn(age);
+          if (flip < Infinity) next = Math.min(next, now + flip);
+        }
+        this.reds.set(id, r);
+        key += `${id}:${r.hot}.${r.red}.${r.rust}.${r.repos};`;
+      }
+      this.tierNext = next;
+      if (key !== this.tierKey) { this.tierKey = key; this.tierVer++; }
+    }
+    if (!this.oldJob && cnt.ver !== this.oldCnt) { this.oldCnt = cnt.ver; this.oldJob = this.scanOld(w); }
+    if (this.oldJob) {
+      const r = this.oldJob.next();
+      if (r.done) {
+        this.oldJob = null;
+        let key = '';
+        for (const [id, a] of r.value) key += `${id}:${a.join('.')};`;
+        this.oldN = r.value;
+        if (key !== this.oldKey) { this.oldKey = key; this.tierVer++; }
+      }
+    }
+  }
+
+  /** Open non-bot PRs untouched for 14 d or more (`stale_ms`, the server's idle time) per lane and
+   *  phase cell, OLD_SLICE a census check. */
+  private *scanOld(w: World): Generator<void, Map<string, Int16Array>, void> {
+    const G = floorGroups(), out = new Map<string, Int16Array>();
+    let n = 0;
+    for (const p of w.prs.values()) {
+      if (++n % OLD_SLICE === 0) yield;
+      if ((p.stale_ms ?? 0) < PR_OLD_MS || isBot(p.author, p.bot)) continue;
+      const row = phaseRow(p);
+      if (row < 0) continue;
+      const lid = G.laneOfRepo(p.repo);
+      let a = out.get(lid);
+      if (!a) out.set(lid, (a = new Int16Array(4)));
+      a[row]++;
+    }
+    return out;
+  }
+
+  /** w2-red (REVIEW-iter3 #4): whether a lane's red mains are rising: its group's red trend is
+   *  `bad` (the server's flag; a server without it: rising and ≥ 1.2 × its 7-d mean), by 1.5 or more. */
+  redRising(laneId: string): boolean {
+    const m = metricOf(floorGroups().stats(laneId)?.trend ?? null, 'red');
+    if (!m) return false;
+    // at least 1.5 more red than usual (a group going 0 → 1 red is its gauge's news, not a trend)
+    const ref = m.d7 ?? m.h24;
+    if (m.h1 === null || ref === null || m.h1 - ref < 1.5) return false;
+    if (m.bad !== undefined) return m.bad && m.dir >= 0;
+    return m.dir > 0 && m.h1 >= ref * 1.2;
+  }
+
+  /** w2-red (REVIEW-iter3 #4): a 2-px red edge along the near side of each rising-red group's
+   *  approach road (front.ts lays the roads; this rides their near edge, a hair outside the band). */
+  private roadEdges(g: Gfx): void {
+    const fr = frontOf(this.f);
+    if (!fr || !this.on) return;
+    const cam = this.f.cam;
+    let any = false;
+    g.begin_();
+    for (const L of this.lanesNow) {
+      if (L.kind === 'bots' || !this.redRising(L.id)) continue;
+      // the road's half width: front.ts's own (read, no hook there: w2-chrome owns front.ts this
+      // wave); a front without it, the widest road's
+      const hw = (fr as unknown as { lanes?: { id: string; hw?: number }[] }).lanes?.find((e) => e.id === L.id)?.hw ?? 11;
+      const road = fr.roadOf(L.id), off = hw + 1.6;
+      if (!road || road.length < 2) continue;
+      // the polyline offset to its near side, mitred at the joints (one continuous stroke)
+      const nrm: [number, number][] = [];
+      for (let i = 1; i < road.length; i++) {
+        const a = road[i - 1]!, b = road[i]!, du = b[0] - a[0], dv = b[1] - a[1], len = Math.hypot(du, dv) || 1;
+        let nu = -dv / len, nv = du / len;
+        if (nu * UY + nv * VY < 0) { nu = -nu; nv = -nv; } // the side nearer the camera
+        nrm.push([nu, nv]);
+      }
+      for (let i = 0; i < road.length; i++) {
+        const na = nrm[Math.max(0, i - 1)]!, nb = nrm[Math.min(nrm.length - 1, i)]!;
+        let mu = na[0] + nb[0], mv = na[1] + nb[1];
+        const ml = Math.hypot(mu, mv) || 1;
+        mu /= ml; mv /= ml;
+        const k = off / Math.max(0.5, mu * nb[0] + mv * nb[1]);
+        const u = road[i]![0] + mu * k, v = road[i]![1] + mv * k;
+        if (i) g.line(cam.x(u, v), cam.y(u, v, 0.3)); else g.move(cam.x(u, v), cam.y(u, v, 0.3));
+      }
+      any = true;
+    }
+    if (any) g.stroke(C.red, 2);
+  }
+
+  /** A lane's red mains by tier (w2-red), undefined before the first count. */
+  redOf(laneId: string): LaneRed | undefined { return this.reds.get(laneId); }
+  /** A repo's red tier (0 hot, 1 red, 2 rust), -1 when its main is not red. */
+  tierOf(repo: string): number { return this.repoTier.get(repo) ?? -1; }
 
   /** Lane geometry now (and the plan's RAIL_V for the org rails the lens system still reads). */
   private relayout(): void {
@@ -164,6 +305,9 @@ export class Floor implements Layer {
    *  and the main-line dots (red, running, ok lamp, settled). */
   private rowB = Array.from({ length: 16 }, () => new BoxBatch());
   private dotB = Array.from({ length: 4 }, () => new BoxBatch());
+  /** w2-red: rust things (a chronic red's lamp, car, post), and red cars by tier. */
+  private rustB = new BoxBatch();
+  private hotCars = new BoxBatch();
   private rowN = new Uint8Array(24);
 
   /** Where a lane's name stands: its approach road's midpoint (u, v on the floor), on the lane's
@@ -416,15 +560,16 @@ export class Floor implements Layer {
       // repos, a sub-row each (§F); else its four phase cells
       if (this.subRowsOn(L)) { this.subRows(g, add, L, info); }
       else for (let r = 0; r < 4; r++) {
-        const C = info?.cells[r];
+        const cell = info?.cells[r];
         const u0 = ROW_U[r] - CELL_DU / 2;
-        const hgt = C ? stackH(C.n) : 2;
-        add(u0, L.s.cell0, () => this.stack(g, u0, L.s.cell0, CELL_DU, L.s.cell1 - L.s.cell0, C, L, lo), u0 + CELL_DU, L.s.cell1, hgt);
+        const hgt = cell ? stackH(cell.n) : 2;
+        const old = this.oldN.get(L.id)?.[r] ?? 0; // w2-red: PRs untouched > 14 d
+        add(u0, L.s.cell0, () => this.stack(g, u0, L.s.cell0, CELL_DU, L.s.cell1 - L.s.cell0, cell, L, lo, old), u0 + CELL_DU, L.s.cell1, hgt);
       }
-      // the buffer stop at the rail's end: a red notch per red main line of the group
+      // the red tally at the rail's end (w2-red): a block per red main of the group, by age tier
       if (info) {
-        const red = Math.min(STOP_N, info.red), h = STOP_H + red * NOTCH + (info.red > STOP_N ? 1.6 : 0), v = this.subRowsOn(L) ? (L.v0 + L.v1) / 2 : L.s.rail;
-        add(RAIL_U1 - 1, v - 4.5, () => this.stop(g, L, v, info), RAIL_U1 + 3, v + 4.5, h);
+        const v = this.subRowsOn(L) ? (L.v0 + L.v1) / 2 : L.s.rail;
+        add(RAIL_U1 - 1, v - 4.5, () => this.stop(g, L, v, info, lo), RAIL_U1 - 1 + STOP_DU, v + 4.5, this.stopH(L.id, info));
       }
     }
     // the posts: one per active repo on each lane's back curb, red first
@@ -435,6 +580,8 @@ export class Floor implements Layer {
     }
     // the merge gate: a low gantry over every lane, a lintel per lane in its hue, ticks = merges
     add(GATE_U, LANE_V0, () => this.gate(g, lanes, cnt), GATE_U + 8, LANE_V1, 26);
+    // w2-red: a group whose red is rising: a red edge along its approach road (over the apron)
+    fp.after(() => this.roadEdges(g));
     // the main lines' cars: they change at a merge or a run's end, which redraws this layer
     fp.after(() => this.drawCars(g, lo));
   }
@@ -465,92 +612,112 @@ export class Floor implements Layer {
   }
 
   /** A PR stack: a cell plate with the group's base stripe; on it the open PRs (a layer per 5) in
-   *  the lane's hue, muted (fx-lanes: the yard reads as the lanes' colours, not one olive carpet),
-   *  stale layers dusty at the bottom (the hue nearly gray and lighter, specked), a red band on top
-   *  for CI failing, a crack for conflicts, an amber rim while PRs wait on checks (heavier when most
-   *  do). */
-  private stack(g: Gfx, u0: number, v0: number, du: number, dv: number, C: Cell | undefined, L: LaneGeo, lo: boolean): void {
+   *  the lane's hue, muted (fx-lanes: the yard reads as the lanes' colours, not one olive carpet).
+   *  w2-red (REVIEW-iter3 #2, #5): from the foot up, the PRs untouched > 14 d (desaturated to 60 %
+   *  of the fresh layers' chroma, darker: dead weight), the stale ones (idle > 72 h: dusty, lighter),
+   *  the fresh ones in the lane's hue; CI failing a BRICK lid (`C.redPR`, as deep as its share) with
+   *  a 1-px red top edge, never a solid red fill (red is a main or an app broken now); a crack for
+   *  conflicts (pale, not red); an amber rim while PRs wait on checks (heavier when most do). */
+  private stack(g: Gfx, u0: number, v0: number, du: number, dv: number, cell: Cell | undefined, L: LaneGeo, lo: boolean, oldN: number): void {
     const cam = this.f.cam, hex = L.hex, T = L.tint;
     if (dv < 4) return;
     box(cam, g, u0 + 2, v0, du - 4, dv, 1.2, '#161618', '#111113', '#0F0F11', '#232326');
     g.begin_(); quad(cam, g, u0 + 2, v0 + dv - 1.6, u0 + du - 2, v0 + dv, 1.25); g.fill(withAlpha(hex, 0.9));
-    if (!C || !C.n) return;
-    const layers = Math.min(16, Math.ceil(C.n / 5));
+    if (!cell || !cell.n) return;
+    const n = cell.n, layers = Math.min(16, Math.ceil(n / 5));
     const lh = 2.4, inset = Math.min(5, dv * 0.18);
     const ua = u0 + 2 + inset, ub = u0 + du - 2 - inset, va = v0 + inset * 0.6, vb = v0 + dv - inset;
-    const dusty = Math.min(layers, Math.round((layers * C.stale) / C.n));
-    const amber = C.checks > 0, most = C.checks >= C.n / 2;
+    const old = Math.min(n, oldN), stale = Math.min(n, Math.max(cell.stale, old));
+    const oldL = Math.min(layers, Math.round((layers * old) / n));
+    const dusty = Math.max(0, Math.min(layers, Math.round((layers * stale) / n)) - oldL);
+    const fresh = Math.max(0, layers - oldL - dusty);
+    const amber = cell.checks > 0, most = cell.checks >= n / 2;
     const edge = amber ? (most ? '#C89A55' : '#8E6E3E') : withAlpha(T.ink, 0.35);
     const h0 = 1.2;
+    // one band of layers (z0 → z1): its front, its side, its top
+    const band = (z0: number, z1: number, top: string, side: string, front: string) => {
+      g.begin_(); poly(cam, g, [ua, vb, z0, ub, vb, z0, ub, vb, z1, ua, vb, z1]); g.fill(front);
+      g.begin_(); poly(cam, g, [ub, va, z0, ub, vb, z0, ub, vb, z1, ub, va, z1]); g.fill(side);
+      g.begin_(); quad(cam, g, ua, va, ub, vb, z1); g.fill(top);
+    };
+    let z = 0;
+    if (oldL) { band(z, h0 + oldL * lh, T.oldTop, T.oldSide, T.oldFront); z = h0 + oldL * lh; }
     if (dusty) {
-      box(cam, g, ua, va, ub - ua, vb - va, h0 + dusty * lh, T.dustTop, T.dustSide, T.dustFront, '');
+      const z1 = (z || h0) + dusty * lh;
+      band(z, z1, T.dustTop, T.dustSide, T.dustFront);
       // dust: a few specks on the stale top while it is the top
-      if (!lo && dusty === layers) {
+      if (!lo && !fresh) {
         g.begin_();
-        for (let k = 0; k < 6; k++) { const su = ua + ((ub - ua) * ((k * 37) % 11 + 0.5)) / 11, sv = va + ((vb - va) * ((k * 53) % 7 + 0.5)) / 7; quad(cam, g, su - 0.5, sv - 0.5, su + 0.5, sv + 0.5, h0 + dusty * lh + 0.02); }
+        for (let k = 0; k < 6; k++) { const su = ua + ((ub - ua) * ((k * 37) % 11 + 0.5)) / 11, sv = va + ((vb - va) * ((k * 53) % 7 + 0.5)) / 7; quad(cam, g, su - 0.5, sv - 0.5, su + 0.5, sv + 0.5, z1 + 0.02); }
         g.fill(withAlpha('#B8B2A0', 0.35));
       }
+      z = z1;
     }
-    const fresh = layers - dusty;
-    if (fresh) {
-      // the fresh layers stand on the dusty ones, in the lane's hue
-      const z0 = h0 + dusty * lh;
-      g.begin_(); poly(cam, g, [ua, vb, z0, ub, vb, z0, ub, vb, z0 + fresh * lh, ua, vb, z0 + fresh * lh]); g.fill(T.front);
-      g.begin_(); poly(cam, g, [ub, va, z0, ub, vb, z0, ub, vb, z0 + fresh * lh, ub, va, z0 + fresh * lh]); g.fill(T.side);
-      g.begin_(); quad(cam, g, ua, va, ub, vb, z0 + fresh * lh); g.fill(T.top);
-    }
+    if (fresh) { const z1 = (z || h0) + fresh * lh; band(z, z1, T.top, T.side, T.front); z = z1; }
     const top = h0 + layers * lh;
     g.begin_(); quad(cam, g, ua, va, ub, vb, top); g.stroke(edge, g.hair * (most ? 1.8 : amber ? 1.3 : 1));
     if (!lo && layers > 1) {
       g.begin_();
-      for (let k = 1; k < layers; k++) { const z = h0 + k * lh; g.move(cam.x(ua, vb), cam.y(ua, vb, z)); g.line(cam.x(ub, vb), cam.y(ub, vb, z)); g.line(cam.x(ub, va), cam.y(ub, va, z)); }
+      for (let k = 1; k < layers; k++) { const zz = h0 + k * lh; g.move(cam.x(ua, vb), cam.y(ua, vb, zz)); g.line(cam.x(ub, vb), cam.y(ub, vb, zz)); g.line(cam.x(ub, va), cam.y(ub, va, zz)); }
       g.stroke(withAlpha('#4A4A50', 0.5), g.hair);
     }
-    // CI failing: a red band across the top, as deep as its share (all red: the whole top)
-    if (C.red) {
-      const k = clamp(C.red / C.n, 0.18, 1);
-      g.begin_(); quad(cam, g, ua, vb - (vb - va) * k, ub, vb, top + 0.05); g.fill(C.red / C.n >= 0.5 ? F.redTop : withAlpha(F.redTop, 0.85));
+    // CI failing: a brick lid across the top, as deep as its share (all failing: the whole top), its
+    // front and side a band of the top layer, a 1-px red line along its top edges
+    if (cell.red) {
+      const k = clamp(cell.red / n, 0.18, 1), vc = vb - (vb - va) * k, zc = top - Math.min(1.4, lh * 0.6), zt = top + 0.05;
+      g.begin_(); poly(cam, g, [ua, vb, zc, ub, vb, zc, ub, vb, zt, ua, vb, zt]); g.fill(C.redPRFront);
+      g.begin_(); poly(cam, g, [ub, vc, zc, ub, vb, zc, ub, vb, zt, ub, vc, zt]); g.fill(C.redPRSide);
+      g.begin_(); quad(cam, g, ua, vc, ub, vb, zt); g.fill(C.redPR);
+      g.begin_(); g.move(cam.x(ua, vb), cam.y(ua, vb, zt)); g.line(cam.x(ub, vb), cam.y(ub, vb, zt)); g.line(cam.x(ub, vc), cam.y(ub, vc, zt));
+      g.stroke(C.red, 1);
     }
-    // a conflict: a crack down the front face
-    if (C.conflict) {
-      const n = Math.min(3, C.conflict);
+    // a conflict: a crack down the front face (pale: a conflict is not a broken main)
+    if (cell.conflict) {
+      const m = Math.min(3, cell.conflict);
       g.begin_();
-      for (let j = 0; j < n; j++) {
-        const u = ua + ((ub - ua) * (j + 1)) / (n + 1);
+      for (let j = 0; j < m; j++) {
+        const u = ua + ((ub - ua) * (j + 1)) / (m + 1);
         g.move(cam.x(u, vb), cam.y(u, vb, top)); g.line(cam.x(u + 1.2, vb), cam.y(u + 1.2, vb, top * 0.66)); g.line(cam.x(u - 0.8, vb), cam.y(u - 0.8, vb, top * 0.36)); g.line(cam.x(u + 0.6, vb), cam.y(u + 0.6, vb, h0));
       }
-      g.stroke('#E3858C', Math.max(1, g.hair * 1.3));
+      g.stroke(CRACK, Math.max(1, g.hair * 1.3));
     }
-    if (C.n > 80) { g.begin_(); quad(cam, g, ua + 3, va + 2, ub - 3, vb - 2, top); g.stroke(edge, g.hair * 1.5); }
+    if (n > 80) { g.begin_(); quad(cam, g, ua + 3, va + 2, ub - 3, vb - 2, top); g.stroke(edge, g.hair * 1.5); }
   }
 
-  /** The buffer stop at a lane's rail end (fx-lanes, REVIEW-iter2 #1): a low block in the lane's hue,
-   *  standing taller by a red notch per red main line of the group (on its face toward the plant,
-   *  the newest reds, under an hour, bright; older ones darker; past STOP_N the cap goes solid). A
-   *  calm lane's stop is a low hued block: the column of stops reads "which team is red" at once. */
-  private stop(g: Gfx, L: LaneGeo, v: number, info: LaneInfo): void {
-    const cam = this.f.cam;
-    const red = Math.min(STOP_N, info.red), over = info.red > STOP_N;
-    const u0 = RAIL_U1 - 1, u1 = RAIL_U1 + 3, v0 = v - 4.5, v1 = v + 4.5;
-    const h = STOP_H + red * NOTCH + (over ? 1.6 : 0);
-    box(cam, g, u0, v0, u1 - u0, v1 - v0, h, L.hex, L.tint.ufSide, L.tint.ufFront, '#0C0C0E', g.hair);
+  /** The red tally's height (world z) for a lane: its plinth and a block per red main (≤ STOP_N). */
+  private stopH(id: string, info: LaneInfo): number {
+    const n = this.reds.get(id)?.n ?? info.red;
+    return STOP_H + Math.min(STOP_N, n) * NOTCH + (n > STOP_N ? 1.6 : 0);
+  }
+
+  /** The red tally at a lane's rail end (w2-red, REVIEW-iter3 #2, #5; was fx-lanes' buffer stop of
+   *  notches): a low plinth in the lane's hue, on it a block per red main line of the group, so
+   *  the column of tallies reads "which team, how many" at once. The blocks are its reds by age:
+   *  rust (≥ 7 d) at the foot, brick and hatched; red (1 h – 7 d) above, still; the hot ones (< 1 h)
+   *  on top (their white core and rim are the live layer's, on the beat). Past STOP_N a solid cap.
+   *  Seams between the blocks count them up close. */
+  private stop(g: Gfx, L: LaneGeo, v: number, info: LaneInfo, lo: boolean): void {
+    const cam = this.f.cam, R = this.reds.get(L.id);
+    const n = R ? R.n : info.red, red = Math.min(STOP_N, n), over = n > STOP_N;
+    const u0 = RAIL_U1 - 1, u1 = u0 + STOP_DU, v0 = v - 4.5, v1 = v + 4.5;
+    box(cam, g, u0, v0, u1 - u0, v1 - v0, STOP_H, L.hex, L.tint.ufSide, L.tint.ufFront, '#0C0C0E', g.hair);
     if (!red) return;
-    // the notches: across the stop's two visible faces (+u, the plant's side; +v, the front)
-    const fresh = Math.min(red, info.fresh);
-    const notch = (k0: number, k1: number, col: string) => {
-      if (k1 <= k0) return;
+    // the hot first, then the red, the rest rust (capped at STOP_N in all)
+    const hot = Math.min(red, R ? R.hot : info.fresh), mid = Math.min(red - hot, R ? R.red : red - hot), rust = red - hot - mid;
+    const ia = u0 + 0.6, ib = u1 - 0.6, ja = v0 + 0.6, jb = v1 - 0.6;
+    const zAt = (k: number) => STOP_H + k * NOTCH;
+    if (rust) {
+      slab(cam, g, ia, ja, ib, jb, zAt(0), zAt(rust), C.rust, C.rustSide, C.rustFront);
+      if (!lo) hatchFaces(cam, g, ia, ja, ib, jb, zAt(0), zAt(rust), C.rustHatch);
+    }
+    if (mid + hot) slab(cam, g, ia, ja, ib, jb, zAt(rust), zAt(red), F.redTop, F.redSide, F.redFront);
+    if (over) { g.begin_(); quad(cam, g, ia, ja, ib, jb, zAt(red) + 0.05); g.fill(C.hot); }
+    // the seams: a block per red main, readable up close
+    if (!lo && cam.s * NOTCH >= 2.2) {
       g.begin_();
-      for (let k = k0; k < k1; k++) {
-        const za = STOP_H - 0.6 + k * NOTCH + 0.35, zb = za + NOTCH - 0.6;
-        poly(cam, g, [u1, v0 + 0.6, za, u1, v1, za, u1, v1, zb, u1, v0 + 0.6, zb]);
-        poly(cam, g, [u0 + 0.4, v1, za, u1, v1, za, u1, v1, zb, u0 + 0.4, v1, zb]);
-      }
-      g.fill(col);
-    };
-    // newest at the top: the older reds below, the fresh ones on top of them
-    notch(0, red - fresh, F.redFront);
-    notch(red - fresh, red, F.redTop);
-    if (over) { g.begin_(); quad(cam, g, u0, v0, u1, v1, h); g.fill(F.redTop); }
+      for (let k = 1; k < red; k++) { const zz = zAt(k); g.move(cam.x(ia, jb), cam.y(ia, jb, zz)); g.line(cam.x(ib, jb), cam.y(ib, jb, zz)); g.line(cam.x(ib, ja), cam.y(ib, ja, zz)); }
+      g.stroke(withAlpha('#120A0A', 0.7), g.hair);
+    }
   }
 
   /** fx-lanes: true when a lane shows its repos as sub-rows (§F group level): the open lane of the
@@ -597,7 +764,7 @@ export class Floor implements Layer {
             if (!rest[p]) continue;
             const len = Math.max(2, ((CELL_DU - 8) * rest[p]) / restMax), u0 = ROW_U[p] - CELL_DU / 2 + 4, k = restRed[p] / rest[p];
             box(cam, g, u0, mid - dv * 0.22, len, dv * 0.44, 2.2, T.cdTop, T.cdSide, T.cdFront, '', g.hair);
-            if (k > 0) { g.begin_(); quad(cam, g, u0 + len * (1 - k), mid - dv * 0.22, u0 + len, mid + dv * 0.22, 2.25); g.fill(F.redTop); }
+            if (k > 0) { g.begin_(); quad(cam, g, u0 + len * (1 - k), mid - dv * 0.22, u0 + len, mid + dv * 0.22, 2.25); g.fill(C.redPR); } // w2-red: brick, CI failing
           }
           return;
         }
@@ -618,7 +785,7 @@ export class Floor implements Layer {
         }
         const edge = cam.s * d >= 7;
         for (let k = 0; k < 4; k++) {
-          B[k * 4]!.flush(g, cam, F.redTop, F.redSide, F.redFront, edge ? '#E08088' : '', g.hair, 3);
+          B[k * 4]!.flush(g, cam, C.redPR, C.redPRSide, C.redPRFront, edge ? C.red : '', g.hair, 3); // w2-red: a PR failing CI is brick
           B[k * 4 + 1]!.flush(g, cam, F.crateTop, F.crateSide, F.crateFront, edge ? '#F0CC8A' : '', g.hair, 3);
           B[k * 4 + 2]!.flush(g, cam, T.cdTop, T.cdSide, T.cdFront, '', g.hair, 3);
           B[k * 4 + 3]!.flush(g, cam, T.cTop, T.cSide, T.cFront, edge ? withAlpha(T.ink, 0.5) : '', g.hair, 3);
@@ -626,7 +793,7 @@ export class Floor implements Layer {
         if (cracks.length) {
           g.begin_();
           for (let i = 0; i < cracks.length; i += 2) { const u = cracks[i]!, z = cracks[i + 1]!; g.move(cam.x(u - d * 0.1, mid + d / 2), cam.y(u - d * 0.1, mid + d / 2, z + hz)); g.line(cam.x(u + d * 0.15, mid + d / 2), cam.y(u + d * 0.15, mid + d / 2, z)); }
-          g.stroke('#E3858C', Math.max(1, g.hair * 1.2));
+          g.stroke(CRACK, Math.max(1, g.hair * 1.2));
         }
         // more than four in a bay: a tick over the stack
         let ticks = false;
@@ -636,9 +803,11 @@ export class Floor implements Layer {
           g.move(cam.x(u - d / 2, mid), cam.y(u - d / 2, mid, z)); g.line(cam.x(u + d / 2, mid), cam.y(u + d / 2, mid, z));
         }
         if (ticks) g.stroke(T.ink, Math.max(1, g.hair * 1.4));
-        // the main line: the post's lamp, then the last 12 runs, oldest → newest (the culprit tall)
-        const st = lr.post.st, D = this.dotB;
-        (st === 0 ? D[0] : st === 1 ? D[1] : st === 2 ? D[2] : D[3])!.add(RAIL_U0 + 2, mid - 3, 6, 6, st === 0 ? 8 : 4);
+        // the main line: the post's lamp, then the last 12 runs, oldest → newest (the culprit tall);
+        // w2-red: a red lamp by its tier (rust: brick, half height)
+        const st = lr.post.st, D = this.dotB, rust = st === 0 && this.tierOf(lr.repo) === TIER_RUST;
+        if (rust) { const RB = this.rustB; RB.add(RAIL_U0 + 2, mid - 3, 6, 6, 4); RB.flush(g, cam, C.rust, C.rustSide, C.rustFront, '', g.hair, 3); }
+        else (st === 0 ? D[0] : st === 1 ? D[1] : st === 2 ? D[2] : D[3])!.add(RAIL_U0 + 2, mid - 3, 6, 6, st === 0 ? 8 : 4);
         lr.dots.forEach((dd, j) => {
           const u = RAIL_U0 + 20 + j * 13;
           const red = dd.state === 'failure' || dd.state === 'error', run = dd.state === 'running' || dd.state === 'pending';
@@ -689,41 +858,45 @@ export class Floor implements Layer {
         g.stroke(withAlpha('#0C0C0E', 0.6), Math.max(1, g.hair * 1.6));
         ctx.restore();
         g.ops += 2;
-        if (p.red > p.n / 2) { g.begin_(); quad(cam, g, u0 + du / 2 - 2.5, v0 + 3, u0 + du / 2 + 2.5, v1 - 3, h + 0.1); g.fill(F.redTop); }
+        if (p.red > p.n / 2) { g.begin_(); quad(cam, g, u0 + du / 2 - 2.5, v0 + 3, u0 + du / 2 + 2.5, v1 - 3, h + 0.1); g.fill(C.redPR); } // w2-red: bot PRs failing CI: brick
         if (p.stale > p.n / 2) { g.begin_(); quad(cam, g, u0 + 3, v0 + 3, u0 + du - 3, v1 - 3, h + 0.05); g.fill(withAlpha('#8A8678', 0.18)); }
       }, u0 + du, v1, h);
       u += du + 10;
     }
   }
 
-  /** Posts on a lane's back curb: one per active repo, red first. A red post is a red cube on a
-   *  stem as tall as its time in state (log); running amber; ok a small green-gray lamp. */
+  /** Posts on a lane's back curb: one per active repo, red first. w2-red (REVIEW-iter3 #5): a red
+   *  post is a cube on a stem by its age tier: hot (< 1 h) and red (1 h – 7 d) full height and red
+   *  (the hot ones' white core and rim are the live layer's, on the beat), rust (≥ 7 d) brick and
+   *  half height (was: taller the longer it was red, so the chronic ones stood tallest). Running
+   *  amber; ok a small green-gray lamp. */
   private posts(g: Gfx, L: LaneGeo, info: LaneInfo, lo: boolean): void {
-    const cam = this.f.cam, now = this.f.floorNow || this.f.tl.playhead; // fab-w7c: the paint's one instant
+    const cam = this.f.cam;
     const span = RAIL_U1 - RAIL_U0 - 8;
     const max = Math.floor(span / 3.6);
     const list = info.posts.length > max ? info.posts.slice(0, max) : info.posts;
     const pitch = Math.min(7, span / Math.max(1, list.length));
     const v = L.s.curb;
-    const stems = new Path(), red = this.f.bC, run = this.f.bB;
+    const stems = new Path(), rustStems = new Path(), red = this.f.bC, run = this.f.bB, rust = this.rustB;
     const okLamps: number[] = [], unk: number[] = [];
     list.forEach((p, j) => {
       const u = RAIL_U0 + 4 + j * pitch;
       if (p.st === 0) {
-        // fab-w7c: in steps of 1/8 (a grown post changes the static floor every minute or more, not
-        // at every repaint by a hair)
-        const h = Math.round(8 * Math.min(14, 4 + 2.4 * Math.log2(1 + Math.max(0, now - p.since) / HOUR))) / 8;
-        stems.add(u, v, h);
-        red.add(u - 1.6, v - 1.6, 3.2, 3.2, 2.6, h);
+        const h = postH(this.tierOf(p.repo));
+        if (this.tierOf(p.repo) === TIER_RUST) { rustStems.add(u, v, h); rust.add(u - 1.5, v - 1.5, 3, 3, 1.8, h); }
+        else { stems.add(u, v, h); red.add(u - 1.6, v - 1.6, 3.2, 3.2, 2.6, h); }
       } else if (p.st === 1) { stems.add(u, v, 4); run.add(u - 1.3, v - 1.3, 2.6, 2.6, 2.2, 4); }
       else if (p.st === 2) okLamps.push(u, v);
       else unk.push(u, v);
     });
-    if (stems.n) {
+    const stem = (P: Path, col: string) => {
+      if (!P.n) return;
       g.begin_();
-      for (let k = 0; k < stems.n; k++) { const [u, vv, h] = stems.at(k); g.move(cam.x(u, vv), cam.y(u, vv, 0)); g.line(cam.x(u, vv), cam.y(u, vv, h)); }
-      g.stroke('#6A4A4C', Math.max(1, g.hair * 1.5));
-    }
+      for (let k = 0; k < P.n; k++) { const [u, vv, h] = P.at(k); g.move(cam.x(u, vv), cam.y(u, vv, 0)); g.line(cam.x(u, vv), cam.y(u, vv, h)); }
+      g.stroke(col, Math.max(1, g.hair * 1.5));
+    };
+    stem(rustStems, '#4A2E2B');
+    stem(stems, '#6A4A4C');
     const r = Math.max(1.1, 1.25 * cam.s);
     if (okLamps.length) {
       g.begin_();
@@ -736,6 +909,7 @@ export class Floor implements Layer {
       g.ops += unk.length; g.stroke('#55555A', 1);
     }
     run.flush(g, cam, F.crateTop, F.crateSide, F.crateFront, '', g.hair, 3);
+    rust.flush(g, cam, C.rust, C.rustSide, C.rustFront, lo ? '' : C.rustHatch, g.hair, 3);
     red.flush(g, cam, F.redTop, F.redSide, F.redFront, lo ? '' : '#F08A90', g.hair, 3);
   }
 
@@ -765,8 +939,11 @@ export class Floor implements Layer {
   }
 
   /** Each lane's cars: its newest merged commits, newest at the right; one path per face and state
-   *  (settled gray, running amber, red culprit), edges only zoomed in. fx-lanes: each car stands on
-   *  a 2-px underframe in its lane's hue (REVIEW-iter2 #1: a red car says which team at once). */
+   *  (settled gray, running amber, red), edges only zoomed in. fx-lanes: each car stands on an
+   *  underframe in its lane's hue (REVIEW-iter2 #1: a red car says which team at once). w2-red
+   *  (REVIEW-iter3 #2, #5): a car is red only while its repo's main is red NOW: the newest car of a
+   *  red main (and the culprit that broke it), by tier: red (hot, red) tall, rust (≥ 7 d) brick and
+   *  half height; a culprit whose main is green again settles gray. */
   /** The cars the rails hold, from the lanes' count (what drawCars paints at the fit, without its
    *  screen culling): tests and drivers read it as `ov.facCars`. It is DATA, so it is right as soon
    *  as the lanes are counted, however late a slow host paints the static floor (v0.1.2 release run
@@ -784,7 +961,8 @@ export class Floor implements Layer {
 
   private drawCars(g: Gfx, lo: boolean): void {
     const cam = this.f.cam, cnt = this.data.last;
-    const carG = this.f.bA, carA = this.f.bB, carR = this.f.bC, uf = this.f.bD;
+    const carG = this.f.bA, carA = this.f.bB, carR = this.f.bC, uf = this.f.bD, carRust = this.rustB;
+    const rustAt: number[] = [];
     let cars = 0;
     for (const L of this.lanesNow) {
       if (L.s.stripe || L.kind === 'bots' || this.subRowsOn(L)) continue;
@@ -795,17 +973,19 @@ export class Floor implements Layer {
         if (u < RAIL_U0 + 4) return;
         const x = cam.x(u, v), y = cam.y(u, v);
         if (x < -24 || x > cam.W + 24 || y < -24 || y > cam.H + 24) return;
-        uf.add(u - 4.5, v - 4, 9, 8, UF_Z);
+        uf.add(u - 5, v - 4.5, 10, 9, UF_Z);
       });
       // the lane's underframes first (one batch a hue), the cars on them after
       uf.flush(g, cam, L.hex, L.tint.ufSide, L.tint.ufFront, '', g.hair, 3);
+      const red = this.redCars(list);
       list.forEach((car, k) => {
         const u = RAIL_U1 - 12 - (n - 1 - k) * 10;
         if (u < RAIL_U0 + 4) return;
         const x = cam.x(u, v), y = cam.y(u, v);
         if (x < -24 || x > cam.W + 24 || y < -24 || y > cam.H + 24) return;
-        const run = car.state === 'running' || car.state === 'pending';
-        (car.culprit ? carR : run ? carA : carG).add(u - 4, v - 3.5, 8, 7, car.culprit ? 7.5 : 5, UF_Z);
+        const run = car.state === 'running' || car.state === 'pending', t = red[k]!;
+        if (t === TIER_RUST) { carRust.add(u - 4, v - 3.5, 8, 7, 3.75, UF_Z); rustAt.push(u, v); }
+        else (t >= 0 ? carR : run ? carA : carG).add(u - 4, v - 3.5, 8, 7, t >= 0 ? 7.5 : 5, UF_Z);
         cars++;
       });
     }
@@ -813,9 +993,29 @@ export class Floor implements Layer {
     const edge = !lo && carPx >= 6;
     carG.flush(g, cam, '#6E6A62', '#4A4844', '#3E3C38', edge ? '#8A867E' : '', g.hair, 3);
     carA.flush(g, cam, F.crateTop, F.crateSide, F.crateFront, edge ? '#F0CC8A' : '', g.hair, 3);
+    carRust.flush(g, cam, C.rust, C.rustSide, C.rustFront, edge ? C.rustHatch : '', g.hair, 3);
+    if (!lo && carPx >= 9) for (let i = 0; i < rustAt.length; i += 2) hatchFaces(cam, g, rustAt[i]! - 4, rustAt[i + 1]! - 3.5, rustAt[i]! + 4, rustAt[i + 1]! + 3.5, UF_Z, UF_Z + 3.75, C.rustHatch);
     carR.flush(g, cam, F.redTop, F.redSide, F.redFront, edge ? '#E08088' : '', g.hair, 3);
     this.f.stat.cars = cars;
   }
+
+  /** w2-red: each car's red tier, -1 when it is not red: a red main's newest car on the rail and its
+   *  culprit (the commit that turned it red), while that main is red. */
+  private redCars(list: readonly LaneCar[]): number[] {
+    const out = this.redScratch;
+    out.length = list.length;
+    const seen = this.seenScratch; seen.clear();
+    for (let k = list.length - 1; k >= 0; k--) {
+      const car = list[k]!, t = this.tierOf(car.repo);
+      // a run still going on its main stays amber (in flight); the newest settled car takes the red
+      if (car.state === 'running' || car.state === 'pending') { out[k] = -1; continue; }
+      out[k] = t >= 0 && (!seen.has(car.repo) || car.culprit) ? t : -1;
+      seen.add(car.repo);
+    }
+    return out;
+  }
+  private redScratch: number[] = [];
+  private seenScratch = new Set<string>();
 
   // ---- hits: the lanes' cells, posts, rails and the gate (hover lines for drawer.ts) -------------
   hits(fr: LiveFrame): void {
@@ -860,8 +1060,13 @@ export class Floor implements Layer {
       const rows = this.subRowsOn(L);
       // fx-lanes: the buffer stop (its notches: the group's red main lines)
       if (L.kind !== 'bots' && k && info) {
-        const v = rows ? (L.v0 + L.v1) / 2 : L.s.rail, h = STOP_H + Math.min(STOP_N, info.red) * NOTCH;
-        push(rect(RAIL_U1 - 1, v - 4.5, RAIL_U1 + 3, v + 4.5, h), k, id, label, [`${lane ? groupLabel(lane) : name} · buffer stop`, info.red ? `${info.red} main line${info.red === 1 ? '' : 's'} red${info.fresh ? ` · ${info.fresh} in the last hour` : ''}` : 'every main line green', 'click: the group across the floor']);
+        // w2-red: the red tally, its reds by age
+        const v = rows ? (L.v0 + L.v1) / 2 : L.s.rail, h = this.stopH(L.id, info), R = this.reds.get(L.id);
+        const nr = R?.n ?? info.red, of = R?.repos ?? info.repos.length;
+        // (≤ 40 characters a line: the card cuts longer ones; its last line is the drawer's)
+        const tiers = R ? [R.hot ? `${R.hot} new` : '', R.red ? `${R.red} red` : '', R.rust ? `${R.rust} rust` : ''].filter(Boolean).join(' · ') : '';
+        const oldest = R?.oldest ? `oldest ${redFor(f.tl.playhead - R.oldest).slice(4)}` : '';
+        push(rect(RAIL_U1 - 1, v - 4.5, RAIL_U1 - 1 + STOP_DU, v + 4.5, h), k, id, label, [`${lane ? groupLabel(lane) : name} · red tally`, nr ? `${nr} of ${of} main lines red (${Math.round((100 * nr) / Math.max(1, of))} %)` : 'every main line green', nr ? [tiers, oldest].filter(Boolean).join(' · ') : 'click: the group across the floor']);
       }
       if (L.kind !== 'bots' && k && !rows) band(RAIL_U0, L.s.rail - 5, RAIL_U1, L.s.rail + 5, 6, k, id, label, [`${name} main lines`, `${info?.red ?? 0} red · ${info?.merges1h ?? 0} merged/h · ${info?.cars.length ?? 0} merges 24 h`, 'click: the group across the floor']);
       if (info?.posts.length) {
@@ -874,7 +1079,8 @@ export class Floor implements Layer {
           const u = RAIL_U0 + 4 + j * pitch, v = L.s.curb;
           const x = cam.x(u, v), y = cam.y(u, v, p.st === 0 ? 8 : 3);
           const st = ['red', 'running', 'ok', 'unknown'][p.st];
-          push([x - tgt / 2, y - 7, tgt, 12], 'commit', `${p.repo}@${p.head}`, `${p.name} · ${st}`, [p.name, `main ${st}${p.st === 0 && p.since ? ` · ${ago(f.tl.playhead - p.since)}` : ''}`, 'click: its main line']);
+          const tier = p.st === 0 ? this.tierOf(p.repo) : -1; // w2-red: `red 106 d`, its tier
+          push([x - tgt / 2, y - 7, tgt, 12], 'commit', `${p.repo}@${p.head}`, `${p.name} · ${st}`, [p.name, p.st === 0 ? `${p.since ? redFor(f.tl.playhead - p.since) : 'red'}${tier === TIER_RUST ? ' · rust (≥ 7 d)' : tier === TIER_HOT ? ' · new (< 1 h)' : ''}` : `main ${st}`, 'click: its main line']);
         });
       }
       if (L.kind === 'bots') {
@@ -894,14 +1100,15 @@ export class Floor implements Layer {
           const lr = r.repo, open = lr.prs.reduce((a, b) => a + b, 0);
           const stale = lr.items.reduce((a, it) => a + (it >> 5 & PR_STALE ? 1 : 0), 0);
           const ph = lr.prs.map((x, i) => (x ? `${x} ${PH[i]}` : '')).filter(Boolean).join(' · ');
-          band(ROW_U[0] - CELL_DU / 2, r.v0, RAIL_U1, r.v1, 4, 'commit', `${lr.repo}@${lr.post.head}`, `${lr.name}`, [lr.name, open ? `${open} open PRs: ${ph}${lr.red ? ` · ${lr.red} failing CI` : ''}${stale ? ` · ${stale} stale` : ''}` : 'no open PRs', `main ${['red', 'running', 'ok', 'unknown'][lr.post.st]}${lr.post.st === 0 && lr.post.since ? ` · ${ago(f.tl.playhead - lr.post.since)}` : ''} · ${lr.day} merged 24 h`]);
+          band(ROW_U[0] - CELL_DU / 2, r.v0, RAIL_U1, r.v1, 4, 'commit', `${lr.repo}@${lr.post.head}`, `${lr.name}`, [lr.name, open ? `${open} open PRs: ${ph}${lr.red ? ` · ${lr.red} failing CI` : ''}${stale ? ` · ${stale} stale` : ''}` : 'no open PRs', `${lr.post.st === 0 ? (lr.post.since ? redFor(f.tl.playhead - lr.post.since) : 'red') : `main ${['red', 'running', 'ok', 'unknown'][lr.post.st]}`} · ${lr.day} merged 24 h`]);
         }
         continue;
       }
       for (let r = 0; r < 4; r++) {
         const C = info.cells[r];
         const u0 = ROW_U[r] - CELL_DU / 2;
-        push(rect(u0, L.s.cell0, u0 + CELL_DU, L.s.cell1, stackH(C.n)), k, id, label, [`${name} · ${PH[r]}`, `${C.n} open PRs${C.red ? ` · ${C.red} failing CI` : ''}${C.conflict ? ` · ${C.conflict} conflicted` : ''}`, `${C.stale} stale${C.oldest ? ` · oldest ${ago(C.oldest)}` : ''}`]);
+        const old = Math.min(C.n, this.oldN.get(L.id)?.[r] ?? 0); // w2-red: untouched > 14 d (gray at the foot)
+        push(rect(u0, L.s.cell0, u0 + CELL_DU, L.s.cell1, stackH(C.n)), k, id, label, [`${name} · ${PH[r]}`, `${C.n} open PRs${C.red ? ` · ${C.red} failing CI` : ''}${C.conflict ? ` · ${C.conflict} conflicted` : ''}`, `${C.stale} stale${old ? ` · ${old} untouched > 14 d` : ''}${C.oldest ? ` · oldest ${ago(C.oldest)}` : ''}`]);
       }
     }
     // (the back wall's boards and the roads: front.ts hits, fx-front)
@@ -910,7 +1117,7 @@ export class Floor implements Layer {
     if (cam.zoom === 1 && !this.focusId && lk !== this.loggedLanes) {
       this.loggedLanes = lk;
       const pt = (u: number, v: number, z = 0) => [Math.round(cam.x(u, v)), Math.round(cam.y(u, v, z))];
-      console.log(`factory-lanes: ${JSON.stringify(this.lanesNow.map((L) => ({ id: L.id, dock: pt((DOCK_U0 + DOCK_U1) / 2, (L.b0 + L.b1) / 2, 6), cell: pt(ROW_U[1], (L.s.cell0 + L.s.cell1) / 2), road: pt(-ROAD_DU / 2, (L.v0 + L.v1) / 2) })))}`);
+      console.log(`factory-lanes: ${JSON.stringify(this.lanesNow.map((L) => ({ id: L.id, dock: pt((DOCK_U0 + DOCK_U1) / 2, (L.b0 + L.b1) / 2, 6), cell: pt(ROW_U[1], (L.s.cell0 + L.s.cell1) / 2), road: pt(-ROAD_DU / 2, (L.v0 + L.v1) / 2), tally: pt(RAIL_U1 - 1 + STOP_DU / 2, L.s.rail, STOP_H), post0: pt(RAIL_U0 + 4, L.s.curb, 4) })))}`); // w2-red: + the red tally and the first (reddest, newest) post
     }
     // the gate: one hit along it, in pieces
     for (let v = LANE_V0; v < LANE_V1; v += 40) push(rect(GATE_U - 2, v, GATE_U + 8, Math.min(LANE_V1, v + 40), 24), 'gate', 'gate', 'merge gate', ['merge gate', `${c.flow.merges} merged/h`, 'click: 24 h of merges']);
@@ -999,13 +1206,122 @@ export class Floor implements Layer {
     }
     if (blink(t)) flushLights(cam, g, lamps, C.packet, 1.8, q < 2); else lamps.n = 0;
     this.focalAt = focal;
-    if (focal && !this.f.selected) {
+    // the newest culprit's beacon (w2-red: only while its main is still red; on the beat only while
+    // that red is hot, < 1 h; a steady lamp after; nothing once the main is green again)
+    const ft = fc ? this.tierOf(fc.repo) : -1;
+    if (focal && !this.f.selected && ft >= 0 && ft !== TIER_RUST) {
       const [u, v] = focal as Pt;
-      const x = cam.x(u, v), y = cam.y(u, v, 11), fx = flash(t);
+      const x = cam.x(u, v), y = cam.y(u, v, 11), fx = inBeat(ft) && !this.f.reduced ? flash(t) : 0.2;
       g.begin_(); g.circle(x, y, (3 + 5 * fx) * Math.max(1, cam.s)); g.fill(withAlpha(C.red, 0.12 + 0.3 * fx));
       g.begin_(); g.circle(x, y, 1.8 * Math.max(1, cam.s)); g.fill(C.red);
     }
     if (selCar) ring(cam, g, selCar[0], selCar[1], 8);
+    // 4. w2-red: the hot reds (< 1 h) in the beat: a white-hot core and rim on each one's post, its
+    //    newest car and its lane's tally (fx.ts hotRims); rust and red hold still
+    if (q < 3 && !this.f.lens?.topLens) this.hotLive(g, t);
+    // 5. w2-red: each heap on the return belt stands on an underframe in its lanes' hues
+    if (q < 3) this.heapHue(g);
+  }
+
+  /** w2-red: the hot reds' white cores and rims, on the beat (fx.ts `hotRims`). */
+  private hotLive(g: Gfx, t: number): void {
+    const cam = this.f.cam, cnt = this.data.last, h = this.hotN;
+    h.reset();
+    const r = Math.max(1.4, 1.3 * cam.s);
+    const on = (x: number, y: number) => x > -24 && x < cam.W + 24 && y > -24 && y < cam.H + 24;
+    for (const L of this.lanesNow) {
+      const R = this.reds.get(L.id), info = cnt.lanes.get(L.id);
+      if (!R?.hot || !info) continue;
+      // its posts: the hot ones lead the red ones
+      const span = RAIL_U1 - RAIL_U0 - 8, max = Math.floor(span / 3.6), m = Math.min(max, info.posts.length);
+      const pitch = Math.min(7, span / Math.max(1, m));
+      for (let j = 0; j < m; j++) {
+        const p = info.posts[j]!;
+        if (p.st !== 0 || this.tierOf(p.repo) !== TIER_HOT) break;
+        const u = RAIL_U0 + 4 + j * pitch, x = cam.x(u, L.s.curb), y = cam.y(u, L.s.curb, postH(TIER_HOT) + 1.3);
+        if (on(x, y)) h.push3(x, y, r);
+      }
+      if (L.s.stripe || L.kind === 'bots') continue;
+      // its tally's hot top
+      const sub = this.subRowsOn(L), v = sub ? (L.v0 + L.v1) / 2 : L.s.rail, uc = RAIL_U1 - 1 + STOP_DU / 2;
+      const top = STOP_H + Math.min(STOP_N, R.n) * NOTCH;
+      { const x = cam.x(uc, v + 4.5), y = cam.y(uc, v + 4.5, top - Math.min(R.hot, STOP_N) * NOTCH / 2); if (on(x, y)) h.push3(x, y, r); }
+      if (sub) continue;
+      // its newest red cars
+      const list = info.cars, n = list.length, red = this.redCars(list);
+      for (let k = n - 1; k >= 0; k--) {
+        if (red[k] !== TIER_HOT) continue;
+        const u = RAIL_U1 - 12 - (n - 1 - k) * 10;
+        if (u < RAIL_U0 + 4) break;
+        const x = cam.x(u, L.s.rail), y = cam.y(u, L.s.rail, UF_Z + 7.5);
+        if (on(x, y)) h.push3(x, y, r);
+      }
+    }
+    hotRims(g, h, t, this.f.reduced);
+  }
+  private hotN = new Nums();
+
+  /** w2-red (REVIEW-iter3 B#1): the return belt's heaps (lens.ts draws them, clusters.ts lays them)
+   *  carry their lanes' hues: an underframe under each, from the belt up to the heap's first layer,
+   *  split along it by the lanes of the repos it hit (in lane order), so a heap says whose it is.
+   *  Laid when the heaps or the lanes change; a frame projects and fills one path per hue. */
+  private heapHue(g: Gfx): void {
+    const pk = this.f.lens?.parked, heaps = pk ? heapsOf(pk) : null;
+    if (!heaps || !heaps.length || !this.on) { this.heapSegs.length = 0; return; }
+    if (heaps !== this.heapFor || this.lanes.ver !== this.heapVer) {
+      this.heapFor = heaps; this.heapVer = this.lanes.ver;
+      this.heapSegs = this.layHeaps(heaps);
+    }
+    const cam = this.f.cam, V = this.f.plan.RETURN_V, v0 = V - 4, v1 = V + 4;
+    for (const seg of this.heapSegs) {
+      const pts = seg.pts;
+      g.begin_();
+      for (let i = 0; i < pts.length; i += 3) {
+        const ua = pts[i]!, ub = pts[i + 1]!, zt = pts[i + 2]!;
+        // the front face (+v) and, at the heap's near end, the side (+u): from the belt to zt
+        g.move(cam.x(ua, v1), cam.y(ua, v1, 0)); g.line(cam.x(ub, v1), cam.y(ub, v1, 0)); g.line(cam.x(ub, v1), cam.y(ub, v1, zt)); g.line(cam.x(ua, v1), cam.y(ua, v1, zt)); g.ctx.closePath();
+        g.ops += 5;
+      }
+      g.fill(seg.hex);
+      if (seg.side.length) {
+        g.begin_();
+        for (let i = 0; i < seg.side.length; i += 2) {
+          const u = seg.side[i]!, zt = seg.side[i + 1]!;
+          g.move(cam.x(u, v0), cam.y(u, v0, 0)); g.line(cam.x(u, v1), cam.y(u, v1, 0)); g.line(cam.x(u, v1), cam.y(u, v1, zt)); g.line(cam.x(u, v0), cam.y(u, v0, zt)); g.ctx.closePath();
+          g.ops += 5;
+        }
+        g.fill(seg.dark);
+      }
+    }
+  }
+  private heapFor: readonly Heap[] | null = null;
+  private heapVer = -1;
+  private heapSegs: { hex: string; dark: string; pts: number[]; side: number[] }[] = [];
+
+  /** The heaps' underframe pieces by hue: [u0, u1, zTop] runs along each heap's front, its lanes'
+   *  shares of the repos it hit (lane order, back first at the far end), and the near end's side. */
+  private layHeaps(heaps: readonly Heap[]): { hex: string; dark: string; pts: number[]; side: number[] }[] {
+    const by = new Map<string, { hex: string; dark: string; pts: number[]; side: number[] }>();
+    const get = (L: LaneGeo) => { let s = by.get(L.hex); if (!s) by.set(L.hex, (s = { hex: L.hex, dark: L.tint.ufSide, pts: [], side: [] })); return s; };
+    const lanes = this.lanesNow;
+    for (const h of heaps) {
+      const per = new Map<number, number>();
+      for (const repo of h.repoList) { const i = this.laneIndex(repo); if (i >= 0) per.set(i, (per.get(i) ?? 0) + 1); }
+      if (!per.size) continue;
+      const tot = [...per.values()].reduce((a, b) => a + b, 0);
+      const zt = 1.2 + Math.min(1.6, h.h * 0.35); // the belt's gap under the heap, and a band of its foot
+      let u = h.u0;
+      const order = [...per.keys()].sort((a, b) => a - b);
+      order.forEach((i, j) => {
+        const L = lanes[i];
+        if (!L) return;
+        const du = ((h.u1 - h.u0) * per.get(i)!) / tot, ub = j === order.length - 1 ? h.u1 : u + du;
+        get(L).pts.push(u, ub, zt);
+        if (j === order.length - 1) get(L).side.push(h.u1, zt);
+        u = ub;
+      });
+    }
+    return [...by.values()];
   }
 
   /** Where the newest culprit's car sits on its lane's rail this frame (labels.ts names it). */
@@ -1118,7 +1434,7 @@ export class Floor implements Layer {
         box(cam, g, u0, v0, du, dv, z, '#3E3E42', '#2C2C2F', '#252528', withAlpha(tint, 0.55 + 0.45 * k), hw * (0.6 + 1.8 * k));
         g.begin_(); quad(cam, g, u0, v0, u0 + du, v0 + dv, z); g.fill(withAlpha(tint, 0.08 + 0.42 * k));
         const red = a[4 + r]!;
-        if (red) { g.begin_(); poly(cam, g, [u0, v0 + dv, 0, u0 + du, v0 + dv, 0, u0 + du, v0 + dv, z * (red / n), u0, v0 + dv, z * (red / n)]); g.fill(withAlpha(C.red, 0.8)); }
+        if (red) { g.begin_(); poly(cam, g, [u0, v0 + dv, 0, u0 + du, v0 + dv, 0, u0 + du, v0 + dv, z * (red / n), u0, v0 + dv, z * (red / n)]); g.fill(withAlpha(C.redPR, 0.95)); } // w2-red: CI failing is brick
         num(String(n), cam.x(u0 + du / 2, v0 + dv / 2), cam.y(u0 + du / 2, v0 + dv / 2, Math.max(z, full)) - 5, red > 0);
       }
       // the lane's rail, traced, and its lit cars
@@ -1131,13 +1447,13 @@ export class Floor implements Layer {
       g.move(cam.x(RAIL_U0, v - 3), cam.y(RAIL_U0, v - 3)); g.line(cam.x(RAIL_U1, v - 3), cam.y(RAIL_U1, v - 3));
       g.move(cam.x(RAIL_U0, v + 3), cam.y(RAIL_U0, v + 3)); g.line(cam.x(RAIL_U1, v + 3), cam.y(RAIL_U1, v + 3));
       g.stroke(withAlpha(tint, 0.55), g.hair * 2);
-      const n = list.length;
+      const n = list.length, red = this.redCars(list);
       list.forEach((car, k) => {
         if (!cars.has(`${car.repo}@${car.sha}`) && !repos.has(car.repo)) return;
         const u = RAIL_U1 - 12 - (n - 1 - k) * 10;
         if (u < RAIL_U0 + 4) return;
         const run = car.state === 'running' || car.state === 'pending';
-        this.car(g, u, v, car.culprit, !run && !car.culprit, g.hair);
+        this.car(g, u, v, red[k]!, !run, g.hair);
       });
     }
     for (const [bot, n] of bots) {
@@ -1152,8 +1468,13 @@ export class Floor implements Layer {
 
   /** One car (a lens draws a lit one over the floor's batched cars; fx-lanes: as tall as a car on
    *  its underframe). */
-  car(g: Gfx, u: number, v: number, red: boolean, settled: boolean, hair: number): void {
-    box(this.f.cam, g, u - 4, v - 4, 8, 8, 5 + UF_Z, red ? F.redTop : settled ? '#6E6A62' : F.crateTop, red ? F.redSide : settled ? '#4A4844' : F.crateSide, red ? F.redFront : settled ? '#3E3C38' : F.crateFront, red ? '#E08088' : settled ? '#8A867E' : '#F0CC8A', hair);
+  car(g: Gfx, u: number, v: number, tierOrRed: number | boolean, settled: boolean, hair: number): void {
+    // w2-red: by the main's red tier (-1 not red; a boolean from the lens system: red or not):
+    // rust brick and half height
+    const tier = typeof tierOrRed === 'boolean' ? (tierOrRed ? TIER_RED : -1) : tierOrRed;
+    if (tier >= 0) settled = false;
+    const rust = tier === TIER_RUST, red = tier >= 0 && !rust;
+    box(this.f.cam, g, u - 4, v - 4, 8, 8, (rust ? 3.75 : red ? 7.5 : 5) + UF_Z, rust ? C.rust : red ? F.redTop : settled ? '#6E6A62' : F.crateTop, rust ? C.rustSide : red ? F.redSide : settled ? '#4A4844' : F.crateSide, rust ? C.rustFront : red ? F.redFront : settled ? '#3E3C38' : F.crateFront, rust ? C.rustHatch : red ? '#E08088' : settled ? '#8A867E' : '#F0CC8A', hair);
   }
 }
 
@@ -1177,3 +1498,55 @@ class Path {
   add(u: number, v: number, h: number): void { this.a[this.n * 3] = u; this.a[this.n * 3 + 1] = v; this.a[this.n * 3 + 2] = h; this.n++; }
   at(k: number): [number, number, number] { return [this.a[k * 3]!, this.a[k * 3 + 1]!, this.a[k * 3 + 2]!]; }
 }
+
+/** A conflict's crack: pale (w2-red: a conflict is not a broken main, so not red). */
+const CRACK = '#CDBDB7';
+
+/** w2-red: a block from z0 to z1 (its front, its side, its top), no edges. */
+function slab(cam: Factory['cam'], g: Gfx, u0: number, v0: number, u1: number, v1: number, z0: number, z1: number, top: string, side: string, front: string): void {
+  g.begin_(); poly(cam, g, [u0, v1, z0, u1, v1, z0, u1, v1, z1, u0, v1, z1]); g.fill(front);
+  g.begin_(); poly(cam, g, [u1, v0, z0, u1, v1, z0, u1, v1, z1, u1, v0, z1]); g.fill(side);
+  g.begin_(); quad(cam, g, u0, v0, u1, v1, z1); g.fill(top);
+}
+
+/** w2-red: rust's 45° hatch over a block's two visible faces (front +v, side +u), z0 → z1: screen
+ *  diagonals ~3 px apart, clipped to the faces. */
+function hatchFaces(cam: Factory['cam'], g: Gfx, u0: number, v0: number, u1: number, v1: number, z0: number, z1: number, col: string): void {
+  const ctx = g.ctx;
+  const pts = [cam.x(u0, v1), cam.y(u0, v1, z0), cam.x(u1, v1), cam.y(u1, v1, z0), cam.x(u1, v0), cam.y(u1, v0, z0), cam.x(u1, v0), cam.y(u1, v0, z1), cam.x(u1, v1), cam.y(u1, v1, z1), cam.x(u0, v1), cam.y(u0, v1, z1)];
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (let i = 0; i < pts.length; i += 2) { x0 = Math.min(x0, pts[i]!); x1 = Math.max(x1, pts[i]!); y0 = Math.min(y0, pts[i + 1]!); y1 = Math.max(y1, pts[i + 1]!); }
+  if (x1 - x0 < 2 || y1 - y0 < 2) return;
+  ctx.save();
+  g.begin_();
+  for (let i = 0; i < pts.length; i += 2) if (i) g.line(pts[i]!, pts[i + 1]!); else g.move(pts[i]!, pts[i + 1]!);
+  ctx.closePath(); ctx.clip();
+  g.begin_();
+  const span = y1 - y0;
+  for (let x = x0 - span; x < x1; x += 3) { g.move(x, y1); g.line(x + span, y0); }
+  g.stroke(col, Math.max(1, g.hair * 1.6));
+  ctx.restore();
+  g.ops += 2;
+}
+
+/** w2-red: rust's hatch over a flat quad on the floor plane at z (a dock roof's rust share). */
+export function hatchQuad(cam: Factory['cam'], g: Gfx, u0: number, v0: number, u1: number, v1: number, z: number, col: string): void {
+  const ctx = g.ctx;
+  const pts = [cam.x(u0, v0), cam.y(u0, v0, z), cam.x(u1, v0), cam.y(u1, v0, z), cam.x(u1, v1), cam.y(u1, v1, z), cam.x(u0, v1), cam.y(u0, v1, z)];
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (let i = 0; i < pts.length; i += 2) { x0 = Math.min(x0, pts[i]!); x1 = Math.max(x1, pts[i]!); y0 = Math.min(y0, pts[i + 1]!); y1 = Math.max(y1, pts[i + 1]!); }
+  if (x1 - x0 < 2 || y1 - y0 < 1) return;
+  ctx.save();
+  g.begin_();
+  for (let i = 0; i < pts.length; i += 2) if (i) g.line(pts[i]!, pts[i + 1]!); else g.move(pts[i]!, pts[i + 1]!);
+  ctx.closePath(); ctx.clip();
+  g.begin_();
+  const span = y1 - y0;
+  for (let x = x0 - span; x < x1; x += 3) { g.move(x, y1); g.line(x + span, y0); }
+  g.stroke(col, Math.max(1, g.hair * 1.6));
+  ctx.restore();
+  g.ops += 2;
+}
+
+/** w2-red: a red post's height by its tier: hot and red full, rust half. */
+function postH(tier: number): number { return tier === TIER_RUST ? 4.5 : 9; }
