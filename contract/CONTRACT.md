@@ -285,7 +285,8 @@ type Flake = {                // id = "<owner/name>|<workflow>/<step>"; present 
   shas: string[]              // newest first (≤ 5)
 }
 
-type Trend = {                // id = "fleet" | a Group id; recomputed at most every 5 min
+type Trend = {                // id = "fleet" | a Group id; as of `at`, the start of the current
+                              // 5-minute bucket (updates at most every 5 min, plus late data)
   id: string, at: number,
   intake_ms: Metric,          // pipeline created → started, p50 (queue wait)
   run_ms: Metric,             // started → finished of successful runs, p50
@@ -298,13 +299,16 @@ type Trend = {                // id = "fleet" | a Group id; recomputed at most e
 }
 type Metric = {
   h1?: number, h24?: number, d7?: number,   // last hour / 24 h / 7 d (absent = no data)
-  dir: -1 | 0 | 1,            // h1 against d7 (h24 while d7 is null): beyond ±15 % (pass_rate: ±3 points)
+  dir: -1 | 0 | 1,            // h1 against d7 (h24 until 7-day data exists): beyond ±15 % AND an
+                              // absolute floor (5 s for durations, 1 h for PR age, 2/h for rates,
+                              // 5 points for pass_rate, 1 repo for red); 0 for intake/run/pass_rate
+                              // when the last hour had < 5 finished runs
   bad?: true,                 // that direction is worse (slower, fewer passes, older PRs, more red)
-  spark: (number | null)[]    // 24 hourly values, oldest first, the current hour last
+  spark: (number | null)[]    // the last 24 full hours, oldest first (the running hour is h1)
 }
 ```
 
-Durations are in ms rounded to the second; rates to 2 decimals; a missing `h1`/`h24`/`d7`
+Durations are in ms rounded to the second (PR age to the hour); rates to 2 decimals; a missing `h1`/`h24`/`d7`
 (or a `null` in `spark`) = no data in that window. Rates (`pipelines`, `deploys`) are per hour in every window, so they compare
 directly.
 

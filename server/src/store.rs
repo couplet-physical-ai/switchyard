@@ -178,11 +178,16 @@ pub struct Store {
     rollups: BTreeMap<Ms, RollupFact>,
     /// repo → normalized team slug (from the apps list).
     repo_team: FxHashMap<String, String>,
+    /// Team slug → display name when the catalog spells it as an acronym.
+    team_names: BTreeMap<String, String>,
     /// Hourly gauge samples (hour → group id → (pr age, red repos)), taken by `tick`.
     gauges: BTreeMap<Ms, BTreeMap<String, (Option<Ms>, u32)>>,
     /// Groups / clusters / flakes need recomputing (a pipeline finished, a failure
     /// signature arrived, apps changed, time passed).
     insights_dirty: bool,
+    /// Trends need recomputing (their inputs changed); time alone moves them only per
+    /// 5-minute bucket.
+    trends_dirty: bool,
     /// 5-minute bucket the trends were last computed for.
     trends_at: Ms,
     idx: Indices,
@@ -254,6 +259,7 @@ impl Store {
     pub fn has_dirty(&self) -> bool {
         !self.events.is_empty()
             || self.insights_dirty
+            || self.trends_dirty
             || self.trends_due(self.now)
             || self.dirty.iter().any(|d| !d.is_empty())
     }
@@ -324,6 +330,7 @@ impl Store {
                     self.app_list = Some(a);
                     self.rebuild_repo_team();
                     self.insights_dirty = true;
+                    self.trends_dirty = true;
                     let ds: Vec<String> = self
                         .deploys
                         .values()
@@ -444,6 +451,7 @@ impl Store {
                     self.step_errors.insert(k, e);
                     self.mark(Kind::Pipeline, &p);
                     self.insights_dirty = true;
+                    self.trends_dirty = true;
                 }
             }
             Fact::Rollup(r) => {
@@ -452,6 +460,7 @@ impl Store {
                 }) {
                     self.rollups.insert(r.hour, r);
                     self.insights_dirty = true;
+                    self.trends_dirty = true;
                     self.trends_at = 0;
                 }
             }
@@ -644,6 +653,7 @@ impl Store {
                 .is_some_and(|o| o.state.is_done() || o.state != p.state);
         if done_changed {
             self.insights_dirty = true;
+            self.trends_dirty = true;
         }
         // A sibling's step outcome decides `flaky` on the runs of the same sha.
         let sibs: Vec<String> = self
@@ -999,6 +1009,7 @@ impl Store {
             }
         }
         self.insights_dirty = true;
+        self.trends_dirty = true;
         self.trends_at = 0;
     }
 
@@ -1186,6 +1197,7 @@ impl Store {
                     if touched && matches!(k, Kind::Repo | Kind::Pr | Kind::Deploy | Kind::Pipeline)
                     {
                         self.insights_dirty = true;
+                        self.trends_dirty = true;
                     }
                 }
             }

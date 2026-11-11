@@ -159,7 +159,8 @@ enum M {
 impl M {
     fn round(self, v: Option<f64>) -> Option<f64> {
         match self {
-            M::Intake | M::Run | M::PrAge => round_ms(v),
+            M::Intake | M::Run => round_ms(v),
+            M::PrAge => v.map(|x| (x / 3_600_000.0).round() * 3_600_000.0),
             M::Red => v.map(|x| (x * 10.0).round() / 10.0),
             _ => round2(v),
         }
@@ -170,10 +171,13 @@ impl M {
             return (0, false);
         };
         let d = a - b;
+        // A move must be both relative (15 %) and big enough to matter in absolute terms.
         let moved = match self {
-            M::Pass => d.abs() > 0.03,
+            M::Pass => d.abs() > 0.05,
             M::Red => d.abs() >= 1.0_f64.max(0.15 * b),
-            _ => b > 0.0 && d.abs() > 0.15 * b,
+            M::Intake | M::Run => d.abs() > (0.15 * b).max(5_000.0),
+            M::PrAge => d.abs() > (0.15 * b).max(3_600_000.0),
+            M::Pipelines | M::Deploys => d.abs() > (0.15 * b).max(2.0),
         };
         if !moved {
             return (0, false);
@@ -218,6 +222,23 @@ impl Store {
                 *votes.entry(r.clone()).or_default().entry(t).or_default() += 1;
             }
         }
+        // Display names: the catalog's spelling when it is an acronym ("HR", "SEIT").
+        let mut names: BTreeMap<String, String> = BTreeMap::new();
+        for a in self.app_list.iter().flat_map(|l| l.apps.iter()) {
+            if let Some(raw) = a.team.as_deref()
+                && let Some(t) = team_slug(raw)
+            {
+                let raw = raw.trim();
+                let raw = raw
+                    .strip_suffix("-team")
+                    .or(raw.strip_suffix("-Team"))
+                    .unwrap_or(raw);
+                if raw.len() >= 2 && raw.chars().all(|c| c.is_ascii_uppercase()) {
+                    names.insert(t, raw.to_string());
+                }
+            }
+        }
+        self.team_names = names;
         let mut m = FxHashMap::default();
         for (r, v) in votes {
             // Most apps wins; ties go to the smallest slug (deterministic).
@@ -372,17 +393,22 @@ impl Store {
     /// Recompute when something they read changed (or a new 5-minute bucket began):
     /// a pure function of the registers and `now`, so any arrival order converges.
     pub(super) fn flush_insights(&mut self, now: Ms, ops: &mut Vec<OpOut>) {
-        if !self.insights_dirty && !self.trends_due(now) {
-            return;
+        if self.insights_dirty {
+            self.insights_dirty = false;
+            let (groups, clusters, flakes) = self.compute_floor(now);
+            if groups != self.tables[Kind::Group.index()] {
+                self.trends_dirty = true; // trends exist per group
+            }
+            self.sync_table(Kind::Group, groups, ops);
+            self.sync_table(Kind::Cluster, clusters, ops);
+            self.sync_table(Kind::Flake, flakes, ops);
         }
-        self.insights_dirty = false;
-        self.trends_at = now - now.rem_euclid(TREND_EVERY_MS);
-        let (groups, clusters, flakes) = self.compute_floor(now);
-        self.sync_table(Kind::Group, groups, ops);
-        self.sync_table(Kind::Cluster, clusters, ops);
-        self.sync_table(Kind::Flake, flakes, ops);
-        let t = self.compute_trends(now);
-        self.sync_table(Kind::Trend, t, ops);
+        if self.trends_dirty || self.trends_due(now) {
+            self.trends_dirty = false;
+            self.trends_at = now - now.rem_euclid(TREND_EVERY_MS);
+            let t = self.compute_trends(now);
+            self.sync_table(Kind::Trend, t, ops);
+        }
     }
 
     fn sync_table(&mut self, k: Kind, new: BTreeMap<String, Arc<str>>, ops: &mut Vec<OpOut>) {
@@ -490,7 +516,13 @@ impl Store {
         let entry = |groups: &mut BTreeMap<String, Group>, gid: &str| {
             if !groups.contains_key(gid) {
                 let (kind, name) = match gid.split_once(':') {
-                    Some(("team", t)) => (GroupKind::Team, group_name(t)),
+                    Some(("team", t)) => (
+                        GroupKind::Team,
+                        self.team_names
+                            .get(t)
+                            .cloned()
+                            .unwrap_or_else(|| group_name(t)),
+                    ),
                     Some((_, o)) => (GroupKind::Org, o.to_string()),
                     None => (GroupKind::Org, gid.to_string()),
                 };
@@ -834,7 +866,11 @@ impl Store {
             .collect()
     }
 
+    /// Trends as of the start of the current 5-minute bucket: windows move once per
+    /// bucket (not on every tick), so clients get at most one update per 5 minutes plus
+    /// late data.
     fn compute_trends(&self, now: Ms) -> BTreeMap<String, Arc<str>> {
+        let now = now - now.rem_euclid(TREND_EVERY_MS);
         let cur = hour_of(now);
         let h1 = self.live(now - H, now + 1);
         let h24 = self.live(now - 24 * H, now + 1);
@@ -876,7 +912,8 @@ impl Store {
             let l24 = h24.get(&id).unwrap_or(&empty);
             let (age_now, red_now) = gauges_now.get(&id).cloned().unwrap_or((None, 0));
             let spark_of = |f: &dyn Fn(&Agg) -> Option<f64>| -> Vec<Option<f64>> {
-                per_hour[HOURS_7D - 24..]
+                // The last 24 full hours (the running hour is h1).
+                per_hour[HOURS_7D - 25..HOURS_7D - 1]
                     .iter()
                     .map(|a| a.as_ref().and_then(f))
                     .collect()
@@ -907,7 +944,12 @@ impl Store {
                 } else {
                     h24
                 };
-                let (dir, bad) = m.dir(h1, base);
+                // Too few runs in the last hour to call a direction for per-run metrics.
+                let (dir, bad) = if matches!(m, M::Intake | M::Run | M::Pass) && l1.finished < 5 {
+                    (0, false)
+                } else {
+                    m.dir(h1, base)
+                };
                 Metric {
                     h1,
                     h24,
@@ -921,10 +963,7 @@ impl Store {
             let gauge = |pick: &dyn Fn(&Agg) -> Option<f64>,
                          live: Option<f64>|
              -> (Vec<Option<f64>>, Vec<f64>) {
-                let mut sp = spark_of(pick);
-                if let Some(last) = sp.last_mut() {
-                    *last = live;
-                }
+                let sp = spark_of(pick);
                 let mut v = all(pick);
                 if per_hour
                     .last()
@@ -1056,11 +1095,21 @@ mod tests {
 
     #[test]
     fn directions() {
-        assert_eq!(M::Run.dir(Some(130.0), Some(100.0)), (1, true));
-        assert_eq!(M::Run.dir(Some(110.0), Some(100.0)), (0, false));
+        assert_eq!(M::Run.dir(Some(130_000.0), Some(100_000.0)), (1, true));
+        assert_eq!(M::Run.dir(Some(110_000.0), Some(100_000.0)), (0, false));
+        assert_eq!(
+            M::Intake.dir(Some(4_000.0), Some(5_000.0)),
+            (0, false),
+            "1 s is noise"
+        );
         assert_eq!(M::Pass.dir(Some(0.80), Some(0.90)), (-1, true));
-        assert_eq!(M::Pass.dir(Some(0.89), Some(0.90)), (0, false));
+        assert_eq!(M::Pass.dir(Some(0.86), Some(0.90)), (0, false));
         assert_eq!(M::Pipelines.dir(Some(5.0), Some(10.0)), (-1, false));
+        assert_eq!(
+            M::Pipelines.dir(Some(3.0), Some(1.5)),
+            (0, false),
+            "below 2/h"
+        );
         assert_eq!(M::Red.dir(Some(3.0), Some(2.0)), (1, true));
         assert_eq!(M::Red.dir(Some(2.4), Some(2.0)), (0, false));
         assert_eq!(M::Run.dir(None, Some(1.0)), (0, false));

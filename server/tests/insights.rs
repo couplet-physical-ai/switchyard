@@ -335,7 +335,7 @@ fn trends_compare_the_last_hour_with_the_baselines() {
         ));
         n += 1;
     }
-    for m in [10, 20, 30] {
+    for m in [5, 15, 25, 35, 45, 55] {
         facts.push(run(
             "acme/api",
             n,
@@ -363,15 +363,15 @@ fn trends_compare_the_last_hour_with_the_baselines() {
     assert_eq!(t["run_ms"]["h24"], 60_000.0);
     assert_eq!(t["run_ms"]["dir"], 1);
     assert_eq!(t["run_ms"]["bad"], true);
-    assert_eq!(t["pipelines"]["h1"], 3.0);
+    assert_eq!(t["pipelines"]["h1"], 6.0);
     assert_eq!(t["pipelines"]["dir"], 1);
     assert!(
         t["pipelines"].get("bad").is_none(),
         "more throughput is never bad"
     );
     assert_eq!(t["pass_rate"]["h1"], 1.0);
-    // d7 = 26 successes + the old hour's 5/10: (26 + 5) / (26 + 10).
-    assert_eq!(t["pass_rate"]["d7"], 0.86);
+    // d7 = 29 successes + the old hour's 5/10: (29 + 5) / (29 + 10).
+    assert_eq!(t["pass_rate"]["d7"], 0.87);
     assert_eq!(t["hours_7d"], 26, "25 live hours + the rollup");
     assert_eq!(t["run_ms"]["spark"].as_array().unwrap().len(), 24);
     assert_eq!(t["at"], NOW - NOW % (5 * 60_000));

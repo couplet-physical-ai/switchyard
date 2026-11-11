@@ -157,6 +157,25 @@ async fn tstream_accepts_only_a_device_token_in_the_query() {
         .unwrap()
         .unwrap();
     assert!(first.is_some_and(|c| !c.is_empty()));
+    // The Factory Floor queries are ordinary guarded reads.
+    for p in ["/api/v1/insights", "/api/v1/changes?since=0"] {
+        let u = format!("{}{p}", s.base);
+        assert_eq!(status(&u, &[]).await, 401, "{p} anonymous");
+        assert_eq!(
+            status(&u, &[("authorization", &bearer)]).await,
+            200,
+            "{p} device token"
+        );
+    }
+    assert_eq!(
+        status(
+            &format!("{}/api/v1/changes", s.base),
+            &[("authorization", &bearer)]
+        )
+        .await,
+        400,
+        "changes needs since"
+    );
     // Only the two stream routes live under tstream: nothing else answers with data.
     for p in [
         "/api/v1/tstreamx",
