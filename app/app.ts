@@ -19,7 +19,7 @@ import { fleet, journeyView, prDetailView, search } from './src/project.ts';
 import { MainlinesModel, stateWords } from './src/table/mainlines.ts';
 import { PrsModel } from './src/table/prs.ts';
 import { Timeline } from './src/timeline.ts';
-import { connectedWith, saveTokenFile, takeTokenFile, tokenFileReport } from './src/hooks.ts';
+import { connectedWith, saveTokenFile, scrubKept, takeTokenFile, tokenFileReport } from './src/hooks.ts';
 import { updateDo, updateState } from './src/update.ts';
 import type { Frame as WireFrame } from './src/wire.ts';
 import { Yard } from './src/yard/draw.ts';
@@ -354,8 +354,9 @@ export const sources: Sources = {
   // short hash that changes when the token does, so conn/feed re-ask). A resource's answer and
   // its identifying arguments are kept on disk for the next launch (exact.kept), so a token there
   // would sit in plain text beside the Keychain; the sources read it from the store themselves.
-  loadToken: (_a, store: Store) => {
+  loadToken: (_a, store: Store, _storage, native) => {
     const t = store.get(TOKEN) ?? '';
+    scrubKept(native, t); // older builds' kept answers holding this token: deleted (macOS)
     return { ver: t ? tokenVer(t) : '', has: t !== '' };
   },
   saveToken: ([token, set], store: Store) => {

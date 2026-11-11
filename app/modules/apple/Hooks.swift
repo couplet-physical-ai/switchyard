@@ -38,6 +38,11 @@ final class SYHooks {
             return !started
         }
         guard first else { return }
+        // Tokens that older builds left in kept answers (SYKeptScrub): gone at every launch, off
+        // the main thread; the data module's `scrub` call adds the stored token's own value.
+        let roots = SYKeptScrub.roots(appID: Bundle.main.bundleIdentifier ?? "com.exowatt.switchyard", dataRoot: context.data)
+        lock.withLock { scrubRoots = roots }
+        DispatchQueue.global(qos: .utility).async { SYHooks.scrubbed(SYKeptScrub.scrub(roots: roots, token: nil)) }
         let env = ProcessInfo.processInfo.environment
         if let path = env[SYTokenFile.env] {
             switch SYTokenFile.read(path) {
@@ -59,6 +64,24 @@ final class SYHooks {
                 SYHookLog.line("snapshot: failed \(why)")
             }
         }
+    }
+
+    // MARK: the kept-answer scrub
+
+    private var scrubRoots: [URL] = []
+
+    static func scrubbed(_ n: Int) {
+        if n > 0 { SYHookLog.line("scrub: removed \(n) kept \(n == 1 ? "entry" : "entries") holding a token") }
+    }
+
+    /// `native.call({op: "scrub", token})`, from the data module once a launch: the same scrub,
+    /// matching the stored token's exact value too. Answers `{removed}`; the token is not kept.
+    func scrub(_ request: [String: Any]) -> [String: Any] {
+        let token = request["token"] as? String
+        let roots = lock.withLock { scrubRoots }
+        let n = SYKeptScrub.scrub(roots: roots, token: token?.isEmpty == false ? token : nil)
+        SYHooks.scrubbed(n)
+        return ["removed": n]
     }
 
     // MARK: the token file

@@ -224,6 +224,15 @@ app/tools/updater-e2e-feed.sh <Switchyard.app> 0.0.2 <latest.json URL>   # a rea
 - `updater-e2e-feed.sh` installs a stamped old build and updates it from a real `latest.json`
   with `--update-now`.
 
+
+**Tokens never sit in kept answers.** Exact keeps a resource's answer and its identifying
+arguments on disk for the next launch (`kv/exact.kept`). Builds before 5ecedeb passed the token
+through Contract, so it landed there in plain text; now Contract only sees `{has, ver}` and the
+sources read the token from the Keychain. At every launch the module also deletes any kept entry
+or persisted state that holds a token (`syd_`/`sys_`-shaped, or the stored token's value), and
+logs `scrub: removed N kept entries holding a token` to switchyard.log. Native tests in
+`tools/updater-tests.sh`; a real launch in `tools/kept-scrub-e2e.sh` (Mac).
+
 ## Test hooks (macOS)
 
 Two env-only hooks for proving a build with no agent channel (a release, a fresh install). They

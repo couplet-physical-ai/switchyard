@@ -27,7 +27,8 @@ final class Updater: ExactModule {
         case "state": return SYUpdateEngine.shared.snapshot()
         case "tokenFile": return SYHooks.shared.takeToken()
         case "tokenFileResult": return SYHooks.shared.report(request)
-        default: throw ExactNativeRefusal("the module answers state, tokenFile and tokenFileResult")
+        case "scrub": return SYHooks.shared.scrub(request)
+        default: throw ExactNativeRefusal("the module answers state, tokenFile, tokenFileResult and scrub")
         }
     }
 

@@ -118,3 +118,51 @@ enum SYHookLog {
         }
     }
 }
+
+/// Tokens Exact once kept in plain text (before 5ecedeb a resource's answer and identifying
+/// arguments, kept on disk for the next launch under `kv/exact.kept`, carried the device token).
+/// At every launch the module deletes any kept entry that holds a token: one with the stored
+/// token's value (the data module hands it over, `op: "scrub"`), or anything shaped like a
+/// Switchyard token (`syd_`/`sys_` and ≥ 8 more token characters). Deleting a kept answer only
+/// costs that resource its placeholder at the next launch. Lines name counts, never a token.
+enum SYKeptScrub {
+    static let pattern = try! NSRegularExpression(pattern: "sy[ds]_[A-Za-z0-9_\\-]{8,}")
+    /// The `kv` stores to look in: the real app's (Application Support/<id>/kv) and the one beside
+    /// the module's data root (an agent drive's scratch tree keeps its kv there).
+    static func roots(appID: String, dataRoot: URL?) -> [URL] {
+        var out: [URL] = []
+        if let lib = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            out.append(lib.appendingPathComponent(appID, isDirectory: true).appendingPathComponent("kv", isDirectory: true))
+        }
+        if let d = dataRoot { out.append(d.deletingLastPathComponent().appendingPathComponent("kv", isDirectory: true)) }
+        var seen = Set<String>()
+        return out.filter { seen.insert($0.standardizedFileURL.path).inserted }
+    }
+
+    /// Whether `data` holds a token: the exact `token` (≥ 8 characters) or the token pattern.
+    static func holds(_ data: Data, token: String?) -> Bool {
+        if let t = token, t.count >= 8, data.range(of: Data(t.utf8)) != nil { return true }
+        guard let s = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else { return false }
+        return pattern.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
+    }
+
+    /// Deletes every file under each root's `exact.*` scopes (kept answers, persisted states) that
+    /// holds a token; the count removed. Files over 4 MiB are left alone (the runner keeps ≤ 512 KiB).
+    @discardableResult
+    static func scrub(roots: [URL], token: String?) -> Int {
+        let fm = FileManager.default
+        var removed = 0
+        for root in roots {
+            guard let scopes = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { continue }
+            for scope in scopes where scope.lastPathComponent.hasPrefix("exact.") {
+                guard let files = try? fm.contentsOfDirectory(at: scope, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]) else { continue }
+                for f in files {
+                    let v = try? f.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+                    guard v?.isRegularFile == true, (v?.fileSize ?? 0) <= 4 << 20, let d = try? Data(contentsOf: f) else { continue }
+                    if holds(d, token: token), (try? fm.removeItem(at: f)) != nil { removed += 1 }
+                }
+            }
+        }
+        return removed
+    }
+}

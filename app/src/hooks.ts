@@ -79,3 +79,13 @@ export function tokenFileReport(native: NativeModule | null | undefined): { ok: 
   report(native, o.ok, o.server, o.reason);
   return { ok: true, status: o.ok ? 'connected' : 'failed' };
 }
+
+let scrubbed = false;
+/** Once a launch, from loadToken (a synchronous answer, so the call is allowed): the module
+ *  deletes kept answers holding the stored token's value (it already removed syd_/sys_-shaped
+ *  ones at launch). The token goes to the module in the call only; nothing keeps it. */
+export function scrubKept(native: NativeModule | null | undefined, token: string): void {
+  if (scrubbed || !token || !native?.available) return;
+  scrubbed = true;
+  try { native.call({ op: 'scrub', token }); } catch { /* a module without the scrub (web, older host) */ }
+}

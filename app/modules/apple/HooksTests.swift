@@ -83,6 +83,30 @@ extension SYUpdaterTests {
         check(refused("/tmp/a.png:7200") == "7200 is not a number of seconds from 0 to 3600", "snapshot: over an hour → refused")
         check(refused("/tmp/dir/") == "/tmp/dir/ is a directory, not a PNG's path", "snapshot: a directory → refused")
         check(arg("/tmp/a.png:1e3") == SYSnapshotArg(path: "/tmp/a.png:1e3", seconds: 8), "snapshot: a tail that is not a plain number is path")
+        // The kept-answer scrub (SYKeptScrub): a seeded store, the token-holding entries gone.
+        let kv = dir.appendingPathComponent("kv", isDirectory: true)
+        let kept = kv.appendingPathComponent("exact.kept", isDirectory: true)
+        let state = kv.appendingPathComponent("exact.state", isDirectory: true)
+        let other = kv.appendingPathComponent("app.scope", isDirectory: true)
+        for d in [kept, state, other] { try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true) }
+        func put(_ d: URL, _ name: String, _ text: String) -> String { let p = d.appendingPathComponent(name).path; FileManager.default.createFile(atPath: p, contents: Data(text.utf8)); return p }
+        let byPrefix = put(kept, "orxww", #"{"a":["syd_FAKEtoken0123456789"],"v":{"token":"syd_FAKEtoken0123456789","has":true}}"#)
+        let bySys = put(kept, "mnxw43q", #"{"a":["https://x","sys_ServiceToken_abcdef"],"v":{"ok":true}}"#)
+        let byValue = put(kept, "mzswkza", #"{"a":["https://x","plainOpaqueToken42"],"v":{"ok":true}}"#)
+        let clean = put(kept, "ovygi", #"{"a":["https://x","1a2b3c4"],"v":{"ok":true,"label":"syd_ is a prefix"}}"#)
+        let stateTok = put(state, "c2vydmvy", #""syd_FAKEtoken0123456789""#)
+        let notOurs = put(other, "x", "syd_FAKEtoken0123456789")
+        let n = SYKeptScrub.scrub(roots: [kv], token: "plainOpaqueToken42")
+        let gone = { (p: String) in !FileManager.default.fileExists(atPath: p) }
+        check(n == 4, "scrub: four token-holding entries removed", "\(n)")
+        check(gone(byPrefix) && gone(bySys), "scrub: syd_/sys_ tokens in kept answers → removed")
+        check(gone(byValue), "scrub: the stored token's value (no prefix) → removed")
+        check(gone(stateTok), "scrub: a persisted state holding a token → removed")
+        check(!gone(clean), "scrub: a clean kept answer (a bare 'syd_' word, a token version) stays")
+        check(!gone(notOurs), "scrub: a scope that is not exact.* is not touched")
+        check(SYKeptScrub.scrub(roots: [kv], token: nil) == 0, "scrub: a second pass finds nothing")
+        check(SYKeptScrub.scrub(roots: [dir.appendingPathComponent("missing")], token: "x") == 0, "scrub: a missing store → nothing, no error")
+        check(!SYKeptScrub.holds(Data("short".utf8), token: "short"), "scrub: a stored token under 8 characters is not matched by value")
     }
 }
 #endif
