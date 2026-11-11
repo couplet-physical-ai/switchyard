@@ -1,0 +1,60 @@
+// NOW: the primary view (ZERO.md). STUB — owned by sy-zero (src/now/view.ts builds the shapes).
+// One vertical, time-ordered feed: what is happening right now on top, then what just
+// finished, then earlier; each event a line with the jobs it started under it and their result.
+
+shape NowFeed
+  ok: bool
+  tick: number
+
+shape NowPanel
+  ok: bool
+  id: string
+
+shape NowLog
+  ok: bool
+  step: string
+
+members App
+  // the selected item (an event, a job, a machine or an app): "kind:id", "" for none
+  state nowSel = ""
+  derive nowSec = floor(clockMs / 1000)
+  // filters live in the URL (deep-linkable): /?repo=owner/name, /?app=slug, /?sha=<sha>
+  derive nowRepo = searchParam(top(nav), "repo")
+  derive nowApp = searchParam(top(nav), "app")
+  derive nowSha = searchParam(top(nav), "sha")
+  resource nowData = nowFeed(here == "now" ? nowSec : 0, nowRepo, nowApp, nowSha) as shape NowFeed else empty()
+  resource nowPanelData = nowPanel(nowSel, (here == "now" and nowSel != "") ? nowSec : 0) as shape NowPanel else empty()
+  resource nowLogData = nowLog(nowSel, nowSec) as shape NowLog else empty()
+  action nowSelect(id: string)
+    nowSel = (id == nowSel) ? "" : id
+  action nowClose
+    nowSel = ""
+  action nowFilter(kind: string, v: string)
+    nav = go(nav, v == "" ? "/" : `/?${kind}=${encodeURIComponent(v)}`)
+  action nowClear
+    nav = go(nav, "/")
+  action nowKey(k: string)
+    if k == "Escape" and nowSel != ""
+      preventDefault()
+      nowClose()
+
+component NowView
+  props
+    d: NowFeed
+    p: NowPanel
+    log: NowLog
+    sel: string
+    mode: string
+    reduced: bool
+    repo: string
+    app: string
+    sha: string
+    select: action
+    close: action
+    filter: action
+    clear: action
+    key: action
+    settings: action
+  view
+    column flex=1 min-height=0 testId="now"
+      text (d.ok ? "now" : "waiting") testId="now-status"
