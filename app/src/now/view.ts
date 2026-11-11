@@ -120,9 +120,10 @@ function appUrl(w: World, id: string): string {
   const a = w.apps.get(id) as (App & { links?: { status?: string } }) | undefined;
   return a?.url ?? '';
 }
+/** The app's status dashboard: App.status_url (contract 0.6), else the 0.5 links.status. */
 function statusUrl(w: World, id: string): string {
-  const a = w.apps.get(id) as (App & { links?: { status?: string } }) | undefined;
-  return a?.links?.status ?? '';
+  const a = w.apps.get(id) as (App & { status_url?: string; links?: { status?: string } }) | undefined;
+  return a?.status_url ?? a?.links?.status ?? '';
 }
 function engineUrl(w: World, m: FlowMachine | undefined): string {
   if (!m) return '';
