@@ -279,6 +279,7 @@ async fn meta(State(st): State<Arc<AppState>>) -> Response {
         "process": process_stats(),
         "web": web_info(st.static_dir.as_deref()),
         "caps": caps(&st),
+        "links": crate::links::bases(),
         "now": (st.clock)(),
     });
     (StatusCode::OK, axum::Json(body)).into_response()
@@ -872,6 +873,8 @@ struct LogQ {
     step: Option<String>,
     workflow: Option<String>,
     tail: Option<usize>,
+    /// `decisive`: the lines around the decisive line (failed steps).
+    around: Option<String>,
 }
 
 /// `PipelineLog`: the tail of one step's log (see `logs.rs`).
@@ -952,7 +955,8 @@ async fn pipeline_log(
         }
         return (StatusCode::OK, axum::Json(v)).into_response();
     }
-    match logs.tail(&sref, tail, now).await {
+    let around = q.around.as_deref() == Some("decisive");
+    match logs.tail(&sref, tail, around, now).await {
         Ok(v) => (StatusCode::OK, axum::Json(v)).into_response(),
         Err(crate::logs::LogError::NotFound(m)) => not_found_json(&m),
         Err(crate::logs::LogError::Upstream(m)) => {

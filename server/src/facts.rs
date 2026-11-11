@@ -178,6 +178,12 @@ pub struct AppMeta {
     pub live_sha: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deployed_at: Option<Ms>,
+    /// The catalog's status dashboard for the app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_url: Option<String>,
+    /// The catalog's logs link for the app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logs_url: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]

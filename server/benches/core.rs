@@ -71,9 +71,11 @@ fn pipeline(n: usize, k: usize) -> Fact {
                         exit_code: (k > i).then_some(0),
                         cached: None,
                         cluster: None,
+                        url: None,
                     }
                 })
                 .collect(),
+            url: None,
         })
         .collect();
     Fact::Pipeline(Pipeline {
@@ -98,6 +100,8 @@ fn pipeline(n: usize, k: usize) -> Fact {
         flaky: false,
         workflows,
         url: format!("https://ci.example/repos/{}/pipeline/{n}", n % REPOS),
+        links: Default::default(),
+        git_ref: None,
     })
 }
 
@@ -133,6 +137,8 @@ fn fleet() -> Store {
                     team: Some("software".into()),
                     live_sha: None,
                     deployed_at: None,
+                    status_url: None,
+                    logs_url: None,
                 })
                 .collect(),
         }),

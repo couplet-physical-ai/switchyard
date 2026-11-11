@@ -40,6 +40,9 @@ pub struct WpRepo {
 pub struct WpStep {
     #[serde(default)]
     pub id: u64,
+    /// Position in the pipeline (Woodpecker's step URLs use it).
+    #[serde(default)]
+    pub pid: u64,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -58,6 +61,8 @@ pub struct WpStep {
 pub struct WpWorkflow {
     #[serde(default)]
     pub id: u64,
+    #[serde(default)]
+    pub pid: u64,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -288,8 +293,18 @@ impl Mapper {
                             .then_some(s.exit_code),
                         cached: None,
                         cluster: None,
+                        url: (s.pid != 0).then(|| crate::links::wp_step(repo_id, p.number, s.pid)),
                     })
                     .collect(),
+                url: Some(
+                    w.children
+                        .iter()
+                        .flatten()
+                        .map(|s| s.pid)
+                        .find(|&pid| pid != 0)
+                        .map(|pid| crate::links::wp_step(repo_id, p.number, pid))
+                        .unwrap_or_else(|| crate::links::wp_run(repo_id, p.number)),
+                ),
             })
             .collect();
         let state = map_state(&p.status);
@@ -315,6 +330,9 @@ impl Mapper {
             number: p.number,
             sha: p.commit.clone(),
             branch,
+            git_ref: (event == PipelineEvent::Tag)
+                .then(|| crate::links::tag_of(&p.git_ref).map(str::to_string))
+                .flatten(),
             event,
             state,
             created: p.created * 1000,
@@ -334,6 +352,7 @@ impl Mapper {
                 self.public_url.trim_end_matches('/'),
                 p.number
             ),
+            links: Default::default(),
         };
         if event == PipelineEvent::Push {
             for w in deploy_wfs {
@@ -407,6 +426,7 @@ pub fn engines_fact(
                     && !a.no_schedule,
                 running: r,
                 agents: Vec::new(),
+                url: Some(crate::links::engine_page(agent_host(&a.name).as_deref())),
             }
         })
         .collect();
@@ -459,6 +479,7 @@ pub fn queue_fact(q: &WpQueueInfo, repos: &BTreeMap<u64, String>, now: Ms) -> Qu
             pipelines_running: running.len() as u32,
             paused: q.paused,
             items,
+            url: Some(crate::links::wp_queue()),
         },
     }
 }

@@ -15,6 +15,8 @@ use serde_json::{Value, json};
 use crate::model::{CiState, Ms};
 
 pub const TAIL_DEFAULT: usize = 200;
+/// `around=decisive`: lines on each side of the decisive line.
+pub const AROUND: usize = 40;
 pub const TAIL_MAX: usize = 500;
 const LINE_MAX: usize = 400;
 const BYTES_MAX: usize = 64 * 1024;
@@ -50,8 +52,8 @@ pub struct StepRef {
     pub state: CiState,
 }
 
-/// (pipeline, workflow, step, tail)
-type Key = (String, String, String, usize);
+/// (pipeline, workflow, step, tail, around)
+type Key = (String, String, String, usize, bool);
 
 pub struct Logs {
     wp: Option<(String, String)>,
@@ -104,10 +106,23 @@ impl Logs {
             || (pipeline.starts_with("gha:") && self.gh.is_some())
     }
 
-    /// `PipelineLog` for one step.
-    pub async fn tail(&self, s: &StepRef, tail: usize, now: Ms) -> Result<Value, LogError> {
+    /// `PipelineLog` for one step: the last `tail` lines, or with `around` (failed steps
+    /// with a decisive line) the ±[`AROUND`] lines around the decisive line.
+    pub async fn tail(
+        &self,
+        s: &StepRef,
+        tail: usize,
+        around: bool,
+        now: Ms,
+    ) -> Result<Value, LogError> {
         let tail = tail.clamp(1, TAIL_MAX);
-        let key = (s.pipeline.clone(), s.workflow.clone(), s.step.clone(), tail);
+        let key = (
+            s.pipeline.clone(),
+            s.workflow.clone(),
+            s.step.clone(),
+            tail,
+            around,
+        );
         let hit = self.cached(&key, now);
         if let Some(v) = hit {
             return Ok(v);
@@ -125,7 +140,7 @@ impl Logs {
         // The same window the failure signatures read, so the decisive line is the one
         // the step's cluster came from.
         let window = crate::adapters::woodpecker::LOG_LINES;
-        let (mut raw, state, exit) = if s.pipeline.starts_with("wp:") {
+        let (raw, state, exit) = if s.pipeline.starts_with("wp:") {
             self.wp_lines(s, window).await?
         } else if s.pipeline.starts_with("gha:") {
             let (l, st) = self.gh_lines(s, window).await?;
@@ -137,20 +152,10 @@ impl Logs {
         let decisive = matches!(state, CiState::Failure | CiState::Error)
             .then(|| crate::signature::extract_at(&s.workflow, &s.step, exit, &raw).1)
             .flatten();
-        // Keep the tail (+1: a line before it says the log goes on).
-        let drop = raw.len().saturating_sub(tail + 1);
-        raw.drain(..drop);
-        let mut v = shape(raw, tail);
-        if let Some(d) = decisive
-            .and_then(|d| d.checked_sub(drop))
-            .and_then(|d| d.checked_sub(v["first"].as_u64().unwrap_or(0) as usize))
-            && d < v["lines"].as_array().map_or(0, Vec::len)
-        {
-            v["decisive"] = d.into();
-        }
-        if let Some(o) = v.as_object_mut() {
-            o.remove("first");
-        }
+        let mut v = match decisive.filter(|_| around) {
+            Some(d) => around_of(raw, d),
+            None => tail_of(raw, tail, decisive),
+        };
         v["id"] = s.pipeline.clone().into();
         v["step"] = s.step.clone().into();
         if !s.workflow.is_empty() {
@@ -348,6 +353,48 @@ impl Logs {
             None,
         ))
     }
+}
+
+/// The last `tail` lines (and the decisive line's index when inside them).
+fn tail_of(mut raw: Vec<String>, tail: usize, decisive: Option<usize>) -> Value {
+    // Keep the tail (+1: a line before it says the log goes on).
+    let drop = raw.len().saturating_sub(tail + 1);
+    raw.drain(..drop);
+    let mut v = shape(raw, tail);
+    if let Some(d) = decisive
+        .and_then(|d| d.checked_sub(drop))
+        .and_then(|d| d.checked_sub(v["first"].as_u64().unwrap_or(0) as usize))
+        && d < v["lines"].as_array().map_or(0, Vec::len)
+    {
+        v["decisive"] = d.into();
+    }
+    if let Some(o) = v.as_object_mut() {
+        o.remove("first");
+    }
+    v
+}
+
+/// The ±[`AROUND`] lines around the decisive line `d` of `raw` (the read window).
+fn around_of(raw: Vec<String>, d: usize) -> Value {
+    let lo = d.saturating_sub(AROUND);
+    let hi = (d + AROUND + 1).min(raw.len());
+    let n = raw.len();
+    // The read window is the log's last lines: at its cap, the log may go on before it.
+    let before = lo > 0 || n >= crate::adapters::woodpecker::LOG_LINES;
+    let lines: Vec<String> = raw.into_iter().skip(lo).take(hi - lo).collect();
+    let len = lines.len();
+    let mut v = shape(lines, len);
+    let first = v["first"].as_u64().unwrap_or(0) as usize;
+    if let Some(o) = v.as_object_mut() {
+        o.remove("first");
+    }
+    v["truncated"] = (before || hi < n || v["truncated"] == true || first > 0).into();
+    if let Some(k) = (d - lo).checked_sub(first) {
+        v["decisive"] = k.into();
+    }
+    v["around"] = "decisive".into();
+    v["after"] = (n - hi).into();
+    v
 }
 
 fn started(s: CiState) -> bool {

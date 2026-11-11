@@ -116,10 +116,14 @@ fn pipeline() -> impl Strategy<Value = Fact> {
                                 exit_code: None,
                                 cached: None,
                                 cluster: None,
+                                url: None,
                             }],
+                            url: None,
                         })
                         .collect(),
                     url: "https://ci.example/x".into(),
+                    links: Default::default(),
+                    git_ref: None,
                 })
             },
         )
@@ -308,6 +312,8 @@ fn misc() -> impl Strategy<Value = Fact> {
                     },
                     live_sha: None,
                     deployed_at: None,
+                    status_url: None,
+                    logs_url: None,
                 })
                 .collect(),
         })),
@@ -346,6 +352,7 @@ fn misc() -> impl Strategy<Value = Fact> {
                 items: (1..=pending as u64)
                     .map(|n| ids::wp_pipeline("acme/api", n))
                     .collect(),
+                url: None,
             },
         })),
         (t(), 0u32..3).prop_map(|(observed, busy)| Fact::Engines(EngineList {
@@ -366,6 +373,7 @@ fn misc() -> impl Strategy<Value = Fact> {
                 last_seen: Some(observed),
                 running: vec![],
                 agents: vec![],
+                url: None,
             }],
         })),
         (t(), any::<bool>()).prop_map(|(observed, tripped)| Fact::Watcher(WatcherFact {
@@ -587,6 +595,8 @@ fn expected_durations() {
             flaky: false,
             workflows: vec![],
             url: String::new(),
+            links: Default::default(),
+            git_ref: None,
         })
     };
     // Flush; if `id` was re-sent (upsert or patch), its current value.

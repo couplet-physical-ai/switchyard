@@ -1603,7 +1603,77 @@ impl Store {
                 .and_then(|d| d.pipeline.clone())
                 .or_else(|| regs.iter().find_map(|d| d.pipeline.clone())),
             url: regs.iter().find_map(|d| d.url.clone()),
+            links: Default::default(),
         })
+        .map(|mut d| {
+            d.links = self.deploy_links(&d);
+            d
+        })
+    }
+
+    /// (Woodpecker repo id, number) of a `wp:` pipeline, from its own Woodpecker URL
+    /// (`…/repos/{id}/pipeline/{n}`): a function of the pipeline alone, so links never
+    /// depend on which fact arrived first.
+    fn wp_run_of(&self, pipeline: &str, url: Option<&str>) -> Option<(u64, u64)> {
+        let n: u64 = pipeline
+            .strip_prefix("wp:")?
+            .rsplit(':')
+            .next()?
+            .parse()
+            .ok()?;
+        let u = url?;
+        let i = u.find("/repos/")? + "/repos/".len();
+        let mut parts = u[i..].split('/');
+        let rid = parts.next()?.parse().ok()?;
+        (parts.next() == Some("pipeline") && parts.next()?.parse::<u64>().ok()? == n)
+            .then_some((rid, n))
+    }
+
+    fn deploy_links(&self, d: &Deploy) -> DeployLinks {
+        let cicd = d
+            .pipeline
+            .as_deref()
+            .and_then(|p| self.wp_run_of(p, d.url.as_deref()))
+            .map(|(rid, n)| crate::links::rr_run(rid, n));
+        let app = self
+            .app_list
+            .as_ref()
+            .and_then(|l| l.apps.iter().find(|a| a.id == d.app))
+            .map(|a| a.url.clone())
+            .filter(|u| !u.is_empty());
+        DeployLinks {
+            cicd,
+            commit: (!d.sha.is_empty()).then(|| crate::links::gh_commit(&d.repo, &d.sha)),
+            app,
+        }
+    }
+
+    fn pipeline_links(&self, p: &Pipeline) -> PipelineLinks {
+        use crate::links as l;
+        let mut out = PipelineLinks::default();
+        if p.id.starts_with("wp:") {
+            if let Some((rid, n)) = self.wp_run_of(&p.id, Some(&p.url)) {
+                out.cicd = Some(l::rr_run(rid, n));
+                out.woodpecker = Some(l::wp_run(rid, n));
+            }
+        } else if let Some(run) = p.id.strip_prefix("gha:").and_then(|r| r.parse().ok()) {
+            out.github = Some(l::gh_run(&p.repo, run));
+        }
+        if !p.sha.is_empty() {
+            out.commit = Some(l::gh_commit(&p.repo, &p.sha));
+        }
+        if let Some(t) = p.git_ref.as_deref().filter(|t| !t.is_empty()) {
+            out.release = Some(l::gh_release(&p.repo, t));
+        } else if p.event != PipelineEvent::Tag
+            && !p.branch.is_empty()
+            && !p.branch.starts_with("pull/")
+        {
+            out.branch = Some(l::gh_branch(&p.repo, &p.branch));
+        }
+        if let Some(n) = p.pr {
+            out.pr = Some(l::gh_pr(&p.repo, n));
+        }
+        out
     }
 
     fn derive_deploy(&self, id: &str, now: Ms) -> Option<Deploy> {
@@ -1651,6 +1721,7 @@ impl Store {
         let mut p = p.clone();
         p.queue_pos = None;
         p.expected_ms = None;
+        p.links = Box::new(self.pipeline_links(&p));
         self.mark_failures(&mut p);
         if p.state.is_active() {
             let (event, deploy) = (p.event, p.deploy);
@@ -1805,11 +1876,16 @@ impl Store {
                 }
             }
         };
+        let links = CommitLinks {
+            commit: crate::links::gh_commit(&c.repo, &c.sha),
+            branch: (!branch.is_empty() && !branch.starts_with("pull/"))
+                .then(|| crate::links::gh_branch(&c.repo, &branch)),
+            pr: pr.map(|n| crate::links::gh_pr(&c.repo, n)),
+        };
         Some(Commit {
             id: id.to_string(),
             repo: c.repo.clone(),
             sha: c.sha.clone(),
-            branch,
             title: c.title.clone(),
             author: c.author.clone(),
             bot: c.bot,
@@ -1817,6 +1893,8 @@ impl Store {
             pr,
             stage,
             ci,
+            links,
+            branch,
             pipelines: pipes,
             deploy: deploy.map(|d| DeployRef {
                 id: d.id.clone(),
@@ -1943,6 +2021,10 @@ impl Store {
             blocked_by,
             stale_ms: (p.state == PrState::Open && idle > 72 * H).then(|| idle / H * H),
             url: p.url.clone(),
+            links: PrLinks {
+                checks: crate::links::gh_pr_checks(&p.repo, p.number),
+                branch: (!p.head.is_empty()).then(|| crate::links::gh_branch(&p.repo, &p.head)),
+            },
         })
     }
 
@@ -2100,9 +2182,9 @@ impl Store {
             ),
             group: Some(self.group_of(id)),
             links: Links {
-                github: format!("https://github.com/{id}"),
-                woodpecker: wid.map(|w| format!("{}/repos/{w}", self.cfg.woodpecker_url)),
-                cicd: wid.map(|w| format!("{}/pipelines/{w}", self.cfg.cicd_url)),
+                github: crate::links::gh_repo(id),
+                woodpecker: wid.map(crate::links::wp_repo),
+                cicd: wid.map(crate::links::rr_repo),
             },
         })
     }
@@ -2168,6 +2250,11 @@ impl Store {
             runtime: meta.runtime.clone(),
             team: meta.team.clone(),
             note: health.and_then(|h| h.note.clone()),
+            status_url: meta.status_url.clone(),
+            links: AppLinks {
+                logs: meta.logs_url.clone(),
+                repo: meta.repo.as_deref().map(crate::links::gh_repo),
+            },
         })
     }
 

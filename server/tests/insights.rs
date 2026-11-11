@@ -52,6 +52,7 @@ fn run(
                         finished: Some(finished),
                         engine: None,
                         steps: vec![],
+                        url: None,
                     });
                 }
                 wfs.last_mut().unwrap().steps.push(Step {
@@ -62,11 +63,14 @@ fn run(
                     exit_code: *code,
                     cached: None,
                     cluster: None,
+                    url: None,
                 });
             }
             wfs
         },
         url: "https://ci.example/x".into(),
+        links: Default::default(),
+        git_ref: None,
     })
 }
 
@@ -91,6 +95,8 @@ fn apps() -> Fact {
         team: Some(team.into()),
         live_sha: None,
         deployed_at: None,
+        status_url: None,
+        logs_url: None,
     };
     Fact::Apps(AppList {
         observed: NOW - H,

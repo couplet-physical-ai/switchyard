@@ -774,3 +774,20 @@ fn pr_merged_closed_review_and_mergeable_variants() {
     n["headRefOid"] = Value::Null;
     assert!(pr_fact(&n, P_AT).unwrap().1.is_empty());
 }
+
+#[test]
+fn a_failed_job_opens_on_its_failed_step() {
+    use switchyard::adapters::github::failed_step_of;
+    let job = serde_json::json!({"id": 22, "steps": [
+        {"name": "Set up job", "number": 1, "conclusion": "success"},
+        {"name": "Build", "number": 2, "conclusion": "success"},
+        {"name": "Test", "number": 3, "conclusion": "failure"},
+        {"name": "Upload", "number": 4, "conclusion": "skipped"}
+    ]});
+    assert_eq!(failed_step_of(&job), Some(3));
+    let timeout = serde_json::json!({"steps": [{"number": 5, "conclusion": "timed_out"}]});
+    assert_eq!(failed_step_of(&timeout), Some(5));
+    let none = serde_json::json!({"steps": [{"number": 1, "conclusion": "success"}]});
+    assert_eq!(failed_step_of(&none), None);
+    assert_eq!(failed_step_of(&serde_json::json!({})), None);
+}

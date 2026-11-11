@@ -1,4 +1,4 @@
-# Switchyard wire contract — v0.5
+# Switchyard wire contract — v0.6
 
 Owner: the **server** thread (`server/`). The client reads this and `contract/fixtures/`;
 it never edits them. Any change: bump `PROTOCOL` minor, update fixtures in the same commit,
@@ -27,9 +27,9 @@ except the two singleton snapshot fields, which are `null` before their first va
 | `GET /api/v1/insights` | the Factory Floor in one call: `Insights` (groups, failure clusters, flakes, trends), same entities as the snapshot tables, sorted for display. |
 | `GET /api/v1/changes?since=<ms>[&until=<ms>]` | "since your last visit": `Changes` — what turned red, recovered, deployed, new failure clusters, PRs, counts; up to 7 days back. |
 | `GET /api/v1/app/{id}` | `AppHistory`: the app now, its last 10 deploys, its health transitions over 7 days. 404 if unknown. |
-| `GET /api/v1/pipeline/{id}/log?step=<Step.name>[&workflow=<Workflow.name>][&tail=200]` | `PipelineLog`: the tail of one step's log, read on demand (only when `meta.caps` has `"pipeline_log"`). `id` URL-encoded (`wp%3Aacme%2Fapi%3A42`, `gha%3A123`); `tail` lines, default 200, max 500. 404 for a pipeline not in the live view or an unknown step; 400 without `step`; 502 when the upstream fails. |
+| `GET /api/v1/pipeline/{id}/log?step=<Step.name>[&workflow=<Workflow.name>][&tail=200][&around=decisive]` | `PipelineLog`: the tail of one step's log (or, with `around=decisive`, the ±40 lines around a failed step's decisive line), read on demand (only when `meta.caps` has `"pipeline_log"`). `id` URL-encoded (`wp%3Aacme%2Fapi%3A42`, `gha%3A123`); `tail` lines, default 200, max 500. 404 for a pipeline not in the live view or an unknown step; 400 without `step`; 502 when the upstream fails. |
 | `GET /api/v1/engine/{id}/history` | `EngineHistory`: one engine (agent, Dagger host, runner pool) over 24 h at one-minute resolution, columnar; the repos it served in the last hour. 404 if unknown. |
-| `GET /api/v1/meta` | `{protocol, version, git_sha, mode: "live"\|"demo", epoch, seq, snapshot:{seq,at,bytes,gzip_bytes}, clients, adapters: AdapterStatus[], orgs, counts, process: {rss_bytes, peak_rss_bytes, threads}, web, caps, now}`. `caps`: optional features this server serves, e.g. `["pipeline_log"]` (a client shows a feature only when listed; absent on servers before it). `web` (null without a web client): `{sha, tree?, files, shell_bytes, app_js_bytes}`, `sha` = the commit the served web build came from, `tree` = that commit's `app/` tree hash (`git rev-parse <sha>:app`, 40 hex): a deploy that changes only the server moves `sha`, never `tree`. |
+| `GET /api/v1/meta` | `{protocol, version, git_sha, mode: "live"\|"demo", epoch, seq, snapshot:{seq,at,bytes,gzip_bytes}, clients, adapters: AdapterStatus[], orgs, counts, process: {rss_bytes, peak_rss_bytes, threads}, web, caps, links, now}`. `links` (0.6): the deep-link bases `{github, roadrunner, woodpecker, cicd}` (`roadrunner` = `woodpecker`, the Roadrunner UI; `cicd` = the Roadrunner console); every URL field is built from these, so a client never hardcodes a host. `caps`: optional features this server serves, e.g. `["pipeline_log"]` (a client shows a feature only when listed; absent on servers before it). `web` (null without a web client): `{sha, tree?, files, shell_bytes, app_js_bytes}`, `sha` = the commit the served web build came from, `tree` = that commit's `app/` tree hash (`git rev-parse <sha>:app`, 40 hex): a deploy that changes only the server moves `sha`, never `tree`. |
 | `GET /api/healthz` | liveness `{ok:true}` (public). |
 | `GET /api/readyz` | `{ready, mode, seq, adapters: AdapterStatus[]}`; 200 when every enabled adapter has synced once, else 503. |
 | `GET /connect` | (browser, SSO) page that mints a device token for the macOS app. |
@@ -109,7 +109,7 @@ refetch the snapshot and keep the socket: drop deltas with `seq <= snapshot.seq`
 
 ```ts
 type Snapshot = {
-  protocol: "0.5", epoch: string, seq: number, at: number,
+  protocol: "0.6", epoch: string, seq: number, at: number,
   orgs: Org[], repos: Repo[], commits: Commit[], pipelines: Pipeline[], prs: Pr[],
   deploys: Deploy[], apps: App[], engines: Engine[], queues: Queue[], lanes: Lane[],
   watcher: Watcher | null, stats: Stats | null,
@@ -138,7 +138,9 @@ type Repo = {
   last_activity: number,      // newest commit / pipeline / PR update (0 = none known)
   p50_build_ms?: number,      // median duration of the repo's successful push runs, last 24 h
   group?: string,             // 0.5: Group id (team from the apps catalog, else the org)
-  links: { github: string, woodpecker?: string, cicd?: string }
+  links: { github: string,    // the repo on GitHub
+           woodpecker?: string, // its Woodpecker repo page
+           cicd?: string }      // its Roadrunner console repo page (/repos/<wp id>)
 }
 
 type MainState = {
@@ -161,13 +163,17 @@ type Commit = {               // id = "owner/name@sha"
   stage: "pushed" | "queued" | "building" | "gating" | "merged" | "deploying" | "deployed" | "failed" | "done",
   ci: CiState,                // combined: Roadrunner pipelines + GitHub Actions runs + statuses
   pipelines: string[],        // Pipeline ids (also ones no longer in the snapshot)
-  deploy?: DeployRef
+  deploy?: DeployRef,
+  links?: { commit: string,   // 0.6: the commit on GitHub
+            branch?: string,  // its branch on GitHub (absent for "pull/N")
+            pr?: string }     // its PR on GitHub
 }
 
 type Pipeline = {             // id = "wp:<owner/name>:<number>" (Roadrunner) | "gha:<run_id>" (GitHub Actions)
   id: string, lane: "roadrunner" | "gha",
   repo: string, number: number, sha: string,
   branch: string,             // push: the branch; pull_request: the PR's head branch
+  ref?: string,               // 0.6: tag runs: the tag ("v1.4.0")
   event: "push" | "pull_request" | "tag" | "cron" | "manual" | "deployment",
   state: CiState, created: number, started?: number, finished?: number,
   queue_pos?: number,         // 1-based, while pending
@@ -180,13 +186,29 @@ type Pipeline = {             // id = "wp:<owner/name>:<number>" (Roadrunner) | 
   deploy?: true,              // has a deploy workflow (push pipelines)
   flaky?: true,               // 0.5: failed, but every failed step passed on the same sha within 6 h
   workflows: Workflow[],
-  url: string
+  url: string,                // Roadrunner run (wp:) | GitHub Actions run (gha:)
+  links?: {                   // 0.6
+    cicd?: string,            // the run in the Roadrunner console (wp:)
+    woodpecker?: string,      // the run in Roadrunner (= `url`, wp:)
+    github?: string,          // the GitHub Actions run (gha:)
+    commit?: string,          // the commit on GitHub
+    branch?: string,          // the branch on GitHub (not tag runs; PR runs: the head branch)
+    release?: string,         // the release / tag on GitHub (tag runs with a `ref`)
+    pr?: string               // the PR on GitHub (pull_request runs)
+  }
 }
 type Workflow = { name: string, state: CiState, started?: number, finished?: number,
-                  engine?: string, steps: Step[] }
+                  engine?: string, steps: Step[],
+                  url?: string }      // 0.6: Roadrunner opened on its first step (wp:),
+                                      // the GitHub Actions run (gha:)
 type Step = { name: string, state: CiState, started?: number, finished?: number,
               exit_code?: number, cached?: boolean,
-              cluster?: string }      // 0.5: failed steps: the failure Cluster id
+              cluster?: string,       // 0.5: failed steps: the failure Cluster id
+              url?: string }          // 0.6: where the step and its log open: Roadrunner's
+                                      // step page `…/repos/{id}/pipeline/{n}/{step pid}`
+                                      // (wp:); the GitHub Actions job (gha: a Step is a
+                                      // job), on its failed step `…/job/{id}#step:{i}:1`
+                                      // when it failed
 
 type Pr = {                   // id = "owner/name#123"
   id: string, repo: string, number: number, title: string, author: string, bot?: true,
@@ -203,14 +225,20 @@ type Pr = {                   // id = "owner/name#123"
   merged_at?: number, merge_sha?: string,
   blocked_by?: string,        // "merge conflict" | "failing: <check>" | "review required" | ...
   stale_ms?: number,          // open and idle > 72 h (hour resolution)
-  url: string
+  url: string,                // the PR on GitHub
+  links?: { checks: string,   // 0.6: its checks tab
+            branch?: string } // its head branch on GitHub
 }
 
 type Deploy = {               // id = "owner/name@sha" (same as the commit's id)
   id: string, app: string, repo: string, sha: string,
   via: "roadrunner" | "gha" | "gha_fallback" | "manual",
   state: "pending" | "running" | "success" | "failure",
-  started: number, finished?: number, pipeline?: string, url?: string
+  started: number, finished?: number, pipeline?: string,
+  url?: string,               // the deploy run (Woodpecker / GitHub Actions)
+  links?: { cicd?: string,    // 0.6: the deploy run in the Roadrunner console (Roadrunner deploys)
+            commit?: string,  // the deployed commit on GitHub
+            app?: string }    // "Open app": the app's URL
 }
 type DeployRef = { id: string, state: Deploy["state"] }
 
@@ -223,7 +251,10 @@ type App = {                  // id = app slug ("roster")
   main_sha?: string, behind?: number,   // commits on main after live_sha (if known)
   last_deploy?: DeployRef,
   runtime?: string,           // "lxc" | "static" | "external"
-  team?: string, note?: string
+  team?: string, note?: string,
+  status_url?: string,        // 0.6: its status page (apps catalog: health, latency, resources)
+  links?: { logs?: string,    // 0.6: its runtime logs (apps catalog)
+            repo?: string }   // its repo on GitHub
 }
 
 type Engine = {               // "wp-agent-<n>" (Woodpecker agent) | "dagger:<VM n>" (Dagger engine host)
@@ -236,7 +267,10 @@ type Engine = {               // "wp-agent-<n>" (Woodpecker agent) | "dagger:<VM
   cpu?: number, mem?: number, load?: number,   // percent / percent / load1 (engine hosts)
   last_seen?: number,
   running: string[],          // Pipeline ids running here
-  agents?: string[]           // engine host → its agent engine ids
+  agents?: string[],          // engine host → its agent engine ids
+  url?: string                // 0.6: its machine's page: the Roadrunner console's engine page
+                              // for the machine it shows (its Dagger engine and the agents on
+                              // it), else Roadrunner's agents page (no page per agent)
 }
 
 type Queue = {                // id = "roadrunner"
@@ -247,7 +281,8 @@ type Queue = {                // id = "roadrunner"
   pipelines_running: number,
   paused?: true,
   oldest_wait_ms: number,
-  items: string[]             // pending Pipeline ids in queue order (≤ 50)
+  items: string[],            // pending Pipeline ids in queue order (≤ 50)
+  url?: string                // 0.6: its page (Roadrunner's queue)
 }
 
 type Lane = { id: string /* repo */, mode: Repo["lane"], fallback?: true, held?: true, note?: string }
@@ -439,6 +474,9 @@ type PipelineLog = {                     // GET /api/v1/pipeline/{id}/log?step=&
   truncated: boolean,                    // the log goes on before `lines`, or a line / the 64 KB
                                          // budget was cut
   bytes: number,                         // UTF-8 size of `lines` (≤ 64 KB)
+  around?: "decisive",                   // `around=decisive` and the step has a decisive line:
+                                         // `lines` = the ±40 lines around it (else the tail)
+  after?: number,                        // with `around`: log lines after the window
   decisive?: number,                     // failed steps: the index in `lines` of the decisive
                                          // error line, raw (redacted like the rest): the line
                                          // the step's Cluster.line is the normalized form of
@@ -492,6 +530,13 @@ cargo run --release -- --demo --listen 127.0.0.1:8080   # from server/, fixtures
 
 ## Changes
 
+- **0.6** (additive; 0.5 clients keep working): deep links, all optional and built from
+  the configured bases in `meta.links {github, roadrunner, woodpecker, cicd}` — a client
+  hides a link that is absent. `Step.url` (Roadrunner step page; GitHub Actions job, on
+  its failed step), `Workflow.url`, `Engine.url` (machine page), `Queue.url`,
+  `App.status_url`, `Pipeline.ref` (tags); `links` objects on Pipeline / Commit / Pr /
+  Deploy / App; Repo `links.cicd` → the console's repo page. `PipelineLog`:
+  `around=decisive`. Snapshot +20 % raw, +6 % gzipped (live: 1.84 → 2.21 MB raw).
 - **0.5** (additive; 0.4 clients keep working: they skip the new kinds and fields): the
   Factory Floor. `Repo.group` and `Group` entities; failure `Cluster`s by normalized
   signature (step + class + the decisive log line) with `Step.cluster`; `Flake`s and
@@ -501,7 +546,7 @@ cargo run --release -- --demo --listen 127.0.0.1:8080   # from server/, fixtures
   49 KB/h (3.4 %) to the stream (1.45 MB/h). Then: `/changes` PR counts (opened / merged /
   stuck per group) and a 7-day window (a persisted log), `GET /api/v1/app/{id}`,
   `GET /api/v1/engine/{id}/history`; `GET /api/v1/pipeline/{id}/log` behind
-  `meta.caps: ["pipeline_log"]`.
+  `meta.caps: ["pipeline_log"]` (+ `decisive`).
 - **0.4**: smaller deltas and snapshot (measured on the live fleet: stream 7.0 → 1.9 MB/h,
   snapshot 3.1 → 2.5 MB, so 1 h of `/history` ≈ 4.4 MB). New ops `patch` (RFC 7386 merge patch) and `dot` (one main-line
   Dot); `Repo.main.recent` keeps 12 dots (was ≤ 40, 20 in practice); `Pr.checks` lists only

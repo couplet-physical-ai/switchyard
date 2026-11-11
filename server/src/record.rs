@@ -670,6 +670,124 @@ impl Sanitizer {
             }
             _ => {}
         }
+        self.links(kind, v);
+    }
+
+    /// Deep links (contract 0.6: `links` objects, `Step.url`, `Workflow.url`,
+    /// `Engine.url`, `Queue.url`, `App.status_url`, `Pipeline.ref`): private repo names
+    /// become their stand-ins and hosts go neutral; an app's catalog links (status, logs)
+    /// name the app and internal dashboards and are dropped; a deploy's app link follows
+    /// the app's stand-in; a tag that is not a version becomes one.
+    fn links(&mut self, kind: &str, v: &mut Value) {
+        if kind == "app"
+            && let Some(o) = v.as_object_mut()
+        {
+            o.remove("status_url");
+        }
+        if kind == "pipeline"
+            && let Some(t) = v.get("ref").and_then(Value::as_str).map(str::to_string)
+        {
+            let clean = if is_version_tag(&t) {
+                t.clone()
+            } else {
+                "v1.0.0".to_string()
+            };
+            if clean != t {
+                v["ref"] = Value::from(clean.clone());
+                if let Some(r) = v.pointer("/links/release").and_then(Value::as_str) {
+                    let base = r.rsplit_once("/releases/tag/").map_or(r, |(b, _)| b);
+                    v["links"]["release"] = Value::from(format!("{base}/releases/tag/{clean}"));
+                }
+            }
+        }
+        if let Some(l) = v.get_mut("links").and_then(Value::as_object_mut) {
+            if kind == "app" {
+                l.remove("status");
+                l.remove("logs");
+            }
+            let keys: Vec<String> = l.keys().cloned().collect();
+            for k in keys {
+                if kind == "deploy" && k == "app" {
+                    continue;
+                }
+                if let Some(s) = l.get(&k).and_then(Value::as_str).map(str::to_string) {
+                    let clean = self.link(&s);
+                    l.insert(k, Value::from(clean));
+                }
+            }
+        }
+        if kind == "deploy"
+            && let Some(u) = v
+                .pointer("/links/app")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        {
+            let app = v
+                .get("app")
+                .and_then(Value::as_str)
+                .unwrap_or("app")
+                .to_string();
+            v["links"]["app"] = Value::from(if u.contains(".apps.example.com") {
+                format!("https://{app}.apps.example.com/")
+            } else {
+                format!("https://{app}.example.com/")
+            });
+        }
+        if matches!(kind, "engine" | "queue")
+            && let Some(u) = v.get("url").and_then(Value::as_str).map(str::to_string)
+        {
+            v["url"] = Value::from(self.link(&u));
+        }
+        if kind == "pipeline" {
+            let mut urls: Vec<(usize, usize, String)> = Vec::new();
+            let mut wf_urls: Vec<(usize, String)> = Vec::new();
+            for (wi, w) in v
+                .get("workflows")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                if let Some(u) = w.get("url").and_then(Value::as_str) {
+                    wf_urls.push((wi, u.to_string()));
+                }
+                for (si, st) in w
+                    .get("steps")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                {
+                    if let Some(u) = st.get("url").and_then(Value::as_str) {
+                        urls.push((wi, si, u.to_string()));
+                    }
+                }
+            }
+            for (wi, si, u) in urls {
+                let clean = self.link(&u);
+                v["workflows"][wi]["steps"][si]["url"] = Value::from(clean);
+            }
+            for (wi, u) in wf_urls {
+                let clean = self.link(&u);
+                v["workflows"][wi]["url"] = Value::from(clean);
+            }
+        }
+    }
+
+    /// One link: private repo names replaced, hosts neutral.
+    fn link(&mut self, s: &str) -> String {
+        let mut out = s.to_string();
+        let names: Vec<(String, String)> = self
+            .repo_map
+            .iter()
+            .map(|(a, b)| (a.clone(), b.clone()))
+            .collect();
+        for (from, to) in names {
+            if out.contains(&from) {
+                out = out.replace(&from, &to);
+            }
+        }
+        neutral_hosts(&out)
     }
 
     fn pipeline_id(&mut self, id: &str) -> String {
@@ -959,6 +1077,23 @@ const LONG_LIVED: [&str; 8] = [
 
 /// Internal-only hosts (`<x>.dev.example.com`, `<x>.example.com`) in URLs become
 /// `<x>.example.com`, so links keep their shape without naming internal machines.
+/// A plain version tag (`v1.2.3`, `0.14.0`, `v0.1.8-rc.2`): kept by the sanitizer;
+/// any other tag may name something private.
+fn is_version_tag(t: &str) -> bool {
+    let v = t.strip_prefix('v').unwrap_or(t);
+    let (core, pre) = v.split_once('-').unwrap_or((v, ""));
+    let core_ok = !core.is_empty()
+        && core
+            .split('.')
+            .all(|x| !x.is_empty() && x.chars().all(|c| c.is_ascii_digit()));
+    let pre_ok = pre.is_empty()
+        || ["rc", "beta", "alpha"].iter().any(|w| {
+            pre.strip_prefix(w)
+                .is_some_and(|r| r.chars().all(|c| c.is_ascii_digit() || c == '.'))
+        });
+    core_ok && pre_ok
+}
+
 pub fn neutral_hosts(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
@@ -1127,5 +1262,71 @@ mod tests {
             s.rekey("flake", "acme/secret-billing|ci/test"),
             f["id"].as_str().unwrap()
         );
+    }
+
+    #[test]
+    fn deep_links_hide_private_repos_apps_and_hosts() {
+        let mut s = Sanitizer::new(["acme/open".to_string()].into_iter().collect());
+        let gh = "https://github.com/acme/secret-billing";
+        let mut p = serde_json::json!({
+            "id": "wp:acme/secret-billing:7", "repo": "acme/secret-billing", "sha": "abc",
+            "title": "secret billing change", "url": "https://ci.dev.example.com/repos/9/pipeline/7",
+            "links": {"cicd": "https://cicd.apps.example.com/pipelines/9/7",
+                      "woodpecker": "https://ci.dev.example.com/repos/9/pipeline/7",
+                      "commit": format!("{gh}/commit/abc"),
+                      "release": format!("{gh}/releases/tag/secret-billing-2026")},
+            "ref": "secret-billing-2026",
+            "workflows": [{"name": "ci", "url": format!("{gh}/actions/runs/1"), "steps": [
+                {"name": "a", "url": "https://cicd.apps.example.com/pipelines/9/7?tab=steps&step=3"},
+                {"name": "b", "url": format!("{gh}/actions/runs/1/job/2")}]}]
+        });
+        s.entity("pipeline", &mut p);
+        let txt = p.to_string();
+        assert!(!txt.contains("secret"), "{txt}");
+        // (Whole frames go through `neutral_hosts` when written; links are neutral already.)
+        assert!(!p["links"].to_string().contains("dev.example.com"), "{txt}");
+        assert!(
+            p["links"]["commit"]
+                .as_str()
+                .unwrap()
+                .ends_with("/commit/abc")
+        );
+        assert_eq!(p["ref"], "v1.0.0");
+        assert!(
+            p["links"]["release"]
+                .as_str()
+                .unwrap()
+                .ends_with("/releases/tag/v1.0.0")
+        );
+        for keep in ["v1.2.3", "0.14.0", "v0.1.8-rc.2", "v2.0-beta1"] {
+            assert!(is_version_tag(keep), "{keep}");
+        }
+        for drop in ["billing-v1", "v1.0-billing", "release", ""] {
+            assert!(!is_version_tag(drop), "{drop}");
+        }
+        let mut a = serde_json::json!({"id": "billing", "repo": "acme/secret-billing",
+            "url": "https://billing.apps.example.com/", "health": "up", "checked": 0,
+            "status_url": "https://grafana.dev.example.com/d/x/?var-app=billing",
+            "links": {"status": "https://grafana.dev.example.com/d/x/?var-app=billing",
+                      "logs": format!("{gh}/actions/workflows/app-logs.yml"), "repo": gh}});
+        s.entity("app", &mut a);
+        assert!(a.get("status_url").is_none() && a["links"].get("logs").is_none());
+        assert!(!a.to_string().contains("secret"), "{a}");
+        let mut d = serde_json::json!({"id": "acme/secret-billing@abc", "app": "billing",
+            "repo": "acme/secret-billing", "sha": "abc", "via": "roadrunner", "state": "success",
+            "started": 0, "links": {"app": "https://billing.apps.example.com/",
+                                    "commit": format!("{gh}/commit/abc")}});
+        s.entity("deploy", &mut d);
+        assert_eq!(
+            d["links"]["app"],
+            format!("https://{}.apps.example.com/", d["app"].as_str().unwrap())
+        );
+        assert!(
+            !d.to_string().contains("secret") && !d.to_string().contains("billing."),
+            "{d}"
+        );
+        let mut e = serde_json::json!({"id": "wp-agent-1", "url": "https://ci.dev.example.com/admin/agents"});
+        s.entity("engine", &mut e);
+        assert_eq!(e["url"], "https://ci.example.com/admin/agents");
     }
 }
