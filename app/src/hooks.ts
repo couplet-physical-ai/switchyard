@@ -1,12 +1,13 @@
 // SWITCHYARD_TOKEN_FILE's data-module side (README "Test hooks"; the native side is
 // modules/apple/Hooks.swift, the Contract side views/hooks.contract). The module reads the token
 // at launch and hands it over once. It goes through the switchyard:// link's checks (parseLink)
-// and is stored as Connect stores one (the store's `switchyard.token`, the Keychain on macOS),
-// with the server in the stored `server`; no confirm sheet. The connect that follows is reported
-// to the module, which logs it. The token stays in this module's memory and the store: no
-// answer carries it, so no answer kept across launches holds it. The web has no module.
+// and is stored as Connect stores one (app.ts `saveToken`: the token file on macOS,
+// modules/apple/Keychain.swift), with the server in the stored `server`; no confirm sheet. The
+// connect that follows is reported to the module, which logs it. The token stays in this
+// module's memory and the token store: no answer carries it, so no answer kept across launches
+// holds it. The web's page module answers no `call`, so nothing happens there.
 
-import type { NativeModule, Store } from '../app.contract.d.ts';
+import type { NativeModule } from '../app.contract.d.ts';
 
 type Link = { server: string; token: string; ok: boolean };
 type Check = (u: string, server: string, token: string) => Link;
@@ -54,10 +55,9 @@ export function takeTokenFile(native: NativeModule | null | undefined, defaultSe
 }
 
 /** Connect's `saveToken(token, true)` for the hook's token, which never leaves this module. */
-export function saveTokenFile(store: Store, key: string): { ok: boolean; status: string } {
+export async function saveTokenFile(save: (token: string) => Promise<{ ok: boolean; status: string }>): Promise<{ ok: boolean; status: string }> {
   if (!pending) return { ok: false, status: 'no token from SWITCHYARD_TOKEN_FILE' };
-  store.set(key, pending.token);
-  return { ok: true, status: 'saved' };
+  return save(pending.token);
 }
 
 /** After the newest connect (app.ts skips one a newer connect overtook, whose answer is let go):
@@ -80,12 +80,6 @@ export function tokenFileReport(native: NativeModule | null | undefined): { ok: 
   return { ok: true, status: o.ok ? 'connected' : 'failed' };
 }
 
-let scrubbed = false;
-/** Once a launch, from loadToken (a synchronous answer, so the call is allowed): the module
- *  deletes kept answers holding the stored token's value (it already removed syd_/sys_-shaped
- *  ones at launch). The token goes to the module in the call only; nothing keeps it. */
-export function scrubKept(native: NativeModule | null | undefined, token: string): void {
-  if (scrubbed || !token || !native?.available) return;
-  scrubbed = true;
-  try { native.call({ op: 'scrub', token }); } catch { /* a module without the scrub (web, older host) */ }
-}
+// The kept-answer scrub with the stored token's value (f3ab409) runs in the module as it reads
+// the token (modules/apple/Keychain.swift `onRead`): the read is async now, and a native call
+// from a continuation is not one.

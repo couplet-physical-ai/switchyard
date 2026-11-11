@@ -1,6 +1,6 @@
 #!/bin/sh
 # The updater's and the test hooks' native unit tests (modules/apple/UpdaterTests.swift and
-# HooksTests.swift, README "Updates" and "Test hooks"): compiles UpdaterCore.swift,
+# HooksTests.swift, README "Updates" and "Test hooks"; KeychainTests.swift, "Security"): compiles UpdaterCore.swift,
 # HooksCore.swift and the two test files with swiftc into a CLI and runs it. Exits
 # nonzero when a case fails or the build does.
 # The signer-pin cases make two throwaway self-signed code-signing certificates in a keychain
@@ -11,7 +11,7 @@
 #                                               over ssh and runs them there
 set -eu
 cd "$(dirname "$0")/.."
-SRC="modules/apple/UpdaterCore.swift modules/apple/UpdaterTests.swift modules/apple/HooksCore.swift modules/apple/HooksTests.swift"
+SRC="modules/apple/UpdaterCore.swift modules/apple/UpdaterTests.swift modules/apple/HooksCore.swift modules/apple/HooksTests.swift modules/apple/Keychain.swift modules/apple/KeychainTests.swift" # fx-kc: + the token at rest
 
 if [ "$(uname -s)" != Darwin ]; then
   MINI=${MINI:?not a Mac: set MINI=user@host of one}

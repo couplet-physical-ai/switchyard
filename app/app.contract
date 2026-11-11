@@ -9,6 +9,7 @@ use JourneyView from "./views/journey.contract"
 use UpdatePill from "./views/update.contract"
 use Conn, Tok, Ack, Overview, Hit, Media, Time, Found, Mainlines, Prs, PrDetail, Fleet, Journey, Link from "./views/shapes.contract"
 use WebReload from "./views/webreload.contract"
+use TokenCard from "./views/token.contract"
 
 font "Commit Mono"
   400 = "assets/fonts/CommitMono-400.ttf"
@@ -54,7 +55,8 @@ component App
   resource media = exactViewport() as shape Media
   resource time = exactTime() as shape Time
   // Where the data comes from: "" is the page's own server (web) or unset (macOS); "demo" is
-  // the built-in simulation. The token lives in the platform's secret store, never in state.
+  // the built-in simulation. The token lives in the app's module (a 0600 file on macOS, the
+  // page's localStorage on the web; README "Security"), never in state.
   state server = "" persist
   state draftServer = ""
   state draftToken = ""
@@ -69,9 +71,16 @@ component App
   state picked = ""
   state facWheel = 0
   state facPulse = 0
-  resource tok = loadToken(tokGen) as shape Tok else empty(ver="", has=false)
+  // fx-kc: the token is read once, async, through the module: the window and the floor never
+  // wait on it (a Keychain prompt from an older build's item waits with the window up). The
+  // route's ?keychain=denied is the agent's test hook (one read answers denied); ?keychain=left
+  // says an old Keychain item was left (Settings' Security note).
+  resource tok = loadToken(tokGen, searchParam(top(nav), "keychain")) as shape Tok else empty(ver="", has=false, status="loading", detail="", left=false)
+  state tokSlow = false
   resource link = parseLink(searchParam(top(nav), "u"), searchParam(top(nav), "server"), searchParam(top(nav), "token")) as shape Link else empty(server="", token="", ok=false)
-  resource conn = connect(server, tok.ver, gen) with time.epochAtZero, time.utcOffset as shape Conn else empty(ok=false, status="connecting", error="", seq=0, label="", kind="", needsSetup=false, signIn="")
+  // fx-kc: asked again when the token's read fails or recovers (tokBad), not for each status
+  derive tokBad = tok.status == "denied" or tok.status == "error"
+  resource conn = connect(server, tok.ver, gen) with time.epochAtZero, time.utcOffset, tokBad as shape Conn else empty(ok=false, status="connecting", error="", seq=0, label="", kind="", needsSetup=false, signIn="")
   resource feed = liveFeed(server, tok.ver, conn.seq, gen, conn.ok) as shape Ack else empty(ok=false, status="idle")
   resource ov = overview(clockMs, conn.seq, conn.ok) as shape Overview else empty()
   resource found = search(q, clockMs) as shape Found else empty(hits=[])
@@ -84,6 +93,16 @@ component App
   derive reduced = media.prefersReducedMotion
   derive here = top(nav).name
   derive dropped = feed.status == "closed" or feed.status == "error" or conn.status == "offline"
+  // fx-kc: the token card over the floor, while the server is not connected (the demo and the
+  // page's own server never wait on the token): macOS asking about the Keychain (after ~400 ms
+  // of waiting, or at once after "Try again"; the module is the macOS one where the updater is),
+  // or a read that was denied or failed
+  state tokRetrying = false
+  // loading: the read is out. pending(tok), not only its value: the build bakes the answer a
+  // module-less bake gets ("none") as the first frame's, which stands until the read lands.
+  derive tokLoading = pending(tok) or tok.status == "loading"
+  derive tokState = (tokLoading or tokRetrying) ? "loading" : tok.status
+  derive tokCard = not conn.ok and ((tokState == "loading" and (tokSlow or tokRetrying) and upd.supported) or tokState == "denied" or tokState == "error")
   derive hitNow = match hit { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }
   derive replayOk = match replayed { case some(r) => r.ok, case none => false }
   derive hovering = match hov { case some(h) => h.kind != "", case none => false }
@@ -116,6 +135,12 @@ component App
 
   task pulse mount
     every(250, tick)
+  task tokWait when tokLoading and not tokSlow
+    after(400, tokWaited)
+  task tokCalm when tokSlow and not tokLoading and not tokRetrying
+    after(1, tokSlowOff)
+  task tokRetried when tokRetrying and not pending(tok)
+    after(1, tokRetryDone)
   // The factory floor's calm clock: while it is on top and calm, its live layer (asleep when
   // nothing travels) is woken 8 times a second for the belts and the beat (src/factory/motion.ts);
   // a loud floor draws every frame on its own, so the clock stops.
@@ -146,6 +171,22 @@ component App
 
   action tick
     clockMs = performanceNow()
+  action tokWaited
+    tokSlow = true
+  action tokSlowOff
+    tokSlow = false
+  // fx-kc: the token card's buttons: read again, or type one in Settings
+  action tokRetry
+    tokRetrying = true
+    tokGen = tokGen + 1
+  action tokRetryDone
+    tokRetrying = false
+  action tokEnter
+    openSettings()
+  // Sign out: the token file goes (and the old Keychain item's delete is tried); then reconnect
+  action forgetToken
+    draftToken = ""
+    send saved = forgetToken()
   action facPulseTick
     facPulse = facPulse + 1
   action retry
@@ -327,9 +368,11 @@ component App
                 text "last hour" color="#00000000" font-size=1
               // Offline or not set up: a card over the floor (the idle floor, or the last fleet
               // it showed, dimmed behind it), never a black void.
-              if not conn.ok and conn.status != "connecting"
+              if not conn.ok and conn.status != "connecting" and not tokCard
                 column position="absolute" inset=0 background-color="sy.canvas" opacity=0.7 aria-hidden=true
-              if not conn.ok and conn.status != "connecting"
+              if tokCard
+                TokenCard(status=tokState, detail=tok.detail, retry=tokRetry, enter=tokEnter)
+              if not conn.ok and conn.status != "connecting" and not tokCard
                 column position="absolute" inset=0 align-items="center" justify-content="center" testId="setup"
                   column align-items="center" gap=14 padding="26px 32px" border-radius=12 border="1px solid sy.edge" background-color="sy.raised" max-width=620
                     text (conn.needsSetup ? "Connect Switchyard to a server" : "The server is not answering") font-weight=700 font-size=16
@@ -353,7 +396,9 @@ component App
               button appearance="none" press=startReplay testId="yard-replay" aria-label="Replay the last hour, sped up" disabled=(ov.mode == "replay" or not conn.ok)
                 position="absolute" top=0 right=0 height=(ov.dialH > 0 ? ov.dialH : 26) padding-left=12 padding-right=(ov.dialPad > 0 ? ov.dialPad : 38) display="flex" align-items="center"
                 text (ov.dial != "" ? ov.dial : "1 hour, sped up") font-size=(ov.dialFont > 0 ? ov.dialFont : 11) color=(ov.mode == "replay" or ov.mode == "paused" ? "sy.amber-text" : "sy.ink3")
-              if not conn.ok and conn.status != "connecting"
+              if tokCard
+                TokenCard(status=tokState, detail=tok.detail, retry=tokRetry, enter=tokEnter)
+              if not conn.ok and conn.status != "connecting" and not tokCard
                 column position="absolute" inset=0 align-items="center" justify-content="center" background-color="sy.canvas" gap=14 testId="yard-setup"
                   text (conn.needsSetup ? "Connect Switchyard to a server" : "The server is not answering") font-weight=700 font-size=16
                   text (conn.error != "" ? conn.error : "Its address and a token, or watch the built-in demo fleet.") color="sy.ink3" font-size=13 max-width=560 text-align="center" testId="yard-setup-error"
@@ -380,7 +425,7 @@ component App
               text (link.ok ? "Connect to this server?" : "This link names no Switchyard server") font-weight=700 font-size=16
               text link.server color="sy.ink2" font-size=13 testId="connect-server"
               if link.ok and link.token != ""
-                text "with a device token from the link (kept in the Keychain)" color="sy.ink3" font-size=12
+                text "with a device token from the link (kept on this device, for your account only)" color="sy.ink3" font-size=12
               row gap=10
                 button press=connectLink disabled=(not link.ok) class=Primary testId="connect-yes"
                   text "Connect"
@@ -437,9 +482,18 @@ component App
               padding="8px 10px" font-size=13 border-radius=8 background-color="sy.canvas" border="1px solid sy.edge" color="sy.ink"
             text "blank: the server this page came from · demo: the built-in fleet" font-size=11 color="sy.ink3"
           column gap=6
-            text (tok.has ? "Token (one is saved; type to replace it)" : "Token") font-size=12 color="sy.ink3"
-            input type="password" value=draftToken input=editToken aria-label="Token" placeholder="kept in the Keychain on macOS" testId="token-field" class=Field
+            row align-items="center" gap=8
+              text (tok.has ? "Token (one is saved; type to replace it)" : "Token") font-size=12 color="sy.ink3" flex=1
+              if tok.has
+                button press=forgetToken commandfor="settings" command="close" appearance="none" testId="settings-forget" padding="1px 6px" border-radius=5
+                  text "Forget token" font-size=11 color="sy.ink3"
+            input type="password" value=draftToken input=editToken aria-label="Token" placeholder="kept on this device, for your account only" testId="token-field" class=Field
               padding="8px 10px" font-size=13 border-radius=8 background-color="sy.canvas" border="1px solid sy.edge" color="sy.ink"
+          // fx-kc: an older build's Keychain item that macOS would not let this build delete
+          if tok.left
+            column gap=4 padding-top=10 border-top="1px solid sy.rule" testId="settings-security"
+              text "SECURITY" font-size=10 letter-spacing="0.08em" color="sy.ink3" font-weight=700
+              text "An old Switchyard token remains in your login Keychain; remove it in Keychain Access → search 'switchyard'." font-size=12 color="sy.ink2" testId="settings-security-note"
           row gap=8 align-items="center"
             button appearance="none" press=toggleStress testId="settings-stress" padding="4px 10px" border-radius=6 border="1px solid sy.edge"
               text (ov.stress ? "Stress mode: on (10× synthetic fleet)" : "Stress mode: off") font-size=12 color=(ov.stress ? "sy.red-text" : "sy.ink3")

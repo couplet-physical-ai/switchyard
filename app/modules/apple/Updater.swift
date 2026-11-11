@@ -37,6 +37,9 @@ final class Updater: ExactModule {
         case "check": SYUpdateEngine.shared.check(manual: request["manual"] as? Bool ?? true) { reply.send($0) }
         case "install": SYUpdateEngine.shared.install { reply.send($0) }
         case "state": reply.send(SYUpdateEngine.shared.snapshot())
+        case "tokenGet": SYToken.get(request, context, reply: reply) // fx-kc: the token at rest (Keychain.swift), never on the main thread
+        case "tokenSet": SYToken.set(request, context, reply: reply) // fx-kc
+        case "tokenForget": SYToken.forget(request, context, reply: reply) // fx-kc
         default: reply.fail("updater answers check, install and state")
         }
     }

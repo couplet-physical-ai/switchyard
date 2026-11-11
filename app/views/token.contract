@@ -1,0 +1,27 @@
+// The token card (fx-kc; README "Security"): over the floor when the saved token cannot be used
+// yet. The app reads it once, async, so the window is up while macOS asks about the Keychain
+// item an older build kept (status "loading" past ~400 ms, macOS only), and says so when that
+// read was refused ("denied") or failed ("error"). The demo and the page's own server never wait
+// on it. App.tokCard decides when it shows; this is only its look.
+
+component TokenCard
+  props
+    status: string
+    detail: string
+    retry: action
+    enter: action
+  view
+    column position="absolute" inset=0 align-items="center" justify-content="center" testId="tok-card"
+      column position="absolute" inset=0 background-color="sy.canvas" opacity=0.7 aria-hidden=true
+      column role="alert" align-items="center" gap=12 padding="24px 30px" border-radius=12 border="1px solid sy.edge" background-color="sy.raised" max-width=560 position="relative"
+        row align-items="center" gap=8
+          // amber: in flight (macOS is asking); red: it failed
+          column width=8 height=8 border-radius=4 background-color=(status == "loading" ? "sy.amber" : "sy.red") aria-hidden=true
+          text (status == "loading" ? "Waiting for Keychain access…" : (status == "denied" ? "Keychain access was denied" : "Could not read the saved token")) role="heading" aria-level=2 font-weight=700 font-size=15 testId="tok-title"
+        text (status == "loading" ? "macOS is asking whether Switchyard may read its saved token. Answer the dialog to connect." : (status == "denied" ? "Switchyard cannot connect without its saved token. Try again to see the dialog, or enter a token." : (detail != "" ? detail : "Try again, or enter a token."))) color="sy.ink3" font-size=13 max-width=500 text-align="center" testId="tok-line"
+        if status != "loading"
+          row gap=10 padding-top=2
+            button press=retry appearance="none" testId="tok-retry" padding="6px 14px" border-radius=6 border="1px solid sy.brand" background-color="sy.brand"
+              text "Try again" color="#0E0E0E" font-size=12 font-weight=700
+            button press=enter appearance="none" testId="tok-enter" padding="6px 12px" border-radius=6 border="1px solid sy.edge" background-color="sy.control"
+              text "Enter token" color="sy.ink2" font-size=12

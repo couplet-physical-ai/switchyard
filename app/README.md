@@ -31,7 +31,7 @@ about 4 minutes on an M-series Mac mini (cargo ~190 s, swift ~45 s).
 The server serves the web build from the same origin (`switchyard-server --static-dir
 <OUTDIR>`): with no server set, the client reads `/api/v1/snapshot` and
 `ws(s)://<origin>/api/v1/stream` of the page's own origin. On macOS it asks for a server URL
-and a token (kept in the Keychain) in the connection sheet, or takes a
+and a token (kept in a file only you can read, "Security" below) in the connection sheet, or takes a
 `switchyard://connect?server=…&token=…` link.
 
 ### Without a server
@@ -44,6 +44,53 @@ deploys and app health. The same simulation runs as a standalone mock of the API
 bun app/server/mock.ts --port 4790          # live; --frozen, --rate 10, --burst, --fixtures <dir>
 bun app/server/selftest.ts                  # 50 checks: shapes, determinism, history, WS, SSE, auth
 ```
+
+## Security and install: where the token lives
+
+Switchyard keeps one secret, the read-only device token the server's `/connect` page mints. It
+keeps it readable by your own macOS user's processes, the way `gh` keeps its token:
+
+- **macOS:** `~/Library/Application Support/com.exowatt.switchyard/token`, mode `0600`, in a
+  folder of mode `0700`, written atomically (a `0600` temp file, then a rename). Any process
+  running as you can read it; other users cannot. `modules/apple/Keychain.swift` keeps it.
+- **Web:** the page's `localStorage` under `exact.secret.switchyard.token` (the key Exact used, so
+  a page's token carries over), this origin only (`modules/web/index.js`). With no server set the
+  page uses its own origin's sign-in and needs no token.
+
+**Why not the Keychain.** Exowatt builds have no Apple Developer ID. Without a Team ID, a Keychain
+item's partition is the CDHash of the build that made it, so every update asked again, and 0.1.2
+blocked its launch on that prompt with no window. An "any application" access list does not help:
+we tried it on a Mac, and the partition still prompts. With a Developer ID we would tighten this
+(a Keychain item whose partition is our Team ID).
+
+**From 0.1.2 and earlier.** Those builds kept the token in the Keychain (a generic password,
+service `com.exowatt.switchyard`, account `switchyard.token`). The first launch with no token file
+reads that item once, with its window already up; macOS may ask once whether Switchyard may read
+it, and the floor says *Waiting for Keychain access…* meanwhile. Allow, and the token moves to the
+file and `migrated` (`0600`, beside it) is marked: it is checked before any Keychain call, so
+the app never reads the Keychain again, and later updates never ask. Deny, and the card offers
+**Try again** and **Enter token**. Nothing at boot waits on the token, and the demo and the page's
+own server never do.
+
+The app then deletes the old item (a delete never asks). On a Mac, a newer ad-hoc build deleted
+the item an older Switchyard build made, but macOS refused the delete of one another app had made
+(`errSecInvalidOwnerEdit`, at once, with no prompt), so the item may stay, unread. (While macOS's
+prompt is up, every Keychain call of the app waits behind it, so the delete runs once the prompt is
+answered or dismissed; a save never waits for it.) When the delete fails, Switchyard remembers
+that (`keychain-left`, beside the token), logs it once
+to `~/Library/Logs/Switchyard/switchyard.log`, and Settings shows, under **Security**:
+
+> An old Switchyard token remains in your login Keychain; remove it in Keychain Access → search
+> 'switchyard'.
+
+(Keychain Access lists it as `com.exowatt.switchyard`, account `switchyard.token`.) The note goes
+once a delete succeeds. **Forget token** in Settings signs out: it deletes the token file and tries
+the item's delete again (never a read); `migrated` stays.
+
+The token is never in a Contract value or argument, Exact's kept answers (`kv/exact.kept`), a
+persisted state, argv or a log line. Contract sees `tok` as `{has, ver, status, detail, left}`, `ver` an
+8-character hash. It travels only as `Authorization: Bearer`, and as the stream's `?token=` (a
+WebSocket carries no header).
 
 ## Updates (macOS)
 
@@ -244,9 +291,10 @@ app/tools/updater-e2e-feed.sh <Switchyard.app> 0.0.2 <latest.json URL>   # a rea
 
 **Tokens never sit in kept answers.** Exact keeps a resource's answer and its identifying
 arguments on disk for the next launch (`kv/exact.kept`). Builds before 5ecedeb passed the token
-through Contract, so it landed there in plain text; now Contract only sees `{has, ver}` and the
-sources read the token from the Keychain. At every launch the module also deletes any kept entry
-or persisted state that holds a token (`syd_`/`sys_`-shaped, or the stored token's value), and
+through Contract, so it landed there in plain text; now Contract only sees `{has, ver, status}` and
+the sources keep the token in the data module's memory ("Security"). At every launch the module
+also deletes any kept entry or persisted state that holds a token (`syd_`/`sys_`-shaped, or the
+stored token's value as the module reads it), and
 logs `scrub: removed N kept entries holding a token` to switchyard.log. Native tests in
 `tools/updater-tests.sh`; a real launch in `tools/kept-scrub-e2e.sh` (Mac).
 
@@ -267,8 +315,8 @@ ignores them. The code is `modules/apple/HooksCore.swift` (pure, tested by
   `SWITCHYARD_DEFAULT_SERVER`, else the stored one. The data module takes `{server, token}` once
   (`native.call({op: "tokenFile"})`, sent as a mutation, so no answer kept for the next launch
   holds it), checks them with the `switchyard://` link's `parseLink`, and connects as the link's
-  Connect does (`connectTokenFile`): the server is stored, the token goes to the Keychain
-  (`secret.keep switchyard.token`; the data module stores it, so it never enters a Contract
+  Connect does (`connectTokenFile`): the server is stored, the token goes to the token file
+  ("Security"; the data module stores it through the module, so it never enters a Contract
   value). The connect that follows logs `token-file: connected <server>` or
   `token-file: failed <server>: <why>`. The token never crosses argv, a URL or a log.
 - **`SWITCHYARD_SNAPSHOT=<png>[:<seconds>]`** draws the main window to `<png>` (an absolute path)
@@ -302,4 +350,5 @@ grep -E 'token-file|snapshot' ~/Library/Logs/Switchyard/switchyard.log
 | `tests/` | `*.test.contract` suites (web and macOS) |
 | `modules/apple/Updater*.swift`, `views/update.contract`, `src/update.ts` | the macOS updater ("Updates" above) |
 | `modules/apple/Hooks*.swift`, `views/hooks.contract`, `src/hooks.ts` | the macOS test hooks ("Test hooks" above) |
+| `modules/apple/Keychain*.swift`, `modules/web/index.js`, `views/token.contract` | the token at rest and its card ("Security" above) |
 | `tools/` | `webperf.mjs` (frame pacing in Chromium), `mini-sync.sh` (copy to the Mac mini), `updater-tests.sh`, `updater-e2e.sh` |
