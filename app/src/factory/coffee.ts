@@ -202,6 +202,18 @@ export class Coffee {
       return true;
     }
     this.menu = false;
+    // the verdict is a lens too: on what made it (the new reds or the apps down, the intake, the
+    // tests)
+    if (h?.kind === 'verdict') {
+      const m = this.dg.marks, fr = this.dg.fresh, ww = this.windowWords();
+      if (m.verdict === 'broken') {
+        const key = fr.newRed.length ? 'red' : 'down';
+        const n = key === 'red' ? fr.newRed.length : fr.down.length;
+        this.f.lens.push({ kind: 'fresh', id: key, name: key === 'red' ? `${n} main lines turned red · ${ww}` : `${n} apps went down · ${ww}`, sub: '' }, t);
+      } else if (m.verdict === 'jammed') this.f.lens.push({ kind: 'queue', id: 'intake', name: 'intake', sub: '' }, t);
+      else if (m.verdict === 'slowed') this.f.lens.push({ kind: 'scanner', id: 'tests', name: 'tests', sub: '' }, t);
+      return true;
+    }
     return false;
   }
 

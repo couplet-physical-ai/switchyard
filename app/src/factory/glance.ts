@@ -193,8 +193,13 @@ export class Glance {
         const w = g.width(h.lead, SMALL, true) + g.width(h.rest, SMALL);
         const at = f.fx.placeAt(Math.round(ax + 16), Math.round(ay - 30), w, 14, 5, true);
         if (!at) return;
+        // each callout is a lens: the cluster's (a failing run of it the world holds, else the
+        // tests), the group's dock or district, the intake
         let kind = 'scanner', id = 'tests', label = 'tests';
-        if (h.kind === 'jam') { kind = 'intake'; id = 'intake'; label = 'intake'; }
+        if (h.kind === 'cluster') {
+          const ex = insights().cluster(h.id)?.examples.find((pid) => f.world.pipelines.has(pid));
+          if (ex) { kind = 'failure'; id = ex; label = h.lead; }
+        } else if (h.kind === 'jam') { kind = 'intake'; id = 'intake'; label = 'intake'; }
         else if (h.kind === 'group') {
           if (h.id.startsWith('org:')) { kind = 'dock'; id = h.id.slice(4); label = h.lead; }
           else { const di = f.fx.districtBox.findIndex((b) => b.team.toLowerCase().replace(/\s+/g, '-') === h.id.slice(5)); kind = 'district'; id = String(di); label = f.fx.districtBox[di]?.team ?? h.lead; }
