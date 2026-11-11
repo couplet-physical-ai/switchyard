@@ -129,7 +129,8 @@ function lanes(S: Stages): Lane[] {
   });
   // past the gate: passed work (green) into the main-line yard, three rows at a time
   const passed = Math.max(0, S.flow.mains);
-  [0, 5, 11].forEach((row, k) => out.push(lane(`yard${k}`, [[GATE.x + GATE.w + 2, Y], [882, Y], [882, yardRowY(row)], [YARD.x0 - 2, yardRowY(row)]], passed / 3, GREEN, 72)));
+  const g0 = Math.min(YARD.rows - 3, S.mains.red.length);
+  [g0, g0 + 1, g0 + 2].forEach((row, k) => out.push(lane(`yard${k}`, [[GATE.x + GATE.w + 2, Y], [882, Y], [882, yardRowY(row)], [YARD.x0 - 2, yardRowY(row)]], passed / 3, GREEN, 72)));
   out.push(lane('press', [[YARD.x1 + 2, yardRowY(5)], [1154, yardRowY(5)], [1154, Y], [PRESS.x - 2, Y]], S.flow.deploy, GREEN, 66));
   out.push(lane('apps', [[PRESS.x + PRESS.w + 2, Y], [1256, Y], [1256, SKY.base + 12], [SKY.x0 + 30, SKY.base + 12]], S.flow.deploy, GREEN, 66));
   // the reject chute: failures fall straight down into the slag pit
@@ -348,21 +349,38 @@ function drawPit(g: Gfx, o: SwarmOpts, hits: Hit[], t: number): void {
   }
 }
 
-function drawYard(g: Gfx, S: Stages, hits: Hit[]): void {
+/** The main-line yard: one named row per main line, its recent runs as square beads (oldest at
+ *  the left, newest at the right, next to the track's end); red lines lit and pulled to the top,
+ *  then the green ones that moved last. */
+function drawYard(g: Gfx, S: Stages, hits: Hit[], t: number): void {
   block(g, YARD.x0 - 8, YARD.y0 - 8, YARD.x1 - YARD.x0 + 16, YARD.rows * YARD.row + 16);
-  const reds = S.mains.red.slice(0, YARD.rows);
-  for (let i = 0; i < YARD.rows; i++) {
+  const rows = S.mains.rows;
+  const nRed = S.mains.red.length;
+  // red rows first; if there are more reds than room, leave the last row for "+N red"
+  const shown = rows.slice(0, YARD.rows);
+  const bead = 7, bp = 9, bx1 = YARD.x1 - 6;
+  for (let i = 0; i < shown.length; i++) {
     const y = yardRowY(i);
-    const r = reds[i];
-    g.fillRect(YARD.x0 + 100, y - 0.5, YARD.x1 - YARD.x0 - 104, 1, '#232325');
-    if (!r) continue;
-    g.text(g.fit(r.name, 10.5, 94), YARD.x0, y + 4, C.redText, 10.5);
-    cube(g, YARD.x1 - 10, y, 9, RED, 0.8);
+    const r = shown[i];
+    // the track: a dim rail from the name to the beads
+    g.fillRect(YARD.x0 + 102, y - 0.5, bx1 - 10 * bp - YARD.x0 - 104, 1, r.red ? '#3A2224' : '#232325');
+    if (r.red) { g.alpha(0.06 + 0.02 * Math.sin(t / 900 + i)); g.fillRect(YARD.x0 - 4, y - YARD.row / 2 + 1, YARD.x1 - YARD.x0 + 8, YARD.row - 2, RED); g.alpha(1); }
+    g.text(g.fit(r.name, 10.5, 98), YARD.x0, y + 4, r.red ? C.redText : C.ink3, 10.5);
+    // its beads: the last 10 runs, newest at the right
+    const bs = r.beads;
+    for (let j = 0; j < bs.length; j++) {
+      const bxx = bx1 - (bs.length - j) * bp;
+      const col = bs[j] === 'fail' ? RED : bs[j] === 'run' ? AMBER : '#4E6B57';
+      const newest = j === bs.length - 1;
+      if (newest && bs[j] !== 'pass') cube(g, bxx + bead / 2, y, bead, col, 0.9);
+      else g.fillRect(bxx, y - bead / 2, bead, bead, col);
+    }
     hits.push({ kind: 'main', id: r.repo, x: YARD.x0, y: y - YARD.row / 2, w: YARD.x1 - YARD.x0, h: YARD.row, url: r.url, label: r.name });
   }
-  const more = S.mains.red.length - reds.length;
+  const redShown = shown.filter((r) => r.red).length;
+  const more = nRed - redShown;
   const yb = YARD.y0 + YARD.rows * YARD.row + 22;
-  g.text(more > 0 ? `+${more} red · ${S.mains.green} green` : `${S.mains.green} green`, YARD.x0, yb, more > 0 ? C.redText : C.greenInk, 10.5);
+  g.text(more > 0 ? `+${more} more red · ${S.mains.green} green` : `${S.mains.green} green`, YARD.x0, yb, more > 0 ? C.redText : C.greenInk, 10.5);
 }
 
 function drawPress(g: Gfx, S: Stages, t: number): void {
@@ -434,7 +452,7 @@ export function drawSwarmFloor(g: Gfx, S: Stages, now: number, o: SwarmOpts): { 
   drawIntake(g, S, o, hits, now);
   drawEngines(g, S, o, hits);
   drawGate(g, S, o.t);
-  drawYard(g, S, hits);
+  drawYard(g, S, hits, o.t);
   drawPress(g, S, o.t);
   drawApps(g, S, hits);
   drawPit(g, o, hits, o.t);

@@ -23,6 +23,8 @@ export type Item = {
 export type Bay = { slot: number; item: Item | null };
 export type Machine = { id: string; label: string; slots: number; busy: number; online: boolean; url: string; bays: Bay[] };
 export type RedMain = { repo: string; name: string; since: number; sha: string; title: string; author: string; url: string };
+/** A main line's row in the yard: its name, red or not, its recent runs oldest → newest (beads). */
+export type MainRow = { repo: string; name: string; red: boolean; since: number; at: number; beads: ('pass' | 'fail' | 'run')[]; url: string };
 export type AppCell = { id: string; health: string; url: string; statusUrl: string; repo: string };
 
 export type Stages = {
@@ -31,7 +33,7 @@ export type Stages = {
   intake: { items: Item[]; waiting: number; oldestAt: number };
   engines: { machines: Machine[]; running: number; slots: number };
   tests: { total: number; failed: number; passRate: number; fails: Item[] };
-  mains: { total: number; red: RedMain[]; green: number };
+  mains: { total: number; red: RedMain[]; green: number; rows: MainRow[] };
   deploy: { running: Item[]; today: number; failed: Item[] };
   apps: { total: number; up: number; down: AppCell[]; cells: AppCell[] };
   /** Runs that moved between stages in the last hour (the belts' density). */
@@ -137,6 +139,22 @@ function build(w: World, now: number): Stages {
     red.push(redMain(r));
   }
   red.sort((a, b) => a.since - b.since);
+  // the yard's rows: every red line first (oldest red first), then the green ones that moved last
+  const rows: MainRow[] = [];
+  const greens: MainRow[] = [];
+  for (const r of w.repos.values()) {
+    const rec = r.main?.recent ?? [];
+    if (!rec.length) continue;
+    const row: MainRow = {
+      repo: r.id, name: r.name, red: isRed(r), since: r.main.since || 0, at: rec[rec.length - 1]?.at ?? 0,
+      beads: rec.slice(-10).map((d) => (d.state === 'failure' || d.state === 'error' ? 'fail' : d.state === 'running' || d.state === 'pending' ? 'run' : 'pass')),
+      url: r.links?.cicd ?? r.links?.github ?? '',
+    };
+    (row.red ? rows : greens).push(row);
+  }
+  rows.sort((a, b) => a.since - b.since);
+  greens.sort((a, b) => b.at - a.at);
+  rows.push(...greens.slice(0, 40));
   // ---- deploy: deploys running now, today's count, the failed ones still failed
   const dRunning: Item[] = [], dFailed: Item[] = [];
   for (const p of pipes) {
@@ -177,7 +195,7 @@ function build(w: World, now: number): Stages {
     intake,
     engines: { machines, running, slots },
     tests: { total, failed, passRate: total ? (total - failed) / total : 1, fails: fails.slice(0, 40) },
-    mains: { total: mainsTotal, red, green: mainsTotal - red.length },
+    mains: { total: mainsTotal, red, green: mainsTotal - red.length, rows },
     deploy: { running: dRunning, today, failed: dFailed },
     apps: { total: cells.length, up, down, cells },
     flow: { intake: fIntake, engines: fEng, tests: total, mains: fMains, deploy: fDeploy },
