@@ -589,8 +589,23 @@ export class Coffee {
     const add = (key: string, u: number, v: number, z: number, r: number, col: string, when: string) => { items.push([key, cam.x(u, v), cam.y(u, v, z), r, col]); at.push(fr.at.get(when) ?? this.dg.since); };
     const { carAt } = this.carSpots();
     for (const id of fr.newRed) { const s = repoSpot(id); if (s) add(`red:${id}`, s[0], s[1], 5, 6, C.red, `red:${id}`); }
-    const parked = new Map(f.lens.parked.map((x) => [x.id, x.u]));
-    for (const id of fr.failed) { const u = parked.get(id); if (u !== undefined) add(`fail:${id}`, u, P.RETURN_V, 8, 6, C.red, `fail:${id}`); }
+    // fresh failures: one ring per CLUSTER on the conveyor (fab-w3's parked groups), sized to its
+    // run, so tight-packed crates do not melt into one red blob; it starts with the newest
+    const parkedK = new Map(f.lens.parked.map((x) => [x.id, x.k]));
+    const groupAt = new Map<number, number>();
+    for (const id of fr.failed) {
+      const k = parkedK.get(id);
+      if (k === undefined) continue;
+      const when = fr.at.get(`fail:${id}`) ?? 0;
+      if (when > (groupAt.get(k) ?? -1)) groupAt.set(k, when);
+    }
+    for (const [k, when] of groupAt) {
+      const pg = f.lens.parkGroups[k];
+      if (!pg) continue;
+      const um = (pg.u0 + pg.u1) / 2, half = Math.abs(cam.x(pg.u1, P.RETURN_V) - cam.x(pg.u0, P.RETURN_V)) / 2;
+      items.push([`failc:${pg.cl}`, cam.x(um, P.RETURN_V), cam.y(um, P.RETURN_V, 8), Math.max(6, half + 4), C.red]);
+      at.push(when || this.dg.since);
+    }
     for (const id of fr.fixed) { const s = repoSpot(id); if (s) add(`fix:${id}`, s[0], s[1], 5, 6, OK, `fix:${id}`); }
     const down = new Set(fr.down), rec = new Set(fr.recovered);
     for (const id of new Set([...fr.down, ...fr.recovered, ...fr.deployApps])) {
