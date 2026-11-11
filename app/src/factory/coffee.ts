@@ -266,10 +266,18 @@ export class Coffee {
         g.fill(withAlpha(i % 3 ? '#8E8E94' : '#A6A6AC', 0.22 * fade * k));
       }
     };
-    // smoke: one signature failing ≥ 3 repos this hour, over the scanner, wisps over each dock
+    // smoke: one signature failing ≥ 3 repos this hour, over the scanner, wisps over each dock;
+    // its hotspot callout (≤ 1 here) when no lens tells another story
     if (d.smoke) {
       const k = clamp(0.45 + d.smoke.repos.size / 10, 0.45, 1);
-      smoke(cam.x(P.SCAN_U, 320), cam.y(P.SCAN_U, 320, 56), k, true);
+      const sx = cam.x(P.SCAN_U, 320), sy = cam.y(P.SCAN_U, 320, 56);
+      smoke(sx, sy, k, true);
+      if (!f.lens.topLens) {
+        const s1 = clusterStep(d.smoke.key), s2 = ` · ${d.smoke.repos.size} repos`;
+        const wv = g.width(s1, SMALL, true) + g.width(s2, SMALL);
+        const at = fx.placeAt(Math.round(sx + 26 * sz), Math.round(sy - 70 * sz), wv, 14, 4, true);
+        if (at) { g.fillRect(at[0] - 4, at[1] - 12, wv + 8, 16, withAlpha('#111112', 0.9)); g.runs([[s1, C.redText, true], [s2, C.ink2]], at[0], at[1], SMALL); }
+      }
       const orgs = new Set([...d.smoke.repos].map((r) => w.orgOf(r)));
       for (const o of orgs) { const v = fx.dockV(o); smoke(cam.x(P.DOCK_U0 + 20, v), cam.y(P.DOCK_U0 + 20, v, 14), k * 0.7, false, 4, 34); }
     }
@@ -290,6 +298,22 @@ export class Coffee {
       g.begin_(); g.circle(x, y1, (8 + live * 7) * Math.min(1.6, sz)); g.fill(withAlpha(C.red, 0.1 + 0.14 * live));
       g.begin_(); g.circle(x, y1, 3.4 + live); g.fill(C.red);
     });
+    // cracks: a bay running over 3× its expected time (§E)
+    const now = f.tl.playhead;
+    g.begin_();
+    let cracked = 0;
+    for (const bay of fx.bays) {
+      const p = bay.pid ? w.pipelines.get(bay.pid) : undefined;
+      const exp = p?.expected_ms ?? 0;
+      if (!p?.started || exp <= 0 || now - p.started < 3 * exp) continue;
+      cracked++;
+      const z = P.ENG_H + 0.5, u0 = bay.u + bay.du * 0.15, v0 = bay.v + bay.dv * 0.2;
+      const pts = [[0, 0], [0.22, 0.18], [0.3, 0.42], [0.52, 0.5], [0.6, 0.78], [0.78, 0.86]];
+      pts.forEach(([a, b2], i) => { const x = cam.x(u0 + a * bay.du * 0.8, v0 + b2 * bay.dv * 0.7), y = cam.y(u0 + a * bay.du * 0.8, v0 + b2 * bay.dv * 0.7, z); if (i) g.line(x, y); else g.move(x, y); });
+      const bx = cam.x(u0 + 0.3 * bay.du * 0.8, v0 + 0.42 * bay.dv * 0.7), by = cam.y(u0 + 0.3 * bay.du * 0.8, v0 + 0.42 * bay.dv * 0.7, z);
+      g.move(bx, by); g.line(bx + 6 * sz, by - 3 * sz);
+    }
+    if (cracked) g.stroke(withAlpha('#E8E8EA', 0.85), 1.1);
     // a jam: crates bunch at the intake's mouth, pressed together; chevrons push behind them
     if (d.jam > 0) {
       const n = 3 + Math.round(d.jam * 4);

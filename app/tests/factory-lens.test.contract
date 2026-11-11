@@ -9,8 +9,8 @@ test "the coffee check reads the floor and keeps the last visit"
   clock +500
   expect state coffee.ok == true
   expect state visitN == 0
-  clock +10000
-  clock +111000
+  clock +20000
+  clock +101000
   clock data
   expect state visitN == 1
   expect state looking == true
@@ -19,7 +19,7 @@ test "leaving the floor marks the visit"
   clock data
   tap "setup-demo"
   clock data
-  clock +11000
+  clock +21000
   expect state looking == true
   tap "tab-fleet"
   clock settle

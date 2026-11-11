@@ -110,7 +110,13 @@ async function lensShots(page, box, shot, anchorsNow) {
     await page.waitForTimeout(opts.wait ?? 1400);
     return true;
   };
-  const out = async () => { await page.keyboard.press('Escape'); await page.keyboard.press('Escape'); await page.keyboard.press('Escape'); await page.mouse.move(box.x + 6, box.y + box.height - 80); await page.waitForTimeout(700); };
+  const out = async () => {
+    for (let i = 0; i < 3; i++) await page.keyboard.press('Escape');
+    const fit = at('fit');
+    if (fit) await page.mouse.click(box.x + fit[0], box.y + fit[1]); // back to the whole floor
+    await page.mouse.move(box.x + 6, box.y + box.height - 80);
+    await page.waitForTimeout(1600);
+  };
   console.log('anchors', JSON.stringify(anchorsNow()));
   await page.mouse.move(box.x + 6, box.y + box.height - 80);
   await shot('coffee');
@@ -135,4 +141,15 @@ async function lensShots(page, box, shot, anchorsNow) {
   await page.waitForTimeout(600);
   await shot('legend');
   await page.keyboard.press('Escape');
+  // a time-strip tick: the replay jumps to that moment (two thirds along the 24 h strip)
+  const tk = at('tick');
+  if (tk) {
+    const sx = box.x + tk[0] + 120;
+    await page.mouse.move(sx, box.y + tk[1]);
+    await page.waitForTimeout(400);
+    await page.mouse.click(sx, box.y + tk[1]);
+    await page.waitForTimeout(5000);
+    await page.mouse.move(box.x + 6, box.y + box.height - 80);
+    await shot('tick-replay');
+  }
 }

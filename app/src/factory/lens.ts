@@ -715,6 +715,8 @@ export class Lenses {
     const f = this.f, fx = this.fx, P = f.plan, cam = f.cam, c = f.census, w = f.world, now = f.tl.playhead;
     void t;
     const hw = Math.max(1, g.hair * 2.5);
+    // a compare's second side writes its counts beside the first's, in its hue
+    const side = tint === HUE_B ? 1 : 0, ncol = side ? HUE_B : tint === HUE_A ? HUE_A : C.ink, ndx = side ? 14 : tint === HUE_A ? -14 : 0;
     // docks
     for (const d of c.docks) {
       if (!rel.orgs.has(d.org)) continue;
@@ -728,14 +730,14 @@ export class Lenses {
       const layers = Math.min(16, Math.ceil(n / 3));
       fx.box(g, u0 + 10, v0 + 10, P.ROW_DU - 20, P.STACK_DV - 20, 2 + layers * 2.6, '#47474B', '#323235', '#2A2A2D', tint, hw);
       const x = cam.x(u0 + P.ROW_DU / 2, v0 + P.STACK_DV / 2), y = cam.y(u0 + P.ROW_DU / 2, v0 + P.STACK_DV / 2, 4 + layers * 2.6) - 5;
-      this.num(g, String(n), x, y, C.ink);
+      this.num(g, String(n), x + ndx, y, ncol);
     }
     c.pallets.forEach((p, i) => {
       const n = rel.palletN.get(p.bot);
       if (!n) return;
       const u0 = P.YARD_U0 + 8 + i * 76, v0 = P.PALLET_V - 16;
       g.begin_(); fx.quad(g, u0, v0, u0 + 64, v0 + 34, 3); g.stroke(tint, hw);
-      this.num(g, String(n), cam.x(u0 + 32, v0 + 17), cam.y(u0 + 32, v0 + 17, 30), C.ink);
+      this.num(g, String(n), cam.x(u0 + 32, v0 + 17) + ndx, cam.y(u0 + 32, v0 + 17, 30), ncol);
     });
     // main lines: the lit org's rails, then the lit repos' cars
     c.rails.forEach((r, i) => {
@@ -1135,6 +1137,14 @@ export class Lenses {
     if (this.legend) this.legendPanel(g, right - 16, ky + 30, t);
     // the strip under the pointer: the moment a click replays from
     const tk = this.tick;
+    // since you last looked: a bright bracket on the strip from then to now (§E)
+    if (tk && !f.coffee.first && f.coffee.since > 0 && f.tl.mode !== 'replay') {
+      const k = clamp(1 - (tk.now - f.coffee.since) / (24 * HOUR), 0, 1);
+      const bx = tk.x + k * tk.w, by = tk.y - 6;
+      g.fillRect(bx, by, Math.max(2, tk.x + tk.w - bx), 2, withAlpha(LIT, 0.85));
+      g.vline(g.crisp(bx), by, by + 7, LIT, 1.5);
+      g.vline(g.crisp(tk.x + tk.w), by, by + 7, LIT, 1.5);
+    }
     if (tk && f.hoverId === 'strip' && f.px >= tk.x && f.px <= tk.x + tk.w) {
       g.vline(g.crisp(f.px), tk.y - 4, tk.y + tk.h + 3, C.ink, 1);
     }
@@ -1152,9 +1162,11 @@ export class Lenses {
     const out: Record<string, number[]> = {};
     const mid = (h: Hit) => [Math.round(h.x + h.w / 2), Math.round(h.y + h.h / 2)];
     const culprits = new Set<string>();
-    for (const r of f.census.rails) for (const car of r.cars) if (car.culprit) culprits.add(`${car.repo}@${car.sha}`);
+    for (const r of f.census.rails) for (const car of r.cars) if (car.culprit || car.state === 'failure' || car.state === 'error') culprits.add(`${car.repo}@${car.sha}`);
     let best = -1;
     for (const h of this.fx.hits) {
+      const [mx, my] = mid(h);
+      if (f.hitAt(mx, my) !== h) continue; // covered by something drawn later
       let k = h.kind;
       if (k === 'pipeline' && this.fx.bays.some((b) => b.pid === h.id)) k = 'bay';
       if (k === 'commit' && culprits.has(h.id)) k = 'culprit';
@@ -1357,7 +1369,7 @@ export class Lenses {
       case 'failure': {
         const items = st.items ?? [];
         const repos = new Set(items.map((i) => i.state)).size;
-        line([[`${items.length}`, C.redText, true], [items.length === 1 ? ' failure · ' : ' failures · ', C.ink3], [`${repos}`, C.ink, true], [repos === 1 ? ' repo' : ' repos', C.ink3], [repos >= 3 ? ' · shared' : repos === 1 ? ' · one repo' : '', repos >= 3 ? C.redText : C.ink3]]);
+        line([[`${items.length}`, C.redText, true], [items.length === 1 ? ' failure · ' : ' failures · ', C.ink3], [`${repos}`, C.ink, true], [repos === 1 ? ' repo' : ' repos', C.ink3], [repos >= 3 ? ' · shared cause?' : '', C.redText]]);
         if (paint) {
           // when they failed: a tick each across the last 24 h
           g.hline(x, x + W, y + h + 18, '#2A2A2C');

@@ -122,9 +122,9 @@ component App
     after(20000, steadyAgain)
   // fab-lens: the coffee check's last visit
   task coffeeLook when conn.ok and here == "factory" and not looking key=server
-    after(10000, startLooking)
+    after(20000, startLooking)
   task coffeeFirst when looking and here == "factory" and visitTry == 0 key=server
-    after(110000, markVisit)
+    after(100000, markVisit)
   task coffeeAgain when looking and here == "factory" and visitTry > 0 key=`${visitTry}`
     after(60000, markVisit)
   task coffeeLeave when looking and here != "factory"
