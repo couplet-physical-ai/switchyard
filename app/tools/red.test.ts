@@ -22,6 +22,12 @@ ok(C.rust === '#6E3B36', 'C.rust is the brief\'s #6E3B36');
 ok(oklch(C.rust)[0] < Lpr && oklch(C.rust)[0] < oklch(STATE.fail)[0] - 0.2, `rust: darker than brick and well below the red (L ${oklch(C.rust)[0].toFixed(3)})`);
 ok(deltaE(C.rust, STATE.fail) >= 20, `rust: ΔE ${deltaE(C.rust, STATE.fail).toFixed(1)} ≥ 20 from the state red`);
 ok(oklch(C.hot)[0] > 0.95, 'hot: a white-hot core (L > 0.95)');
+// v4-heaps (REVIEW-iter3b #2, #3): the failing-flow role: gray-red, never read as the state red
+const [Lff, Cff, hff] = oklch(C.failFlow);
+ok(deltaE(C.failFlow, STATE.fail) >= 20 && Cff < oklch(STATE.fail)[1] * 0.5, `failFlow: ΔE ${deltaE(C.failFlow, STATE.fail).toFixed(1)} ≥ 20 from the state red, chroma ${Cff.toFixed(3)} under half its`);
+ok((hff < 50 || hff > 340) && Lff > 0.4 && Lff < 0.56, `failFlow: a red-family gray (${hff.toFixed(0)}°, L ${Lff.toFixed(3)})`);
+ok(deltaE(C.failFlowText, STATE.fail) >= 15 && oklch(C.failFlowText)[0] >= 0.68, `failFlowText: readable (L ${oklch(C.failFlowText)[0].toFixed(3)}) and ΔE ${deltaE(C.failFlowText, STATE.fail).toFixed(1)} from the red`);
+ok(oklch(C.quietTop)[0] < oklch(C.failFlowTop)[0] && oklch(C.quietTop)[1] <= oklch(C.failFlowTop)[1], 'quiet heap: darker and no more chroma than the failing-flow one');
 
 // ── the tiers ──
 ok(redTier(0) === TIER_HOT && redTier(RED_HOT_MS - 1) === TIER_HOT, 'tier: under an hour is hot');

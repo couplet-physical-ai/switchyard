@@ -220,5 +220,35 @@ const fixture = await Bun.file(new URL('../../contract/fixtures/snapshot.json', 
   eq(concentration({ at: NOW, ver: 1, pipelines: new Map() }, NOW, 60 * M), null, 'concentration: no failures, null');
 }
 
+// v4-heaps (REVIEW-iter3b #3): the belt names the heap group failing NOW; one repo's crons are one
+// group; one state fact; a closed cluster is never named red
+{
+  const { heapFact, heapGroups, mergeKeyOf, namedGroup } = await import('../src/factory/clusters.ts');
+  const pipes = new Map<string, any>([['a', { event: 'cron' }], ['b', { event: 'cron' }], ['c', { event: 'push' }], ['d', { event: 'push' }]]);
+  eq([
+    mergeKeyOf([{ id: 'a', repo: 'o/lt' }, { id: 'b', repo: 'o/lt' }], null, pipes),
+    mergeKeyOf([{ id: 'c', repo: 'o/lt' }], 'error: …/admin/x returned HTTP 000', pipes),
+    mergeKeyOf([{ id: 'c', repo: 'o/lt' }, { id: 'd', repo: 'o/x' }], 'HTTP 000', pipes),
+    mergeKeyOf([{ id: 'c', repo: 'o/lt' }], 'leaks found: N', pipes),
+    mergeKeyOf([], null, pipes),
+  ], ['crons:o/lt', 'err:o/lt|HTTP 000', '', '', ''], 'mergeKeyOf: one repo\'s crons, or one repo\'s one error shape; several repos never merge');
+  const H = (cl: string, o: { n?: number; repos?: number; rate?: number; open?: number; last?: number; count?: number; heat?: 'red' | 'flow' | 'quiet'; grp?: string; repo?: string; error?: string; flakyCl?: boolean; u1?: number }) => ({
+    k: 0, cl, step: cl, u0: 0, u1: o.u1 ?? 1, h: 1, unit: 1, n: o.n ?? 1, repos: o.repos ?? 1, repoList: [], ids: [], flaky: new Set<string>(), newest: '', flakyCl: o.flakyCl ?? false,
+    rate: o.rate, open: o.open, last: o.last, count: o.count, heat: o.heat, grp: o.grp, repo: o.repo, error: o.error,
+  });
+  // 14:38Z: notification-outbox closed (72 in 24 h, none this hour) against the crons failing now
+  const closed = H('notification-outbox', { n: 1, rate: 0, open: 0, last: 1000, count: 72, heat: 'quiet' });
+  const live = H('crons', { n: 8, rate: 8, open: 1, last: 5000, count: 76, heat: 'red', grp: 'crons:Northwind-Labs/legal-tracker', repo: 'Northwind-Labs/legal-tracker', error: 'HTTP 000' });
+  const scan = H('security-scan', { n: 1, repos: 8, rate: 1, open: 7, last: 4000, count: 20, heat: 'red' });
+  const g1 = namedGroup([closed, live, scan]);
+  eq(g1 && [g1.label, g1.error, g1.heat, heapFact(g1, 6000)], ['legal-tracker crons', 'HTTP 000', 'red', '8 / h'], 'namedGroup: the most failures this hour first (not the 24 h count, not the widest): legal-tracker crons · HTTP 000 · 8 / h');
+  eq(namedGroup([closed, H('b', { rate: 1, open: 0, last: 10 }), H('c', { rate: 1, open: 2, last: 5 })])?.head.cl, 'c', 'namedGroup: ties on the hour → the most mains held red');
+  eq(namedGroup([H('b', { rate: 1, open: 1, last: 10 }), H('c', { rate: 1, open: 1, last: 50 })])?.head.cl, 'c', 'namedGroup: then the newest failure');
+  eq(namedGroup([H('a', { rate: 9, flakyCl: true }), H('b', { rate: 1 })])?.head.cl, 'b', 'namedGroup: a solid group before a flaky one');
+  const gs = heapGroups([closed, live, scan]);
+  eq(gs.map((g) => g.heat), ['quiet', 'red', 'red'], 'heapGroups: a closed cluster (open 0, none this hour) is quiet: gray-red, never red');
+  eq([heapFact({ rate: 1, open: 7, last: 0 }, 0), heapFact({ rate: 4, open: 1, last: 0 }, 0), heapFact({ rate: 0, open: 1, last: 0 }, 0), heapFact({ rate: 0, open: 0, last: 1 }, 1.4 * 3_600_000)], ['7 mains red', '4 / h', '1 main red', 'quiet 1 h'], 'heapFact: the one state fact (never "· 1 repo")');
+}
+
 console.log(fails ? `${fails} FAILED` : 'all planthist tests passed');
 process.exit(fails ? 1 : 0);

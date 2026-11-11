@@ -64,8 +64,9 @@ export function clusterOrder(failures: readonly ParkedFailure[]): ClusterRun[] {
 // fx-engine (REVIEW-iter2 #9, wow 3): the conveyor shows ONE HEAP per failure signature, not a
 // dotted line of crates: its height ∝ the failures it holds (this hour), its width ∝ the repos it
 // reached, the biggest open one nearest the scanner. A heap is a stack of layers, one per failure
-// (the newest on top), so its seams count them up close. A cluster that healed (`open` 0) is not
-// failing now: it gets no heap (red is for failing now; the gray crates left the belt).
+// (the newest on top), so its seams count them up close. v4 (REVIEW-iter3b #3): a cluster that
+// holds no main red (`open` 0) keeps its heap in gray-red (failing flow, or healed: quiet), never
+// red; one repo's crons failing the same way stand as one group of heaps under one label.
 
 /** One heap: a cluster's run on the conveyor, from u0 (far end) to u1 (nearest the scanner). */
 export type Heap = {
@@ -85,6 +86,10 @@ export type Heap = {
   /** w2-engine2 (REVIEW-iter3 #6): the cluster is FLAKY (`flakyCluster`): its heap is drawn hatched
    *  in gray-red, never solid red. */
   flakyCl: boolean;
+  /** v4-heaps (REVIEW-iter3b #3), optional for hand-made heaps: its merge key ('' alone), mains it
+   *  holds red (the cluster's `open`), failures in the last hour (0: healed), its newest failure,
+   *  its 24 h failures, its error shape, its one repo ('' several), its heat (`HeapHeat`). */
+  grp?: string; ks?: number[]; open?: number; rate?: number; last?: number; count?: number; error?: string; repo?: string; heat?: HeapHeat;
 };
 
 /** w2-engine2 (REVIEW-iter3 #6): a failure cluster is FLAKY, not broken, when at least a quarter of
@@ -148,50 +153,100 @@ export const HEAP_GAP = 10, HEAP_GAP1 = 4;
 
 const heapCache = new WeakMap<readonly Parked[], Heap[]>();
 
+/** v4-heaps (REVIEW-iter3b #3): the merge key of a park group's failures: `crons:<repo>` when they
+ *  are all one repo's crons, `err:<repo>|<shape>` when they are one repo's with one error shape
+ *  (`HTTP 000`), else ''. Clusters with one key stand as one heap group with one label. */
+export function mergeKeyOf(xs: readonly { id: string; repo: string }[], line: string | null | undefined, pipelines: ReadonlyMap<string, Pipeline>): string {
+  if (!xs.length) return '';
+  const repo = xs[0]!.repo;
+  if (!repo || xs.some((x) => x.repo !== repo)) return '';
+  if (xs.every((x) => pipelines.get(x.id)?.event === 'cron')) return `crons:${repo}`;
+  const shape = errorShape(line);
+  return shape ? `err:${repo}|${shape}` : '';
+}
+
 /** The heaps for the conveyor's parked failures (lenses.ts parkByCluster, in its order: open
  *  first, the most parked first), right edge at `u1 + 4`, stopping at `uMin`. Re-lays the parked
  *  failures IN PLACE so everything that reads them agrees with what the floor draws: each member
  *  at its heap's centre (the lens's threads, the coffee check's replay, the anchors), each group's
- *  u0..u1 the heap's extent inset by a crate's half (the brackets and glows pad by that). A healed
- *  cluster's failures LEAVE the list (nothing parks, rings or replays where no heap is); its group
- *  stays, at the conveyor's far end. Computed once per parked list. */
+ *  u0..u1 the heap's extent inset by a crate's half (the brackets and glows pad by that).
+ *  v4 (REVIEW-iter3b #3): a cluster that holds no main red keeps its heap (its height is the
+ *  story), painted gray-red by the plant (`heat`); the clusters of one merge key (`mergeKeyOf`:
+ *  one repo's crons, or one repo's failures with one error shape) are ONE heap, where the first
+ *  of them stood, a layer per failure (`ks`: their park groups). Computed once per parked list. */
 export function heapUp(parked: Parked[], groups: ParkGroup[], u1: number, uMin: number): Heap[] {
   const hit = heapCache.get(parked);
   if (hit) return hit;
-  for (let i = parked.length - 1; i >= 0; i--) if (!groups[parked[i]!.k]?.open) parked.splice(i, 1);
-  groups.forEach((pg) => { if (!pg.open) pg.u0 = pg.u1 = uMin; });
-  const ins = insights();
+  const ins = insights(), w = ins.world;
   const members = new Map<number, Parked[]>();
   for (const x of parked) { let l = members.get(x.k); if (!l) members.set(x.k, (l = [])); l.push(x); }
+  const cls = groups.map((pg) => (pg.cl.startsWith('~') ? undefined : ins.cluster(pg.cl)));
+  const keys = groups.map((_, k) => mergeKeyOf(members.get(k) ?? [], cls[k]?.line, w.pipelines));
+  // the units on the belt, in its order: a park group, or a merge key's groups (at its first's place)
+  const units: number[][] = [], seen = new Set<number>();
+  groups.forEach((_, k) => {
+    if (seen.has(k) || !members.get(k)?.length) return;
+    seen.add(k);
+    const ks = [k], mk = keys[k];
+    if (mk) for (let j = k + 1; j < groups.length; j++) if (keys[j] === mk && !seen.has(j) && members.get(j)?.length) { seen.add(j); ks.push(j); }
+    units.push(ks);
+  });
+  const xsOf = (ks: number[]): Parked[] => {
+    const xs = ks.flatMap((k) => members.get(k) ?? []);
+    if (ks.length > 1) xs.sort((a, b) => b.at - a.at || (a.id < b.id ? -1 : 1));
+    return xs;
+  };
   let nmax = 1;
-  groups.forEach((pg) => { if (pg.open) nmax = Math.max(nmax, pg.n); });
+  for (const ks of units) nmax = Math.max(nmax, xsOf(ks).length);
   const unit = Math.min(HEAP_UNIT, HEAP_H1 / nmax);
   const heaps: Heap[] = [];
   let uR = u1 + 4, lastN = 0;
-  groups.forEach((pg, k) => {
-    const xs = members.get(k) ?? [];
-    if (!xs.length) return;
+  groups.forEach((pg, k) => { if (!seen.has(k)) pg.u0 = pg.u1 = uMin; });
+  for (const ks of units) {
+    const xs = xsOf(ks);
     if (lastN === 1 && xs.length === 1) uR += HEAP_GAP - HEAP_GAP1;
     lastN = xs.length;
-    const cl = pg.cl.startsWith('~') ? undefined : ins.cluster(pg.cl);
+    const k = ks[0]!, pg = groups[k]!, cl = cls[k];
     const parkedRepos = [...new Set(xs.map((x) => x.repo))];
-    const repoList = cl?.repos?.length ? [...new Set([...parkedRepos, ...cl.repos])] : parkedRepos;
-    const repos = Math.max(1, cl ? Math.max(cl.repo_count || 0, repoList.length) : parkedRepos.length);
-    const w = Math.min(HEAP_W1, HEAP_W0 + HEAP_WR * (repos - 1));
+    const cRepos = ks.flatMap((j) => cls[j]?.repos ?? []);
+    const repoList = cRepos.length ? [...new Set([...parkedRepos, ...cRepos])] : parkedRepos;
+    const repos = Math.max(1, cl ? Math.max(...ks.map((j) => cls[j]?.repo_count || 0), repoList.length) : parkedRepos.length);
+    const wd = Math.min(HEAP_W1, HEAP_W0 + HEAP_WR * (repos - 1));
     // past the conveyor's far end: the rest pile, unseen, at its end (no heap)
-    if (uR - w < uMin) { for (const x of xs) x.u = uMin; pg.u0 = pg.u1 = uMin; return; }
-    const a = uR - w, b = uR;
+    if (uR - wd < uMin) { for (const x of xs) x.u = uMin; for (const j of ks) groups[j]!.u0 = groups[j]!.u1 = uMin; continue; }
+    const a = uR - wd, b = uR;
     const mid = (a + b) / 2;
     for (const x of xs) x.u = mid;
-    pg.u0 = Math.min(mid, a + 4); pg.u1 = Math.max(mid, b - 4);
+    for (const j of ks) { groups[j]!.u0 = Math.min(mid, a + 4); groups[j]!.u1 = Math.max(mid, b - 4); }
     uR = a - HEAP_GAP;
     const flaky = new Set(xs.filter((x) => x.flaky).map((x) => x.id));
+    // the facts: summed over the merged clusters (one repo's: it holds at most its one main red)
+    let open = 0, rate = 0, last = 0, count = 0, flakyCl = true, live = false;
+    const shapes = new Map<string, number>();
+    for (const j of ks) {
+      const c = cls[j], n = members.get(j)!.length;
+      const o = c ? Math.max(0, c.open) : groups[j]!.open ? 1 : 0;
+      open = ks.length > 1 ? Math.max(open, Math.min(1, o)) : o;
+      const healed = !!c && c.open <= 0 && c.count_1h <= 0;
+      if (!healed) { rate += Math.max(c?.count_1h ?? 0, n); live = true; }
+      last = Math.max(last, c?.last_seen ?? Math.max(...members.get(j)!.map((x) => x.at || 0)));
+      count += Math.max(c?.count ?? 0, n);
+      const sh = errorShape(c?.line);
+      if (sh) shapes.set(sh, (shapes.get(sh) ?? 0) + n);
+      const st = c?.step ?? groups[j]!.step;
+      const fl = flakyCluster(c, { n, flaky: members.get(j)!.filter((x) => x.flaky).length }, flakeOf(st, repoList)) || stepCalledFlaky(st, repoList);
+      flakyCl = flakyCl && fl;
+    }
+    let error = '', en = 0;
+    for (const [sh, n] of shapes) if (n > en) { error = sh; en = n; }
+    if (!error && keys[k]?.startsWith('err:')) error = keys[k]!.slice(keys[k]!.indexOf('|') + 1);
     heaps.push({
       k, cl: pg.cl, step: pg.step, u0: a, u1: b, h: xs.length * unit, unit, n: xs.length, repos, repoList,
-      ids: xs.map((x) => x.id), flaky, newest: pg.newest || xs[0]!.id,
-      flakyCl: flakyCluster(cl, { n: xs.length, flaky: flaky.size }, flakeOf(cl?.step ?? pg.step, repoList)) || stepCalledFlaky(cl?.step ?? pg.step, repoList),
+      ids: xs.map((x) => x.id), flaky, newest: ks.length > 1 ? xs[0]!.id : pg.newest || xs[0]!.id, flakyCl,
+      grp: ks.length > 1 ? keys[k]! : '', ks, open, rate, last, count, error, repo: parkedRepos.length === 1 ? parkedRepos[0]! : '',
+      heat: open > 0 ? 'red' : !cl && ks.length === 1 ? 'red' : live ? 'flow' : 'quiet',
     });
-  });
+  }
   heapCache.set(parked, heaps);
   return heaps;
 }
@@ -199,20 +254,99 @@ export function heapUp(parked: Parked[], groups: ParkGroup[], u1: number, uMin: 
 /** The heaps already laid for this parked list (heapUp), or null. */
 export function heapsOf(parked: readonly Parked[]): Heap[] | null { return heapCache.get(parked) ?? null; }
 
-/** The heap the belt names (and fires arcs from): the WIDEST repo spread (a shared cause tells
- *  more than one repo's pile; overseer, after the iter-2 reel), ties: most failures, then nearest
- *  the scanner; null when none. (The name `tallest` stays for its callers.) */
+/** The heap the belt fires arcs from: the WIDEST repo spread (a shared cause tells more than one
+ *  repo's pile; overseer, after the iter-2 reel), ties: most failures, then nearest the scanner;
+ *  null when none. */
 export function tallest(heaps: readonly Heap[]): Heap | null {
   let best: Heap | null = null;
   for (const h of heaps) if (!best || h.repos > best.repos || (h.repos === best.repos && (h.n > best.n || (h.n === best.n && h.u1 > best.u1)))) best = h;
   return best;
 }
 
-/** p3 (#5): the heap the belt NAMES (plant.ts heapMarks; the callouts give way to it): the widest
- *  of the solid (not flaky) heaps, a flaky one only when no solid one is on the belt; null none. */
-export function namedHeap(heaps: readonly Heap[]): Heap | null {
-  const solid = heaps.filter((h) => !h.flakyCl);
-  return tallest(solid.length ? solid : heaps);
+/** v4-heaps (REVIEW-iter3b #3): one heap GROUP on the belt: the heaps of one merge key (one repo's
+ *  crons failing the same way), or one heap alone. What the belt names. */
+export type HeapGroup = {
+  key: string; heaps: Heap[];
+  /** The biggest of its heaps (its arcs, its cluster for the callouts). */
+  head: Heap;
+  /** `legal-tracker crons` / `legal-tracker` (a merged group), '' for one heap (named by its step). */
+  label: string; repo: string;
+  /** The shared error shape (`HTTP 000`), '' none. */
+  error: string;
+  /** Failures on the belt, failures in the last hour, mains it holds red, its newest failure, its
+   *  24 h failures. */
+  n: number; rate: number; open: number; last: number; count: number;
+  /** red: it holds a main red (open); flow: failing, holding none (gray-red); quiet: healed (open 0
+   *  and none this hour: gray-red, never named red). */
+  heat: HeapHeat;
+  flaky: boolean;
+};
+export type HeapHeat = 'red' | 'flow' | 'quiet';
+
+const groupCache = new WeakMap<readonly Heap[], HeapGroup[]>();
+
+/** The heaps by group, in belt order (nearest the scanner first). Cached per heap list. */
+export function heapGroups(heaps: readonly Heap[]): HeapGroup[] {
+  const hit = groupCache.get(heaps);
+  if (hit) return hit;
+  const out: HeapGroup[] = [], by = new Map<string, HeapGroup>();
+  for (const h of heaps) {
+    const key = h.grp || `cl:${h.cl}`;
+    let g = by.get(key);
+    if (!g) {
+      const repo = h.repo ?? '';
+      const name = repo.slice(repo.lastIndexOf('/') + 1);
+      by.set(key, (g = { key, heaps: [], head: h, label: h.grp ? (h.grp.startsWith('crons:') ? `${name} crons` : name) : '', repo, error: '', n: 0, rate: 0, open: 0, last: 0, count: 0, heat: 'quiet', flaky: true }));
+      out.push(g);
+    }
+    g.heaps.push(h);
+    if (h.n > g.head.n) g.head = h;
+    g.n += h.n; g.rate += h.rate ?? h.n; g.count += h.count ?? h.n;
+    // one repo's group holds at most its one main red
+    g.open = h.grp ? Math.max(g.open, Math.min(1, h.open ?? 1)) : (h.open ?? 1);
+    g.last = Math.max(g.last, h.last ?? 0);
+    const heat = h.heat ?? 'red';
+    if (heat === 'red' || (heat === 'flow' && g.heat === 'quiet')) g.heat = heat;
+    g.flaky = g.flaky && h.flakyCl;
+  }
+  for (const g of out) {
+    // the error shape most of its heaps share (by failures), else the members' one
+    const sh = new Map<string, number>();
+    for (const h of g.heaps) if (h.error) sh.set(h.error, (sh.get(h.error) ?? 0) + h.n);
+    let best = '', n = 0;
+    for (const [k, c] of sh) if (c > n) { best = k; n = c; }
+    g.error = best || (g.key.startsWith('err:') ? g.key.slice(g.key.indexOf('|') + 1) : '');
+  }
+  groupCache.set(heaps, out);
+  return out;
+}
+
+/** v4-heaps (REVIEW-iter3b #3): the heap group the belt NAMES. A solid (not flaky) group first;
+ *  then the most failures in the LAST HOUR, then the most mains held red, then the newest failure,
+ *  and only then the 24 h count (a cluster quiet for an hour never outranks a live one by its day);
+ *  ties: nearest the scanner. Null: none. */
+export function namedGroup(heaps: readonly Heap[]): HeapGroup | null {
+  let best: HeapGroup | null = null;
+  for (const g of heapGroups(heaps)) {
+    if (!best) { best = g; continue; }
+    const d = (best.flaky ? 1 : 0) - (g.flaky ? 1 : 0) || g.rate - best.rate || g.open - best.open || g.last - best.last || g.count - best.count;
+    if (d > 0) best = g;
+  }
+  return best;
+}
+
+/** The heap the belt names (its group's biggest): glance.ts's callouts give way to its cluster. */
+export function namedHeap(heaps: readonly Heap[]): Heap | null { return namedGroup(heaps)?.head ?? null; }
+
+/** v4-heaps (REVIEW-iter3b #3): the ONE state fact after a heap group's name: `· 7 mains red` when
+ *  it holds two or more mains red, else `· 8 / h` while it fails this hour, else `· 1 main red`,
+ *  else `· quiet 2 h` (never `· 1 repo`). */
+export function heapFact(g: Pick<HeapGroup, 'rate' | 'open' | 'last'>, now: number): string {
+  if (g.open >= 2) return `${g.open} mains red`;
+  if (g.rate > 0) return `${g.rate} / h`;
+  if (g.open === 1) return '1 main red';
+  const h = Math.max(1, Math.round((now - g.last) / 3_600_000));
+  return g.last > 0 ? `quiet ${h} h` : 'quiet';
 }
 
 /** The first failed step of a pipeline (its name), '' when none. */

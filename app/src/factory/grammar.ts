@@ -188,6 +188,14 @@ export const C = {
   rust: '#6E3B36', rustSide: '#4E2A27', rustFront: '#5C312D', rustHatch: '#2A1514',
   /** the white-hot core and rim of a red main under an hour old */
   hot: '#FFF4EE',
+  /** v4-heaps (REVIEW-iter3b #2, #3): FAILING FLOW, failures that break no main now: the chute's
+   *  rail when one repo or one cluster is the flow, a heap holding no main red (one repo's crons),
+   *  its label. Gray-red (OKLCH L ≈ 0.48, chroma ≈ 0.05; the flaky heap's family), never the
+   *  state red: the colour stays on the heap that holds a main red. */
+  failFlow: '#7A4F4C', failFlowText: '#B4908C',
+  /** a failing-flow heap's faces, and a HEALED one's (open 0, none this hour: quieter still) */
+  failFlowTop: '#6E5250', failFlowSide: '#4A3634', failFlowFront: '#563F3D',
+  quietTop: '#4A3D3C', quietSide: '#33292A', quietFront: '#3C3231',
 } as const;
 
 const HOUR = 3_600_000, DAY = 24 * HOUR;

@@ -50,9 +50,10 @@ import { R_BEAM, R_DOOR, R_RING, beltSpeedPx, breathe } from './motion.ts';
 import { AFTER_MS, DAY_MS, PlantHist, TICKS_MS, afterK, dataRuns, dealSlots, historyIds, laneArrivals, type SlotPast, type SlotRun, type Tide } from './planthist.ts';
 import { F, SMALL, box, dur, hash, pipeWords, poly, quad, ring } from './prims.ts';
 import type { Bay, FloorPass, Layer, LiveFrame, Pt } from './types.ts';
-import { flakyHeap, heapsOf, namedHeap, type Heap } from './clusters.ts';
+import { concentration, flakyHeap, heapFact, heapGroups, heapsOf, namedGroup, type Concentration, type Heap } from './clusters.ts';
+import { C as G4 } from './grammar.ts'; // v4-heaps: the failing-flow palette role
 import { beat } from './motion.ts';
-import { HALO_D, emberPass, metricOf, typical as typicalOf, type EmberAsk, type MetricKey } from './trendmarks.ts';
+import { HALO_D, emberPass, failuresOf, metricOf, threshold, typical as typicalOf, type EmberAsk, type MetricKey } from './trendmarks.ts';
 import { insights } from '../insights.ts';
 import { Packets } from './packets.ts';
 
@@ -106,7 +107,10 @@ export function typical(t: Tide): number {
 }
 const STEP_OK = '#5E7363';
 /** w2-engine2 (#6): a flaky cluster's heap: gray-red faces (never solid red), a red hatch over them. */
-const FLAKY_TOP = '#6E5250', FLAKY_SIDE = '#4A3634', FLAKY_FRONT = '#563F3D', FLAKY_EDGE = '#7A4F4C', FLAKY_TEXT = '#B4908C';
+const FLAKY_TOP = G4.failFlowTop, FLAKY_SIDE = G4.failFlowSide, FLAKY_FRONT = G4.failFlowFront, FLAKY_EDGE = G4.failFlow, FLAKY_TEXT = G4.failFlowText;
+/** v4-heaps (REVIEW-iter3b #2): the chute's loudness: failures in the last LOUD_MS against the
+ *  fleet's failures/h p90 over the same span. */
+const LOUD_MS = 15 * 60_000;
 /** w2-engine2: a holding-yard cell's heat level (0 none, 1..7 ∝ √(runs / the busiest cell)). */
 export function heatLevel(v: number, max: number): number {
   return v > 0 && max > 0 ? 1 + Math.min(6, Math.floor(6 * Math.sqrt(v / max))) : 0;
@@ -451,7 +455,8 @@ export class Plant implements Layer {
       case '04': return !c.rails.length;
       case '05': return c.waiting <= 0;
       case '06': return !c.groups.some((g) => g.running.length > 0);
-      case '07': return c.flow.finished <= 0;
+      // v4-heaps (#2): one repo's (or one cluster's) failures are not the tests stage's story: no ember
+      case '07': return c.flow.finished <= 0 || !!this.focusFlow();
       case '08': return c.flow.deploys <= 0 && !c.deploying.length;
       default: return false;
     }
@@ -947,7 +952,7 @@ export class Plant implements Layer {
     if (selBay) ring(cam, g, selBay.u + selBay.du / 2, selBay.v + selBay.dv / 2, 14, ENG_H);
     // gauges: the engines' cpu and mem towers (a sample every few seconds; a few boxes)
     this.drawGauges(g);
-    this.drawBeam(g);
+    this.drawBeam(g, fr.now);
     this.drawReturns(g, q, t);
     this.heapMarks(g, fr);
   }
@@ -965,23 +970,46 @@ export class Plant implements Layer {
     const f = this.f, cam = f.cam;
     const heaps = heapsOf(f.lens.parked);
     if (!heaps?.length || f.census.skeleton) return;
+    this.flowHeaps(g, heaps);
     this.flakyHeaps(g, heaps);
     if (f.lens.topLens) return;
-    // w2-engine2 (#6): a flaky heap is named only when no broken one is on the belt, as flaky
-    const top = namedHeap(heaps);
-    if (!top) return;
-    const fl = top.flakyCl;
-    const mid = (top.u0 + top.u1) / 2;
-    const hx = cam.x(mid, RETURN_V - 4), hy = cam.y(mid, RETURN_V - 4, 1.2 + top.h);
+    // v4-heaps (REVIEW-iter3b #3): the group the belt names, ranked by the last hour, then the mains
+    // it holds red, then its newest failure (clusters.ts namedGroup); one state fact after its name
+    const grp = namedGroup(heaps);
+    if (!grp) return;
+    const top = grp.head, fl = grp.flaky, red = !fl && grp.heat === 'red';
+    const ga = Math.min(...grp.heaps.map((h) => h.u0)), gb = Math.max(...grp.heaps.map((h) => h.u1));
+    const gh = Math.max(...grp.heaps.map((h) => h.h));
+    const mid = (ga + gb) / 2;
+    const hx = cam.x(mid, RETURN_V - 4), hy = cam.y(mid, RETURN_V - 4, 1.2 + gh);
     if (fr.q < 4) this.arcs(g, top, hx, hy, fr.t);
-    const name = fl ? `${shortStep(top.step)} · flaky` : `${shortStep(top.step)} · ${top.repos} repo${top.repos === 1 ? '' : 's'}`;
+    const what = grp.label ? `${grp.label}${grp.error ? ` · ${grp.error}` : ''}` : shortStep(top.step);
+    const name = fl ? `${what} · flaky` : `${what} · ${heapFact(grp, fr.now)}`;
     const wv = g.width(name, SMALL);
-    const at = f.placeAt(Math.round(hx - wv / 2), Math.round(hy - 7), wv, 13, 4, true);
+    // v4-heaps: the name ends short of the scanner's foot (a longer name never runs through its post)
+    const xMax = cam.x(SCAN_U - 4, RETURN_V + 8) - 8;
+    const at = f.placeAt(Math.round(Math.min(hx - wv / 2, Math.max(hx - wv + 10, xMax - wv))), Math.round(hy - 7), wv, 13, 4, true);
     if (!at) return;
     const [x, y] = at;
-    if (y < hy - 22 || Math.abs(x + wv / 2 - hx) > wv / 2 + 6) { g.begin_(); g.move(hx, hy - 2); g.line(Math.min(Math.max(hx, x + 2), x + wv - 2), y + 3); g.stroke(withAlpha(fl ? FLAKY_EDGE : C.red, 0.6), 1); }
+    if (y < hy - 22 || Math.abs(x + wv / 2 - hx) > wv / 2 + 6) { g.begin_(); g.move(hx, hy - 2); g.line(Math.min(Math.max(hx, x + 2), x + wv - 2), y + 3); g.stroke(withAlpha(red ? C.red : FLAKY_EDGE, 0.6), 1); }
     g.fillRect(x - 3, y - 11, wv + 6, 15, withAlpha(C.canvas, 0.82));
-    g.text(name, x, y, fl ? FLAKY_TEXT : C.redText, SMALL);
+    g.text(name, x, y, red ? C.redText : FLAKY_TEXT, SMALL);
+  }
+
+  /** v4-heaps (REVIEW-iter3b #3): a heap that holds no main red is not broken: painted over the
+   *  conveyor's solid red heap (lens.ts drawParked, earlier in the frame) in the failing-flow
+   *  gray-red (still failing this hour: one repo's crons), or quieter still when it healed (open 0,
+   *  none this hour). Its height stays (the story). Flaky heaps are flakyHeaps'. */
+  private flowHeaps(g: Gfx, heaps: readonly Heap[]): void {
+    const cam = this.f.cam, V = RETURN_V, v0 = V - 4, v1 = V + 4, z0 = 1.2;
+    for (const heat of ['flow', 'quiet'] as const) {
+      const b = this.f.bD;
+      let any = 0;
+      for (const h of heaps) if (!h.flakyCl && h.heat === heat) { b.add(h.u0, v0, h.u1 - h.u0, v1 - v0, h.h, z0); any++; }
+      if (!any) continue;
+      if (heat === 'flow') b.flush(g, cam, FLAKY_TOP, FLAKY_SIDE, FLAKY_FRONT, FLAKY_EDGE, Math.max(1, g.hair * 1.2), 3);
+      else b.flush(g, cam, G4.quietTop, G4.quietSide, G4.quietFront, withAlpha(FLAKY_EDGE, 0.6), Math.max(1, g.hair), 3);
+    }
   }
 
   /** w2-engine2 (REVIEW-iter3 #6): a FLAKY cluster's heap (clusters.ts flakyCluster) is not a broken
@@ -1192,22 +1220,71 @@ export class Plant implements Layer {
     cap.flushQuads(g, cam, C.red);
   }
 
-  /** The scanner's split beam: its crossbar lit pass (green-gray, from the back) and fail (red,
-   *  the front, over the return conveyor), each ∝ its share of the last hour's finishes, a faint
-   *  light curtain under each part. Nothing finished this hour: the bar stays dark. */
-  private drawBeam(g: Gfx): void {
+  /** The scanner's split beam: its crossbar lit pass (green-gray, from the back) and fail (the
+   *  front, over the return conveyor), each ∝ its share of the last hour's finishes, a faint light
+   *  curtain under each part. Nothing finished this hour: the bar stays dark.
+   *  v4-heaps (REVIEW-iter3b #2): the fail part's LOUDNESS is the recent failures, not their share:
+   *  its width ∝ the last 15 min's failures against the fleet's p90 for 15 min, its colour the share
+   *  of them on heaps that hold a main red (failing flow gray-red → the state red). When one repo or
+   *  one cluster IS the flow (`focusFlow`), it is a 2-px gray-red rail and no curtain: that heap,
+   *  at the bottom, carries the colour. */
+  private drawBeam(g: Gfx, now: number): void {
     const cam = this.f.cam, fl = this.f.census.flow;
     const fin = fl.finished, failed = Math.min(fl.failed, fl.finished);
     if (fin <= 0) return;
     const L0 = 32, L1 = 596, vs = L0 + (L1 - L0) * ((fin - failed) / fin);
     g.begin_(); poly(cam, g, [SCAN_U, L0, 3, SCAN_U, vs, 3, SCAN_U, vs, 55, SCAN_U, L0, 55]); g.fill(withAlpha(OK_BEAM, 0.07));
-    if (failed) { g.begin_(); poly(cam, g, [SCAN_U, vs, 3, SCAN_U, L1, 3, SCAN_U, L1, 55, SCAN_U, vs, 55]); g.fill(withAlpha(C.red, 0.13)); }
     g.begin_(); quad(cam, g, SCAN_U - 1.8, L0, SCAN_U + 1.8, vs, 56.4); g.fill(withAlpha(OK_BEAM, 0.5));
-    if (failed) {
-      g.begin_(); quad(cam, g, SCAN_U - 2.6, vs, SCAN_U + 2.6, L1, 56.4); g.fill(C.red);
-      // the split: a bright line down the curtain where the beam divides
-      g.begin_(); g.move(cam.x(SCAN_U, vs), cam.y(SCAN_U, vs, 56)); g.line(cam.x(SCAN_U, vs), cam.y(SCAN_U, vs, 3)); g.stroke(withAlpha(C.ink, 0.5), 1);
+    if (!failed) return;
+    const focus = this.focusFlow();
+    if (focus) {
+      g.begin_(); g.move(cam.x(SCAN_U, vs), cam.y(SCAN_U, vs, 56.4)); g.line(cam.x(SCAN_U, L1), cam.y(SCAN_U, L1, 56.4));
+      g.stroke(G4.failFlow, 2);
+    } else {
+      const { loud, red } = this.beamLoud(now);
+      const col = mix(C.red, G4.failFlow, red);
+      g.begin_(); poly(cam, g, [SCAN_U, vs, 3, SCAN_U, L1, 3, SCAN_U, L1, 55, SCAN_U, vs, 55]); g.fill(withAlpha(col, 0.04 + 0.09 * loud));
+      const hw = 0.6 + 2 * loud;
+      g.begin_(); quad(cam, g, SCAN_U - hw, vs, SCAN_U + hw, L1, 56.4); g.fill(col);
     }
+    // the split: a bright line down the curtain where the beam divides
+    g.begin_(); g.move(cam.x(SCAN_U, vs), cam.y(SCAN_U, vs, 56)); g.line(cam.x(SCAN_U, vs), cam.y(SCAN_U, vs, 3)); g.stroke(withAlpha(C.ink, 0.5), 1);
+  }
+
+  private focusAt = -1;
+  private focusV: Concentration | { key: string; label: string } | null = null;
+  /** v4-heaps (REVIEW-iter3b #2): the flow has ONE subject: the last hour's failures concentrate on
+   *  one repo or one repo's crons (clusters.ts `concentration`, the verdict's own test), or one
+   *  heap group on the belt holds ≥ 60 % of them (and ≥ 2). Null: spread. Once per census. */
+  focusFlow(): Concentration | { key: string; label: string } | null {
+    const c = this.f.census;
+    if (c.at === this.focusAt) return this.focusV;
+    this.focusAt = c.at;
+    let v: Concentration | { key: string; label: string } | null = concentration(this.f.world, c.at, 3_600_000);
+    if (!v) {
+      const heaps = heapsOf(this.f.lens.parked);
+      let tot = 0;
+      for (const h of heaps ?? []) tot += h.n;
+      for (const gr of heaps ? heapGroups(heaps) : []) if (gr.n >= 2 && gr.n >= 0.6 * tot) v = { key: gr.key, label: gr.label || gr.head.step };
+    }
+    this.focusV = v;
+    return v;
+  }
+
+  /** The beam's loudness 0..1 (the last 15 min's failures against the fleet's p90 failures/h over
+   *  15 min, at least one) and its red share 0..1 (of the hour's failures, those on heaps that hold
+   *  a main red). */
+  private beamLoud(now: number): { loud: number; red: number } {
+    const c = this.f.census;
+    let n15 = 0;
+    for (const x of c.failing) if (x.at > now - LOUD_MS) n15++;
+    const ft = insights().trend('fleet');
+    const p90 = ft ? threshold(failuresOf(ft), 'fleet', 'failures', now) : null;
+    const per = Math.max(1, ((p90 ?? 4) * LOUD_MS) / 3_600_000);
+    const heaps = heapsOf(this.f.lens.parked) ?? [];
+    let tot = 0, red = 0;
+    for (const h of heaps) { tot += h.n; if ((h.heat ?? 'red') === 'red' && !h.flakyCl) red += h.n; }
+    return { loud: clamp(n15 / per, 0, 1), red: tot ? red / tot : 1 };
   }
 
   /** The riser's slats drift up toward the docks while failures came home this hour (as the
