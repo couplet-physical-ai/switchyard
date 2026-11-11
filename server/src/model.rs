@@ -336,6 +336,27 @@ pub struct Commit {
     pub pipelines: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deploy: Option<DeployRef>,
+    #[serde(default, skip_serializing_if = "CommitLinks::is_empty")]
+    pub links: CommitLinks,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct CommitLinks {
+    /// The commit on GitHub.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub commit: String,
+    /// Its branch on GitHub (absent for `pull/N` pseudo-branches).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// Its PR on GitHub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<String>,
+}
+
+impl CommitLinks {
+    pub fn is_empty(&self) -> bool {
+        *self == CommitLinks::default()
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -394,6 +415,41 @@ pub struct Pipeline {
     pub flaky: bool,
     pub workflows: Vec<Workflow>,
     pub url: String,
+    /// Deep links (server-built from configured bases).
+    #[serde(default, skip_serializing_if = "PipelineLinks::is_empty")]
+    pub links: PipelineLinks,
+}
+
+/// Where a pipeline can be opened.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct PipelineLinks {
+    /// Roadrunner console: the run (Woodpecker pipelines).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cicd: Option<String>,
+    /// Woodpecker UI: the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub woodpecker: Option<String>,
+    /// GitHub Actions: the run (gha pipelines).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<String>,
+    /// The commit on GitHub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// The branch on GitHub (push / cron / manual runs; a PR run: its head branch).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// The release / tag on GitHub (tag runs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<String>,
+    /// The PR on GitHub (pull_request runs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<String>,
+}
+
+impl PipelineLinks {
+    pub fn is_empty(&self) -> bool {
+        *self == PipelineLinks::default()
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -424,6 +480,10 @@ pub struct Step {
     /// Failed steps: the failure cluster id.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub cluster: Option<String>,
+    /// Where the step (its log) opens: the Roadrunner run on this step, or the GitHub
+    /// Actions job.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub url: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -498,6 +558,24 @@ pub struct Pr {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stale_ms: Option<i64>,
     pub url: String,
+    #[serde(default, skip_serializing_if = "PrLinks::is_empty")]
+    pub links: PrLinks,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct PrLinks {
+    /// The PR's checks tab.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub checks: String,
+    /// Its head branch on GitHub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+}
+
+impl PrLinks {
+    pub fn is_empty(&self) -> bool {
+        *self == PrLinks::default()
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -543,6 +621,27 @@ pub struct Deploy {
     pub pipeline: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "DeployLinks::is_empty")]
+    pub links: DeployLinks,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct DeployLinks {
+    /// The deploy run in the Roadrunner console (Roadrunner deploys).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cicd: Option<String>,
+    /// The commit deployed, on GitHub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// The app (its URL).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+}
+
+impl DeployLinks {
+    pub fn is_empty(&self) -> bool {
+        *self == DeployLinks::default()
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -584,6 +683,27 @@ pub struct App {
     pub team: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "AppLinks::is_empty")]
+    pub links: AppLinks,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct AppLinks {
+    /// The app's status dashboard (health, latency, resources), from the apps catalog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Its runtime logs, from the apps catalog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logs: Option<String>,
+    /// Its repo on GitHub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+}
+
+impl AppLinks {
+    pub fn is_empty(&self) -> bool {
+        *self == AppLinks::default()
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -622,6 +742,10 @@ pub struct Engine {
     /// For an engine host: the agent engine ids it serves.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agents: Vec<String>,
+    /// Its page: the Roadrunner engine page (Dagger hosts), Woodpecker's agents
+    /// (agents), the runner scale sets (GitHub runners).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -642,6 +766,9 @@ pub struct Queue {
     pub oldest_wait_ms: i64,
     /// Pending pipeline ids in queue order (≤ 50).
     pub items: Vec<String>,
+    /// Its page (Woodpecker's queue).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]

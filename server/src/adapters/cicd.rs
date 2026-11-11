@@ -326,6 +326,7 @@ pub fn engines_from_cicd(v: &Value, now: Ms) -> Vec<Fact> {
                 last_seen: Some(now),
                 running: Vec::new(),
                 agents,
+                url: Some(crate::links::rr_engine()),
             })
         })
         .collect();

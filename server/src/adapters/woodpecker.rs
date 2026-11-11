@@ -250,7 +250,11 @@ impl Mapper {
         } else {
             None
         };
-        let branch = if event == PipelineEvent::PullRequest {
+        let branch = if event == PipelineEvent::Tag {
+            crate::links::tag_of(&p.git_ref)
+                .map(str::to_string)
+                .unwrap_or_else(|| p.branch.clone())
+        } else if event == PipelineEvent::PullRequest {
             p.refspec
                 .split(':')
                 .next()
@@ -288,6 +292,7 @@ impl Mapper {
                             .then_some(s.exit_code),
                         cached: None,
                         cluster: None,
+                        url: (s.id != 0).then(|| crate::links::rr_step(repo_id, p.number, s.id)),
                     })
                     .collect(),
             })
@@ -334,6 +339,7 @@ impl Mapper {
                 self.public_url.trim_end_matches('/'),
                 p.number
             ),
+            links: Default::default(),
         };
         if event == PipelineEvent::Push {
             for w in deploy_wfs {
@@ -407,6 +413,7 @@ pub fn engines_fact(
                     && !a.no_schedule,
                 running: r,
                 agents: Vec::new(),
+                url: Some(crate::links::wp_agents()),
             }
         })
         .collect();
@@ -459,6 +466,7 @@ pub fn queue_fact(q: &WpQueueInfo, repos: &BTreeMap<u64, String>, now: Ms) -> Qu
             pipelines_running: running.len() as u32,
             paused: q.paused,
             items,
+            url: Some(crate::links::wp_queue()),
         },
     }
 }

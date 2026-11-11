@@ -62,11 +62,13 @@ fn run(
                     exit_code: *code,
                     cached: None,
                     cluster: None,
+                    url: None,
                 });
             }
             wfs
         },
         url: "https://ci.example/x".into(),
+        links: Default::default(),
     })
 }
 
@@ -91,6 +93,8 @@ fn apps() -> Fact {
         team: Some(team.into()),
         live_sha: None,
         deployed_at: None,
+        status_url: None,
+        logs_url: None,
     };
     Fact::Apps(AppList {
         observed: NOW - H,

@@ -230,6 +230,31 @@ async fn step_log_tails() {
     assert_eq!(m["decisive"], 301);
     assert_eq!(m["truncated"], false);
 
+    // Around the decisive line: ±40 lines, the decisive one at its index.
+    let (_, ar) = get_json(&format!(
+        "{base}/api/v1/pipeline/wp:acme%2Fapi:42/log?step=test&around=decisive"
+    ))
+    .await;
+    assert_eq!(ar["around"], "decisive");
+    let ls = ar["lines"].as_array().unwrap();
+    let d = ar["decisive"].as_u64().unwrap() as usize;
+    assert_eq!(
+        ls[d],
+        "FAILED tests/test_api.py::test_login - AssertionError"
+    );
+    assert_eq!(d, 40, "40 lines before it");
+    assert_eq!(ls.len(), 40 + 1 + 1, "and the one line after it");
+    assert_eq!(ls[0], "ok 261");
+    assert_eq!(ar["after"], 0);
+    assert_eq!(ar["truncated"], true, "the log goes on before the window");
+    // A GitHub Actions job: the same (its window is the whole short log).
+    let (_, ok) = get_json(&format!(
+        "{base}/api/v1/pipeline/gha:555/log?step=build&around=decisive"
+    ))
+    .await;
+    assert_eq!(ok["around"], "decisive");
+    assert_eq!(ok["decisive"], 2);
+
     // Not started: an empty tail, no upstream read.
     let before = HITS.load(Ordering::SeqCst);
     let (st, p) = get_json(&format!(

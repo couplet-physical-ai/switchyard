@@ -20,6 +20,8 @@ pub struct UpstreamCfg {
     pub woodpecker_token: Option<String>,
     pub github_token: Option<String>,
     pub github_api: String,
+    /// GitHub web (deep links).
+    pub github_web: String,
     pub cicd_url: String,
     pub cicd_token: Option<String>,
     pub catalog_url: String,
@@ -43,6 +45,7 @@ impl UpstreamCfg {
             woodpecker_token: env("WOODPECKER_TOKEN"),
             github_token: env("GITHUB_TOKEN").or_else(|| env("GITHUB_BOT_TOKEN")),
             github_api: env("GITHUB_API_URL").unwrap_or_else(|| "https://api.github.com".into()),
+            github_web: env("GITHUB_WEB_URL").unwrap_or_else(|| "https://github.com".into()),
             cicd_url: env("CICD_URL").unwrap_or_else(|| "https://cicd.apps.example.com".into()),
             cicd_token: env("CICD_READ_TOKEN").or_else(|| env("SWITCHYARD_READ_TOKEN")),
             catalog_url: env("APPS_CATALOG_URL")

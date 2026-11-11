@@ -36,6 +36,10 @@ pub struct CatalogRow {
     pub team: Option<String>,
     #[serde(default)]
     pub last_deployed_at: Option<String>,
+    #[serde(default)]
+    pub grafana_url: Option<String>,
+    #[serde(default)]
+    pub diagnostics_url: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone, Default)]
@@ -107,6 +111,11 @@ pub fn facts_from_catalog(c: &Catalog, now: Ms) -> Vec<Fact> {
             team: r.team.clone().filter(|x| !x.is_empty()),
             live_sha: None,
             deployed_at: r.last_deployed_at.as_deref().and_then(parse_time),
+            status_url: r.grafana_url.clone().filter(|u| u.starts_with("https://")),
+            logs_url: r
+                .diagnostics_url
+                .clone()
+                .filter(|u| u.starts_with("https://")),
         });
         let stopped = r.ct_status.as_deref().is_some_and(|s| s != "running") && r.kind == "lxc";
         let h = match (r.health.as_str(), stopped) {

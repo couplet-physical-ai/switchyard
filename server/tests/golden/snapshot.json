@@ -9,6 +9,11 @@
         "id": "Northwind-Labs/aurora-api@cba1fed1817599ede1b917712f1ac8d2e629e690",
         "state": "pending"
       },
+      "links": {
+        "logs": "https://github.com/Northwind-Labs/aurora-api/actions/workflows/app-logs.yml",
+        "repo": "https://github.com/Northwind-Labs/aurora-api",
+        "status": "https://grafana.example/d/fleet-overview/?var-app=aurora-api"
+      },
       "live_sha": "eed5b2a3b817f288f79cd4a0c9b015e008e6b452",
       "main_sha": "cba1fed1817599ede1b917712f1ac8d2e629e690",
       "repo": "Northwind-Labs/aurora-api",
@@ -24,6 +29,11 @@
       "last_deploy": {
         "id": "Northwind-Labs/borealis-web@be13021ca83449d513f82b9ab0708be58e876780",
         "state": "success"
+      },
+      "links": {
+        "logs": "https://github.com/Northwind-Labs/borealis-web/actions/workflows/app-logs.yml",
+        "repo": "https://github.com/Northwind-Labs/borealis-web",
+        "status": "https://grafana.example/d/fleet-overview/?var-app=borealis-web"
       },
       "live_sha": "be13021ca83449d513f82b9ab0708be58e876780",
       "main_sha": "be13021ca83449d513f82b9ab0708be58e876780",
@@ -41,6 +51,11 @@
         "id": "Northwind-Labs/cirrus-hub@f917c191816f60e33bd397e5c528f3ed7b1f8c9f",
         "state": "success"
       },
+      "links": {
+        "logs": "https://github.com/Northwind-Labs/cirrus-hub/actions/workflows/app-logs.yml",
+        "repo": "https://github.com/Northwind-Labs/cirrus-hub",
+        "status": "https://grafana.example/d/fleet-overview/?var-app=cirrus-hub"
+      },
       "live_sha": "f917c191816f60e33bd397e5c528f3ed7b1f8c9f",
       "main_sha": "f917c191816f60e33bd397e5c528f3ed7b1f8c9f",
       "repo": "Northwind-Labs/cirrus-hub",
@@ -54,6 +69,11 @@
       "health": "degraded",
       "id": "delta-stock",
       "latency_ms": 840,
+      "links": {
+        "logs": "https://github.com/Northwind-Labs/delta-stock/actions/workflows/app-logs.yml",
+        "repo": "https://github.com/Northwind-Labs/delta-stock",
+        "status": "https://grafana.example/d/fleet-overview/?var-app=delta-stock"
+      },
       "live_sha": "be9ecc4",
       "main_sha": "be9ecc432e0e797ef223aa4c2d49757cb46f9de6",
       "note": "slow /healthz",
@@ -70,6 +90,10 @@
         "id": "Northwind-Labs/harbor-board@0d5c96bb2b8a1dce9783ebf4323614e694cb3209",
         "state": "success"
       },
+      "links": {
+        "repo": "https://github.com/Northwind-Labs/harbor-board",
+        "status": "https://grafana.example/d/fleet-overview/?var-app=harbor"
+      },
       "live_sha": "0d5c96bb2b8a1dce9783ebf4323614e694cb3209",
       "repo": "Northwind-Labs/harbor-board",
       "runtime": "external",
@@ -84,6 +108,11 @@
         "id": "Northwind-Labs/meridian-shop@a988b12d5807cc1250dae2eae8b63ed942a3c59c",
         "state": "failure"
       },
+      "links": {
+        "logs": "https://github.com/Northwind-Labs/meridian-shop/actions/workflows/app-logs.yml",
+        "repo": "https://github.com/Northwind-Labs/meridian-shop",
+        "status": "https://grafana.example/d/fleet-overview/?var-app=meridian-shop"
+      },
       "main_sha": "a988b12d5807cc1250dae2eae8b63ed942a3c59c",
       "repo": "Northwind-Labs/meridian-shop",
       "runtime": "lxc",
@@ -94,6 +123,9 @@
       "checked": 1794339000000,
       "health": "up",
       "id": "static-site-01",
+      "links": {
+        "status": "https://grafana.example/d/fleet-overview/?var-app=static-site-01"
+      },
       "runtime": "static",
       "team": "software",
       "url": "https://static-site-01.apps.example.com/"
@@ -173,6 +205,11 @@
       "branch": "feature/change-1",
       "ci": "success",
       "id": "Northwind-EMS/ember-api@aad98fd9b169395a00cd2260d34490c1d1c0e6cb",
+      "links": {
+        "branch": "https://github.com/Northwind-EMS/ember-api/tree/feature/change-1",
+        "commit": "https://github.com/Northwind-EMS/ember-api/commit/aad98fd9b169395a00cd2260d34490c1d1c0e6cb",
+        "pr": "https://github.com/Northwind-EMS/ember-api/pull/102"
+      },
       "pipelines": [
         "wp:Northwind-EMS/ember-api:53"
       ],
@@ -188,6 +225,10 @@
       "branch": "main",
       "ci": "running",
       "id": "Northwind-EMS/ember-api@acff1d505dc63d47e78d4dec9946f8a6848053cb",
+      "links": {
+        "branch": "https://github.com/Northwind-EMS/ember-api/tree/main",
+        "commit": "https://github.com/Northwind-EMS/ember-api/commit/acff1d505dc63d47e78d4dec9946f8a6848053cb"
+      },
       "pipelines": [
         "wp:Northwind-EMS/ember-api:54"
       ],
@@ -202,6 +243,10 @@
       "branch": "main",
       "ci": "success",
       "id": "Northwind-EMS/kestrel-deploy@ab1f04b23be2672d913b9c75dc991f5331e364d2",
+      "links": {
+        "branch": "https://github.com/Northwind-EMS/kestrel-deploy/tree/main",
+        "commit": "https://github.com/Northwind-EMS/kestrel-deploy/commit/ab1f04b23be2672d913b9c75dc991f5331e364d2"
+      },
       "pipelines": [
         "wp:Northwind-EMS/kestrel-deploy:68"
       ],
@@ -216,6 +261,10 @@
       "branch": "main",
       "ci": "error",
       "id": "Northwind-EMS/kestrel-deploy@be83166efbf554f6fc5af32ebcb4f359bff0a4f1",
+      "links": {
+        "branch": "https://github.com/Northwind-EMS/kestrel-deploy/tree/main",
+        "commit": "https://github.com/Northwind-EMS/kestrel-deploy/commit/be83166efbf554f6fc5af32ebcb4f359bff0a4f1"
+      },
       "pipelines": [
         "wp:Northwind-EMS/kestrel-deploy:71",
         "wp:Northwind-EMS/kestrel-deploy:73"
@@ -231,6 +280,11 @@
       "branch": "feature/change-9",
       "ci": "failure",
       "id": "Northwind-EMS/quartz-infra@18dea342fe0f37f52861407b574a17d480c1f361",
+      "links": {
+        "branch": "https://github.com/Northwind-EMS/quartz-infra/tree/feature/change-9",
+        "commit": "https://github.com/Northwind-EMS/quartz-infra/commit/18dea342fe0f37f52861407b574a17d480c1f361",
+        "pr": "https://github.com/Northwind-EMS/quartz-infra/pull/642"
+      },
       "pipelines": [
         "gha:42847337271"
       ],
@@ -250,6 +304,10 @@
         "state": "pending"
       },
       "id": "Northwind-Labs/aurora-api@cba1fed1817599ede1b917712f1ac8d2e629e690",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/aurora-api/tree/main",
+        "commit": "https://github.com/Northwind-Labs/aurora-api/commit/cba1fed1817599ede1b917712f1ac8d2e629e690"
+      },
       "pipelines": [
         "gha:42871000001",
         "wp:Northwind-Labs/aurora-api:28"
@@ -269,6 +327,10 @@
         "state": "success"
       },
       "id": "Northwind-Labs/aurora-api@eed5b2a3b817f288f79cd4a0c9b015e008e6b452",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/aurora-api/tree/main",
+        "commit": "https://github.com/Northwind-Labs/aurora-api/commit/eed5b2a3b817f288f79cd4a0c9b015e008e6b452"
+      },
       "pipelines": [
         "wp:Northwind-Labs/aurora-api:27"
       ],
@@ -287,6 +349,10 @@
         "state": "success"
       },
       "id": "Northwind-Labs/borealis-web@be13021ca83449d513f82b9ab0708be58e876780",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/borealis-web/tree/main",
+        "commit": "https://github.com/Northwind-Labs/borealis-web/commit/be13021ca83449d513f82b9ab0708be58e876780"
+      },
       "pipelines": [
         "wp:Northwind-Labs/borealis-web:23"
       ],
@@ -301,6 +367,10 @@
       "branch": "main",
       "ci": "none",
       "id": "Northwind-Labs/cirrus-hub@8d9a14d926b62e0db30c66a224258debed1d7de5",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/cirrus-hub/tree/main",
+        "commit": "https://github.com/Northwind-Labs/cirrus-hub/commit/8d9a14d926b62e0db30c66a224258debed1d7de5"
+      },
       "pipelines": [],
       "repo": "Northwind-Labs/cirrus-hub",
       "sha": "8d9a14d926b62e0db30c66a224258debed1d7de5",
@@ -313,6 +383,10 @@
       "branch": "main",
       "ci": "none",
       "id": "Northwind-Labs/cirrus-hub@f26d808471def73facfbe91b983f7185dca62555",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/cirrus-hub/tree/main",
+        "commit": "https://github.com/Northwind-Labs/cirrus-hub/commit/f26d808471def73facfbe91b983f7185dca62555"
+      },
       "pipelines": [],
       "repo": "Northwind-Labs/cirrus-hub",
       "sha": "f26d808471def73facfbe91b983f7185dca62555",
@@ -329,6 +403,10 @@
         "state": "success"
       },
       "id": "Northwind-Labs/cirrus-hub@f917c191816f60e33bd397e5c528f3ed7b1f8c9f",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/cirrus-hub/tree/main",
+        "commit": "https://github.com/Northwind-Labs/cirrus-hub/commit/f917c191816f60e33bd397e5c528f3ed7b1f8c9f"
+      },
       "pipelines": [
         "gha:42846645351",
         "wp:Northwind-Labs/cirrus-hub:97"
@@ -344,6 +422,10 @@
       "branch": "main",
       "ci": "none",
       "id": "Northwind-Labs/delta-stock@be9ecc432e0e797ef223aa4c2d49757cb46f9de6",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/delta-stock/tree/main",
+        "commit": "https://github.com/Northwind-Labs/delta-stock/commit/be9ecc432e0e797ef223aa4c2d49757cb46f9de6"
+      },
       "pipelines": [],
       "repo": "Northwind-Labs/delta-stock",
       "sha": "be9ecc432e0e797ef223aa4c2d49757cb46f9de6",
@@ -356,6 +438,11 @@
       "branch": "feature/change-3",
       "ci": "success",
       "id": "Northwind-Labs/delta-stock@d23762fe1a7a7e8914b7406892eb1e05213422f3",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/delta-stock/tree/feature/change-3",
+        "commit": "https://github.com/Northwind-Labs/delta-stock/commit/d23762fe1a7a7e8914b7406892eb1e05213422f3",
+        "pr": "https://github.com/Northwind-Labs/delta-stock/pull/380"
+      },
       "pipelines": [
         "wp:Northwind-Labs/delta-stock:149"
       ],
@@ -375,6 +462,10 @@
         "state": "success"
       },
       "id": "Northwind-Labs/glacier-tracker@56abd483d1857d5540418a1a3bbbe4f667ad0ea6",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/glacier-tracker/tree/main",
+        "commit": "https://github.com/Northwind-Labs/glacier-tracker/commit/56abd483d1857d5540418a1a3bbbe4f667ad0ea6"
+      },
       "pipelines": [
         "wp:Northwind-Labs/glacier-tracker:714"
       ],
@@ -390,6 +481,11 @@
       "branch": "dependabot/npm_and_yarn/example-lib-2",
       "ci": "failure",
       "id": "Northwind-Labs/lumen-report@b39afbc8843cf36efcc96716e1e96844add1e791",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/lumen-report/tree/dependabot/npm_and_yarn/example-lib-2",
+        "commit": "https://github.com/Northwind-Labs/lumen-report/commit/b39afbc8843cf36efcc96716e1e96844add1e791",
+        "pr": "https://github.com/Northwind-Labs/lumen-report/pull/21"
+      },
       "pipelines": [
         "wp:Northwind-Labs/lumen-report:112"
       ],
@@ -406,6 +502,11 @@
       "branch": "dependabot/npm_and_yarn/example-lib-4",
       "ci": "error",
       "id": "Northwind-Labs/lumen-report@c67c88f218c62a5adbe8a8b92304d4c3739c749a",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/lumen-report/tree/dependabot/npm_and_yarn/example-lib-4",
+        "commit": "https://github.com/Northwind-Labs/lumen-report/commit/c67c88f218c62a5adbe8a8b92304d4c3739c749a",
+        "pr": "https://github.com/Northwind-Labs/lumen-report/pull/125"
+      },
       "pipelines": [
         "wp:Northwind-Labs/lumen-report:110"
       ],
@@ -425,6 +526,10 @@
         "state": "failure"
       },
       "id": "Northwind-Labs/meridian-shop@a988b12d5807cc1250dae2eae8b63ed942a3c59c",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/meridian-shop/tree/main",
+        "commit": "https://github.com/Northwind-Labs/meridian-shop/commit/a988b12d5807cc1250dae2eae8b63ed942a3c59c"
+      },
       "pipelines": [
         "gha:42860000031"
       ],
@@ -443,6 +548,10 @@
         "state": "success"
       },
       "id": "Northwind-Labs/nimbus-predict@c29040c88844a9a92c8a12745f53c2e256b48bab",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/nimbus-predict/tree/main",
+        "commit": "https://github.com/Northwind-Labs/nimbus-predict/commit/c29040c88844a9a92c8a12745f53c2e256b48bab"
+      },
       "pipelines": [
         "wp:Northwind-Labs/nimbus-predict:87"
       ],
@@ -457,6 +566,11 @@
       "branch": "feature/change-6",
       "ci": "pending",
       "id": "Northwind-Labs/ridge-code@dd83da664d36424d72f08125d870793570946558",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/ridge-code/tree/feature/change-6",
+        "commit": "https://github.com/Northwind-Labs/ridge-code/commit/dd83da664d36424d72f08125d870793570946558",
+        "pr": "https://github.com/Northwind-Labs/ridge-code/pull/305"
+      },
       "pipelines": [
         "gha:42875219269",
         "gha:42882258502",
@@ -473,6 +587,11 @@
     {
       "app": "aurora-api",
       "id": "Northwind-Labs/aurora-api@cba1fed1817599ede1b917712f1ac8d2e629e690",
+      "links": {
+        "app": "https://aurora-api.apps.example.com/",
+        "cicd": "https://cicd.apps.example.com/pipelines/64/28",
+        "commit": "https://github.com/Northwind-Labs/aurora-api/commit/cba1fed1817599ede1b917712f1ac8d2e629e690"
+      },
       "pipeline": "wp:Northwind-Labs/aurora-api:28",
       "repo": "Northwind-Labs/aurora-api",
       "sha": "cba1fed1817599ede1b917712f1ac8d2e629e690",
@@ -485,6 +604,10 @@
       "app": "aurora-api",
       "finished": 1794256127184,
       "id": "Northwind-Labs/aurora-api@eed5b2a3b817f288f79cd4a0c9b015e008e6b452",
+      "links": {
+        "app": "https://aurora-api.apps.example.com/",
+        "commit": "https://github.com/Northwind-Labs/aurora-api/commit/eed5b2a3b817f288f79cd4a0c9b015e008e6b452"
+      },
       "repo": "Northwind-Labs/aurora-api",
       "sha": "eed5b2a3b817f288f79cd4a0c9b015e008e6b452",
       "started": 1794256127184,
@@ -495,6 +618,10 @@
       "app": "borealis-web",
       "finished": 1794339432178,
       "id": "Northwind-Labs/borealis-web@be13021ca83449d513f82b9ab0708be58e876780",
+      "links": {
+        "app": "https://borealis-web.apps.example.com/",
+        "commit": "https://github.com/Northwind-Labs/borealis-web/commit/be13021ca83449d513f82b9ab0708be58e876780"
+      },
       "repo": "Northwind-Labs/borealis-web",
       "sha": "be13021ca83449d513f82b9ab0708be58e876780",
       "started": 1794339405000,
@@ -506,6 +633,10 @@
       "app": "cirrus-hub",
       "finished": 1794325676000,
       "id": "Northwind-Labs/cirrus-hub@f917c191816f60e33bd397e5c528f3ed7b1f8c9f",
+      "links": {
+        "app": "https://cirrus-hub.apps.example.com/",
+        "commit": "https://github.com/Northwind-Labs/cirrus-hub/commit/f917c191816f60e33bd397e5c528f3ed7b1f8c9f"
+      },
       "repo": "Northwind-Labs/cirrus-hub",
       "sha": "f917c191816f60e33bd397e5c528f3ed7b1f8c9f",
       "started": 1794325632046,
@@ -517,6 +648,9 @@
       "app": "glacier-tracker",
       "finished": 1794337990059,
       "id": "Northwind-Labs/glacier-tracker@56abd483d1857d5540418a1a3bbbe4f667ad0ea6",
+      "links": {
+        "commit": "https://github.com/Northwind-Labs/glacier-tracker/commit/56abd483d1857d5540418a1a3bbbe4f667ad0ea6"
+      },
       "repo": "Northwind-Labs/glacier-tracker",
       "sha": "56abd483d1857d5540418a1a3bbbe4f667ad0ea6",
       "started": 1794337990059,
@@ -527,6 +661,10 @@
       "app": "meridian-shop",
       "finished": 1794329504000,
       "id": "Northwind-Labs/meridian-shop@a988b12d5807cc1250dae2eae8b63ed942a3c59c",
+      "links": {
+        "app": "https://meridian-shop.apps.example.com/",
+        "commit": "https://github.com/Northwind-Labs/meridian-shop/commit/a988b12d5807cc1250dae2eae8b63ed942a3c59c"
+      },
       "pipeline": "gha:42860000031",
       "repo": "Northwind-Labs/meridian-shop",
       "sha": "a988b12d5807cc1250dae2eae8b63ed942a3c59c",
@@ -539,6 +677,9 @@
       "app": "nimbus-predict",
       "finished": 1794322872055,
       "id": "Northwind-Labs/nimbus-predict@c29040c88844a9a92c8a12745f53c2e256b48bab",
+      "links": {
+        "commit": "https://github.com/Northwind-Labs/nimbus-predict/commit/c29040c88844a9a92c8a12745f53c2e256b48bab"
+      },
       "repo": "Northwind-Labs/nimbus-predict",
       "sha": "c29040c88844a9a92c8a12745f53c2e256b48bab",
       "started": 1794322872055,
@@ -564,7 +705,8 @@
       "online": true,
       "platform": "linux/amd64",
       "running": [],
-      "slots": 6
+      "slots": 6,
+      "url": "https://cicd.apps.example.com/engine"
     },
     {
       "busy": 0,
@@ -576,7 +718,8 @@
       "online": false,
       "platform": "linux/amd64",
       "running": [],
-      "slots": 6
+      "slots": 6,
+      "url": "https://cicd.apps.example.com/engine"
     },
     {
       "busy": 1,
@@ -590,7 +733,8 @@
       "running": [
         "wp:Northwind-EMS/kestrel-deploy:74"
       ],
-      "slots": 3
+      "slots": 3,
+      "url": "https://ci.dev.example.com/admin/agents"
     },
     {
       "busy": 2,
@@ -605,7 +749,8 @@
         "wp:Northwind-EMS/polaris-ui:85",
         "wp:Northwind-Labs/delta-stock:149"
       ],
-      "slots": 3
+      "slots": 3,
+      "url": "https://ci.dev.example.com/admin/agents"
     },
     {
       "busy": 1,
@@ -619,7 +764,8 @@
       "running": [
         "wp:Northwind-EMS/ember-api:53"
       ],
-      "slots": 3
+      "slots": 3,
+      "url": "https://ci.dev.example.com/admin/agents"
     },
     {
       "busy": 0,
@@ -631,7 +777,8 @@
       "online": false,
       "platform": "darwin/arm64",
       "running": [],
-      "slots": 1
+      "slots": 1,
+      "url": "https://ci.dev.example.com/admin/agents"
     },
     {
       "busy": 1,
@@ -645,7 +792,8 @@
       "running": [
         "wp:Northwind-EMS/polaris-ui:85"
       ],
-      "slots": 3
+      "slots": 3,
+      "url": "https://ci.dev.example.com/admin/agents"
     }
   ],
   "epoch": "golden",
@@ -766,6 +914,11 @@
       "finished": 1794339618000,
       "id": "gha:42871000001",
       "lane": "gha",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/aurora-api/tree/main",
+        "commit": "https://github.com/Northwind-Labs/aurora-api/commit/cba1fed1817599ede1b917712f1ac8d2e629e690",
+        "github": "https://github.com/Northwind-Labs/aurora-api/actions/runs/42871000001"
+      },
       "number": 42871000001,
       "repo": "Northwind-Labs/aurora-api",
       "sha": "cba1fed1817599ede1b917712f1ac8d2e629e690",
@@ -784,7 +937,8 @@
               "finished": 1794339618000,
               "name": "scan / gitleaks",
               "started": 1794339611000,
-              "state": "success"
+              "state": "success",
+              "url": "https://github.com/Northwind-Labs/aurora-api/actions/runs/42871000001/job/130000000002"
             }
           ]
         }
@@ -797,6 +951,12 @@
       "finished": 1794335191000,
       "id": "gha:42875219269",
       "lane": "gha",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/ridge-code/tree/feature/change-6",
+        "commit": "https://github.com/Northwind-Labs/ridge-code/commit/dd83da664d36424d72f08125d870793570946558",
+        "github": "https://github.com/Northwind-Labs/ridge-code/actions/runs/42875219269",
+        "pr": "https://github.com/Northwind-Labs/ridge-code/pull/305"
+      },
       "number": 42875219269,
       "pr": 305,
       "repo": "Northwind-Labs/ridge-code",
@@ -816,7 +976,8 @@
               "finished": 1794335191000,
               "name": "Build unsigned arm64 DMG",
               "started": 1794335200000,
-              "state": "skipped"
+              "state": "skipped",
+              "url": "https://github.com/Northwind-Labs/ridge-code/actions/runs/42875219269/job/130036683102"
             }
           ]
         }
@@ -829,6 +990,12 @@
       "finished": 1794338069000,
       "id": "gha:42882258502",
       "lane": "gha",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/ridge-code/tree/feature/change-6",
+        "commit": "https://github.com/Northwind-Labs/ridge-code/commit/dd83da664d36424d72f08125d870793570946558",
+        "github": "https://github.com/Northwind-Labs/ridge-code/actions/runs/42882258502",
+        "pr": "https://github.com/Northwind-Labs/ridge-code/pull/305"
+      },
       "number": 42882258502,
       "pr": 305,
       "repo": "Northwind-Labs/ridge-code",
@@ -848,7 +1015,8 @@
               "finished": 1794338069000,
               "name": "Build unsigned arm64 DMG",
               "started": 1794337711000,
-              "state": "success"
+              "state": "success",
+              "url": "https://github.com/Northwind-Labs/ridge-code/actions/runs/42882258502/job/130061301201"
             }
           ]
         }
@@ -861,6 +1029,12 @@
       "finished": 1794337708000,
       "id": "gha:42882258547",
       "lane": "gha",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/ridge-code/tree/feature/change-6",
+        "commit": "https://github.com/Northwind-Labs/ridge-code/commit/dd83da664d36424d72f08125d870793570946558",
+        "github": "https://github.com/Northwind-Labs/ridge-code/actions/runs/42882258547",
+        "pr": "https://github.com/Northwind-Labs/ridge-code/pull/305"
+      },
       "number": 42882258547,
       "pr": 305,
       "repo": "Northwind-Labs/ridge-code",
@@ -880,7 +1054,8 @@
               "finished": 1794337708000,
               "name": "Build preview JS bundle",
               "started": 1794337708000,
-              "state": "skipped"
+              "state": "skipped",
+              "url": "https://github.com/Northwind-Labs/ridge-code/actions/runs/42882258547/job/130061303315"
             }
           ]
         }
@@ -895,6 +1070,13 @@
       "finished": 1794339604000,
       "id": "wp:Northwind-EMS/ember-api:53",
       "lane": "roadrunner",
+      "links": {
+        "branch": "https://github.com/Northwind-EMS/ember-api/tree/feature/change-1",
+        "cicd": "https://cicd.apps.example.com/pipelines/38/53",
+        "commit": "https://github.com/Northwind-EMS/ember-api/commit/aad98fd9b169395a00cd2260d34490c1d1c0e6cb",
+        "pr": "https://github.com/Northwind-EMS/ember-api/pull/102",
+        "woodpecker": "https://ci.dev.example.com/repos/38/pipeline/53"
+      },
       "number": 53,
       "pr": 102,
       "repo": "Northwind-EMS/ember-api",
@@ -916,21 +1098,24 @@
               "finished": 1794339471000,
               "name": "clone",
               "started": 1794339469000,
-              "state": "success"
+              "state": "success",
+              "url": "https://cicd.apps.example.com/pipelines/38/53?tab=steps&step=43073"
             },
             {
               "exit_code": 0,
               "finished": 1794339604000,
               "name": "tests",
               "started": 1794339471000,
-              "state": "success"
+              "state": "success",
+              "url": "https://cicd.apps.example.com/pipelines/38/53?tab=steps&step=43074"
             },
             {
               "exit_code": 0,
               "finished": 1794339491000,
               "name": "db-migrations",
               "started": 1794339471000,
-              "state": "success"
+              "state": "success",
+              "url": "https://cicd.apps.example.com/pipelines/38/53?tab=steps&step=43075"
             }
           ]
         },
@@ -946,14 +1131,16 @@
               "finished": 1794339472000,
               "name": "clone",
               "started": 1794339470000,
-              "state": "success"
+              "state": "success",
+              "url": "https://cicd.apps.example.com/pipelines/38/53?tab=steps&step=43076"
             },
             {
               "exit_code": 0,
               "finished": 1794339474000,
               "name": "security-scan",
               "started": 1794339472000,
-              "state": "success"
+              "state": "success",
+              "url": "https://cicd.apps.example.com/pipelines/38/53?tab=steps&step=43077"
             }
           ]
         }
@@ -967,6 +1154,12 @@
       "event": "push",
       "id": "wp:Northwind-EMS/ember-api:54",
       "lane": "roadrunner",
+      "links": {
+        "branch": "https://github.com/Northwind-EMS/ember-api/tree/main",
+        "cicd": "https://cicd.apps.example.com/pipelines/38/54",
+        "commit": "https://github.com/Northwind-EMS/ember-api/commit/acff1d505dc63d47e78d4dec9946f8a6848053cb",
+        "woodpecker": "https://ci.dev.example.com/repos/38/pipeline/54"
+      },
       "number": 54,
       "repo": "Northwind-EMS/ember-api",
       "sha": "acff1d505dc63d47e78d4dec9946f8a6848053cb",
@@ -986,19 +1179,22 @@
               "finished": 1794339650000,
               "name": "clone",
               "started": 1794339648000,
-              "state": "success"
+              "state": "success",
+              "url": "https://cicd.apps.example.com/pipelines/38/54?tab=steps&step=43099"
             },
             {
               "name": "tests",
               "started": 1794339650000,
-              "state": "running"
+              "state": "running",
+              "url": "https://cicd.apps.example.com/pipelines/38/54?tab=steps&step=43100"
             },
             {
               "exit_code": 0,
               "finished": 1794339657000,
               "name": "db-migrations",
               "started": 1794339650000,
-              "state": "success"
+              "state": "success",
+              "url": "https://cicd.apps.example.com/pipelines/38/54?tab=steps&step=43101"
             }
           ]
         }
@@ -1012,6 +1208,12 @@
       "finished": 1794338519000,
       "id": "wp:Northwind-EMS/kestrel-deploy:68",
       "lane": "roadrunner",
+      "links": {
+        "branch": "https://github.com/Northwind-EMS/kestrel-deploy/tree/main",
+        "cicd": "https://cicd.apps.example.com/pipelines/207/68",
+        "commit": "https://github.com/Northwind-EMS/kestrel-deploy/commit/ab1f04b23be2672d913b9c75dc991f5331e364d2",
+        "woodpecker": "https://ci.dev.example.com/repos/207/pipeline/68"
+      },
       "number": 68,
       "repo": "Northwind-EMS/kestrel-deploy",
       "sha": "ab1f04b23be2672d913b9c75dc991f5331e364d2",
@@ -1029,6 +1231,12 @@
       "finished": 1794338856000,
       "id": "wp:Northwind-EMS/kestrel-deploy:71",
       "lane": "roadrunner",
+      "links": {
+        "branch": "https://github.com/Northwind-EMS/kestrel-deploy/tree/main",
+        "cicd": "https://cicd.apps.example.com/pipelines/207/71",
+        "commit": "https://github.com/Northwind-EMS/kestrel-deploy/commit/be83166efbf554f6fc5af32ebcb4f359bff0a4f1",
+        "woodpecker": "https://ci.dev.example.com/repos/207/pipeline/71"
+      },
       "number": 71,
       "repo": "Northwind-EMS/kestrel-deploy",
       "sha": "be83166efbf554f6fc5af32ebcb4f359bff0a4f1",
@@ -1046,6 +1254,12 @@
       "finished": 1794338965000,
       "id": "wp:Northwind-EMS/kestrel-deploy:73",
       "lane": "roadrunner",
+      "links": {
+        "branch": "https://github.com/Northwind-EMS/kestrel-deploy/tree/main",
+        "cicd": "https://cicd.apps.example.com/pipelines/207/73",
+        "commit": "https://github.com/Northwind-EMS/kestrel-deploy/commit/be83166efbf554f6fc5af32ebcb4f359bff0a4f1",
+        "woodpecker": "https://ci.dev.example.com/repos/207/pipeline/73"
+      },
       "number": 73,
       "repo": "Northwind-EMS/kestrel-deploy",
       "sha": "be83166efbf554f6fc5af32ebcb4f359bff0a4f1",
@@ -1064,6 +1278,12 @@
       "event": "push",
       "id": "wp:Northwind-Labs/aurora-api:28",
       "lane": "roadrunner",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/aurora-api/tree/main",
+        "cicd": "https://cicd.apps.example.com/pipelines/64/28",
+        "commit": "https://github.com/Northwind-Labs/aurora-api/commit/cba1fed1817599ede1b917712f1ac8d2e629e690",
+        "woodpecker": "https://ci.dev.example.com/repos/64/pipeline/28"
+      },
       "number": 28,
       "repo": "Northwind-Labs/aurora-api",
       "sha": "cba1fed1817599ede1b917712f1ac8d2e629e690",
@@ -1083,17 +1303,20 @@
               "finished": 1794339623000,
               "name": "clone",
               "started": 1794339620000,
-              "state": "success"
+              "state": "success",
+              "url": "https://cicd.apps.example.com/pipelines/64/28?tab=steps&step=43082"
             },
             {
               "name": "backend",
               "started": 1794339623000,
-              "state": "running"
+              "state": "running",
+              "url": "https://cicd.apps.example.com/pipelines/64/28?tab=steps&step=43083"
             },
             {
               "name": "frontend",
               "started": 1794339623000,
-              "state": "running"
+              "state": "running",
+              "url": "https://cicd.apps.example.com/pipelines/64/28?tab=steps&step=43084"
             }
           ]
         },
@@ -1103,11 +1326,13 @@
           "steps": [
             {
               "name": "clone",
-              "state": "pending"
+              "state": "pending",
+              "url": "https://cicd.apps.example.com/pipelines/64/28?tab=steps&step=43085"
             },
             {
               "name": "failsafe-deploy",
-              "state": "pending"
+              "state": "pending",
+              "url": "https://cicd.apps.example.com/pipelines/64/28?tab=steps&step=43086"
             }
           ]
         },
@@ -1123,14 +1348,16 @@
               "finished": 1794339621000,
               "name": "clone",
               "started": 1794339619000,
-              "state": "success"
+              "state": "success",
+              "url": "https://cicd.apps.example.com/pipelines/64/28?tab=steps&step=43087"
             },
             {
               "exit_code": 0,
               "finished": 1794339629000,
               "name": "docs",
               "started": 1794339621000,
-              "state": "success"
+              "state": "success",
+              "url": "https://cicd.apps.example.com/pipelines/64/28?tab=steps&step=43088"
             }
           ]
         }
@@ -1144,6 +1371,12 @@
       "finished": 1794339405000,
       "id": "wp:Northwind-Labs/borealis-web:23",
       "lane": "roadrunner",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/borealis-web/tree/main",
+        "cicd": "https://cicd.apps.example.com/pipelines/101/23",
+        "commit": "https://github.com/Northwind-Labs/borealis-web/commit/be13021ca83449d513f82b9ab0708be58e876780",
+        "woodpecker": "https://ci.dev.example.com/repos/101/pipeline/23"
+      },
       "number": 23,
       "repo": "Northwind-Labs/borealis-web",
       "sha": "be13021ca83449d513f82b9ab0708be58e876780",
@@ -1161,6 +1394,13 @@
       "finished": 1794339495000,
       "id": "wp:Northwind-Labs/delta-stock:149",
       "lane": "roadrunner",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/delta-stock/tree/feature/change-3",
+        "cicd": "https://cicd.apps.example.com/pipelines/3/149",
+        "commit": "https://github.com/Northwind-Labs/delta-stock/commit/d23762fe1a7a7e8914b7406892eb1e05213422f3",
+        "pr": "https://github.com/Northwind-Labs/delta-stock/pull/380",
+        "woodpecker": "https://ci.dev.example.com/repos/3/pipeline/149"
+      },
       "number": 149,
       "pr": 380,
       "repo": "Northwind-Labs/delta-stock",
@@ -1178,6 +1418,12 @@
       "finished": 1794339082000,
       "id": "wp:Northwind-Labs/glacier-tracker:714",
       "lane": "roadrunner",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/glacier-tracker/tree/main",
+        "cicd": "https://cicd.apps.example.com/pipelines/2/714",
+        "commit": "https://github.com/Northwind-Labs/glacier-tracker/commit/56abd483d1857d5540418a1a3bbbe4f667ad0ea6",
+        "woodpecker": "https://ci.dev.example.com/repos/2/pipeline/714"
+      },
       "number": 714,
       "repo": "Northwind-Labs/glacier-tracker",
       "sha": "56abd483d1857d5540418a1a3bbbe4f667ad0ea6",
@@ -1194,6 +1440,13 @@
       "finished": 1794338832000,
       "id": "wp:Northwind-Labs/lumen-report:110",
       "lane": "roadrunner",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/lumen-report/tree/dependabot/npm_and_yarn/example-lib-4",
+        "cicd": "https://cicd.apps.example.com/pipelines/47/110",
+        "commit": "https://github.com/Northwind-Labs/lumen-report/commit/c67c88f218c62a5adbe8a8b92304d4c3739c749a",
+        "pr": "https://github.com/Northwind-Labs/lumen-report/pull/125",
+        "woodpecker": "https://ci.dev.example.com/repos/47/pipeline/110"
+      },
       "number": 110,
       "pr": 125,
       "repo": "Northwind-Labs/lumen-report",
@@ -1213,6 +1466,13 @@
       "finished": 1794339128000,
       "id": "wp:Northwind-Labs/lumen-report:112",
       "lane": "roadrunner",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/lumen-report/tree/dependabot/npm_and_yarn/example-lib-2",
+        "cicd": "https://cicd.apps.example.com/pipelines/47/112",
+        "commit": "https://github.com/Northwind-Labs/lumen-report/commit/b39afbc8843cf36efcc96716e1e96844add1e791",
+        "pr": "https://github.com/Northwind-Labs/lumen-report/pull/21",
+        "woodpecker": "https://ci.dev.example.com/repos/47/pipeline/112"
+      },
       "number": 112,
       "pr": 21,
       "repo": "Northwind-Labs/lumen-report",
@@ -1234,14 +1494,16 @@
               "finished": 1794339112000,
               "name": "clone",
               "started": 1794339110000,
-              "state": "success"
+              "state": "success",
+              "url": "https://cicd.apps.example.com/pipelines/47/112?tab=steps&step=42981"
             },
             {
               "exit_code": 0,
               "finished": 1794339128000,
               "name": "backend",
               "started": 1794339112000,
-              "state": "success"
+              "state": "success",
+              "url": "https://cicd.apps.example.com/pipelines/47/112?tab=steps&step=42982"
             },
             {
               "cluster": "f:ade02e03d804",
@@ -1249,7 +1511,8 @@
               "finished": 1794339119000,
               "name": "frontend",
               "started": 1794339112000,
-              "state": "failure"
+              "state": "failure",
+              "url": "https://cicd.apps.example.com/pipelines/47/112?tab=steps&step=42983"
             }
           ]
         },
@@ -1265,14 +1528,16 @@
               "finished": 1794339112000,
               "name": "clone",
               "started": 1794339110000,
-              "state": "success"
+              "state": "success",
+              "url": "https://cicd.apps.example.com/pipelines/47/112?tab=steps&step=42984"
             },
             {
               "exit_code": 0,
               "finished": 1794339114000,
               "name": "security-scan",
               "started": 1794339112000,
-              "state": "success"
+              "state": "success",
+              "url": "https://cicd.apps.example.com/pipelines/47/112?tab=steps&step=42985"
             }
           ]
         }
@@ -1303,6 +1568,10 @@
       "head": "dependabot/npm_and_yarn/example-lib-8",
       "head_sha": "0c1e5c558eb43dc75d72a9d8b5d813ecaa20589a",
       "id": "Northwind-EMS/ember-api#100",
+      "links": {
+        "branch": "https://github.com/Northwind-EMS/ember-api/tree/dependabot/npm_and_yarn/example-lib-8",
+        "checks": "https://github.com/Northwind-EMS/ember-api/pull/100/checks"
+      },
       "number": 100,
       "phase": "mergeable",
       "repo": "Northwind-EMS/ember-api",
@@ -1332,6 +1601,10 @@
       "head": "feature/change-1",
       "head_sha": "aad98fd9b169395a00cd2260d34490c1d1c0e6cb",
       "id": "Northwind-EMS/ember-api#102",
+      "links": {
+        "branch": "https://github.com/Northwind-EMS/ember-api/tree/feature/change-1",
+        "checks": "https://github.com/Northwind-EMS/ember-api/pull/102/checks"
+      },
       "number": 102,
       "phase": "mergeable",
       "repo": "Northwind-EMS/ember-api",
@@ -1372,6 +1645,10 @@
       "head": "feature/change-7",
       "head_sha": "65fd0896bb7549c61e8b66f79d398ed77bd7e699",
       "id": "Northwind-EMS/kestrel-deploy#267",
+      "links": {
+        "branch": "https://github.com/Northwind-EMS/kestrel-deploy/tree/feature/change-7",
+        "checks": "https://github.com/Northwind-EMS/kestrel-deploy/pull/267/checks"
+      },
       "number": 267,
       "phase": "conflict",
       "repo": "Northwind-EMS/kestrel-deploy",
@@ -1401,6 +1678,10 @@
       "head": "feature/change-1",
       "head_sha": "d6fbeb40b6daaa748ba0fd8c424d0e7d23240c9a",
       "id": "Northwind-EMS/polaris-ui#119",
+      "links": {
+        "branch": "https://github.com/Northwind-EMS/polaris-ui/tree/feature/change-1",
+        "checks": "https://github.com/Northwind-EMS/polaris-ui/pull/119/checks"
+      },
       "number": 119,
       "phase": "mergeable",
       "repo": "Northwind-EMS/polaris-ui",
@@ -1441,6 +1722,10 @@
       "head": "feature/change-9",
       "head_sha": "18dea342fe0f37f52861407b574a17d480c1f361",
       "id": "Northwind-EMS/quartz-infra#642",
+      "links": {
+        "branch": "https://github.com/Northwind-EMS/quartz-infra/tree/feature/change-9",
+        "checks": "https://github.com/Northwind-EMS/quartz-infra/pull/642/checks"
+      },
       "number": 642,
       "phase": "checks",
       "repo": "Northwind-EMS/quartz-infra",
@@ -1459,6 +1744,10 @@
       "head": "feature/change-30",
       "head_sha": "30d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
       "id": "Northwind-Labs/aurora-api#30",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/aurora-api/tree/feature/change-30",
+        "checks": "https://github.com/Northwind-Labs/aurora-api/pull/30/checks"
+      },
       "number": 30,
       "phase": "draft",
       "repo": "Northwind-Labs/aurora-api",
@@ -1484,6 +1773,10 @@
       "head": "feature/change-31",
       "head_sha": "31e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
       "id": "Northwind-Labs/aurora-api#31",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/aurora-api/tree/feature/change-31",
+        "checks": "https://github.com/Northwind-Labs/aurora-api/pull/31/checks"
+      },
       "number": 31,
       "phase": "changes_requested",
       "repo": "Northwind-Labs/aurora-api",
@@ -1504,6 +1797,10 @@
       "head": "feature/change-41",
       "head_sha": "41a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
       "id": "Northwind-Labs/borealis-web#41",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/borealis-web/tree/feature/change-41",
+        "checks": "https://github.com/Northwind-Labs/borealis-web/pull/41/checks"
+      },
       "merge_sha": "be13021ca83449d513f82b9ab0708be58e876780",
       "merged_at": 1794339299000,
       "number": 41,
@@ -1526,6 +1823,10 @@
       "head": "feature/change-12",
       "head_sha": "12b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
       "id": "Northwind-Labs/cirrus-hub#12",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/cirrus-hub/tree/feature/change-12",
+        "checks": "https://github.com/Northwind-Labs/cirrus-hub/pull/12/checks"
+      },
       "merge_sha": "f26d808471def73facfbe91b983f7185dca62555",
       "merged_at": 1794267565000,
       "number": 12,
@@ -1547,6 +1848,10 @@
       "head": "feature/change-9",
       "head_sha": "09f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
       "id": "Northwind-Labs/cirrus-hub#9",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/cirrus-hub/tree/feature/change-9",
+        "checks": "https://github.com/Northwind-Labs/cirrus-hub/pull/9/checks"
+      },
       "number": 9,
       "phase": "review",
       "repo": "Northwind-Labs/cirrus-hub",
@@ -1568,6 +1873,10 @@
       "head": "feature/change-377",
       "head_sha": "377c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c",
       "id": "Northwind-Labs/delta-stock#377",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/delta-stock/tree/feature/change-377",
+        "checks": "https://github.com/Northwind-Labs/delta-stock/pull/377/checks"
+      },
       "number": 377,
       "phase": "closed",
       "repo": "Northwind-Labs/delta-stock",
@@ -1592,6 +1901,10 @@
       "head": "feature/change-3",
       "head_sha": "d23762fe1a7a7e8914b7406892eb1e05213422f3",
       "id": "Northwind-Labs/delta-stock#380",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/delta-stock/tree/feature/change-3",
+        "checks": "https://github.com/Northwind-Labs/delta-stock/pull/380/checks"
+      },
       "number": 380,
       "phase": "mergeable",
       "repo": "Northwind-Labs/delta-stock",
@@ -1622,6 +1935,10 @@
       "head": "feature/change-6",
       "head_sha": "dd83da664d36424d72f08125d870793570946558",
       "id": "Northwind-Labs/ridge-code#305",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/ridge-code/tree/feature/change-6",
+        "checks": "https://github.com/Northwind-Labs/ridge-code/pull/305/checks"
+      },
       "number": 305,
       "phase": "checks",
       "repo": "Northwind-Labs/ridge-code",
@@ -1653,6 +1970,10 @@
       "head": "dependabot/npm_and_yarn/example-lib-5",
       "head_sha": "7fdef914108e7e65814e67c7215c724968447ee4",
       "id": "Northwind-Labs/tundra-lab#143",
+      "links": {
+        "branch": "https://github.com/Northwind-Labs/tundra-lab/tree/dependabot/npm_and_yarn/example-lib-5",
+        "checks": "https://github.com/Northwind-Labs/tundra-lab/pull/143/checks"
+      },
       "number": 143,
       "phase": "checks",
       "repo": "Northwind-Labs/tundra-lab",
@@ -1672,6 +1993,7 @@
       "pending": 1,
       "pipelines_running": 4,
       "running": 5,
+      "url": "https://ci.dev.example.com/admin/queue",
       "waiting": 0
     }
   ],
@@ -1684,7 +2006,7 @@
       "lane": "none",
       "last_activity": 1794339646000,
       "links": {
-        "cicd": "https://cicd.apps.example.com/pipelines/38",
+        "cicd": "https://cicd.apps.example.com/repos/38",
         "github": "https://github.com/Northwind-EMS/ember-api",
         "woodpecker": "https://ci.dev.example.com/repos/38"
       },
@@ -2083,7 +2405,7 @@
       "lane": "none",
       "last_activity": 0,
       "links": {
-        "cicd": "https://cicd.apps.example.com/pipelines/370",
+        "cicd": "https://cicd.apps.example.com/repos/370",
         "github": "https://github.com/copper-browser/Copper",
         "woodpecker": "https://ci.dev.example.com/repos/370"
       },
@@ -2105,7 +2427,7 @@
       "lane": "none",
       "last_activity": 0,
       "links": {
-        "cicd": "https://cicd.apps.example.com/pipelines/373",
+        "cicd": "https://cicd.apps.example.com/repos/373",
         "github": "https://github.com/copper-browser/canvas-app",
         "woodpecker": "https://ci.dev.example.com/repos/373"
       },
@@ -2127,7 +2449,7 @@
       "lane": "none",
       "last_activity": 0,
       "links": {
-        "cicd": "https://cicd.apps.example.com/pipelines/372",
+        "cicd": "https://cicd.apps.example.com/repos/372",
         "github": "https://github.com/copper-browser/canvas-cloud",
         "woodpecker": "https://ci.dev.example.com/repos/372"
       },

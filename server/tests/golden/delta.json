@@ -19,21 +19,24 @@
               "finished": 1794339471000,
               "name": "clone",
               "started": 1794339469000,
-              "state": "success"
+              "state": "success",
+              "url": "https://cicd.apps.example.com/pipelines/38/53?tab=steps&step=43073"
             },
             {
               "exit_code": 0,
               "finished": 1794339604000,
               "name": "tests",
               "started": 1794339471000,
-              "state": "success"
+              "state": "success",
+              "url": "https://cicd.apps.example.com/pipelines/38/53?tab=steps&step=43074"
             },
             {
               "exit_code": 0,
               "finished": 1794339491000,
               "name": "db-migrations",
               "started": 1794339471000,
-              "state": "success"
+              "state": "success",
+              "url": "https://cicd.apps.example.com/pipelines/38/53?tab=steps&step=43075"
             }
           ]
         },
@@ -49,14 +52,16 @@
               "finished": 1794339472000,
               "name": "clone",
               "started": 1794339470000,
-              "state": "success"
+              "state": "success",
+              "url": "https://cicd.apps.example.com/pipelines/38/53?tab=steps&step=43076"
             },
             {
               "exit_code": 0,
               "finished": 1794339474000,
               "name": "security-scan",
               "started": 1794339472000,
-              "state": "success"
+              "state": "success",
+              "url": "https://cicd.apps.example.com/pipelines/38/53?tab=steps&step=43077"
             }
           ]
         }

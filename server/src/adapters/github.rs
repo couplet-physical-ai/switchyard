@@ -253,6 +253,10 @@ pub fn contexts_to_facts(
                 exit_code: None,
                 cached: None,
                 cluster: None,
+                // The job's page (its log).
+                url: s(j, "/detailsUrl")
+                    .filter(|u| u.contains("/job/"))
+                    .map(str::to_string),
             })
             .collect();
         if deploy && event != PipelineEvent::PullRequest {
@@ -312,6 +316,7 @@ pub fn contexts_to_facts(
                 steps,
             }],
             url,
+            links: Default::default(),
         }));
     }
     out

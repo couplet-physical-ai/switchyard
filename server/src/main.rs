@@ -104,6 +104,15 @@ fn main() -> Result<()> {
         .with_target(false)
         .init();
     let cli = Cli::parse();
+    {
+        // Deep-link bases (meta.links; every URL field the server builds).
+        let up = switchyard::adapters::UpstreamCfg::from_env();
+        switchyard::links::set(switchyard::links::Bases {
+            github: up.github_web,
+            woodpecker: up.woodpecker_public_url,
+            cicd: up.cicd_url,
+        });
+    }
     match &cli.cmd {
         Some(Cmd::Version) => {
             println!(
