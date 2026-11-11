@@ -55,9 +55,10 @@ mkdir -p ~/Library/Logs/Switchyard; : > ~/Library/Logs/Switchyard/update.log
 sudo -n launchctl asuser \$(id -u) sudo -n -u \$(id -un) open ${OPEN_ENV[*]:-} "\$A" ${ARG:+--args $ARG}
 for i in \$(seq 1 120); do
   sleep 2
-  [[ "\$(v)" == "$TO" ]] && pgrep -f 'Switchyard.app/Contents/MacOS/Switchyard' >/dev/null && break
+  [[ "\$(v)" == "$TO" ]] && pgrep -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' >/dev/null && break
 done
-echo "after update: \$(v) (running: \$(pgrep -f 'Switchyard.app/Contents/MacOS/Switchyard' || echo none))"
+echo "other Switchyard processes: \$(pgrep -fl 'Switchyard.app/Contents/MacOS/Switchyard' | grep -v '^[0-9]* /Applications/' || echo none)"
+echo "after update: \$(v) (running: \$(pgrep -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || echo none))"
 echo "--- update.log"; tail -20 ~/Library/Logs/Switchyard/update.log || true
 [[ "\$(v)" == "$TO" ]] || { echo "FAIL: bundle is \$(v), expected $TO" >&2; exit 1; }
 codesign --verify --deep --strict "\$A" && echo "signature: ok"
