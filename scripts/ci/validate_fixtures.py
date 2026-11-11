@@ -9,6 +9,8 @@ Checks (stdlib only, so CI needs no install):
     their documented shape, times are Unix milliseconds;
   * fixtures/hour.jsonl is one Frame per line: `t` in delta|hb|reset, `seq` strictly
     increasing across deltas, `at` non-decreasing, every Op is upsert|remove|event|patch|dot
+    (0.5 Factory Floor kinds group/cluster/flake/trend included: snapshot arrays required from
+    protocol 0.5, ids, FailClass, Metric {h1?,h24?,d7?,dir,bad?,spark[24]}, Repo.group, Step.cluster)
     with a known kind (unknown kinds are allowed by the contract but reported), every Event
     has a known `k` and its required fields;
   * the ops are replayed onto the snapshot's entities: `patch` (RFC 7386 JSON Merge Patch on
@@ -37,6 +39,13 @@ ENGINE_KIND = {"dagger", "wp_agent", "gha_runner"}
 PIPE_LANE = {"roadrunner", "gha"}
 PIPE_EVENT = {"push", "pull_request", "tag", "cron", "manual", "deployment"}
 AI_REVIEW = {"pending", "commented", "approved", "skipped"}
+# Factory Floor (0.5)
+GROUP_KIND = {"team", "org"}
+FAIL_CLASS = {"compile", "test", "lint", "typecheck", "deps", "build", "deploy", "security", "oom",
+              "timeout", "network", "infra", "exit"}
+TREND_METRICS = ["intake_ms", "run_ms", "pass_rate", "pipelines", "deploys", "pr_age_ms", "red"]
+CLUSTER_ID = re.compile(r"^f:[0-9a-f]{12}$")
+GROUP_ID = re.compile(r"^(team:[a-z0-9][a-z0-9-]*|org:[A-Za-z0-9_.-]+)$")
 
 # Entity kind -> (required fields, {field: allowed enum})
 ENTITIES: dict[str, tuple[list[str], dict[str, set[str]]]] = {
@@ -54,7 +63,14 @@ ENTITIES: dict[str, tuple[list[str], dict[str, set[str]]]] = {
     "lane": (["id", "mode"], {"mode": LANE_MODE}),
     "watcher": (["id", "tripped", "gh_status"], {}),
     "stats": (["id", "commits_24h", "pipelines_24h", "success_rate_24h", "prs_open"], {}),
+    "group": (["id", "name", "kind", "repos", "apps", "red"], {"kind": GROUP_KIND}),
+    "cluster": (["id", "signature", "step", "class", "count", "count_1h", "repos", "repo_count", "groups",
+                 "first_seen", "last_seen", "examples", "open"], {"class": FAIL_CLASS}),
+    "flake": (["id", "repo", "workflow", "step", "flips_24h", "failures_24h", "last_at", "shas"], {}),
+    "trend": (["id", "at", "hours_7d"] + TREND_METRICS, {}),
 }
+# 0.5 collections: required in a snapshot whose protocol is >= 0.5, checked whenever present.
+COLLECTIONS_05 = {"groups": "group", "clusters": "cluster", "flakes": "flake", "trends": "trend"}
 # Snapshot collection key -> entity kind
 COLLECTIONS = {
     "orgs": "org", "repos": "repo", "commits": "commit", "pipelines": "pipeline", "prs": "pr",
@@ -104,7 +120,7 @@ def check_entity(kind: str, v, where: str) -> None:
     for f, allowed in enums.items():
         if f in v and v[f] not in allowed:
             err(where, f"{kind}.{f} = {v[f]!r} not in {sorted(allowed)}")
-    for f in ("at", "created", "updated", "started", "finished", "checked", "since"):
+    for f in ("at", "created", "updated", "started", "finished", "checked", "since", "first_seen", "last_seen", "last_at"):
         if f in v and v[f] is not None and not is_ms(v[f]):
             err(where, f"{kind}.{f} = {v[f]!r} is not Unix milliseconds")
     if kind == "repo":
@@ -136,6 +152,55 @@ def check_entity(kind: str, v, where: str) -> None:
         ai = (v.get("review") or {}).get("ai")
         if ai is not None and ai not in AI_REVIEW:
             err(where, f"pr.review.ai = {ai!r}")
+    if kind == "repo" and "group" in v and not (v["group"] is None or GROUP_ID.match(str(v["group"]))):
+        err(where, f"repo.group = {v['group']!r} is not a Group id (team:<slug> | org:<Owner>)")
+    if kind == "pipeline":
+        if "flaky" in v and not isinstance(v["flaky"], (bool, int)):
+            err(where, f"pipeline.flaky = {v['flaky']!r}")
+        for wi, w in enumerate(v.get("workflows") or []):
+            for si, st in enumerate((w or {}).get("steps") or [] if isinstance(w, dict) else []):
+                c = st.get("cluster") if isinstance(st, dict) else None
+                if c is not None and not CLUSTER_ID.match(str(c)):
+                    err(f"{where}.workflows[{wi}].steps[{si}]", f"step.cluster = {c!r} is not f:<12 hex>")
+    if kind == "group" and "id" in v and not GROUP_ID.match(str(v["id"])):
+        err(where, f"group id {v['id']!r} is not team:<slug> | org:<Owner>")
+    if kind == "cluster":
+        if "id" in v and not CLUSTER_ID.match(str(v["id"])):
+            err(where, f"cluster id {v['id']!r} is not f:<12 hex>")
+        for f, cap in (("repos", 12), ("examples", 5)):
+            if f in v and (not isinstance(v[f], list) or len(v[f]) > cap):
+                err(where, f"cluster.{f} must be a list of at most {cap}")
+        if "groups" in v and not isinstance(v["groups"], list):
+            err(where, "cluster.groups must be a list")
+        if isinstance(v.get("line"), str) and len(v["line"]) > 160:
+            err(where, "cluster.line longer than 160 chars")
+        if isinstance(v.get("count"), int) and isinstance(v.get("count_1h"), int) and v["count_1h"] > v["count"]:
+            err(where, "cluster.count_1h > count")
+    if kind == "flake":
+        if "id" in v and "repo" in v and v["id"] != f"{v['repo']}|{v.get('workflow')}/{v.get('step')}":
+            err(where, f"flake id {v['id']!r} is not <repo>|<workflow>/<step>")
+        if "shas" in v and (not isinstance(v["shas"], list) or len(v["shas"]) > 5):
+            err(where, "flake.shas must be a list of at most 5")
+    if kind == "trend":
+        if "id" in v and v["id"] != "fleet" and not GROUP_ID.match(str(v["id"])):
+            err(where, f"trend id {v['id']!r} is neither fleet nor a Group id")
+        for mk in TREND_METRICS:
+            m = v.get(mk)
+            if m is None:
+                continue
+            if not isinstance(m, dict):
+                err(where, f"trend.{mk} is not a Metric object")
+                continue
+            for w in ("h1", "h24", "d7"):
+                if w in m and not isinstance(m[w], (int, float)):
+                    err(where, f"trend.{mk}.{w} = {m[w]!r}: a number, or absent (never null)")
+            if m.get("dir") not in (-1, 0, 1):
+                err(where, f"trend.{mk}.dir = {m.get('dir')!r} not in -1|0|1")
+            if "bad" in m and m["bad"] is not True:
+                err(where, f"trend.{mk}.bad = {m['bad']!r}: true or absent")
+            sp = m.get("spark")
+            if not isinstance(sp, list) or len(sp) != 24 or any(x is not None and not isinstance(x, (int, float)) for x in sp):
+                err(where, f"trend.{mk}.spark must be 24 numbers|null")
     if kind == "queue" and len(v.get("items") or []) > 50:
         err(where, "queue.items has more than 50 entries")
 
@@ -191,6 +256,22 @@ def check_snapshot(path: Path) -> None:
             key = entity_id(kind, e, ident)
             if key is not None and isinstance(e, dict):
                 STATE[(kind, key)] = e
+        notes.append(f"{coll}: {len(items)}")
+    proto = str(snap.get("protocol", "0"))
+    v05 = tuple(int(x) for x in re.findall(r"\d+", proto)[:2]) >= (0, 5)
+    for coll, kind in COLLECTIONS_05.items():
+        if coll not in snap:
+            if v05:
+                err(path.name, f"protocol {proto} snapshot missing `{coll}`")
+            continue
+        items = entities_of(snap[coll])
+        if items is None:
+            err(path.name, f"`{coll}` is neither a list nor a map")
+            continue
+        for ident, e in items:
+            check_entity(kind, e, f"{path.name}:{coll}[{ident}]")
+            if isinstance(e, dict) and isinstance(e.get("id"), str):
+                STATE[(kind, e["id"])] = e
         notes.append(f"{coll}: {len(items)}")
     for single in ("watcher", "stats"):  # one entity each, ids "outage" / "fleet"; patches may target them
         if isinstance(snap.get(single), dict):
