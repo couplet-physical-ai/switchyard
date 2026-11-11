@@ -277,6 +277,35 @@ export function bars(g: Gfx, s: readonly number[], x: number, y: number, w: numb
   }
 }
 
+/** fx-lens: GitHub's hosted runners keep no history of their own: their 24 h is the fleet's own
+ *  runs on the `gha` lane, how many ran at once in each half hour against the slots (null for other
+ *  machines). Cached for 30 s of fleet time. */
+export function hostedRuns(w: World, gr: { id: string; slots: number; hosted?: boolean } | undefined, now: number): EngSeries | null {
+  if (!gr?.hosted) return null;
+  const key = `${Math.floor(now / 30_000)}|${gr.slots}|${w.pipelines.size}`;
+  if (key === hostedKey) return hostedVal;
+  hostedKey = key;
+  const N = 48, step = (24 * HOUR) / N, t0 = now - 24 * HOUR;
+  const busy = new Array<number>(N).fill(0), repos = new Map<string, number>();
+  let any = false;
+  for (const p of w.pipelines.values()) {
+    if (p.lane !== 'gha' || !p.started) continue;
+    const end = p.finished ?? now;
+    if (end < t0 || p.started > now) continue;
+    any = true;
+    for (let i = Math.max(0, Math.floor((p.started - t0) / step)); i <= Math.min(N - 1, Math.floor((end - t0) / step)); i++) busy[i]++;
+    if (p.started >= now - HOUR) repos.set(p.repo, (repos.get(p.repo) ?? 0) + 1);
+  }
+  const sl = Math.max(1, gr.slots);
+  hostedVal = any ? {
+    busy: busy.map((v) => Math.min(100, (v / sl) * 100)), cpu: new Array<number | null>(N).fill(null), mem: new Array<number | null>(N).fill(null), load: new Array<number | null>(N).fill(null),
+    full: busy.map((v) => v >= sl), span: '24 h', repos: [...repos].map(([repo, runs]) => ({ repo, runs })),
+  } : null;
+  return hostedVal;
+}
+let hostedKey = '';
+let hostedVal: EngSeries | null = null;
+
 /** A group's identity hue as `#rrggbb` (FACTORY-SPEC §C). */
 export function hueHex(groupId: string): string { return groupHue(groupId).hex; }
 
@@ -547,8 +576,15 @@ export function machineEngines(w: World, gr: { id: string; engines: string[] } |
 }
 
 export type EngSeries = { busy: (number | null)[]; cpu: (number | null)[]; mem: (number | null)[]; load: (number | null)[]; full: boolean[]; span: string; repos: { repo: string; runs: number }[] };
-export function engineSeries(hosts: { series(id: string, k: 'busy' | 'cpu' | 'mem' | 'load'): number[] }, gr: { id: string; slots: number; engines: string[] } | undefined, ids: string[] = gr?.engines ?? []): EngSeries | null {
+/** fx-lens: the machine wall's own fold (plant.ts PlantHist, planthist.ts `Tide`: busy/slots,
+ *  peak, cpu, mem as 0..1, NaN = a gap), so the lens's chart and the wall agree. */
+type TideLike = { n: number; busy: Float32Array; peak: Float32Array; cpu: Float32Array; mem: Float32Array; covered: number; repos: { repo: string; runs: number }[] };
+export function engineSeries(hosts: { series(id: string, k: 'busy' | 'cpu' | 'mem' | 'load'): number[] }, gr: { id: string; slots: number; engines: string[] } | undefined, ids: string[] = gr?.engines ?? [], tide: TideLike | null = null, hosted: EngSeries | null = null): EngSeries | null {
   if (!gr) return null;
+  if (tide && tide.covered > 0) {
+    const pc = (a: Float32Array) => Array.from(a, (v) => (v === v ? v * 100 : null));
+    return { busy: pc(tide.busy), cpu: pc(tide.cpu), mem: pc(tide.mem), load: new Array<number | null>(tide.n).fill(null), full: Array.from(tide.peak, (v) => v >= 0.999), span: '24 h', repos: tide.repos };
+  }
   // the machine's own engine (a Dagger host: busy, slots, cpu, mem, load) before its agents
   const hs = ids.map((id) => engineHist24(id)).filter((x): x is EngineHist24 => !!x && !!x.busy?.length);
   const e24 = hs.find((x) => x.cpu?.some((v) => v !== null)) ?? hs[0];
@@ -566,6 +602,7 @@ export function engineSeries(hosts: { series(id: string, k: 'busy' | 'cpu' | 'me
     }
     return out;
   }
+  if (hosted) return hosted;
   const b = hosts.series(gr.id, 'busy');
   if (b.length < 2) return null;
   const nn = (s: number[]) => s.map((v) => (Number.isFinite(v) ? v : null));

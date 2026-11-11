@@ -21,7 +21,8 @@ import type { Gfx } from '../yard/gfx.ts';
 import { C, withAlpha } from '../yard/theme.ts';
 import type { Frame } from '../../app.contract.d.ts';
 import { HOUR, PHASES, phaseRow } from './census.ts';
-import { appHist, appHist7, bars, busySeries, machineEngines, clamp, clusterFacts, groupFlow, groupForApps, groupForOrg, healthSegs, hueHex, spark } from './lenses.ts';
+import { appHist, appHist7, bars, busySeries, machineEngines, clamp, clusterFacts, groupFlow, groupForApps, groupForOrg, healthSegs, hostedRuns, hueHex, spark } from './lenses.ts';
+import { floorGroups } from './groups.ts';
 import type { Lenses } from './lens.ts';
 import { BLOCKERS, ageBucket, blocker, botName, healthCol, isBot } from './lens.ts';
 import { groupOf as insGroupOf } from '../insights.ts';
@@ -47,35 +48,84 @@ export class Hover {
 
   constructor(readonly lens: Lenses) {}
 
-  /** Over everything (after the story card and the compare dock): the floor's hover card, taller,
-   *  with its kind's micro-chart. Nothing when the floor draws no hover box for this hit. */
+  /** Over everything (after the story card and the compare dock): THE hover card (fx-lens: the
+   *  only one; drawer.ts's plain box is gone). One title line, at most three short lines (the
+   *  floor's own words first, else the lens's preview, else the drawer's facts), and its kind's
+   *  micro-chart. Placed beside its object, never over it, and inside the viewport. */
   draw(g: Gfx, fr: Frame, dragging: boolean): void {
     const f = this.lens.f;
     if (!f.hoverId || dragging) return;
     const h = f.hitAt(f.px, f.py) as Hit | null;
-    if (!h || !h.label || h.kind === 'drawer') return;
+    if (!h || !h.label || h.kind === 'drawer' || h.kind === 'crumb' || h.kind === 'crumbx') return;
+    const part = this.lens.part(h);
     const mine = f.words.hoverFor(h); // fab-w1: the stage titles' numbers and the lanes' cells and posts (labels.ts, floor.ts)
-    const lines = mine ?? (h.kind === 'stage' ? null : this.lens.preview(h));
-    if (!lines || !lines.length) return;
-    const key = `${h.kind}|${h.id}|${Math.floor(f.tl.clock / 1000)}`;
-    if (key !== this.key) { this.key = key; this.chart = this.build(h); }
-    const ch = this.chart;
-    if (!ch && !mine) return; // fab-w1: the floor's own lines stand without a chart
-    // the floor's box: max(line width) + 16 wide at min(px + 14, W − w − 8), py + 18; this card
-    // is at least as wide and tall, from the same corner, so it covers it whole
-    const wf = Math.max(...lines.map((l) => g.width(l, SMALL))) + 16;
-    const wv = Math.max(wf, ...lines.map((l, i) => g.width(l, SMALL, i === 0) + 16), CW + 16);
-    const bx = Math.min(f.px + 14, fr.width - wv - 8), by = f.py + 18;
-    const H = lines.length * 16 + 10 + (ch ? CH + 10 : 0); // fab-w1
+    const raw = mine ?? (h.kind === 'stage' ? null : this.lens.preview(h)) ?? f.drawer.facts(h);
+    if (!raw || !raw.length) return;
+    const key = `${h.kind}|${h.id}|${part}|${h.x | 0}|${Math.floor(f.tl.clock / 1000)}`;
+    if (key !== this.key) { this.key = key; this.chart = this.build(h, part); this.lines = this.words(raw, part); }
+    const ch = this.chart, lines = this.lines;
+    if (!lines.length) return;
+    const MAXW = 300;
+    const wv = Math.min(MAXW, Math.max(CW, ...lines.map((l, i) => g.width(l, SMALL, i === 0)))) + 16;
+    const H = lines.length * 16 + 10 + (ch ? CH + 8 : 0);
+    const [bx, by] = place(h, f.px, f.py, wv, H, fr.width, fr.height);
     g.fillRect(bx, by, wv, H, BG);
     g.begin_(); g.rect(bx + 0.5, by + 0.5, wv - 1, H - 1); g.stroke(EDGE, 1);
-    lines.forEach((l, i) => g.text(l, bx + 8, by + 18 + i * 16, i ? C.ink2 : C.ink, SMALL, i === 0));
-    if (ch) paint(g, ch, bx + 8, by + lines.length * 16 + 10, wv - 16, CH, f.tl.playhead); // fab-w1
+    lines.forEach((l, i) => g.text(g.fit(l, SMALL, wv - 16, i === 0), bx + 8, by + 18 + i * 16, i ? C.ink2 : C.ink, SMALL, i === 0));
+    if (ch) paint(g, ch, bx + 8, by + lines.length * 16 + 8, wv - 16, CH, f.tl.playhead);
+  }
+  private lines: string[] = [];
+
+  /** fx-lens: the card's words: the title and ≤ 3 lines, the click hint saying what a press opens
+   *  now (the floor's hints predate the part lenses). */
+  private words(raw: string[], part: string): string[] {
+    const hint = HINT[part];
+    const out = raw.filter((l, i) => i === 0 || !/^(zoom or )?click:/.test(l)).slice(0, hint ? 3 : 4);
+    if (hint) out.push(hint);
+    else { const k = raw.findIndex((l, i) => i > 0 && /^(zoom or )?click:/.test(l)); if (k > 0 && out.length < 4) out.push(raw[k]!); }
+    return out;
   }
 
   /** The chart for a hit (null: the floor's words alone). */
-  private build(h: Hit): Chart | null {
+  private build(h: Hit, part: string): Chart | null {
     const L = this.lens, f = L.f, w = f.world, c = f.census, now = f.tl.playhead;
+    // fx-lens: the lanes' parts (floor.ts registers them as the group's dock / district)
+    if (part === 'road' || part === 'stripe' || (part === 'dock' && f.floor.on)) {
+      const lid = L.laneOf(h), info = f.floor.data.last.lanes.get(lid);
+      if (!info) return null;
+      const s = Array.from(info.push24), red = Array.from(info.fail24);
+      return { k: 'bars', s: half(s), col: floorGroups().hex(lid), red: half(red) };
+    }
+    if (part === 'cell') {
+      const lid = L.laneOf(h), row = L.rowAt(h), G = floorGroups();
+      const counts = new Map<string, number>();
+      for (const p of w.prs.values()) {
+        if (phaseRow(p) !== row || isBot(p) || G.laneOfRepo(p.repo) !== lid) continue;
+        const k = blocker(p);
+        counts.set(k, (counts.get(k) ?? 0) + 1);
+      }
+      return { k: 'stack', parts: BLOCKERS.filter(([k]) => counts.get(k)).map(([k, col]) => [counts.get(k) ?? 0, col] as [number, string]) };
+    }
+    if (part === 'rail') {
+      const lid = L.laneOf(h), G = floorGroups();
+      const s = new Array<number>(24).fill(0), red = new Array<number>(24).fill(0);
+      for (const r of w.repos.values()) {
+        if (G.laneOfRepo(r.id) !== lid) continue;
+        for (const d of r.main?.recent ?? []) {
+          if (d.at < now - 24 * HOUR || d.at > now) continue;
+          const k = 23 - Math.min(23, Math.floor((now - d.at) / HOUR));
+          s[k]++; if (d.state === 'failure' || d.state === 'error') red[k]++;
+        }
+      }
+      return { k: 'bars', s, col: '#8A8A8E', red };
+    }
+    if (part === 'city') {
+      const d = c.districts.find((x) => x.team === h.label.replace(/ \d+$/, ''));
+      if (!d) return null;
+      const n = { up: 0, degraded: 0, down: 0, unknown: 0 } as Record<string, number>;
+      for (const id of d.apps) { const a = w.apps.get(id); n[a?.health ?? 'unknown'] = (n[a?.health ?? 'unknown'] ?? 0) + 1; }
+      return { k: 'stack', parts: [[n.up, healthCol('up')], [n.degraded, C.packet], [n.down, C.red], [n.unknown, '#4E4E52']] };
+    }
     switch (h.kind) {
       case 'dock': case 'rail': {
         const gr = groupForOrg(w, h.id);
@@ -109,6 +159,10 @@ export class Hover {
         const gi = h.kind === 'engine' ? -1 : Number(h.id);
         const gr = c.groups[gi];
         if (!gr) return null;
+        const td = f.plant.hist.tide(gr.id); // fx-lens: the machine wall's own 24 h first
+        if (td && td.covered > 0) return { k: 'spark', s: Array.from(td.busy, (v) => (v === v ? v * 100 : null)), col: C.packet, max: 100 };
+        const hr = hostedRuns(w, gr, now);
+        if (hr) return { k: 'spark', s: hr.busy, col: C.packet, max: 100 };
         const bs = busySeries(L.hosts, gr, machineEngines(w, gr));
         if (bs) return { k: 'spark', s: bs, col: C.packet, max: 100 };
         return { k: 'progress', u: gr.slots ? gr.running.length / gr.slots : 0, over: false };
@@ -167,6 +221,41 @@ export class Hover {
       default: return null;
     }
   }
+}
+
+/** fx-lens: what a press on each part opens (the card's last line). */
+const HINT: Record<string, string> = {
+  road: 'click: the group across the floor', dock: 'click: the group across the floor', stripe: 'click: the group across the floor',
+  cell: 'click: these PRs, by age and blocker', rail: 'click: its main lines, red first', post: 'click: this repo across the floor',
+  row: 'click: this repo across the floor', car: 'click: this commit\'s journey', city: 'click: the district\'s scorecard',
+};
+
+/** fx-lens: 48 half-hour slots → 24 hours. */
+function half(a: number[]): number[] {
+  if (a.length !== 48) return a;
+  const o = new Array<number>(24).fill(0);
+  for (let i = 0; i < 48; i++) o[i >> 1] += a[i]!;
+  return o;
+}
+
+/** fx-lens: where the card goes. Beside its object, never over it: below it, else above, else to
+ *  its right, else its left (a big object, say a district or a road, wider or taller than a third
+ *  of the screen: beside the pointer, flipped to the roomier side); always inside the viewport,
+ *  clear of the top bar (40) and of the timeline strip (the bottom 92). */
+export function place(h: { x: number; y: number; w: number; h: number }, px: number, py: number, w: number, H: number, W: number, VH: number): [number, number] {
+  const top = 40, bot = VH - 92, M = 8;
+  const fitsX = (x: number) => Math.min(Math.max(M, x), W - w - M);
+  const big = h.w > W / 3 || h.h > VH / 3;
+  if (big) {
+    const x = px + 16 + w > W - M ? px - 16 - w : px + 16;
+    const y = py + 18 + H > bot ? py - 18 - H : py + 18;
+    return [fitsX(x), Math.min(Math.max(top, y), bot - H)];
+  }
+  if (h.y + h.h + 6 + H <= bot) return [fitsX(px - 24), h.y + h.h + 6];
+  if (h.y - 6 - H >= top) return [fitsX(px - 24), h.y - 6 - H];
+  const y = Math.min(Math.max(top, py - H / 2), bot - H);
+  if (h.x + h.w + 8 + w <= W - M) return [h.x + h.w + 8, y];
+  return [Math.max(M, h.x - 8 - w), y];
 }
 
 /** Paints a chart in a w × h box at (x, y). */
