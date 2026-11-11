@@ -193,7 +193,9 @@ export class Lenses {
     // one clock: act on it once, or Esc walks back two steps. A second press comes at a later
     // clock: every live frame advances it (app.ts draws), and the floor draws at least on its
     // 125 ms pulse.
-    const dup = k === this.lastKey && t === this.lastKeyT;
+    // fx-lens: in a browser the two handlers' clocks can differ by a frame: one press is one
+    // within 60 ms (no hand presses a key twice that fast; tests step the clock 300 ms between)
+    const dup = k === this.lastKey && Math.abs(t - this.lastKeyT) < 60;
     this.lastKey = k; this.lastKeyT = t;
     if (dup) { /* already handled */ } else if (k === 'Escape' || k === 'Backspace') {
       if (this.legend) this.legend = false;
@@ -374,6 +376,13 @@ export class Lenses {
   /** Hover: a quick preview, ≤ 3 short lines (null: the floor's own facts). */
   preview(h: Hit): string[] | null {
     const f = this.f, w = f.world, c = f.census, now = f.tl.playhead;
+    // fx-lens: a lane's dock door (an org's or a team's): the lane's own numbers, not its district's
+    const pt = this.part(h);
+    if (pt === 'dock' && f.floor.on) {
+      const lid = this.laneOf(h), G = floorGroups(), s = G.stats(lid), L = G.lane(lid);
+      if (s && L) return [`${L.short} dock`, `${s.pushes1h} pushes/h \u00b7 ${s.repos} repos`, `${s.prsOpen} open PRs \u00b7 ${s.redMains} red mains${s.stale ? ` \u00b7 ${s.stale} stale` : ''}`, 'click: the group across the floor'];
+    }
+    if (pt === 'gate') return ['merge gate', `${c.flow.merges} merged/h`, 'click: what landed today, by lane'];
     switch (h.kind) {
       case 'dock': case 'rail': {
         const d = c.docks.find((x) => x.org === h.id), r = c.rails.find((x) => x.org === h.id);
@@ -1734,7 +1743,7 @@ export class Lenses {
     g.stroke(withAlpha(floorGroups().hex(l.id), 0.9), Math.max(1.4, g.hair * 3));
     const spots = this.postSpots(), now = f.tl.playhead;
     g.begin_();
-    for (const p of st.posts ?? []) { const s = spots.get(p.repo); if (s) { const x = cam.x(s[0], s[1]), y = cam.y(s[0], s[1], s[2]); g.ctx.moveTo(x + 6, y - 1.5); g.ctx.ellipse(x, y - 1.5, 6, 4, 0, 0, TAU); } }
+    for (const p of st.posts ?? []) { const s = spots.get(p.repo); if (s) { const x = cam.x(s[0], s[1]), y = cam.y(s[0], s[1], s[2]); g.ctx.moveTo(x + 4, y - 1.5); g.ctx.ellipse(x, y - 1.5, 4, 2.8, 0, 0, TAU); } }
     g.stroke(C.red, 1.2);
     // the two longest red, named (the placer keeps them apart)
     const longest = [...(st.posts ?? [])].sort((a, b) => a.since - b.since).slice(0, 2);
@@ -1742,7 +1751,8 @@ export class Lenses {
       const s = spots.get(p.repo);
       if (!s) continue;
       const words = `${p.name} · ${ago(now - p.since)}`, wv = g.width(words, SMALL);
-      const at = this.fx.placeAt(Math.round(cam.x(s[0], s[1]) - wv / 2), Math.round(cam.y(s[0], s[1], s[2]) - 12), wv, 14, 30, true);
+      // below-right of its post, over the dimmed floor (the stage titles stand above the back lanes)
+      const at = this.fx.placeAt(Math.round(cam.x(s[0], s[1]) + 8), Math.round(cam.y(s[0], s[1], 0) + 16), wv, 14, 30, true);
       if (!at) continue;
       g.fillRect(at[0] - 3, at[1] - 11, wv + 6, 15, withAlpha(CARD, 0.9));
       g.runs([[p.name, C.redText], [` · ${ago(now - p.since)}`, C.ink3]], at[0], at[1], SMALL);
@@ -1803,7 +1813,7 @@ export class Lenses {
   private logAnchors(): void {
     const f = this.f;
     if (f.cam.zoom !== 1 || this.stack.length) return;
-    const key = `${f.cam.key}|${f.census.sig}|${this.parked.length}|${f.census.focal?.sha ?? ''}`;
+    const key = `${f.cam.key}|${f.census.sig}|${this.parked.length}|${f.census.focal?.sha ?? ''}|${f.floor.data.ver}`; // fx-lens: and the lanes' count (cells, posts)
     if (key === this.logged) return;
     this.logged = key;
     const out: Record<string, number[]> = {};
@@ -2172,24 +2182,27 @@ export class Lenses {
         line([[`${items.length}`, C.ink, true], [' deploys in 24 h · ', C.ink3], [`${ok} ok`, C.greenInk], [bad ? ` · ${bad} failed` : '', C.redText], [` · ${rel.apps.size} apps`, C.ink3]]);
         if (paint) this.ticks(g, items, x, y + h + 4, W, now);
         h += 34;
-        // fx-lens: how long each deploy took, by when it started (one dot each on 24 h; red failed)
-        const ds = st.dpts ?? [];
+        // fx-lens: how long each deploy took, by when it started (a dot each on 24 h, log time up;
+        // red failed). Deploys that report no duration are left out.
+        const ds = (st.dpts ?? []).filter((d) => d[1] >= 1000);
         if (ds.length >= 2) {
           const sorted = ds.map((d) => d[1]).sort((a, b) => a - b);
           const p50v = sorted[sorted.length >> 1], p90v = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.9))];
-          const top = Math.max(p90v * 1.6, 60_000);
+          const lo = sorted[0], hi = Math.max(lo * 4, sorted[sorted.length - 1]);
+          const ly = (d: number) => Math.log(Math.max(d, lo) / lo) / Math.log(hi / lo);
           line([['each deploy\'s time \u00b7 ', C.ink3], [`p50 ${ago(p50v)}`, C.ink, true], [` \u00b7 p90 ${ago(p90v)}`, C.ink2]]);
           if (paint) {
-            const H = 26, y0 = y + h + 4;
-            g.hline(x, x + W, y0 + H + 0.5, '#2A2A2C');
-            g.dash(true, 2, 3); g.hline(x, x + W, Math.round(y0 + H - (p50v / top) * H) + 0.5, '#5A5A5E'); g.dash(false);
+            const H = 28, y0 = y + h + 4, W2 = W - 40;
+            g.hline(x, x + W2, y0 + H + 0.5, '#2A2A2C');
+            g.dash(true, 2, 3); g.hline(x, x + W2, Math.round(y0 + H - ly(p50v) * H) + 0.5, '#6A6A6E'); g.dash(false);
             for (const [at, d, bad] of ds) {
-              const px = x + clamp(1 - (now - at) / (24 * HOUR), 0, 1) * W, py = y0 + H - Math.min(1, d / top) * H;
-              g.fillRect(px - 1, py - 1, 2.5, 2.5, bad ? C.red : d > top ? C.amberText : '#9A9AA0');
+              const px = x + clamp(1 - (now - at) / (24 * HOUR), 0, 1) * W2, py = y0 + H - ly(d) * H;
+              g.fillRect(px - 1, py - 1, 2.5, 2.5, bad ? C.red : d > p90v ? C.amberText : '#9A9AA0');
             }
-            g.text(ago(top), x + W, y0 + 7, C.ink3, SMALL, false, 'right');
+            g.text(ago(hi), x + W, y0 + 8, C.ink3, SMALL, false, 'right');
+            g.text(ago(lo), x + W, y0 + H + 1, C.ink3, SMALL, false, 'right');
           }
-          h += 34;
+          h += 36;
         }
         break;
       }

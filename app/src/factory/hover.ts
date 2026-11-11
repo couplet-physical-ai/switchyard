@@ -174,9 +174,14 @@ export class Hover {
         return s.length ? { k: 'bars', s: s.slice(0, 16), col: C.packet } : null;
       }
       case 'gate': {
-        const s = new Array<number>(24).fill(0);
-        for (const p of w.prs.values()) if (p.merged_at && p.merged_at > now - 24 * HOUR && p.merged_at <= now) s[23 - Math.min(23, Math.floor((now - p.merged_at) / HOUR))]++;
-        return { k: 'bars', s, col: '#9A9AA0' };
+        // fx-lens: what landed on main per hour today (red: it ran red), as the gate's lens tells it
+        const s = new Array<number>(24).fill(0), red = new Array<number>(24).fill(0);
+        for (const r of w.repos.values()) for (const d of r.main?.recent ?? []) {
+          if (d.at < now - 24 * HOUR || d.at > now) continue;
+          const k = 23 - Math.min(23, Math.floor((now - d.at) / HOUR));
+          s[k]++; if (d.state === 'failure' || d.state === 'error') red[k]++;
+        }
+        return { k: 'bars', s, col: '#9A9AA0', red };
       }
       case 'scanner': case 'return': {
         const all: number[] = new Array(48).fill(0), red: number[] = new Array(48).fill(0);
@@ -228,6 +233,7 @@ const HINT: Record<string, string> = {
   road: 'click: the group across the floor', dock: 'click: the group across the floor', stripe: 'click: the group across the floor',
   cell: 'click: these PRs, by age and blocker', rail: 'click: its main lines, red first', post: 'click: this repo across the floor',
   row: 'click: this repo across the floor', car: 'click: this commit\'s journey', city: 'click: the district\'s scorecard',
+  gate: 'click: what landed today, by lane',
 };
 
 /** fx-lens: 48 half-hour slots → 24 hours. */
