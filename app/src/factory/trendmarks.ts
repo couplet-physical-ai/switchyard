@@ -292,7 +292,14 @@ export function curb(g: Gfx, cam: Cam, m: Metric | null, a: Pt, b: Pt, o: CurbOp
 
 /** An ember asked for on the floor: a stage's zone (u0, v0)–(u1, v1), or a spot (u0, v0) of
  *  radius r (under one object: a dock, a district); `k` 0..1 its severity, at height z. */
-export type EmberAsk = { zone: boolean; u0: number; v0: number; u1: number; v1: number; r: number; k: number; z: number };
+export type EmberAsk = {
+  zone: boolean; u0: number; v0: number; u1: number; v1: number; r: number; k: number; z: number;
+  /** Set by a gate: the glow becomes a HALO hugging each of these floor rectangles (u0, v0, u1, v1
+   *  quads: the busy machines of a stage whose zone they fill, so a pool under them would hide). */
+  rects?: number[];
+};
+/** A halo's reach beyond its rectangle (world units) and its rings. */
+export const HALO_D = 30, HALO_RINGS = 5;
 
 /** The floor pass's embers (fx-engine, REVIEW-iter2 #6). While a pass is open (`begin`), `ember`
  *  and `emberAt` only ASK; `flush` then paints them under one rule set: an ember on an empty stage
@@ -316,8 +323,7 @@ export class EmberPass {
     this.asks.length = 0;
     let hot = -1;
     keep.forEach((a, i) => { if (hot < 0 || a.k > keep[hot]!.k) hot = i; });
-    keep.forEach((a, i) => { if (i !== hot) a.k *= 0.5; });
-    for (const a of keep) paintEmber(g, cam, a);
+    keep.forEach((a, i) => paintEmber(g, cam, a, strength(a.k) * (i === hot ? 1 : 0.5)));
     this.painted = keep;
   }
 }
@@ -334,9 +340,29 @@ function onScreen(cam: Cam, a: EmberAsk): boolean {
 /** The ember's glow: a pool of light lying ON the floor, an ellipse inscribed in its zone (the
  *  floor plane as the canvas matrix: iso.ts floorMatrix), brightest at the centre and fading to
  *  nothing at its edge. No rim (a rim reads as "selected"), no hard edge. */
-function paintEmber(g: Gfx, cam: Cam, a: EmberAsk): void {
+/** An ember's strength from its severity: never so faint it is not read (a worse-than-usual
+ *  stage must show), never past the full glow. */
+function strength(k: number): number { return k > 0 ? 0.4 + 0.6 * clamp(k, 0, 1) : 0; }
+
+function paintEmber(g: Gfx, cam: Cam, a: EmberAsk, k = strength(a.k)): void {
   const ctx = g.ctx as Ctx2D;
-  const k = clamp(a.k, 0, 1);
+  if (a.rects) {
+    // a halo: nested chamfered rings around each rectangle, the light pooled against its base and
+    // fading outward (the rectangle itself is drawn over it: the floor layer paints this first)
+    const R = a.rects;
+    for (let ring = 1; ring <= HALO_RINGS; ring++) {
+      const d = (HALO_D * ring) / HALO_RINGS, c = d * 0.55;
+      g.begin_();
+      for (let i = 0; i + 3 < R.length; i += 4) {
+        const u0 = R[i]! - d, v0 = R[i + 1]! - d, u1 = R[i + 2]! + d, v1 = R[i + 3]! + d;
+        const pts: Pt[] = [[u0 + c, v0], [u1 - c, v0], [u1, v0 + c], [u1, v1 - c], [u1 - c, v1], [u0 + c, v1], [u0, v1 - c], [u0, v0 + c]];
+        pts.forEach(([u, v], j) => { const x = cam.x(u, v), y = cam.y(u, v, a.z); if (j) g.line(x, y); else g.move(x, y); });
+        g.ctx.closePath();
+      }
+      g.fill(withAlpha(EMBER, 0.2 * k));
+    }
+    return;
+  }
   const cu = a.zone ? (a.u0 + a.u1) / 2 : a.u0, cv = a.zone ? (a.v0 + a.v1) / 2 : a.v0;
   const ru = a.zone ? Math.max(1, (a.u1 - a.u0) / 2) : a.r, rv = a.zone ? Math.max(1, (a.v1 - a.v0) / 2) : a.r * 0.8;
   const m = cam.floorMatrix(a.z);

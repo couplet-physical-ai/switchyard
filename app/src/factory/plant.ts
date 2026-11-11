@@ -52,7 +52,7 @@ import { F, SMALL, box, dur, pipeWords, poly, quad, ring } from './prims.ts';
 import type { Bay, FloorPass, Layer, LiveFrame, Pt } from './types.ts';
 import { heapsOf, tallest, type Heap } from './clusters.ts';
 import { beat } from './motion.ts';
-import { emberPass, metricOf, typical as typicalOf, type EmberAsk, type MetricKey } from './trendmarks.ts';
+import { HALO_D, emberPass, metricOf, typical as typicalOf, type EmberAsk, type MetricKey } from './trendmarks.ts';
 import { insights } from '../insights.ts';
 
 const {
@@ -440,21 +440,22 @@ export class Plant implements Layer {
   }
 
   /** The embers' gate (trendmarks.ts EmberPass): the stage's ember is dropped when the stage holds
-   *  nothing now, and the engine's lies under its busy machines only (never under an idle machine
-   *  or the hosted edge's empty floor). A dock's ember stands. */
+   *  nothing now; the engine's is a HALO hugging its busy machines only (a pool under them would
+   *  hide; never round an idle machine or the hosted edge's empty floor). A dock's ember stands. */
   private emberGate(a: EmberAsk): EmberAsk | null {
     if (!a.zone) return a;
     const stage = this.f.w2.worst.stage;
     if (!stage || this.stageEmpty(stage)) return null;
     if (stage !== '06') return a;
-    let v0 = Infinity, v1 = -Infinity;
+    const rects: number[] = [];
     const busy = this.gateHold.held.split('.')[1] ?? '';
     this.f.census.groups.forEach((g, gi) => {
       if (busy ? busy[gi] !== '1' : !g.running.length) return;
-      const [, mv, , mdv] = this.shell(gi);
-      v0 = Math.min(v0, mv - 10); v1 = Math.max(v1, mv + mdv + 14);
+      const [mu, mv, mdu, mdv] = this.shell(gi);
+      // the static floor's footprint (the edge's live extension is not on it)
+      rects.push(mu, mv, this.isEdge(gi) ? ENG_U0 + Math.max(10, this.edgeDu) : mu + mdu, mv + mdv);
     });
-    return v1 > v0 ? { ...a, v0: Math.max(a.v0, v0), v1: Math.min(a.v1, v1) } : null;
+    return rects.length ? { ...a, rects } : null;
   }
 
   private engineBlock(g: Gfx, gr: Group, v0: number, gi: number, lo = false): void {
@@ -612,13 +613,28 @@ export class Plant implements Layer {
   private emberHits(): void {
     const P = emberPass.painted, cam = this.f.cam;
     if (!P.length) return;
-    const key = `${cam.ver}|${P.length}|${P[0]!.k}|${insights().ver('trends')}`;
+    const key = `${cam.ver}|${P.length}|${P[0]!.k}|${this.gateHold.held}|${this.edgeDu}|${insights().ver('trends')}`;
     if (key !== this.ehKey) {
       this.ehKey = key;
       this.ehBoxes = [];
       for (const a of P) {
         const [id, label] = this.emberWords(a);
         if (!label) continue;
+        if (a.rects) {
+          // a halo: its band round each rectangle, as slices along v (the machine's own hit is over
+          // its middle, so the bare glowing floor round it answers)
+          const R = a.rects, d = HALO_D;
+          for (let i = 0; i + 3 < R.length; i += 4) {
+            const u0 = R[i]! - d, v0 = R[i + 1]! - d, u1 = R[i + 2]! + d, v1 = R[i + 3]! + d;
+            for (let s = 0; s < 6; s++) {
+              const va = v0 + ((v1 - v0) * s) / 6, vb = v0 + ((v1 - v0) * (s + 1)) / 6;
+              const xs = [cam.x(u0, va), cam.x(u1, va), cam.x(u0, vb), cam.x(u1, vb)], ys = [cam.y(u0, va, a.z), cam.y(u1, va, a.z), cam.y(u0, vb, a.z), cam.y(u1, vb, a.z)];
+              const x0 = Math.min(...xs), y0 = Math.min(...ys);
+              this.ehBoxes.push({ x: x0, y: y0, w: Math.max(...xs) - x0, h: Math.max(...ys) - y0, kind: 'ember', id, label });
+            }
+          }
+          continue;
+        }
         const cu = a.zone ? (a.u0 + a.u1) / 2 : a.u0, cv = a.zone ? (a.v0 + a.v1) / 2 : a.v0;
         const ru = (a.zone ? (a.u1 - a.u0) / 2 : a.r) * 0.8, rv = (a.zone ? (a.v1 - a.v0) / 2 : a.r * 0.8) * 0.8;
         // the glow's inner ellipse as slices along v, each a floor rectangle's screen box
@@ -795,15 +811,16 @@ export class Plant implements Layer {
     }
     const E = this.arcEnds;
     if (!E.length) return;
+    // each arc one quadratic Bézier (two calls); its s0..s1 stretch is a Bézier too (de Casteljau)
     const path = (x1: number, y1: number, s0: number, s1: number) => {
       const lift = clamp(Math.hypot(x1 - x0, y1 - y0) * 0.22, 24, 150);
       const cx = (x0 + x1) / 2, cy = Math.max(84, Math.min(y0, y1) - lift);
-      const N = 18;
-      for (let i = 0; i <= N; i++) {
-        const s = s0 + ((s1 - s0) * i) / N, a = (1 - s) * (1 - s), b = 2 * (1 - s) * s, c2 = s * s;
-        const x = a * x0 + b * cx + c2 * x1, y = a * y0 + b * cy + c2 * y1;
-        if (i) g.line(x, y); else g.move(x, y);
-      }
+      const at = (s: number, p0: number, p1: number, p2: number) => (1 - s) * (1 - s) * p0 + 2 * (1 - s) * s * p1 + s * s * p2;
+      const ax = at(s0, x0, cx, x1), ay = at(s0, y0, cy, y1), bx = at(s1, x0, cx, x1), by = at(s1, y0, cy, y1);
+      // the control point of the stretch: the tangent at s0 met with the one at s1
+      const qx = (1 - s0) * ((1 - s1) * x0 + s1 * cx) + s0 * ((1 - s1) * cx + s1 * x1);
+      const qy = (1 - s0) * ((1 - s1) * y0 + s1 * cy) + s0 * ((1 - s1) * cy + s1 * y1);
+      g.move(ax, ay); g.ctx.quadraticCurveTo(qx, qy, bx, by); g.ops++;
     };
     g.begin_();
     for (let i = 0; i < E.length; i += 2) path(E[i]!, E[i + 1]!, 0, 1);

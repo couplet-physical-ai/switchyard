@@ -677,7 +677,10 @@ export class Lenses {
     if (!heaps.length) return;
     const v0 = V - 4, v1 = V + 4, z0 = 1.2, b = f.bD;
     for (const h of heaps) b.add(h.u0, v0, h.u1 - h.u0, v1 - v0, h.h, z0);
-    b.flush(g, cam, F_RED, '#8A3838', '#B04848', withAlpha('#3A1717', 0.9), Math.max(1, g.hair * 1.2), 3);
+    // perf: small on screen (fleet zoom), a heap is its silhouette and top, no edges (half the calls)
+    const small = 8 * cam.s < 11;
+    if (small) b.flush(g, cam, F_RED, '#9A4040', '#9A4040', '', 1, 2);
+    else b.flush(g, cam, F_RED, '#8A3838', '#B04848', withAlpha('#3A1717', 0.9), Math.max(1, g.hair * 1.2), 3);
     const unitPx = (heaps[0]?.unit ?? 0) * cam.s;
     // the layers' seams across the front and the side (one failure each), and flaky layers hatched
     if (unitPx >= 3) {
