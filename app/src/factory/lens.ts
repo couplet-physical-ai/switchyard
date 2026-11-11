@@ -67,6 +67,7 @@ type Metrics = {
 
 // palette: the lens's outline is ink; a compare lights its two sides in two group hues
 // (OKLCH L .72 C .07 at 250° and 310°: away from amber, red and the green-gray of "ok").
+const F_RED = '#E06464'; // the factory's red crate top (factory.ts F.redTop)
 const LIT = '#F2F2F0';
 export const HUE_A = '#83A8CF';
 export const HUE_B = '#B299C6';
@@ -97,7 +98,7 @@ export class Lenses {
   private story: Story | null = null;
   private relVer = -1;
   private relAt = -1e12;
-  private parkedKey = '';
+  parkedKey = '';
   private tick: { x: number; y: number; w: number; h: number; now: number } | null = null;
 
   constructor(readonly f: Factory) {}
@@ -597,8 +598,17 @@ export class Lenses {
 
   private drawParked(g: Gfx): void {
     const f = this.f, P = f.plan, cam = f.cam, fx = this.fx;
+    // perf: small on screen (fleet zoom), a parked failure is a red square in ONE path (n + 2 calls,
+    // not ~18 per crate: on native every canvas call is a host round trip); zoomed in, a crate
+    const small = 8 * cam.s < 11;
+    if (small) {
+      const r = Math.max(2.5, 4 * cam.s);
+      g.begin_();
+      for (const x of this.parked) g.ctx.rect(cam.x(x.u, P.RETURN_V) - r, cam.y(x.u, P.RETURN_V, 6) - r, r * 2, r * 2);
+      if (this.parked.length) g.fill(F_RED);
+    }
     for (const x of this.parked) {
-      fx.crate(g, x.u, P.RETURN_V, 8, true, false);
+      if (!small) fx.crate(g, x.u, P.RETURN_V, 8, true, false);
       fx.hit(cam.x(x.u, P.RETURN_V) - 7, cam.y(x.u, P.RETURN_V, 8) - 7, 14, 14, 'failure', x.id, `${repoName(x.repo)} · ${x.step}`);
     }
   }

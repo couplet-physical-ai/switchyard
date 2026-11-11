@@ -38,6 +38,7 @@ type Digest = Changes & {
   failCount: number; mergedCount: number;
 };
 
+const GLOW_MAX = 48;
 const FRESH_MS = 120_000;
 const OK = '#7FC48F';
 const SMALL = 12;
@@ -61,6 +62,7 @@ export class Coffee {
   dg: Digest = emptyDigest();
   private dgVer = -1;
   private dgAt = -1e12;
+  private dgN = 0;
   /** Fresh thing → the module clock when it was first drawn (its pulse fades from then). */
   private seen = new Map<string, number>();
   /** The queue's length every 15 s of the world, the last 5 minutes (a growing queue jams). */
@@ -160,7 +162,7 @@ export class Coffee {
       this.job = this.digest(w, f.tl.playhead);
     }
     const r = this.job.next();
-    if (r.done) { this.job = null; if (r.value) this.dg = r.value; }
+    if (r.done) { this.job = null; if (r.value) { this.dg = r.value; this.dgN++; } }
   }
 
   private job: Generator<void, Digest | null, void> | null = null;
@@ -257,6 +259,8 @@ export class Coffee {
   /** Where each repo's newest car (and newest culprit) sits on its rail, and each car by key. */
   carSpots(): { carAt: Map<string, [number, number]>; repoAt: Map<string, [number, number]>; culpritAt: Map<string, [number, number]> } {
     const c = this.f.census, P = this.f.plan;
+    // perf: the cars move only when the census recounts (≤ 1/s); one Map set per recount, not per frame
+    if (this.spotsAt === c.at && this.spots) return this.spots;
     const carAt = new Map<string, [number, number]>(), repoAt = new Map<string, [number, number]>(), culpritAt = new Map<string, [number, number]>();
     c.rails.forEach((r, i) => {
       const n = r.cars.length;
@@ -269,42 +273,71 @@ export class Coffee {
         if (car.culprit) culpritAt.set(car.repo, at);
       });
     });
-    return { carAt, repoAt, culpritAt };
+    this.spotsAt = c.at; this.spots = { carAt, repoAt, culpritAt };
+    return this.spots;
   }
+  private spotsAt = -1;
+  private spots: { carAt: Map<string, [number, number]>; repoAt: Map<string, [number, number]>; culpritAt: Map<string, [number, number]> } | null = null;
+  /** perf: the fresh items' screen spots, rebuilt only when the census, the digest or the camera moved. */
+  private glowKey = '';
+  private glowItems: [string, number, number, number, string][] = [];
+  private glowSeenFor = '';
+  private glowSeen: number[] = [];
+  private glowCols: string[] = [];
+  private glowColOf: number[] = [];
+  private glowBuckets: number[][] = [];
 
   /** Fresh things pulse where they are, on the shared beat, fading over ~2 min once seen. */
   private freshGlows(g: Gfx, t: number): void {
     const f = this.f, P = f.plan, cam = f.cam, fx = f.fx, d = this.dg;
+    const gk = `${f.census.at}|${cam.ver}|${this.dgN}|${f.lens.parked.length}|${f.lens.parkedKey}`;
+    if (gk !== this.glowKey) {
+    this.glowKey = gk;
     const { carAt, repoAt, culpritAt } = this.carSpots();
-    const items: [string, number, number, number, string][] = []; // key, x, y, r, colour
+    const items: [string, number, number, number, string][] = (this.glowItems = []); // key, x, y, r, colour
     const add = (key: string, u: number, v: number, z: number, r: number, col: string) => items.push([key, cam.x(u, v), cam.y(u, v, z), r, col]);
     for (const id of d.newRed) { const at = culpritAt.get(id) ?? repoAt.get(id); if (at) add(`red:${id}`, at[0], at[1], 5, 6, C.red); }
-    for (const id of d.fixed) { const at = repoAt.get(id); if (at) add(`fix:${id}`, at[0], at[1], 5, 6, OK); }
-    for (const k of d.merged) { const at = carAt.get(k); if (at) add(`mrg:${k}`, at[0], at[1], 5, 5, C.ink2); }
     const parked = new Map(f.lens.parked.map((x) => [x.id, x.u]));
     for (const id of d.failed) { const u = parked.get(id); if (u !== undefined) add(`fail:${id}`, u, P.RETURN_V, 8, 6, C.red); }
+    for (const id of d.fixed) { const at = repoAt.get(id); if (at) add(`fix:${id}`, at[0], at[1], 5, 6, OK); }
     const down = new Set(d.down), rec = new Set(d.recovered);
     for (const id of new Set([...d.deployApps, ...d.down, ...d.recovered])) {
       const b = fx.blockAt.get(id);
       if (!b) continue;
       add(`app:${id}`, b.u + b.d / 2, b.v + b.d / 2, b.h + 1.5, 4, down.has(id) ? C.red : rec.has(id) ? OK : '#9FB8A6');
     }
-    if (!items.length) return;
-    const b = beat(t), ph = beatPhase(t);
-    const byCol = new Map<string, number[]>();
-    for (const [key, x, y, r, col] of items) {
-      let s = this.seen.get(key);
-      if (s === undefined) { s = t; this.seen.set(key, s); }
-      const a = 1 - (t - s) / FRESH_MS;
-      if (a <= 0) continue;
-      const k = `${col}|${Math.ceil(a * 4) / 4}`;
-      let l = byCol.get(k); if (!l) byCol.set(k, (l = []));
-      l.push(x, y, r);
+    for (const k of d.merged) { const at = carAt.get(k); if (at) add(`mrg:${k}`, at[0], at[1], 5, 5, C.ink2); }
+    // perf + calm: at most GLOW_MAX pulse, most important first (new reds, failures, fixes, apps, merges)
+    if (items.length > GLOW_MAX) items.length = GLOW_MAX;
     }
-    if (this.seen.size > 4000) this.seen.clear();
-    for (const [k, xy] of byCol) {
-      const [col, qs] = k.split('|');
-      const q = Number(qs);
+    const items = this.glowItems;
+    if (!items.length) return;
+    // perf: each item's first-seen time resolved once per rebuild; per frame only numbers, no
+    // strings or Maps. Expired items drop out of the list for good.
+    if (this.glowSeenFor !== this.glowKey) {
+      this.glowSeenFor = this.glowKey;
+      this.glowSeen = items.map(([key]) => { let s0 = this.seen.get(key); if (s0 === undefined) { s0 = t; this.seen.set(key, s0); } return s0; });
+      this.glowCols = [...new Set(items.map((it) => it[4]))];
+      this.glowColOf = items.map((it) => this.glowCols.indexOf(it[4]));
+      if (this.seen.size > 4000) this.seen.clear();
+    }
+    const b = beat(t), ph = beatPhase(t);
+    const nc = this.glowCols.length;
+    const buckets: number[][] = this.glowBuckets;
+    for (let i = 0; i < nc * 4; i++) { if (buckets[i]) buckets[i].length = 0; else buckets[i] = []; }
+    let live = 0;
+    for (let i = 0; i < items.length; i++) {
+      const a = 1 - (t - this.glowSeen[i]) / FRESH_MS;
+      if (a <= 0) continue;
+      live++;
+      const it = items[i];
+      buckets[this.glowColOf[i] * 4 + Math.min(3, Math.ceil(a * 4) - 1)].push(it[1], it[2], it[3]);
+    }
+    if (!live) { this.glowItems = []; return; }
+    for (let ci = 0; ci < nc; ci++) for (let qi = 0; qi < 4; qi++) {
+      const xy = buckets[ci * 4 + qi];
+      if (!xy.length) continue;
+      const col = this.glowCols[ci], q = (qi + 1) / 4;
       g.begin_();
       for (let i = 0; i < xy.length; i += 3) g.circle(xy[i], xy[i + 1], xy[i + 2] * (1.3 + 0.5 * b));
       g.fill(withAlpha(col, 0.18 * q));
