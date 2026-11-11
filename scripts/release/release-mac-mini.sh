@@ -29,8 +29,6 @@ timeout 7200 "${SSH[@]}" "set -e
   export EXACT_DIR='$MINI_DIR/exact'
   git -C \"\$EXACT_DIR\" fetch -q origin && git -C \"\$EXACT_DIR\" checkout -q '$pin'
   cd '$src'
-  # git archive has no .git: give build-macos.sh a build number
-  export SWITCHYARD_BUILD_NUMBER=\$(date +%s)
   scripts/release/build-macos.sh --mode '$MODE' --version '$V'
   scripts/release/package-macos.sh '$V'
   if [ '$MODE' = app ]; then EXACT2=\$EXACT_DIR app/scripts/build.sh test macos; fi"
