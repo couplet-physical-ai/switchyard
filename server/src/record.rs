@@ -22,6 +22,7 @@ use tokio::sync::broadcast;
 use tracing::info;
 
 use crate::hub::Hub;
+use crate::model::Kind;
 use crate::runtime::Adapters;
 use crate::wire::{WireState, diff, dots_between, kind_of};
 
@@ -620,6 +621,11 @@ impl Sanitizer {
                             .collect()
                     })
                     .unwrap_or_default();
+                for k in ["line", "signature"] {
+                    if let Some(t) = v.get(k).and_then(Value::as_str).map(neutral_text) {
+                        v[k] = Value::from(t);
+                    }
+                }
                 if let Some(private) = repos.iter().find(|r| !self.is_public(r)).cloned()
                     && let Some(line) = v.get("line").and_then(Value::as_str).map(str::to_string)
                 {
@@ -747,21 +753,14 @@ impl Sanitizer {
     }
 
     pub fn snapshot(&mut self, snap: &mut Value) {
-        // Apps first so app ids follow their repos.
-        let order = [
-            ("apps", "app"),
-            ("repos", "repo"),
-            ("commits", "commit"),
-            ("pipelines", "pipeline"),
-            ("prs", "pr"),
-            ("deploys", "deploy"),
-            ("engines", "engine"),
-            ("queues", "queue"),
-            ("lanes", "lane"),
-            ("orgs", "org"),
-            ("watcher", "watcher"),
-            ("stats", "stats"),
-        ];
+        // Apps first so app ids follow their repos; then every kind (a new kind can never
+        // pass through unsanitized).
+        let mut order: Vec<(&str, &str)> = vec![("apps", "app")];
+        for k in Kind::ALL {
+            if k != Kind::App {
+                order.push((k.snapshot_field(), k.as_str()));
+            }
+        }
         for (field, kind) in order {
             match snap.get_mut(field) {
                 Some(Value::Array(a)) => {
@@ -963,9 +962,9 @@ const LONG_LIVED: [&str; 8] = [
 pub fn neutral_hosts(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
-    while let Some(i) = rest.find("https://") {
-        out.push_str(&rest[..i + 8]);
-        rest = &rest[i + 8..];
+    while let Some(i) = rest.find("://") {
+        out.push_str(&rest[..i + 3]);
+        rest = &rest[i + 3..];
         let end = rest
             .find(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '-'))
             .unwrap_or(rest.len());
@@ -987,6 +986,47 @@ pub fn neutral_hosts(s: &str) -> String {
         rest = &rest[end..];
     }
     out.push_str(rest);
+    out
+}
+
+/// [`neutral_hosts`] for free text (log lines): also internal host names without a scheme.
+pub fn neutral_text(s: &str) -> String {
+    let mut out = neutral_hosts(s);
+    for suf in [
+        ".lab.example.com",
+        ".example.com",
+        ".dev.example.com",
+    ] {
+        while let Some(i) = out.find(suf) {
+            let start = out[..i]
+                .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '-'))
+                .map_or(0, |j| j + 1);
+            let first = out[start..i].split('.').next().unwrap_or("").to_string();
+            let first = if first.is_empty() {
+                "internal".to_string()
+            } else {
+                first
+            };
+            out.replace_range(start..i + suf.len(), &format!("{first}.example.com"));
+        }
+    }
+    // E-mail addresses (test parameters, owners) become a neutral one.
+    let mut from = 0;
+    while let Some(k) = out[from..].find('@').map(|k| k + from) {
+        let word = |c: char| c.is_ascii_alphanumeric() || "._%+-".contains(c);
+        let start = out[..k].rfind(|c: char| !word(c)).map_or(0, |j| j + 1);
+        let end = out[k + 1..]
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '-'))
+            .map_or(out.len(), |j| k + 1 + j);
+        let domain = out[k + 1..end].trim_end_matches('.');
+        if start < k && domain.contains('.') {
+            let end = k + 1 + domain.len();
+            out.replace_range(start..end, "user@example.com");
+            from = start + "user@example.com".len();
+        } else {
+            from = k + 1;
+        }
+    }
     out
 }
 
@@ -1034,6 +1074,24 @@ mod tests {
             assert_eq!(neutral_hosts(keep), keep);
         }
         assert!(check_clean(b"https://ci.dev.example.com/x").is_err());
+        let plain = format!(
+            "POST http://prov-api.{}.example.com:8000/api failed",
+            "lab"
+        );
+        assert_eq!(
+            neutral_text(&plain),
+            "POST http://prov-api.example.com:8000/api failed"
+        );
+        let bare = format!("dial prov-api.{}.example.com:8000: refused", "lab");
+        assert_eq!(
+            neutral_text(&bare),
+            "dial prov-api.example.com:8000: refused"
+        );
+        assert!(check_clean(neutral_text(&bare).as_bytes()).is_ok());
+        assert_eq!(
+            neutral_text("FAILED t.py::test_x[owner@example.com] and a@b.io. @here"),
+            "FAILED t.py::test_x[user@example.com] and user@example.com. @here"
+        );
         assert!(check_clean(neutral_hosts("https://ci.dev.example.com/x").as_bytes()).is_ok());
     }
 
