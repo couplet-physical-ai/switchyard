@@ -17,6 +17,7 @@ import { PrsModel } from './src/table/prs.ts';
 import { Timeline } from './src/timeline.ts';
 import type { Frame as WireFrame } from './src/wire.ts';
 import { Yard } from './src/yard/draw.ts';
+import { Factory } from './src/factory/factory.ts';
 import { isRed } from './src/yard/layout.ts';
 import { dotLine, fmtDur } from './src/yard/paint.ts';
 import { buildingIds, queueTruth } from './src/yard/select.ts';
@@ -41,7 +42,9 @@ let demo: DemoUpstream | null = null;
 let seenEpoch = -1;
 /** The yard: scene, LOD, frame budget, packet pool (src/yard/draw.ts). */
 const yard = new Yard(tl);
-tl.listener = (e, w) => yard.pool.onEvent(e, w, clock);
+/** The factory floor (src/factory/): the default view, the same world. */
+const factory = new Factory(tl);
+tl.listener = (e, w) => { yard.pool.onEvent(e, w, clock); factory.onEvent(e, w, clock); };
 /** The canvas tables (src/table/): one per view, alive across visits (scroll and focus kept). */
 const mlTable = new MainlinesModel();
 const prTable = new PrsModel();
@@ -251,7 +254,7 @@ function overview(): Result<'overview'> {
     status: w.loaded ? 'ready' : 'waiting', mode: tl.mode, speed: tl.speed, sentence, summary, layoutKey: `${S?.key ?? ''}|${yard.budget.quality >= 3 ? 'lo' : 'hi'}`, repos: w.repos.size,
     building, queued, red, appsUp, appsTotal: w.apps.size, behind, seq: w.seq,
     tick: Math.floor(clock / 250), host: hostLabel(), dial, dialPad: Math.round(((S?.m ?? 16) + 22) * k), dialFont: Math.round(11 * k), dialH: Math.round(34 * k),
-    hud: yard.hud.on, stress: yard.stress.on, quality: yard.budget.quality,
+    hud: yard.hud.on, stress: yard.stress.on, quality: yard.budget.quality, facKey: factory.floorKey,
   };
 }
 
@@ -374,6 +377,18 @@ export const sources: Sources = {
     const h = yard.hoverAt(x < 0 ? -1 : x / k, y / k, clock);
     return h ? { kind: h.kind, id: h.id, label: h.label, route: '' } : { kind: '', id: '', label: '', route: '' };
   },
+  facPointer: ([kind, x, y, buttons]) => {
+    const h = factory.pointer(String(kind), Number(x), Number(y), Number(buttons) || 0, clock);
+    // a newly picked crate: fetch its journey for the drawer (a source may fetch; a draw never does)
+    const sel = factory.selected;
+    if (sel && factory.journeyFor !== sel && up) {
+      const cm = factory.selCommit();
+      factory.journeyFor = sel;
+      if (cm) void cached(`j:${cm.repo}@${cm.sha}`, () => up!.journey(cm.repo, cm.sha)).then((j) => { if (factory.journeyFor === sel) factory.journey = j; }, () => {});
+    }
+    factory.offsetMin = yard.offsetMin;
+    return { kind: h?.kind ?? '', id: h?.id ?? '', label: h?.label ?? '', route: `${factory.cam.key}|${factory.selected}` };
+  },
   devToggle: ([what, on]) => {
     if (what === 'hud') yard.hud.on = on === 1;
     else if (what === 'stress') yard.setStress(on === 1);
@@ -424,7 +439,7 @@ const NO_HIT = { kind: '', id: '', label: '', route: '' };
 const EMPTY_OV: Result<'overview'> = {
   status: 'waiting', mode: 'live', speed: 1, sentence: 'waiting for the fleet', summary: 'The delivery yard, waiting for data.', layoutKey: '', repos: 0,
   building: 0, queued: 0, red: 0, appsUp: 0, appsTotal: 0, behind: '', seq: 0,
-  tick: 0, host: '', dial: '1 hour, sped up', dialPad: 38, dialFont: 11, dialH: 34, hud: false, stress: false, quality: 0,
+  tick: 0, host: '', dial: '1 hour, sped up', dialPad: 38, dialFont: 11, dialH: 34, hud: false, stress: false, quality: 0, facKey: '',
 };
 const EMPTY_FLEET = { apps: [], engines: [], queues: [], stats: [], up: 0, total: 0, down: 0, degraded: 0, attention: [], behindN: 0, never: 0, hasLatency: false, watcher: '', watcherTripped: false };
 
@@ -515,7 +530,7 @@ export const answer: Answer = ((source: keyof Sources, args: unknown, store: Sto
 
 // ---- canvases ------------------------------------------------------------------------------
 /** Surface → its arity (Contract passes that many arguments); the tables' lifetime is 9. */
-export const surfaces: Record<string, number> = { yardStatic: 2, yardInfo: 2, yardLive: 3, yardTop: 2, mainlinesTable: 9, prsTable: 9 };
+export const surfaces: Record<string, number> = { factoryFloor: 3, factoryLive: 4, yardStatic: 2, yardInfo: 2, yardLive: 3, yardTop: 2, mainlinesTable: 9, prsTable: 9 };
 
 /** The route on top (`viewOnTop`). The yard stays mounted under every other view; its live
  *  layer animating there cost 3-4× the ops of the view on top. Covered, it is not drawn (the
@@ -524,6 +539,7 @@ let topView = '';
 
 export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame): boolean {
   if ((surface === 'yardLive' || surface === 'yardInfo' || surface === 'yardTop') && topView !== '' && topView !== 'yard') return true;
+  if (surface === 'factoryLive' && topView !== '' && topView !== 'factory') return true;
   try {
     return drawSurface(surface, args, ctx, frame);
   } catch (e) {
@@ -540,6 +556,17 @@ export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
 }
 
 function drawSurface(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame): boolean {
+  if (surface === 'factoryFloor') {
+    advance(frame.time, false);
+    factory.wheel(Number(args[2]) || 0);
+    const flying = factory.cam.step(frame.time);
+    return factory.drawFloor(ctx, frame, clock) || flying;
+  }
+  if (surface === 'factoryLive') {
+    advance(frame.time, false);
+    factory.reduced = args[0] === 'reduced';
+    return factory.drawLive(ctx, frame, clock, Number(args[2]) || 0);
+  }
   if (surface === 'yardStatic') {
     advance(frame.time, false);
     yard.drawStatic(ctx, frame, clock);

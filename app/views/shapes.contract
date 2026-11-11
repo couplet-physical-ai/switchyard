@@ -60,6 +60,7 @@ shape Overview
   hud: bool
   stress: bool
   quality: number
+  facKey: string
 
 shape SearchHit
   kind: string

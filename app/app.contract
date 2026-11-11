@@ -14,7 +14,8 @@ font "Commit Mono"
   700 = "assets/fonts/CommitMono-700.ttf"
 
 routes nav
-  yard "/"
+  factory "/"
+  yard "/yard"
   mainlines "/mainlines"
   prs "/prs"
   fleet "/fleet"
@@ -65,6 +66,7 @@ component App
   state retries = 0
   state palSel = 0
   state picked = ""
+  state facWheel = 0
   resource tok = loadToken(tokGen) as shape Tok else empty(token="", has=false)
   resource link = parseLink(searchParam(top(nav), "u"), searchParam(top(nav), "server"), searchParam(top(nav), "token")) as shape Link else empty(server="", token="", ok=false)
   resource conn = connect(server, tok.token, gen) with time.epochAtZero, time.utcOffset as shape Conn else empty(ok=false, status="connecting", error="", seq=0, label="", kind="", needsSetup=false, signIn="")
@@ -75,6 +77,7 @@ component App
   mutation replayed as shape Ack refreshes ov then afterReplay
   mutation hit as shape Hit then afterHit
   mutation hov as shape Hit
+  mutation fac as shape Hit then afterFac
   mutation saved as shape Ack then afterSave
   derive reduced = media.prefersReducedMotion
   derive here = top(nav).name
@@ -82,6 +85,7 @@ component App
   derive hitNow = match hit { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }
   derive replayOk = match replayed { case some(r) => r.ok, case none => false }
   derive hovering = match hov { case some(h) => h.kind != "", case none => false }
+  derive facNow = match fac { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }
   members "./views/mainlines.contract"
   members "./views/prs.contract"
   members "./views/fleet.contract"
@@ -118,7 +122,7 @@ component App
   action back
     nav = back(nav)
   action goTo(name: string)
-    nav = go(nav, name == "yard" ? "/" : `/${name}`)
+    nav = go(nav, name == "factory" ? "/" : `/${name}`)
 
   // Time controls (DESIGN.md, "Time")
   action pause
@@ -156,6 +160,22 @@ component App
   action leaveYard
     if hovering
       send hov = hoverAt(-1, -1)
+
+  // The factory floor: drag pans, the wheel zooms, a click picks (a crate lights its journey)
+  action facDown(e: PointerEvent)
+    send fac = facPointer("down", e.offsetX, e.offsetY, e.buttons)
+  action facMove(e: PointerEvent)
+    send fac = facPointer("move", e.offsetX, e.offsetY, e.buttons)
+  action facUp(e: PointerEvent)
+    send fac = facPointer("up", e.offsetX, e.offsetY, e.buttons)
+  action facWheeled(e: WheelEvent)
+    facWheel = facWheel + e.deltaY
+    preventDefault()
+  action afterFac
+    if facNow.kind == "replay" or facNow.kind == "replay24"
+      startReplay()
+    else if facNow.kind == "live"
+      goLive()
 
   // Developer: the HUD (⌘⇧D) and stress mode (a 10× synthetic fleet for the renderer)
   action toggleHud
@@ -230,17 +250,15 @@ component App
       for e in stack(nav) key=e.id
         column navigationKey=`${e.id}` position="absolute" inset=0 display="flex" flex-direction="column"
           TopBar(here=e.name, goTo=goTo, openPalette=openPalette)
-          if e.name == "yard"
-            column flex=1 min-height=0 position="relative" testId="yard"
-              canvas surface=yardStatic(ov.layoutKey, ov.stress) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-static"
-              canvas surface=yardInfo(ov.layoutKey, ov.tick) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-info"
-              canvas surface=yardLive(reduced ? "reduced" : "full", picked, ov.tick) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-live"
-              canvas surface=yardTop(ov.hud, hovering) position="absolute" left=0 top=0 width="100%" height="100%"
-                role="img" aria-label=ov.summary pointerdown=pressYard pointermove=moveYard touch-action="none" testId="yard-top"
-              // The dial is the replay: the canvas draws its face, this button is its words and its press.
+          if e.name == "factory"
+            column flex=1 min-height=0 position="relative" testId="factory"
+              canvas surface=factoryFloor(ov.facKey, facNow.route, facWheel) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="factory-floor"
+              canvas surface=factoryLive(reduced ? "reduced" : "full", facNow.route, facWheel, ov.tick) position="absolute" left=0 top=0 width="100%" height="100%"
+                role="img" aria-label=ov.summary pointerdown=facDown pointermove=facMove pointerup=facUp wheel=facWheeled touch-action="none" testId="factory-live"
+              // The strip's "last hour" is this button too (its words and its press, for tests and keyboards).
               button appearance="none" press=startReplay testId="replay" aria-label="Replay the last hour, sped up" disabled=(ov.mode == "replay" or not conn.ok)
-                position="absolute" top=0 right=0 height=(ov.dialH > 0 ? ov.dialH : 26) padding-left=12 padding-right=(ov.dialPad > 0 ? ov.dialPad : 38) display="flex" align-items="center"
-                text (ov.dial != "" ? ov.dial : "1 hour, sped up") font-size=(ov.dialFont > 0 ? ov.dialFont : 11) color=(ov.mode == "replay" or ov.mode == "paused" ? "sy.amber-text" : "sy.ink3")
+                position="absolute" bottom=0 left=0 width=1 height=1 opacity=0
+                text "last hour"
               if not conn.ok and conn.status != "connecting"
                 column position="absolute" inset=0 align-items="center" justify-content="center" background-color="sy.canvas" gap=14 testId="setup"
                   text (conn.needsSetup ? "Connect Switchyard to a server" : "The server is not answering") font-weight=700 font-size=16
@@ -252,6 +270,29 @@ component App
                     button press=openSettings class=(conn.signIn != "" ? Quiet : Primary) testId="setup-connect"
                       text (conn.signIn != "" ? "Use a token…" : "Connect…")
                     button press=useDemo testId="setup-demo" class=Quiet
+                      text "Watch the demo"
+          if e.name == "yard"
+            column flex=1 min-height=0 position="relative" testId="yard"
+              canvas surface=yardStatic(ov.layoutKey, ov.stress) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-static"
+              canvas surface=yardInfo(ov.layoutKey, ov.tick) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-info"
+              canvas surface=yardLive(reduced ? "reduced" : "full", picked, ov.tick) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-live"
+              canvas surface=yardTop(ov.hud, hovering) position="absolute" left=0 top=0 width="100%" height="100%"
+                role="img" aria-label=ov.summary pointerdown=pressYard pointermove=moveYard touch-action="none" testId="yard-top"
+              // The dial is the replay: the canvas draws its face, this button is its words and its press.
+              button appearance="none" press=startReplay testId="yard-replay" aria-label="Replay the last hour, sped up" disabled=(ov.mode == "replay" or not conn.ok)
+                position="absolute" top=0 right=0 height=(ov.dialH > 0 ? ov.dialH : 26) padding-left=12 padding-right=(ov.dialPad > 0 ? ov.dialPad : 38) display="flex" align-items="center"
+                text (ov.dial != "" ? ov.dial : "1 hour, sped up") font-size=(ov.dialFont > 0 ? ov.dialFont : 11) color=(ov.mode == "replay" or ov.mode == "paused" ? "sy.amber-text" : "sy.ink3")
+              if not conn.ok and conn.status != "connecting"
+                column position="absolute" inset=0 align-items="center" justify-content="center" background-color="sy.canvas" gap=14 testId="yard-setup"
+                  text (conn.needsSetup ? "Connect Switchyard to a server" : "The server is not answering") font-weight=700 font-size=16
+                  text (conn.error != "" ? conn.error : "Its address and a token, or watch the built-in demo fleet.") color="sy.ink3" font-size=13 max-width=560 text-align="center" testId="yard-setup-error"
+                  row gap=10
+                    if conn.signIn != ""
+                      link href=conn.signIn class=Primary testId="yard-setup-signin"
+                        text "Sign in on the web…"
+                    button press=openSettings class=(conn.signIn != "" ? Quiet : Primary) testId="yard-setup-connect"
+                      text (conn.signIn != "" ? "Use a token…" : "Connect…")
+                    button press=useDemo testId="yard-setup-demo" class=Quiet
                       text "Watch the demo"
           if e.name == "mainlines"
             MainlinesView(data=mlData, org=mlOrg, filter=mlFilter, q=mlQ, focus=mlFocus, wheel=mlWheel, px=mlPx, py=mlPy, kick=mlKick, active=(e.id == top(nav).id), mode=ov.mode, pickOrg=mlPickOrg, pickFilter=mlPickFilter, typed=mlTyped, press=mlPress, move=mlMove, hover=mlHover, wheeled=mlWheeled, key=mlKey)
@@ -349,8 +390,8 @@ component TopBar
           path d="M5 12a7 7 0 0 1 14 0M8.5 12a3.5 3.5 0 0 1 7 0" fill="none" stroke="sy.brand" stroke-width=2 stroke-linecap="round"
         text "switchyard" role="heading" aria-level=1 font-weight=700 font-size=13 letter-spacing="0.02em"
       row role="tablist" appearance="none" aria-label="Views" gap=1
-        for v in ["yard", "mainlines", "prs", "fleet"] key=v
-          button role="tab" appearance="none" aria-selected=(here == v) press=goTo(v) testId=`tab-${v}` aria-keyshortcuts=`Meta+${v == "yard" ? "1" : v == "mainlines" ? "2" : v == "prs" ? "3" : "4"}`
+        for v in ["factory", "yard", "mainlines", "prs", "fleet"] key=v
+          button role="tab" appearance="none" aria-selected=(here == v) press=goTo(v) testId=`tab-${v}` aria-keyshortcuts=`Meta+${v == "factory" ? "1" : v == "yard" ? "5" : v == "mainlines" ? "2" : v == "prs" ? "3" : "4"}`
             padding="3px 9px" border-radius=5 background-color=(here == v ? "sy.control" : "transparent")
             text v color=(here == v ? "sy.ink" : "sy.ink3") font-size=12
       row flex=1

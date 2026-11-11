@@ -58,6 +58,11 @@ export async function measure(server: string, size = { w: 1440, h: 900 }): Promi
     const conn = (await call('connect', [server, '', 1, epoch0, 0])) as { ok: boolean; status: string; error?: string };
     if (!conn.ok) throw new Error(`connect: ${conn.status} ${conn.error ?? ''}`);
     await call('overview', [16]);
+    // the factory floor is the default view: its two layers on the boot path
+    paint('factoryFloor', ['', '', 0], 24);
+    paint('factoryFloor', ['', '', 0], 25);
+    paint('factoryFloor', ['', '', 0], 26);
+    for (let f = 0; f < 4; f++) paint('factoryLive', ['full', '', 0, f], 24 + 16 * f);
     for (const s of ['yardStatic', 'yardInfo', 'yardLive', 'yardTop']) paint(s, s === 'yardLive' ? ['full', '', 0] : ['', 0], 32);
     for (let f = 2; f < 6; f++) for (const s of ['yardInfo', 'yardLive', 'yardTop']) paint(s, s === 'yardLive' ? ['full', '', f] : ['', f], 16 * f + 32);
     await call('overview', [300]);
