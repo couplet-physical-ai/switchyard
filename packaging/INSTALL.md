@@ -66,6 +66,14 @@ The top-right status then reads `live · switchyard.apps.example.com`.
 **Server** as `https://switchyard.apps.example.com`, paste the token into **Token**, and click
 **Connect**.
 
+**After an update: a Keychain prompt.** The app is not signed with an Apple Developer ID, so
+macOS treats each new version as a different app. The first launch after an update (in-app or
+`brew upgrade`) asks *"Switchyard wants to use your confidential information stored in
+"com.exowatt.switchyard" in your keychain"*. Enter your Mac login password and click
+**Always Allow**; that version then reads its token without asking. Until you answer, 0.1.2 and
+earlier show no window (the prompt may be behind other windows; check the Dock or press
+⌘-Tab). Clicking **Deny** leaves the app unconnected: connect again as above.
+
 No server handy? **Watch the demo** runs a built-in simulated fleet. To revoke a device token: in the
 browser (signed in), `GET /api/v1/tokens` lists yours and `DELETE /api/v1/tokens/{id}` revokes one.
 
@@ -90,6 +98,7 @@ browser (signed in), `GET /api/v1/tokens` lists yours and `DELETE /api/v1/tokens
 | *"Switchyard" is damaged / can't be opened* | the quarantine flag is still set: `xattr -dr com.apple.quarantine /Applications/Switchyard.app` |
 | `depends_on arch: :arm64` | Intel Macs are not supported; use the web app at https://switchyard.apps.example.com |
 | The app shows *Connect Switchyard to a server* | mint a token at https://switchyard.apps.example.com/connect (see First run above) |
+| After an update the app shows no window | a Keychain prompt is waiting (see *After an update* above): answer it with your login password and **Always Allow** |
 | The app opens but shows no data | check you can open https://switchyard.apps.example.com in a browser (Exowatt SSO; on the company network or VPN if required) |
 
 Release notes and every build: <https://github.com/couplet-physical-ai/switchyard/releases>.

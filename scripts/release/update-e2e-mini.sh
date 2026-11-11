@@ -37,8 +37,16 @@ A=/Applications/Switchyard.app
 # brew runs as the mini's brew owner, from /tmp (a function: an unbalanced '(' inside this
 # heredoc-in-\$( ) breaks macOS bash 3.2's parser, which release-lint runs).
 brew_() ( cd /tmp && sudo -n -Hu felipearce env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 /opt/homebrew/bin/brew "\$@" )
+# Quit /Applications' Switchyard (only that path: dev builds share the bundle id): SIGTERM, up to
+# 15 s, then SIGKILL — 0.1.2 ignores SIGTERM (it stayed up and a later open(1) re-used it).
+quit_() {
+  pkill -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || return 0
+  for i in \$(seq 1 15); do sleep 1; pgrep -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' >/dev/null || return 0; done
+  echo "WARN: Switchyard ignored SIGTERM for 15 s; SIGKILL" >&2
+  pkill -KILL -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true; sleep 1
+}
 v() { /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "\$A/Contents/Info.plist"; }
-pkill -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true
+quit_
 # Dev builds registered with LaunchServices (sy-client's targets, old release dirs) would take
 # switchyard:// links or be what open(1) finds: unregister every Switchyard.app but /Applications'.
 LSR=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
@@ -68,6 +76,7 @@ if [[ "${SY_SEED_TOKEN:-}" == 1 ]]; then
   echo "seeded: fake syd_ token in exact.kept"
 fi
 mkdir -p ~/Library/Logs/Switchyard; : > ~/Library/Logs/Switchyard/update.log
+L0=\$(wc -l < ~/Library/Logs/Switchyard/switchyard.log 2>/dev/null || echo 0)
 \$LSR -f "\$A"
 sudo -n launchctl asuser \$(id -u) sudo -n -u \$(id -un) open ${OPEN_ENV[*]:-} "\$A" ${ARG:+--args $ARG}
 for i in \$(seq 1 120); do
@@ -80,15 +89,16 @@ echo "--- update.log"; tail -20 ~/Library/Logs/Switchyard/update.log || true
 [[ "\$(v)" == "$TO" ]] || { echo "FAIL: bundle is \$(v), expected $TO" >&2; exit 1; }
 codesign --verify --deep --strict "\$A" && echo "signature: ok"
 if [[ "${SY_SEED_TOKEN:-}" == 1 ]]; then
-  pid=\$(pgrep -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' | head -1)
-  for i in \$(seq 1 15); do grep -q "pid \$pid scrub:" ~/Library/Logs/Switchyard/switchyard.log && break; sleep 2; done
-  grep "pid \$pid scrub:" ~/Library/Logs/Switchyard/switchyard.log | tail -1 || { echo "FAIL: $TO (pid \$pid) logged no scrub" >&2; exit 1; }
+  # <from> may scrub it already (0.1.1+ do, at launch, before updating); either way one launch of
+  # this run must have logged the scrub, and nothing may be left.
+  for i in \$(seq 1 15); do tail -n +\$((L0+1)) ~/Library/Logs/Switchyard/switchyard.log | grep -q " scrub:" && break; sleep 2; done
+  tail -n +\$((L0+1)) ~/Library/Logs/Switchyard/switchyard.log | grep " scrub:" | tail -2 || { echo "FAIL: no launch of this run logged a scrub" >&2; exit 1; }
   if [[ -e "\$K/e2e-seeded-token" ]] || grep -rqs syd_SEEDED "\$K"; then echo "FAIL: seeded token still in exact.kept" >&2; exit 1; fi
-  echo "token at rest after update: none (scrubbed by $TO)"
+  echo "token at rest after update: none"
 fi
 sleep 10; [[ ! -e "\$A.old" ]] && echo ".old: swept" || { ls -ld "\$A.old"; echo "FAIL: .old not swept" >&2; exit 1; }
 echo "--- brew info"; brew_ info --cask switchyard 2>&1 | head -3 || true
-if [[ "$KEEP" != --keep ]]; then pkill -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true; rm -rf "\$A"; fi
+if [[ "$KEEP" != --keep ]]; then quit_; rm -rf "\$A"; fi
 echo E2E-PASS
 EOF
 ) || { echo "$out"; echo "update e2e: FAILED" >&2; exit 1; }

@@ -40,8 +40,16 @@ ENV=()
 out=$(timeout 1800 "${SSH[@]}" 'f=$(mktemp); cat > "$f"; bash "$f" </dev/null 2>&1; rc=$?; rm -f "$f"; exit $rc' <<EOF
 set -euo pipefail
 A=/Applications/Switchyard.app
+# Quit /Applications' Switchyard (only that path: dev builds share the bundle id): SIGTERM, up to
+# 15 s, then SIGKILL — 0.1.2 ignores SIGTERM (it stayed up and a later open(1) re-used it).
+quit_() {
+  pkill -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || return 0
+  for i in \$(seq 1 15); do sleep 1; pgrep -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' >/dev/null || return 0; done
+  echo "WARN: Switchyard ignored SIGTERM for 15 s; SIGKILL" >&2
+  pkill -KILL -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true; sleep 1
+}
 LSR=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
-pkill -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true
+quit_
 ($B uninstall --cask switchyard >/dev/null 2>&1 || true)
 ($B untap couplet-physical-ai/tap >/dev/null 2>&1 || true)
 rm -rf "\$A" "\$A.old"
@@ -68,7 +76,7 @@ if [[ -n "\$TOKF" ]]; then
   # through the app's files, while it runs and again after it quits (kept state is flushed then).
   leak() { grep -rlF -f "\$TOKF" ~/Library/Application\ Support/com.exowatt.switchyard ~/Library/Logs/Switchyard ~/Library/Preferences/com.exowatt.switchyard.plist 2>/dev/null || true; }
   l=\$(leak); [[ -z "\$l" ]] && echo "token at rest (running): none" || { echo "FAIL: token found in: \$l" >&2; exit 1; }
-  pkill -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true; sleep 3
+  quit_
   l=\$(leak); [[ -z "\$l" ]] && echo "token at rest (after quit): none" || { echo "FAIL: token found in: \$l" >&2; exit 1; }
   # The app's own log is written as it quits: the connect line must be there by now.
   grep -h "pid \$pid token-file:" ~/Library/Logs/Switchyard/switchyard.log | tail -1
@@ -79,7 +87,7 @@ if [[ -n "${SY_SNAPSHOT:-}" ]]; then
   grep -h "pid \$pid snapshot:" ~/Library/Logs/Switchyard/switchyard.log | tail -1 || true
   [[ -s $DIR/shots/install-$V.png ]] || { echo "FAIL: no snapshot at $DIR/shots/install-$V.png" >&2; exit 1; }
 fi
-if [[ "$KEEP" != --keep ]]; then pkill -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true; fi
+if [[ "$KEEP" != --keep ]]; then quit_; fi
 echo E2E-PASS
 EOF
 ) || { echo "$out"; echo "install e2e: FAILED" >&2; exit 1; }
