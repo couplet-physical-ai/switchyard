@@ -128,5 +128,17 @@ const fixture = await Bun.file(new URL('../../contract/fixtures/snapshot.json', 
   eq([asked.length, H.ver], [2, 1], 'pump: asked again after a minute; an unchanged answer does not repaint');
 }
 
+// fab-w6b: the wall's ghost line, the machine's typical busy/slots (the median of its buckets with data)
+{
+  const { typical } = await import('../src/factory/plant.ts');
+  const t = emptyTide('m', 6);
+  ok(Number.isNaN(typical(t)), 'typical: no data → NaN (no ghost)');
+  const u = emptyTide('m', 6);
+  u.busy.set([0.1, NaN, 0.5, 0.2, NaN, 0.9]);
+  near(typical(u), 0.35, 'typical: the median of the buckets with data (gaps skipped)');
+  u.busy[0] = 1; // cached per fold: a fold is a new tide
+  near(typical(u), 0.35, 'typical: cached per tide');
+}
+
 console.log(fails ? `${fails} FAILED` : 'all planthist tests passed');
 process.exit(fails ? 1 : 0);

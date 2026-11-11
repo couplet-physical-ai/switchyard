@@ -62,7 +62,22 @@ const M_TOP = '#212124', M_SIDE = '#19191B', M_FRONT = '#151517', M_EDGE = '#383
 // the wall's chart speaks the machine lens's language (lens.ts vmStory): busy an amber tide, cpu an
 // ink line, mem a blue-gray one, a red tick under every stretch with every slot taken
 const WALL_FACE = '#18181B', WALL_TOP = '#2C2C30', WALL_EDGE = '#3A3A3F', GAP = '#3A3A3F', MEM_LINE = '#7E8FA6';
+/** The wall's scale (ticks at 50 % / 100 %), its baseline under data, and the typical's ghost. */
+const SCALE = '#4A4A50', BASE = '#46464C', GHOST = 'rgba(216, 186, 146, 0.72)'; // C.amberText ghosted: the tide's own colour
 const OK_BEAM = '#7E9784';
+const typicals = new WeakMap<Tide, number>();
+/** A tide's typical busy/slots: the median of its buckets with data (NaN: none). Cached per fold. */
+export function typical(t: Tide): number {
+  let m = typicals.get(t);
+  if (m !== undefined) return m;
+  const xs: number[] = [];
+  for (let i = 0; i < t.n; i++) { const v = t.busy[i]!; if (v === v) xs.push(v); }
+  xs.sort((a, b) => a - b);
+  const k = xs.length >> 1;
+  m = !xs.length ? NaN : xs.length % 2 ? xs[k]! : (xs[k - 1]! + xs[k]!) / 2;
+  typicals.set(t, m);
+  return m;
+}
 const STEP_OK = '#5E7363';
 
 /** The lit look of a bay for a group hue: the recess floor (the hue over the machine) and the rim. */
@@ -318,7 +333,9 @@ export class Plant implements Layer {
     g.begin_(); poly(cam, g, [ENG_U0, vf, z0, ENG_U1, vf, z0, ENG_U1, vf, z1, ENG_U0, vf, z1]); g.fill(WALL_FACE);
     g.begin_(); poly(cam, g, [ENG_U0, vf, z0, ENG_U1, vf, z0, ENG_U1, vf, z1, ENG_U0, vf, z1]); g.stroke(gr.online ? WALL_EDGE : M_OFF, g.hair * (gr.online ? 1.2 : 2.2));
     const t = this.hist.tide(gr.id);
-    const ua = ENG_U0 + 3, ub = ENG_U1 - 3, za = z0 + 1.5, zb = z1 - 1.8;
+    // the chart takes the whole face (the slab cannot grow: past WALL_H it would hide the top of
+    // the machine behind it)
+    const ua = ENG_U0 + 3, ub = ENG_U1 - 3, za = z0 + 1.1, zb = z1 - 1.1;
     const U = (x: number) => ua + (ub - ua) * x, Z = (y: number) => za + (zb - za) * y;
     const P = (x: number, y: number): [number, number] => [cam.x(U(x), vf), cam.y(U(x), vf, Z(y))];
     // the time axis: a tick every 6 h (the right end is now); the base solid under data, dotted
@@ -335,7 +352,15 @@ export class Plant implements Layer {
     if (at < n) { g.move(...P(at / n, 0)); g.line(...P(1, 0)); }
     g.stroke(GAP, Math.max(1, g.hair * 1.2));
     g.dash(false);
+    // the scale at the wall's left edge: a faint tick at half and at every slot busy
+    g.begin_();
+    for (const k of [0.5, 1]) { const [x, y] = P(0, k); g.move(x - Math.max(3, 2.2 * cam.s), y); g.line(x, y); }
+    g.stroke(SCALE, Math.max(1, g.hair));
     if (!t) return;
+    // the baseline: solid under the stretches with data (the gaps keep their dots)
+    g.begin_();
+    for (const [s, e] of runs) { g.move(...P(s / n, 0)); g.line(...P(e / n, 0)); }
+    g.stroke(BASE, Math.max(1, g.hair * 1.2));
     // the wall's width on screen sets the detail: ~2 px a point at least
     const wpx = Math.abs(cam.x(ub, vf) - cam.x(ua, vf));
     const stride = lo ? 3 : wpx < 260 ? 2 : 1;
@@ -363,6 +388,15 @@ export class Plant implements Layer {
       g.line(...P(e / n, t.busy[e - 1]!));
     }
     g.stroke(withAlpha(C.packet, 0.9), Math.max(1, g.hair * 1.3));
+    // the usual: a dashed ghost at the machine's typical busy/slots (the median of its 24 h), so the
+    // tide reads as busier or quieter than usual; across the span the record holds, not its gaps' lead
+    const typ = typical(t);
+    if (typ === typ && runs.length) {
+      g.dash(true, 4, 3);
+      g.begin_(); g.move(...P(runs[0]![0] / n, typ)); g.line(...P(runs[runs.length - 1]![1] / n, typ));
+      g.stroke(GHOST, Math.max(1, g.hair * 1.2));
+      g.dash(false);
+    }
     // saturated: every slot taken at some minute of the stretch, a red tick along the base
     // (as the machine lens marks it): the machine was the bottleneck then
     g.begin_();
