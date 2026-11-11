@@ -267,6 +267,7 @@ function overview(): Result<'overview'> {
     : 'waiting for the fleet';
   const summary = w.loaded ? `The delivery yard: ${building} pipelines building, ${queued} queued, ${red} main ${red === 1 ? 'line' : 'lines'} red, ${appsUp} of ${w.apps.size} apps up.` : 'The delivery yard, waiting for data.';
   const k = S?.k ?? 1;
+  factory.city.pump(clock); // fab-w5: the city's app histories (H7), a few fetches per data turn, never from a draw
   const dial = tl.mode === 'replay' ? `replaying · ${Math.round(tl.replayProgress() * 60)} of 60 min` : tl.mode === 'paused' ? `paused · 1 hour, sped up` : '1 hour, sped up';
   return {
     status: w.loaded ? 'ready' : 'waiting', mode: tl.mode, speed: tl.speed, sentence, summary, layoutKey: `${S?.key ?? ''}|${yard.budget.quality >= 3 ? 'lo' : 'hi'}`, repos: w.repos.size,
@@ -377,7 +378,7 @@ export const sources: Sources = {
     return c;
   },
   liveFeed: ([server, _ver, seq, _gen, ok], store: Store) => liveFeed(server, store.get(TOKEN) ?? '', seq, ok),
-  overview: ([t]) => { if (t > 0) advance(t); return safe('overview', EMPTY_OV, overview); },
+  overview: ([t]) => { if (t > 0) advance(t); safe('plantHist', 0, () => { factory.plant.pump(clock); return 0; }); return safe('overview', EMPTY_OV, overview); }, // fab-w6: the machine walls' 24 h histories are asked here (a source), never in a draw
   timeControl: async ([what, speed]) => {
     if (what === 'pause') tl.pause();
     else if (what === 'play') {

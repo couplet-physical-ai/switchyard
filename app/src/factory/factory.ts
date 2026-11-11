@@ -319,7 +319,7 @@ export class Factory {
 
   /** The static floor's key: the camera, the fleet's shape, the apps' health (the lights are
    *  painted here, not every frame), and whether the ladder wants the low-detail floor. */
-  get floorKey(): string { return `${this.cam.key}|${this.census.sig}|${this.census.healthSig}|${this.census.carSig}|${this.budget.quality >= 3 ? 'lo' : 'hi'}|${this.w2.sig}`; } // fab-w2: |w2.sig
+  get floorKey(): string { return `${this.cam.key}|${this.census.sig}|${this.census.healthSig}|${this.census.carSig}|${this.budget.quality >= 3 ? 'lo' : 'hi'}|${this.w2.sig}|${this.plant.sig}|${this.city.sig}`; } // fab-w2: |w2.sig · fab-w6: |plant.sig (the machine walls' 24 h) · fab-w5: |city.sig (heights, ghosts, rings)
 
   drawFloor(ctx: Ctx2D, f: Frame, t: number): boolean {
     this.applyStress();
@@ -358,7 +358,8 @@ export class Factory {
     st.floorOps = g.ops;
     st.floorMs = this.budget.estimate(g.ops, g.arcs, g.texts, 0);
     if (!this.heavy) this.heavy = 2;
-    return this.gpuClaim('floor');
+    // fab-w1: the accordion's 600 ms keeps the floor redrawing
+    return this.gpuClaim('floor') || this.floor.animating;
   }
 
   /** A canvas is given to the macOS host's GPU module (Vello, Metal) only if the first draw with
@@ -464,6 +465,7 @@ export class Factory {
     // over the layers: the lens on top, the selection's journey, failures named as they ride home
     const selP = this.selPipeline();
     this.lens.draw(g, ctx, f, t); // fab-lens: the lens on top dims the rest and tells its story
+    this.plant.jobLive(g, this.fr); // fab-w6
     if (this.selected) this.drawer.journey(gt, gt.ctx, f, selP, t);
     this.crates.tags(gt, t, q);
     this.pm('lens', g);

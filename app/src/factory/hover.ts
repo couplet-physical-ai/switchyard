@@ -53,23 +53,24 @@ export class Hover {
     const f = this.lens.f;
     if (!f.hoverId || dragging) return;
     const h = f.hitAt(f.px, f.py) as Hit | null;
-    if (!h || !h.label || h.kind === 'stage' || h.kind === 'drawer') return;
-    const lines = this.lens.preview(h);
+    if (!h || !h.label || h.kind === 'drawer') return;
+    const mine = f.words.hoverFor(h); // fab-w1: the stage titles' numbers and the lanes' cells and posts (labels.ts, floor.ts)
+    const lines = mine ?? (h.kind === 'stage' ? null : this.lens.preview(h));
     if (!lines || !lines.length) return;
     const key = `${h.kind}|${h.id}|${Math.floor(f.tl.clock / 1000)}`;
     if (key !== this.key) { this.key = key; this.chart = this.build(h); }
     const ch = this.chart;
-    if (!ch) return;
+    if (!ch && !mine) return; // fab-w1: the floor's own lines stand without a chart
     // the floor's box: max(line width) + 16 wide at min(px + 14, W − w − 8), py + 18; this card
     // is at least as wide and tall, from the same corner, so it covers it whole
     const wf = Math.max(...lines.map((l) => g.width(l, SMALL))) + 16;
     const wv = Math.max(wf, ...lines.map((l, i) => g.width(l, SMALL, i === 0) + 16), CW + 16);
     const bx = Math.min(f.px + 14, fr.width - wv - 8), by = f.py + 18;
-    const H = lines.length * 16 + 10 + CH + 10;
+    const H = lines.length * 16 + 10 + (ch ? CH + 10 : 0); // fab-w1
     g.fillRect(bx, by, wv, H, BG);
     g.begin_(); g.rect(bx + 0.5, by + 0.5, wv - 1, H - 1); g.stroke(EDGE, 1);
     lines.forEach((l, i) => g.text(l, bx + 8, by + 18 + i * 16, i ? C.ink2 : C.ink, SMALL, i === 0));
-    paint(g, ch, bx + 8, by + lines.length * 16 + 10, wv - 16, CH, f.tl.playhead);
+    if (ch) paint(g, ch, bx + 8, by + lines.length * 16 + 10, wv - 16, CH, f.tl.playhead); // fab-w1
   }
 
   /** The chart for a hit (null: the floor's words alone). */
@@ -148,6 +149,7 @@ export class Hover {
         const ah = appHist(h.id);
         return { k: 'ticks', items: (ah?.deploys ?? []).map((d) => [d.at, d.state === 'success' ? '#7FC48F' : d.state === 'failure' ? C.red : C.packet] as [number, string]), span: null };
       }
+      case 'stage': { const s = f.words.stageSpark(h.label); return s ? { k: 'spark', s, col: '#9A9AA0' } : null; } // fab-w1: the stage's 24 h
       case 'commit': {
         const at = h.id.indexOf('@');
         const r = w.repos.get(h.id.slice(0, at));

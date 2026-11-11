@@ -227,7 +227,7 @@ export class Drawer {
   }
 
   private facts(h: HitBox): string[] {
-    const lf = this.f.lens.preview(h); // fab-lens: ≤ 3 short lines per kind
+    const lf = this.f.words.hoverFor(h) ?? this.f.lens.preview(h); // fab-lens: ≤ 3 short lines per kind; fab-w1: the lanes' and stages' own first
     if (lf) return lf;
     const w = this.f.world, now = this.f.tl.playhead;
     if (h.kind === 'pipeline') {
