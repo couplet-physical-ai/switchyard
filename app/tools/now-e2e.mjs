@@ -25,7 +25,7 @@ const errors = [];
 page.on('pageerror', (e) => errors.push(String(e).slice(0, 200)));
 const res = { label, ok: true, checks: [] };
 const check = (c, m) => { res.checks.push(`${c ? 'ok' : 'FAIL'} ${m}`); if (!c) res.ok = false; };
-const T = (id) => page.locator(`[data-testid="${id}"]`);
+const T = (id) => page.locator(`[data-testid="${id}"]`).last(); // the top route (a stack keeps the ones under it)
 try {
   await page.goto(`${base}/`);
   await T('now-status').waitFor({ timeout: 30000 });

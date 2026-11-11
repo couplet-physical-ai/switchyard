@@ -556,7 +556,7 @@ component TopBar
             text (v == "now" ? "Live" : (v == "factory" ? "Factory" : "Yard")) color=(here == v ? "sy.ink" : "sy.ink3") font-size=12
       row flex=1
       button appearance="none" press=openPalette aria-keyshortcuts="Meta+K" aria-label="Search" testId="open-palette"
-        padding="3px 9px" border-radius=5 border="1px solid sy.edge"
-        row gap=16 align-items="center"
-          text "search repos, prs, commits" color="sy.ink3" font-size=11
+        padding="3px 9px" border-radius=5 border="1px solid sy.edge" min-width=0 flex-shrink=1
+        row gap=16 align-items="center" min-width=0
+          text "search repos, prs, commits" color="sy.ink3" font-size=11 white-space="nowrap" overflow="hidden" text-overflow="ellipsis" min-width=0
           text "⌘K" color="sy.ink3" font-size=11

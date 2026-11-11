@@ -19,7 +19,7 @@ function chrome() {
 const [base = 'http://127.0.0.1:8192', out = '/tmp/sy-preview/zero/v1', what = 'both'] = process.argv.slice(2);
 mkdirSync(out, { recursive: true });
 const browser = await chromium.launch({ executablePath: chrome() });
-const T = (page, id) => page.locator(`[data-testid="${id}"]`);
+const T = (page, id) => page.locator(`[data-testid="${id}"]`).last(); // the top route
 async function ready(page) {
   await T(page, 'now-status').waitFor({ timeout: 30000 });
   await page.waitForFunction(() => /\d/.test(document.querySelector('[data-testid="now-running"]')?.textContent ?? ''), null, { timeout: 30000 });
