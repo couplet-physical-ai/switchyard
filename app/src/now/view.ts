@@ -28,6 +28,7 @@ export const BROKEN_CAP = 60;
 export const BROKEN_SHOWN = 3;
 export const JOBS_SHOWN = 8;
 export const CHAIN_SHOWN = 4;
+const BEADS = 14;
 const STEPS_CAP = 80;
 const RUNS_CAP = 24;
 /** A running job this many times over its usual time (and over STUCK_MIN_MS) needs a human. */
@@ -70,6 +71,12 @@ export function ago(ms: number): string {
   const h = Math.floor(ms / 3_600_000), m = Math.floor((ms % 3_600_000) / 60_000);
   if (h >= 24) return `${Math.floor(h / 24)}d`;
   return m ? `${h}h ${m}m` : `${h}h`;
+}
+/** The Yard's short age: 12m, 17h, 3d. */
+export function short(ms: number): string {
+  if (ms < 3_600_000) return `${Math.max(1, Math.round(ms / 60_000))}m`;
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h`;
+  return `${Math.floor(ms / 86_400_000)}d`;
 }
 function hhmm(at: number, offsetMin: number, secs = false): string {
   const d = new Date(at + offsetMin * 60_000);
@@ -187,7 +194,10 @@ export type EvBlock = {
   title: string; who: string; bot: boolean;
   jobs: JobLine[]; more: string; chain: ChainItem[]; chainMore: string; result: string; links: Link[];
 };
-export type Need = { id: string; kind: string; what: string; word: string; detail: string; ago: string; links: Link[] };
+/** A bead of a main line (the Yard's trail, oldest left): ok, bad (in the red streak), was (a
+ *  red fixed since), run, skip; `cul`: the culprit (a ring). */
+export type Bead = { id: string; st: string; cul: boolean };
+export type Need = { id: string; kind: string; what: string; word: string; detail: string; ago: string; links: Link[]; sha: string; who: string; beads: Bead[] };
 export type NowFeed = {
   ok: boolean; tick: number; clock: string;
   running: number; queued: number; waiting: number; busy: number; slots: number;
@@ -349,7 +359,7 @@ function needs(w: World, v: FlowView, now: number, filter: Filter): Need[] {
   for (const a of w.apps.values()) {
     if (a.health !== 'down' && a.health !== 'degraded') continue;
     if (!match(a.repo ?? '', a.id)) continue;
-    out.push({ id: `app:${a.id}`, kind: 'app', what: String(a.id ?? ''), word: a.health, detail: fit(a.note ?? (a.url ?? ''), 80), ago: ago(Math.max(0, now - a.checked)), at: a.checked, rank: 0,
+    out.push({ id: `app:${a.id}`, kind: 'app', what: String(a.id ?? ''), word: a.health, detail: fit(a.note ?? (a.url ?? ''), 80), ago: ago(Math.max(0, now - a.checked)), at: a.checked, rank: 0, sha: '', who: '', beads: [],
       links: [...L('app', 'Open app', a.url), ...L('status', 'Status', statusUrl(w, String(a.id ?? '')))] });
   }
   const lastByApp = new Map<string, { app: string; repo: string; sha: string; state: string; started: number; finished?: number; url?: string; via: string; pipeline?: string }>();
@@ -359,7 +369,7 @@ function needs(w: World, v: FlowView, now: number, filter: Filter): Need[] {
     const a = w.apps.get(d.app) as App | undefined;
     const p = d.pipeline ? w.pipelines.get(d.pipeline) : undefined;
     const at = d.finished ?? d.started;
-    out.push({ id: `deploy:${d.app}`, kind: 'deploy', what: d.app, word: 'deploy failed', detail: repoName(d.repo) === d.app ? `commit ${sha7(d.sha)}` : `${repoName(d.repo)} ${sha7(d.sha)}`, ago: ago(Math.max(0, now - at)), at, rank: 1,
+    out.push({ id: `deploy:${d.app}`, kind: 'deploy', what: d.app, word: 'deploy failed', detail: repoName(d.repo) === d.app ? 'the last deploy failed' : `from ${repoName(d.repo)}`, ago: ago(Math.max(0, now - at)), at, rank: 1, sha: sha7(d.sha), who: '', beads: [],
       links: [...L('ci', d.via === 'roadrunner' ? 'Roadrunner' : 'GitHub Actions', (d as { links?: { cicd?: string } }).links?.cicd || d.url || (p ? runUrl(w, String(p.id)) : '') || ''), ...L('app', 'Open app', a?.url), ...L('status', 'Status', statusUrl(w, d.app))] });
   }
   for (const e of v.events) {
@@ -368,7 +378,7 @@ function needs(w: World, v: FlowView, now: number, filter: Filter): Need[] {
       if (j.state !== 'running' || !j.expectedMs || !j.started) continue;
       const el = now - j.started;
       if (el < STUCK_MIN_MS || el < STUCK_X * j.expectedMs) continue;
-      out.push({ id: `stuck:${j.id}`, kind: 'stuck', what: `${repoName(e.repo)} ${j.kind}`, word: 'stuck', detail: `usually ${dur(j.expectedMs)}${j.machine ? ` · ${j.machine.label}${j.machine.slot ? ` slot ${j.machine.slot}` : ''}` : ''}`, ago: ago(el), at: j.started, rank: 2,
+      out.push({ id: `stuck:${j.id}`, kind: 'stuck', what: `${repoName(e.repo)} ${j.kind}`, word: 'stuck', detail: `usually ${dur(j.expectedMs)}${j.machine ? ` · ${j.machine.label}${j.machine.slot ? ` slot ${j.machine.slot}` : ''}` : ''}`, ago: ago(el), at: j.started, rank: 2, sha: '', who: '', beads: [],
         links: [...L('ci', ciWord(j.ci), runUrl(w, j.id, j.url)), ...L('machine', j.machine?.label ?? 'Machine', engineUrl(w, j.machine))] });
     }
   }
@@ -376,12 +386,12 @@ function needs(w: World, v: FlowView, now: number, filter: Filter): Need[] {
     for (const q of w.queues.values()) {
       if (!(q.paused || (q.pending > 0 && q.oldest_wait_ms > QUEUE_STUCK_MS))) continue;
       const base = rrBase(w);
-      out.push({ id: `queue:${q.id}`, kind: 'queue', what: 'Roadrunner queue', word: q.paused ? 'paused' : 'stuck', detail: `${q.pending} waiting, oldest ${dur(q.oldest_wait_ms)}`, ago: ago(q.oldest_wait_ms), at: now - q.oldest_wait_ms, rank: 3,
+      out.push({ id: `queue:${q.id}`, kind: 'queue', what: 'Roadrunner queue', word: q.paused ? 'paused' : 'stuck', detail: `${q.pending} waiting, oldest ${dur(q.oldest_wait_ms)}`, ago: ago(q.oldest_wait_ms), at: now - q.oldest_wait_ms, rank: 3, sha: '', who: '', beads: [],
         links: L('queue', 'Queue', (q as { url?: string }).url ?? (base ? `${base}/admin/queue` : '')) });
     }
     for (const e of w.engines.values()) {
       if (e.kind !== 'dagger' || e.online) continue;
-      out.push({ id: `machine:${e.id}`, kind: 'machine', what: e.label ?? e.id, word: 'offline', detail: e.last_seen ? `last seen ${ago(Math.max(0, now - e.last_seen))} ago` : '', ago: e.last_seen ? ago(Math.max(0, now - e.last_seen)) : '', at: e.last_seen ?? now, rank: 4,
+      out.push({ id: `machine:${e.id}`, kind: 'machine', what: e.label ?? e.id, word: 'offline', detail: e.last_seen ? `last seen ${ago(Math.max(0, now - e.last_seen))} ago` : '', ago: e.last_seen ? ago(Math.max(0, now - e.last_seen)) : '', at: e.last_seen ?? now, rank: 4, sha: '', who: '', beads: [],
         links: L('machine', 'Machine', (e as Engine & { url?: string }).url ?? (rrBase(w) ? `${rrBase(w)}/admin/agents` : '')) });
     }
   }
@@ -397,7 +407,17 @@ function needs(w: World, v: FlowView, now: number, filter: Filter): Need[] {
       if (!red || (p.finished ?? p.created) > (red.finished ?? red.created)) red = p;
     }
     const since = r.main.since || dot?.at || 0;
-    out.push({ id: `main:${r.id}`, kind: 'main', what: repoName(r.id), word: 'main failing', detail: fit(dot ? `${sha7(dot.sha)} ${dot.title}${dot.author ? ` · ${dot.author}` : ''}` : '', 96), ago: since ? ago(Math.max(0, now - since)) : '', at: since, rank: 5,
+    const rec = r.main.recent ?? [];
+    let streak = rec.length - 1;
+    while (streak > 0 && !['success'].includes(String(rec[streak - 1].state))) streak--;
+    const ci = rec.findIndex((x) => x.sha === r.main.culprit);
+    if (ci >= 0) streak = ci;
+    const beads: Bead[] = rec.slice(-BEADS).map((x, k) => {
+      const i = rec.length - Math.min(rec.length, BEADS) + k, st0 = String(x.state);
+      const bad = st0 === 'failure' || st0 === 'error';
+      return { id: `${i}`, st: st0 === 'success' ? 'ok' : bad ? (i >= streak ? 'bad' : 'was') : st0 === 'running' || st0 === 'pending' ? 'run' : 'skip', cul: i === ci };
+    });
+    out.push({ id: `main:${r.id}`, kind: 'main', what: repoName(r.id), word: `red ${short(Math.max(0, now - since))}`, detail: fit(dot?.title ?? '', 64), ago: '', at: since, rank: 5, sha: dot ? sha7(dot.sha) : '', who: dot?.author ? fit(dot.author.replace(/\[bot\]$/, ''), 20) : '', beads,
       links: [...L('commit', 'Commit', commitUrl(w, r.id, culprit)), ...L('ci', red?.lane === 'gha' ? 'GitHub Actions' : 'Roadrunner', red ? runUrl(w, String(red.id)) : (r.links as { cicd?: string } | undefined)?.cicd ?? r.links?.woodpecker ?? '')] });
   }
   out.sort((a, b) => a.rank - b.rank || b.at - a.at);

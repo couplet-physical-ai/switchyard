@@ -105,6 +105,11 @@ shape NowEvent
   result: string
   links: NowLink[]
 
+shape NowBead
+  id: string
+  st: string
+  cul: bool
+
 shape NowNeed
   id: string
   kind: string
@@ -113,6 +118,9 @@ shape NowNeed
   detail: string
   ago: string
   links: NowLink[]
+  sha: string
+  who: string
+  beads: NowBead[]
 
 shape NowFeed
   ok: bool
@@ -389,15 +397,38 @@ component NowNeedRow
     narrow: bool
     testKey: string
   view
-    row min-height=26 flex-wrap="wrap" align-items="center" column-gap=12 row-gap=4 padding=(narrow ? "5px 0" : "3px 0 3px 64px") border-top="1px solid zr.rule" testId=`now-need-${testKey}`
-      row flex-wrap="wrap" column-gap=10 row-gap=2 align-items="baseline" min-width=0 flex=(narrow ? "1 1 100%" : "0 1 auto")
-        text "✕" font-size=11.5 font-weight=700 color="zr.fail" width=14 flex-shrink=0
-        text n.what font-size=12 font-weight=700 white-space="nowrap"
-        text n.word font-size=12 color="zr.fail" white-space="nowrap" testId=`now-need-${testKey}-word`
-        if n.ago != ""
-          text n.ago font-size=11.5 color="zr.ink3" white-space="nowrap"
+    // the Yard's main-line row: name (bold) · red 17h · sha message · author · its bead trail
+    row min-height=24 flex-wrap="wrap" align-items="center" column-gap=12 row-gap=2 padding=(narrow ? "4px 0" : "2px 0 2px 64px") testId=`now-need-${testKey}`
+      text n.what font-size=12 font-weight=700 white-space="nowrap" width=(narrow ? "auto" : 230) overflow="hidden" text-overflow="ellipsis" flex-shrink=0
+      text n.word font-size=11.5 color="zr.fail" white-space="nowrap" width=(narrow ? "auto" : 104) flex-shrink=0 testId=`now-need-${testKey}-word`
       if not narrow
-        text n.detail font-size=11.5 color="zr.ink3" flex=1 min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+        row gap=8 align-items="baseline" flex=1 min-width=0
+          if n.sha != ""
+            text n.sha font-size=10 color="zr.ink3" flex-shrink=0
+          text n.detail font-size=11.5 color="zr.ink2" min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+          if n.who != ""
+            text `· ${n.who}` font-size=11.5 color="zr.ink3" white-space="nowrap" flex-shrink=0
+          if n.ago != ""
+            text `· ${n.ago}` font-size=11.5 color="zr.ink3" white-space="nowrap" flex-shrink=0
+      if n.beads.length > 0
+        svg width=(n.beads.length * 13 + 14) height=14 viewBox=`0 0 ${n.beads.length * 13 + 14} 14` aria-hidden=true flex-shrink=0
+          line x1=0 y1=7 x2=(n.beads.length * 13 + 8) y2=7 stroke="#2A2A2B" stroke-width=1
+          for d, di in n.beads key=d.id
+            if d.st == "bad"
+              line x1=(di * 13 + 6.5) y1=7 x2=(di * 13 + 19.5) y2=7 stroke="#E06464" stroke-opacity=0.8 stroke-width=1.2
+            if d.st == "ok"
+              circle cx=(di * 13 + 6.5) cy=7 r=4 fill=(di == n.beads.length - 1 ? "#F2F2F0" : "#A3A3A3")
+            if d.st == "bad"
+              circle cx=(di * 13 + 6.5) cy=7 r=4 fill="#E06464"
+            if d.st == "was"
+              circle cx=(di * 13 + 6.5) cy=7 r=3.5 fill="none" stroke="#E06464" stroke-opacity=0.45 stroke-width=1
+            if d.st == "run"
+              circle cx=(di * 13 + 6.5) cy=7 r=4 fill="#F2F2F0" stroke="#E5B567" stroke-width=1.2
+            if d.st == "skip"
+              circle cx=(di * 13 + 6.5) cy=7 r=2.8 fill="#4E4E50"
+            if d.cul
+              circle cx=(di * 13 + 6.5) cy=7 r=6 fill="none" stroke="#E06464" stroke-opacity=0.7 stroke-width=1
+          rect x=(n.beads.length * 13 + 7) y=1 width=3.5 height=12 rx=1.5 fill="#19191A" stroke="#545456" stroke-width=1
       NowLinks(links=n.links, testKey=`need-${testKey}`)
 
 // An event in flight: its time, the event line, and every job it started as a tree under it.

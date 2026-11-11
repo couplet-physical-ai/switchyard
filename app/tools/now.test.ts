@@ -134,8 +134,10 @@ eq(fit('short', 20), 'short', 'fit keeps what fits');
   });
   const f = feed(w);
   eq(f.needs.map((n) => [n.kind, n.what, n.word]), [
-    ['app', 'app-a', 'down'], ['deploy', 'app-a', 'deploy failed'], ['stuck', 'a ci', 'stuck'], ['queue', 'Roadrunner queue', 'stuck'], ['machine', 'VM 154', 'offline'], ['main', 'b', 'main failing'],
-  ], 'needs, most urgent first: app down, failed deploy, stuck job, stuck queue, machine offline, failing main');
+    ['app', 'app-a', 'down'], ['deploy', 'app-a', 'deploy failed'], ['stuck', 'a ci', 'stuck'], ['queue', 'Roadrunner queue', 'stuck'], ['machine', 'VM 154', 'offline'], ['main', 'b', 'red 2h'],
+  ], 'needs, most urgent first: app down, failed deploy, stuck job, stuck queue, machine offline, failing main ("red 2h", the Yard\'s words)');
+  const mn = f.needs.at(-1)!;
+  eq([mn.sha, mn.who, mn.beads.map((b) => `${b.st}${b.cul ? '*' : ''}`)], ['bad1', 'dev-b', ['bad*']], 'a failing main: culprit sha, author, its bead trail with the culprit ringed');
   eq(f.needs.map((n) => n.links.map((l) => l.label)), [['app', 'status'], ['roadrunner', 'app', 'status'], ['roadrunner'], ['queue'], ['machine'], ['commit', 'roadrunner']], 'every need has its deep links');
   eq([f.needsN, f.needsMore], [6, '3 more: 1 stuck queues · 1 machines offline · 1 failing mains'], 'the first three show; the rest is counted by kind');
   const fb = feed(w, NOW, ['o/b', '', '']);
