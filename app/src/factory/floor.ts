@@ -247,7 +247,10 @@ export class Floor implements Layer {
     g.begin_();
     for (const L of this.lanesNow) {
       if (L.kind === 'bots' || !this.redRising(L.id)) continue;
-      const road = fr.roadOf(L.id), off = fr.roadHw(L.id) + 1.6;
+      // the road's half width: front.ts's own (read, no hook there: w2-chrome owns front.ts this
+      // wave); a front without it, the widest road's
+      const hw = (fr as unknown as { lanes?: { id: string; hw?: number }[] }).lanes?.find((e) => e.id === L.id)?.hw ?? 11;
+      const road = fr.roadOf(L.id), off = hw + 1.6;
       if (!road || road.length < 2) continue;
       // the polyline offset to its near side, mitred at the joints (one continuous stroke)
       const nrm: [number, number][] = [];
