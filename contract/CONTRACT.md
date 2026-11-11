@@ -1,4 +1,4 @@
-# Switchyard wire contract — v0.4
+# Switchyard wire contract — v0.5
 
 Owner: the **server** thread (`server/`). The client reads this and `contract/fixtures/`;
 it never edits them. Any change: bump `PROTOCOL` minor, update fixtures in the same commit,
@@ -24,6 +24,8 @@ except the two singleton snapshot fields, which are `null` before their first va
 | `GET /api/v1/pr/{owner}/{name}/{number}` | `PrDetail`. |
 | `GET /api/v1/search?q=&limit=` | ⌘K: `{q, results: Hit[]}` across repos / apps / PRs / commits / pipelines. |
 | `GET /` and any other non-`/api` path | the web client (`--static-dir` / `SWITCHYARD_WEB_DIR`): the file if it exists, else `shell.html` with 200 (SPA). Content-hashed files (`name-XXXXXXXX.ext`) are `Cache-Control: public, max-age=31536000, immutable`; everything else (`shell.html`, `index.html`, `app.js`, `app.plan`, `style.css`, …) `no-cache`. Unknown `/api/*` paths are a JSON 404, never the shell. |
+| `GET /api/v1/insights` | the Factory Floor in one call: `Insights` (groups, failure clusters, flakes, trends), same entities as the snapshot tables, sorted for display. |
+| `GET /api/v1/changes?since=<ms>[&until=<ms>]` | "since your last visit": `Changes` — what turned red, recovered, deployed, new failure clusters, counts; within the last 24 h. |
 | `GET /api/v1/meta` | `{protocol, version, git_sha, mode: "live"\|"demo", epoch, seq, snapshot:{seq,at,bytes,gzip_bytes}, clients, adapters: AdapterStatus[], orgs, counts, process: {rss_bytes, peak_rss_bytes, threads}, now}` |
 | `GET /api/healthz` | liveness `{ok:true}` (public). |
 | `GET /api/readyz` | `{ready, mode, seq, adapters: AdapterStatus[]}`; 200 when every enabled adapter has synced once, else 503. |
@@ -70,7 +72,8 @@ refetch the snapshot and keep the socket: drop deltas with `seq <= snapshot.seq`
      | `{ "op": "remove", "kind": Kind, "id": string }`
      | `{ "op": "event", "e": Event }` (transient, never stored).
 
-`Kind` = `"org" | "repo" | "commit" | "pipeline" | "pr" | "deploy" | "app" | "engine" | "queue" | "lane" | "watcher" | "stats"`.
+`Kind` = `"org" | "repo" | "commit" | "pipeline" | "pr" | "deploy" | "app" | "engine" | "queue" | "lane" | "watcher" | "stats"`
+       `| "group" | "cluster" | "flake" | "trend"` (0.5; older clients skip unknown kinds).
 
 - **upsert** replaces the whole entity (`v` always carries its own `id`).
 - **patch** is an [RFC 7386 JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7386) on the
@@ -88,10 +91,11 @@ refetch the snapshot and keep the socket: drop deltas with `seq <= snapshot.seq`
 
 ```ts
 type Snapshot = {
-  protocol: "0.4", epoch: string, seq: number, at: number,
+  protocol: "0.5", epoch: string, seq: number, at: number,
   orgs: Org[], repos: Repo[], commits: Commit[], pipelines: Pipeline[], prs: Pr[],
   deploys: Deploy[], apps: App[], engines: Engine[], queues: Queue[], lanes: Lane[],
-  watcher: Watcher | null, stats: Stats | null
+  watcher: Watcher | null, stats: Stats | null,
+  groups: Group[], clusters: Cluster[], flakes: Flake[], trends: Trend[]   // 0.5
 }
 ```
 
@@ -115,6 +119,7 @@ type Repo = {
   open_prs: number,
   last_activity: number,      // newest commit / pipeline / PR update (0 = none known)
   p50_build_ms?: number,      // median duration of the repo's successful push runs, last 24 h
+  group?: string,             // 0.5: Group id (team from the apps catalog, else the org)
   links: { github: string, woodpecker?: string, cicd?: string }
 }
 
@@ -155,13 +160,15 @@ type Pipeline = {             // id = "wp:<owner/name>:<number>" (Roadrunner) | 
   title?: string, author?: string,
   pr?: number,                // pull_request pipelines
   deploy?: true,              // has a deploy workflow (push pipelines)
+  flaky?: true,               // 0.5: failed, but every failed step passed on the same sha within 6 h
   workflows: Workflow[],
   url: string
 }
 type Workflow = { name: string, state: CiState, started?: number, finished?: number,
                   engine?: string, steps: Step[] }
 type Step = { name: string, state: CiState, started?: number, finished?: number,
-              exit_code?: number, cached?: boolean }
+              exit_code?: number, cached?: boolean,
+              cluster?: string }      // 0.5: failed steps: the failure Cluster id
 
 type Pr = {                   // id = "owner/name#123"
   id: string, repo: string, number: number, title: string, author: string, bot?: true,
@@ -234,6 +241,73 @@ type Stats = { id: "fleet", commits_24h, pipelines_24h, success_rate_24h /* 0..1
                running, pending: number }
 ```
 
+### Factory Floor (0.5): groups, failure clusters, flakes, trends
+
+```ts
+type Group = {                // id = "team:<slug>" | "org:<Owner>"
+  id: string, name: string,   // "Software", "Power systems", "Northwind-EMS"
+  kind: "team" | "org",       // team: from the apps catalog (a repo's app's team, normalized:
+                              // lower-case, "-team" dropped); org: repos without a known team
+  repos: number, apps: number,
+  red: number                 // repos in the group whose main is red now
+}
+
+type FailClass = "compile" | "test" | "lint" | "typecheck" | "deps" | "build" | "deploy"
+               | "security" | "oom" | "timeout" | "network" | "infra" | "exit"
+               // exit = only the exit code is known
+
+type Cluster = {              // id = "f:" + 12 hex of sha256(signature); failures of the last 24 h
+  id: string,
+  signature: string,          // the grouping key, readable: "<step> · <class>[ · <line>]"
+  step: string,               // step (Roadrunner) or job / step (GHA) name; numbered shards folded
+                              // ("test-web-3" → "test-web-#")
+  class: FailClass,
+  line?: string,              // the decisive error line from the step's log, normalized (hashes,
+                              // numbers, paths, durations masked), ≤ 160 chars
+  exit_code?: number,
+  count: number,              // failed steps with this signature, last 24 h
+  count_1h: number,           // … last hour
+  repos: string[],            // distinct repos, most recent first (≤ 12)
+  repo_count: number,
+  groups: string[],           // Group ids of those repos
+  first_seen: number,         // first failure with this signature (kept 7 d)
+  last_seen: number,
+  examples: string[],         // failing Pipeline ids, newest first (≤ 5)
+  open: number,               // repos whose latest run of this step still fails (0 = all recovered)
+  flaky?: number              // how many of `count` were flakes (passed on the same sha within 6 h)
+}
+
+type Flake = {                // id = "<owner/name>|<workflow>/<step>"; present while flips_24h ≥ 1
+  id: string, repo: string, workflow: string, step: string,
+  flips_24h: number,          // shas on which this step both failed and passed within 6 h (last 24 h)
+  failures_24h: number,       // failed runs of this step, last 24 h
+  last_at: number,
+  shas: string[]              // newest first (≤ 5)
+}
+
+type Trend = {                // id = "fleet" | a Group id; recomputed at most every 5 min
+  id: string, at: number,
+  intake_ms: Metric,          // pipeline created → started, p50 (queue wait)
+  run_ms: Metric,             // started → finished of successful runs, p50
+  pass_rate: Metric,          // success / (success + failure + error) of finished pipelines, 0..1
+  pipelines: Metric,          // finished pipelines per hour
+  deploys: Metric,            // deploys per hour
+  pr_age_ms: Metric,          // median age of open non-bot PRs (a gauge, sampled hourly)
+  red: Metric,                // repos with a red main (a gauge, sampled hourly)
+  hours_7d: number            // hours of history behind d7 (≤ 168; fills in after a fresh start)
+}
+type Metric = {
+  h1: number | null, h24: number | null, d7: number | null,   // last hour / 24 h / 7 d
+  dir: -1 | 0 | 1,            // h1 against d7 (h24 while d7 is null): beyond ±15 % (pass_rate: ±3 points)
+  bad?: true,                 // that direction is worse (slower, fewer passes, older PRs, more red)
+  spark: (number | null)[]    // 24 hourly values, oldest first, the current hour last
+}
+```
+
+Durations are in ms rounded to the second; rates to 2 decimals; `null` = no data in that
+window. Rates (`pipelines`, `deploys`) are per hour in every window, so they compare
+directly.
+
 ## Transient events (`op: "event"`) — the animation drivers
 
 ```ts
@@ -288,6 +362,31 @@ type PrDetail = { pr: Pr, checks: { name: string, state: CiState, required?: tru
                   deploys: Deploy[] }
 ```
 
+### Factory Floor queries (0.5)
+
+```ts
+type Insights = { at: number, groups: Group[],
+                  clusters: Cluster[],   // open first, then count_1h, then count
+                  flakes: Flake[],       // flips_24h descending
+                  trends: Trend[] }      // "fleet" first, then groups by name
+
+type Changes = {                         // GET /api/v1/changes?since=<ms>[&until=<ms>]
+  since: number, until: number,
+  complete: boolean,                     // false when `since` is older than the retained 24 h (clamped)
+  counts: { red: number, recovered: number, still_red: number, pipelines: number,
+            failed: number, deploys: number, deploys_failed: number, clusters_new: number,
+            flakes: number, prs_merged: number, apps_down: number, apps_recovered: number },
+  red: { repo: string, group?: string, at: number, culprit?: string /* sha */,
+         cluster?: string }[],          // main went red after `since` and is still red, newest first
+  recovered: { repo: string, group?: string, at: number, red_ms: number }[],
+  still_red: { repo: string, group?: string, since: number }[],   // red before `since`, still red
+  clusters: { id: string, count: number /* failures after since */, new: boolean }[],  // ≤ 20
+  deploys: { app: string, sha: string, state: string, at: number }[],                  // ≤ 50, newest first
+  apps: { app: string, from: string, to: string, at: number }[],                       // health changes
+  groups: { id: string, failed: number, red: number }[]            // where it happened, worst first
+}
+```
+
 ## Fixtures
 
 `contract/fixtures/snapshot.json` is a real fleet snapshot and `contract/fixtures/hour.jsonl`
@@ -308,6 +407,11 @@ cargo run --release -- --demo --listen 127.0.0.1:8080   # from server/, fixtures
 
 ## Changes
 
+- **0.5** (additive; 0.4 clients keep working: they skip the new kinds and fields): the
+  Factory Floor. `Repo.group` and `Group` entities; failure `Cluster`s by normalized
+  signature (step + class + the decisive log line) with `Step.cluster`; `Flake`s and
+  `Pipeline.flaky`; `Trend`s per stage for the fleet and each group (1 h / 24 h / 7 d with
+  24 h sparks, from hourly rollups kept 8 d); `GET /api/v1/insights`, `GET /api/v1/changes?since=`.
 - **0.4**: smaller deltas and snapshot (measured on the live fleet: stream 7.0 → 1.9 MB/h,
   snapshot 3.1 → 2.5 MB, so 1 h of `/history` ≈ 4.4 MB). New ops `patch` (RFC 7386 merge patch) and `dot` (one main-line
   Dot); `Repo.main.recent` keeps 12 dots (was ≤ 40, 20 in practice); `Pr.checks` lists only
