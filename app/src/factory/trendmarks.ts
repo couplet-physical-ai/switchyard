@@ -160,7 +160,7 @@ export function severity(m: Metric | null, key: string, metric: MetricKey, at = 
     return clamp(0.4 + (0.6 * Math.abs(v - t)) / margin, 0.4, 1);
   };
   const t24 = ty === null ? null : w > 0 ? Math.max(ty * 1.25, ty + MIN_DELTA[metric]) : ty - Math.max((1 - ty) * 0.25, MIN_DELTA[metric]);
-  const s = Math.max(over(m.h1, thr), over(m.h24, t24));
+  const s = Math.max(over(m.h1, thr), m.h1 === null || worse(m.h1, ty, metric) ? over(m.h24, t24) : 0); // w2-glance2 (#10): the day's ember only while the last hour agrees (never against the wall's arrow)
   return s > 0 ? s : m.bad ? 0.3 : 0;
 }
 

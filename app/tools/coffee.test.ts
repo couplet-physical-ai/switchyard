@@ -12,8 +12,9 @@ import { bindInsights, insights } from '../src/insights.ts';
 import { Factory } from '../src/factory/factory.ts';
 import { Gfx } from '../src/yard/gfx.ts';
 import {
-  DAY, HOUR, fingerprint, freshSince, marks, metricBad, packVisit, unpackVisit, windowStart, type Fresh, type MarkInput,
+  DAY, HOUR, age, fingerprint, freshSince, marks, metricBad, midRank, packVisit, unpackVisit, usualOf, windowStart, type Fresh, type MarkInput,
 } from '../src/factory/anomaly.ts';
+import { emberFact } from '../src/factory/coffee.ts';
 import type { Snapshot } from '../src/wire.ts';
 
 let fails = 0;
@@ -175,7 +176,7 @@ const redSince = (s: Snapshot, from: number) => list(s.repos).filter((r) => (r.m
     const ins = insights(), fleet = ins.trend('fleet')!;
     const jamIn = { ...markInput(f.world, now - HOUR, now, f.coffee.dg.fresh, true, { waiting: 6, oldestWait: 300_000, slots: 12, busy: 12, growing: true, p50: 60_000 }), trend: (id: string) => (id === 'fleet' ? { ...fleet, intake_ms: { ...fleet.intake_ms, dir: 1 as const, bad: true } } : ins.trend(id)) };
     const mj = marks(jamIn);
-    eq([mj.jam?.waiting, mj.verdict, mj.hot.map((h) => h.kind), mj.embers.map((e) => e.id)], [6, 'jammed', ['jam'], ['intake']], 'jam: wait trend bad + queue growing + every slot busy → jammed, the intake embers, a jam callout');
+    eq([mj.jam?.waiting, mj.verdict, mj.factKey, mj.fact, mj.hot.map((h) => h.kind), mj.embers.map((e) => e.id)], [6, 'worse', 'jam', '6 waiting, every slot busy', ['jam'], ['intake']], 'jam: wait trend bad + queue growing + every slot busy → worse than usual by the jam (w2-glance2), the intake embers, a jam callout');
     eq(marks({ ...jamIn, queue: { ...jamIn.queue, growing: false } }).jam, null, 'jam: not while the queue is not growing');
     eq(marks({ ...jamIn, queue: { ...jamIn.queue, busy: 11 } }).jam, null, 'jam: not while a slot is free');
   }
@@ -202,6 +203,70 @@ const redSince = (s: Snapshot, from: number) => list(s.repos).filter((r) => (r.m
   eq(m.embers.filter((e) => e.kind === 'stage').length, stageBad, `fixture embers: one per stage whose 24 h trend is worse than its 7 d (${m.embers.map((e) => `${e.id}:${e.metrics.join('+')}`).join(', ')})`);
   ok(m.hot.length >= 1 && m.hot.length <= 4, `fixture hotspots (candidates; the floor draws ≤ 3): ${m.hot.map((h) => `${h.lead}${h.rest}`).join(' | ')}`);
   ok(m.beacons.length <= 64 && m.verdict !== 'flowing', `fixture verdict: ${m.verdict} (${m.why})`);
+}
+
+// ── 4b. w2-glance2 (REVIEW-iter3 #1 #4 #6 #9 #10): now against usual, share, one fact, no lying embers ──
+{
+  const snap = clone(fixture), now = snap.at;
+  const { f, run } = floor(snap, now);
+  f.coffee.open('', '', true, 0);
+  f.coffee.pick('24h', 0);
+  run(16, 40);
+  const m = f.coffee.dg.marks, w = f.world;
+  // #1 broken only on an app down now, the watcher, or a main red in the last 60 min
+  let acute = 0;
+  for (const r of w.repos.values()) { const st = r.main?.state, si = r.main?.since ?? 0; if ((st === 'failure' || st === 'error') && si >= now - HOUR && si <= now) acute++; }
+  const down = [...w.apps.values()].filter((a) => a.health === 'down').length;
+  eq(m.verdict === 'broken', !!(acute || down || w.watcher?.tripped), `#1 broken iff a main red < 1 h (${acute}), an app down (${down}) or the watcher (verdict ${m.verdict} · ${m.fact})`);
+  ok(!!m.fact && f.coffee.verdictWords() === `${m.verdict === 'worse' ? 'worse than usual' : m.verdict} · ${m.fact}`, `#1 the header says the one fact that decided it: "${f.coffee.verdictWords()}"`);
+  // a fleet whose 24 h window holds new reds but none in the last hour, nothing down: never broken
+  const fleet = list(snap.trends ?? []).find((x) => x.id === 'fleet')!;
+  const base = markInput(w, now - DAY, now, f.coffee.dg.fresh, false, { waiting: 0, oldestWait: 0, slots: 12, busy: 0, growing: false, p50: 0 });
+  const quiet = clone(snap);
+  for (const r of list(quiet.repos)) if (r.main && (r.main.state === 'failure' || r.main.state === 'error')) r.main.since = Math.min(r.main.since || now - 2 * HOUR, now - 2 * HOUR);
+  for (const a of list(quiet.apps)) a.health = 'up';
+  quiet.watcher = { id: 'outage', tripped: false, gh_status: 'ok' };
+  const q = floor(quiet, now);
+  const qm = marks({ ...base, w: q.f.world, fresh: { ...f.coffee.dg.fresh, newRed: ['x/a', 'x/b'] } });
+  ok(qm.verdict !== 'broken', `#1 a window's new reds alone never make it broken (${qm.verdict} · ${qm.fact})`);
+  // worse than usual: the pass rate 7 points under its 7 d decides, said as a fact
+  const pf = { ...fleet, pass_rate: { ...fleet.pass_rate, h1: 0.69, d7: 0.76, bad: true }, red: { ...fleet.red, h1: 1, d7: 40, h24: 40 } };
+  const pm = marks({ ...base, w: q.f.world, trend: (id: string) => (id === 'fleet' ? pf : base.trend(id)) });
+  eq([pm.verdict, pm.factKey, pm.fact], ['worse', 'pass', 'pass 69% (usual 76%)'], '#1 pass 69 % against 76 % over 7 d → "worse than usual · pass 69% (usual 76%)"');
+  const u = usualOf(pf, 3, now, 24);
+  ok(u.passBad && u.rel === 'worse' && u.pass === 0.69 && u.passTyp === 0.76, '#1 usualOf holds the pass rate (h1 against d7, 5 points)');
+  // flowing: red at or under its typical and the pass rate at or over its 7 d; else steady
+  const gf = { ...fleet, pass_rate: { ...fleet.pass_rate, h1: 0.8, d7: 0.76, bad: false }, pipelines: { ...fleet.pipelines, h1: 1 }, red: { ...fleet.red, d7: 50, h24: 50 } };
+  const gm = marks({ ...base, w: q.f.world, trend: (id: string) => (id === 'fleet' ? gf : base.trend(id)) });
+  ok(gm.verdict === 'flowing' || gm.verdict === 'steady', `#1 below every line: flowing or steady, never broken or worse (${gm.verdict} · ${gm.fact})`);
+  // the needle is a percentile
+  eq([midRank([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 10), midRank([5, 5, 5, 5, 5, 5], 5), midRank([1, 2], 2)], [0.95, 0.5, -1], '#1 the needle: now\'s place in the week (ties half; too few hours: none)');
+  // #4 the worst group by red share: couplet 10 of 17 beats labs 18 of 131
+  const gs = [{ id: 'org:Northwind-Labs', red: 18, repos: 131 }, { id: 'org:couplet-physical-ai', red: 10, repos: 17 }, { id: 'team:software', red: 2, repos: 30 }];
+  const sm = marks({ ...base, w: q.f.world, groups: gs, groupWord: (id) => (id.includes('couplet') ? 'couplet' : id.includes('Labs') ? 'labs' : 'software') });
+  const g0 = sm.hot.find((h) => h.kind === 'group');
+  eq(g0 ? `${g0.lead}${g0.rest}` : '', 'couplet · 10 of 17 red', '#4 worstGroup by red share × log(1 + red): "couplet · 10 of 17 red"');
+  // #6 callouts: a name and one state fact, in slot order, a flaky cluster never first
+  const order = ['red', 'down', 'cluster', 'group', 'jam', 'flaky'];
+  const ks = m.hot.map((h) => order.indexOf(h.kind));
+  ok(ks.every((k, i) => k >= 0 && (i === 0 || k >= ks[i - 1]!)) && m.hot[0]?.kind !== 'flaky', `#6 the slots in order (${m.hot.map((h) => h.kind).join(' · ')}), a flaky cluster never first`);
+  const cl = m.hot.find((h) => h.kind === 'cluster');
+  ok(!cl || /^ · \d+ mains? red · (now|\d+[mhd])$/.test(cl.rest), `#6 an open cluster: "· N mains red · age" (${cl ? cl.lead + cl.rest : 'none'})`);
+  const fl = m.hot.find((h) => h.kind === 'flaky');
+  ok(!fl || (fl.tone === 'flaky' && / · flaky( cron)? · \d+ \/ 24h$/.test(fl.rest)), `#6 a flaky cluster: gray-red, "· flaky · N / 24h" (${fl ? fl.lead + fl.rest : 'none'})`);
+  for (const h of m.hot.filter((x) => x.kind === 'red')) ok(/ broke main · (now|\d+m)/.test(h.rest), `#6 "broke main" only under 1 h (${h.lead}${h.rest})`);
+  eq([age(30_000), age(12 * 60_000), age(13 * HOUR), age(3 * DAY)], ['now', '12m', '13h', '3d'], '#6 ages in one unit');
+  const red1 = [...w.repos.values()].find((r) => (r.main?.state === 'failure' || r.main?.state === 'error') && (r.main.since ?? 0) > 0 && now - r.main.since > HOUR);
+  if (red1) {
+    const parts = f.coffee.focalParts(red1.id, red1.name).map((x) => x[0]).join('');
+    ok(!parts.includes('broke main') && / · red \d+[hd]$/.test(parts), `#6 the focal car red over an hour: "${parts}"`);
+  }
+  // #10 an ember never contradicts the wall's arrow: the day worse, the last hour better → none
+  const rm = { h1: 21_000, h24: 45_000, d7: 39_000, dir: -1 as const, spark: [] };
+  eq([metricBad('run_ms', rm, false), metricBad('run_ms', { ...rm, h1: 48_000, dir: 1 as const }, false)], [false, true], '#10 run time 45 s / 24 h against 39 s, the last hour 21 s → no ember; the last hour 48 s → ember');
+  const lt = list(snap.trends ?? []).find((x) => x.id !== 'fleet');
+  if (lt) ok(emberFact({ ...lt, pass_rate: { ...lt.pass_rate, h1: 0.4, d7: 0.49 } }, ['pass_rate'], false) === 'pass 40% (usual 49%)', '#10 an ember\'s hover names its metric: "pass 40% (usual 49%)"');
+  for (const e of m.embers.filter((x) => x.kind === 'group')) ok(emberFact(insights().trend(e.id), e.metrics, false) !== '', `#10 every group ember can name its metric (${e.id}: ${emberFact(insights().trend(e.id), e.metrics, false)})`);
 }
 
 // ── 5. costs (Bun): each digest slice, the layout, one frame's coffee painting ──

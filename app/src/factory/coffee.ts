@@ -4,8 +4,9 @@
 //
 //   The first 10 seconds after the floor opens:
 //     0–0.3 s   the cached floor paints;
-//     0.3–1.5 s the verdict dial's needle swings to flowing · slowed · jammed · broken and the
-//               glyph counters count up (what changed in the window);
+//     0.3–1.5 s the verdict dial's needle swings to where now sits in the week (w2-glance2: the
+//               verdict is flowing · steady · worse than usual · broken, NOW against USUAL) and
+//               the glyph counters count up (what changed in the window);
 //     1.5–7 s   the window replays, compressed (≤ 5.5 s): a playhead sweeps the strip's bracket,
 //               and as it passes each thing's time it lands where it happened: failures ride
 //               home on the return belt, red main lines ignite their beacons, fixes flash, apps
@@ -36,9 +37,11 @@ import { short } from './census.ts';
 import type { Factory } from './factory.ts';
 import { insights } from '../insights.ts';
 import {
-  DAY, HOUR, WINS, ago, emptyFresh, fingerprint, freshSince, h36, isRedMain, marks, noMarks, noTotals, packVisit, shortWindow, totals, totalsWords, unpackVisit, windowStart,
+  DAY, HOUR, VERDICT_WORD, WINS, age, ago, emptyFresh, fingerprint, freshSince, h36, isRedMain, marks, noMarks, noTotals, packVisit, shortWindow, totals, totalsWords, unpackVisit, windowStart,
   type Fingerprint, type Fresh, type Marks, type QueueState, type Totals, type VisitRec, type Win,
 } from './anomaly.ts';
+import { floorGroups } from './groups.ts';
+import { emberPass } from './trendmarks.ts';
 import { FACTOR } from './stress.ts';
 import { K_AMBER, K_BLACK, K_INK, K_OK, K_RED, Nums, beacons, chevrons, crackAt, cracks, dodge, embers, rings, smoke, tint } from './fx.ts';
 import { Glance, T_DONE, T_SETTLE, T_SWEEP } from './glance.ts';
@@ -199,22 +202,37 @@ export class Coffee {
     }
   }
 
-  /** The verdict in words: "broken · worse than usual", "broken · as usual", "flowing". */
+  /** The verdict in words (w2-glance2): now against usual, and the one fact that decided it:
+   *  "worse than usual · pass 69% (usual 76%)", "steady · 40 red (usual 36)", "broken · x down 3m". */
   verdictWords(): string {
-    const m = this.dg.marks, rel = m.verdict === 'flowing' ? '' : m.usual.rel;
-    return rel ? `${m.verdict} · ${rel === 'worse' ? 'worse than usual' : 'as usual'}` : m.verdict;
+    const m = this.dg.marks;
+    return m.fact ? `${VERDICT_WORD[m.verdict]} · ${m.fact}` : VERDICT_WORD[m.verdict];
   }
+
+  /** The focal car's words (labels.ts, w2-glance2 #6): "x broke main · 12m" only while its main
+   *  line has been red under an hour, else "x · red 7h" (it is not news). */
+  focalParts(repo: string, name: string): [string, string, boolean?][] {
+    const r = this.f.world.repos.get(repo), now = this.f.tl.playhead, s = r?.main?.since ?? 0;
+    if (!(s > 0) || s > now) return [[`${name} broke main`, C.redText, true]];
+    if (now - s < HOUR) return [[`${name} broke main`, C.redText, true], [` · ${age(now - s)}`, C.ink2]];
+    return [[name, C.redText, true], [` · red ${age(now - s)}`, C.ink2]];
+  }
+
+  /** A lane dock's hover title tail (lens.ts, w2-glance2 #10): the group's metric that glows,
+   *  " · pass 40% (usual 49%)", '' when none does. */
+  emberWord(lane: string): string { return this.emberWords.get(lane) ?? ''; }
+  private emberWords = new Map<string, string>();
 
   /** The glance in words (the floor's accessible mirror, and tests). */
   words(): string {
     const d = this.dg, m = d.marks, fr = d.fresh;
     const v = this.verdictWords();
-    const parts: string[] = [m.why ? `${v}: ${m.why}` : v];
-    if (fr.newRed.length && !m.why.includes('newly red')) parts.push(`${fr.newRed.length} newly red`);
+    const parts: string[] = [v];
+    if (fr.newRed.length) parts.push(`${fr.newRed.length} newly red`);
     if (fr.fixed.length) parts.push(`${fr.fixed.length} fixed`);
     const nf = Math.max(fr.failed.length, fr.failCount);
     if (nf > 0) parts.push(`${nf} failed`);
-    if (fr.down.length && !m.why.includes('down')) parts.push(`${fr.down.length} down`);
+    if (fr.down.length) parts.push(`${fr.down.length} down`);
     if (fr.deploys) parts.push(`${fr.deploys} deploys`);
     const nm = Math.max(fr.merged.length, fr.mergedCount);
     if (nm > 0) parts.push(`${nm} merged`);
@@ -250,16 +268,17 @@ export class Coffee {
       return true;
     }
     this.menu = false;
-    // the verdict is a lens too: on what made it (the new reds or the apps down, the intake, the
-    // tests)
+    // the verdict is a lens too: on the fact that decided it (w2-glance2): the main lines red in
+    // the last hour or the apps down, the tests (pass rate, failures), the red main lines, the
+    // intake (a jam)
     if (h?.kind === 'verdict') {
-      const m = this.dg.marks, fr = this.dg.fresh, ww = this.windowWords();
-      if (m.verdict === 'broken') {
-        const key = fr.newRed.length ? 'newRed' : 'down';
-        const n = key === 'newRed' ? fr.newRed.length : this.now.down;
-        this.f.lens.push({ kind: 'fresh', id: key, name: key === 'newRed' ? `${n} main lines turned red · ${ww}` : `${n} ${n === 1 ? 'app' : 'apps'} down`, sub: '' }, t);
-      } else if (m.verdict === 'jammed') this.f.lens.push({ kind: 'queue', id: 'intake', name: 'intake', sub: '' }, t);
-      else if (m.verdict === 'slowed') this.f.lens.push({ kind: 'scanner', id: 'tests', name: 'tests', sub: '' }, t);
+      const m = this.dg.marks, fr = this.dg.fresh;
+      const k = m.factKey;
+      if (k === 'acute') this.f.lens.push({ kind: 'fresh', id: 'acute', name: `${fr.acute.length} main ${fr.acute.length === 1 ? 'line' : 'lines'} red in the last hour`, sub: '' }, t);
+      else if (k === 'down' || k === 'watcher') this.f.lens.push({ kind: 'fresh', id: 'down', name: `${this.now.down} ${this.now.down === 1 ? 'app' : 'apps'} down`, sub: '' }, t);
+      else if (k === 'jam') this.f.lens.push({ kind: 'queue', id: 'intake', name: 'intake', sub: '' }, t);
+      else if (k === 'pass' || k === 'fails') this.f.lens.push({ kind: 'scanner', id: 'tests', name: 'tests', sub: '' }, t);
+      else if (k === 'red' && this.now.red) this.f.lens.push({ kind: 'fresh', id: 'red', name: `${this.now.red} main lines red`, sub: '' }, t);
       return true;
     }
     return false;
@@ -328,6 +347,8 @@ export class Coffee {
     if (!(this.srv && this.dg.win === this.srvWin) && this.f.tl.mode === 'live' && t - this.firstT < 1500) return;
     this.openAt = t; this.skipAt = -1; this.camAt = this.f.cam.ver;
     console.log(`coffee: open at ${Math.round(t)} · ${this.words()}`);
+    const m = this.dg.marks; // w2-glance2: the evidence tools read what decided the verdict and the callouts' candidates
+    console.log(`coffee: verdict ${m.verdict} · ${m.fact} · pct ${m.usual.pct.toFixed(2)} (${m.usual.pctOf}) · embers ${m.embers.map((e) => `${e.kind}:${e.id}[${e.metrics.join(',')}]`).join(' ')} · hot ${m.hot.map((h) => `${h.kind}:${h.lead}${h.rest}`).join(' | ')}`);
   }
   private firstT = -1;
 
@@ -361,7 +382,7 @@ export class Coffee {
     const mk = marks({
       w, now, since, short: shortWindow(win, now, this.visitAt), clusters, trend: (id) => ins.trend(id), srv, fresh, queue,
       downSince: (app) => downAt.get(app) ?? (agesKnown ? now - 8 * DAY : 0),
-      groups, groupWord: (id) => groupWord(id, ins.group(id)?.name),
+      groups, groupWord: (id) => groupWord(id, ins.group(id)?.name), groupOf: (repo) => ins.groupOf(repo),
     });
     return { win, since, now, fresh, marks: mk, complete: srv ? srv.complete : true };
   }
@@ -377,6 +398,7 @@ export class Coffee {
         return { repos: [...d.newRed, ...rest], apps: [], fails: [] };
       }
       case 'newRed': return { repos: d.newRed, apps: [], fails: [] };
+      case 'acute': return { repos: d.acute, apps: [], fails: [] }; // w2-glance2: red in the last hour
       case 'down': {
         // every app down now (the chip: "2 apps down"), the window's first
         const apps: string[] = [...d.down];
@@ -435,6 +457,8 @@ export class Coffee {
   private mCrack = new Nums();   // painter runs (chronic: shown from the start)
   private mChev = new Nums();    // x, y
   private jamUV: number[] = [];  // the jam's crates (floor u, v)
+  /** w2-glance2: each group ember's hover box (screen), naming its metric. */
+  private emberBoxes: { x: number; y: number; w: number; h: number; kind: string; id: string; label: string }[] = [];
   private ev = new Nums();       // replay events: x, y, r, fire (intro ms), colour, u (a failure's spot on the return belt, else -1), v
   /** Each hotspot's anchor on screen (glance.ts draws the callouts from them). */
   hotXY: number[] = [];
@@ -466,6 +490,10 @@ export class Coffee {
     const tm = f.reduced ? 0 : t;
     this.lookVeil(g, t); // wow 4: off the worst path the floor dims
     gate(this.mEmber, 5, T, this.sEmber); embers(g, this.sEmber, tm);
+    // w2-glance2: the bare glowing floor says why it glows (the bottom of the frame's hit list:
+    // anything standing on the glow answers first, as plant.ts's embers do)
+    const hl = (f as unknown as { hits?: unknown }).hits;
+    if (this.sEmber.n && this.emberBoxes.length && Array.isArray(hl)) hl.unshift(...this.emberBoxes);
     cracks(g, this.mCrack);
     gate(this.mSmoke, 8, T, this.sSmoke); smoke(g, this.sSmoke, tm, 1, f.labels);
     if (this.jamUV.length && T === Infinity) {
@@ -551,12 +579,36 @@ export class Coffee {
       const u = bay.u + bay.du * 0.4, v = bay.v + bay.dv * 0.5;
       crackAt(cr, cam.x(u, v), cam.y(u, v, P.ENG_H + 0.5), sz * 0.7, hashN(bay.pid), 2);
     }
-    // embers: under the stages and the groups whose trend is bad
+    // embers (w2-glance2, #10): only where the hover names the bad metric. A stage's is the floor's
+    // own (groupfloor.ts glows the worst stage, its hover in plant.ts, its arrow on the wall): not
+    // twice, and never one the wall's arrow contradicts (anomaly.ts metricBad). A group's sits at
+    // its OWN lane's dock (a team folded into "other teams" has no place of its own, so no glow
+    // over a district whose hover names another team), where the dock's hover title says what
+    // glows (lens.ts) and the bare floor round it too; not where groupfloor already glows a dock
     const em = this.mEmber; em.reset();
-    for (const e of m.embers) {
-      const at = e.kind === 'stage' ? STAGE_SPOT[e.id] : this.groupSpot(e.id);
-      if (!at) continue;
-      pushN(em, cam.x(at[0], at[1]), cam.y(at[0], at[1], 0), at[2] * cam.s * 0.95, e.k, d.now - 1);
+    this.emberWords.clear();
+    this.emberBoxes = [];
+    const fl = f.floor, G = floorGroups(), ins = insights();
+    const w2v: number[] = [];
+    for (const a of emberPass.painted) if (!a.zone) w2v.push(a.v0);
+    const shortW = shortWindow(d.win, d.now, this.visitAt);
+    // the hottest per lane: a team folded into "other teams" glows at that dock, whose hover then
+    // names the team ("other teams dock · platform builds 45s (usual 39s)")
+    const ge = m.embers.filter((e) => e.kind === 'group').sort((a, b) => b.k - a.k);
+    for (const e of ge) {
+      const lane = fl.on ? G.laneOfGroup(e.id) : e.id;
+      if (this.emberWords.has(lane) || (fl.on && fl.laneIndex(lane) < 0)) continue;
+      const fact = emberFact(ins.trend(e.id), e.metrics, shortW);
+      if (!fact) continue;
+      const words = lane === e.id ? fact : `${groupWord(e.id, ins.group(e.id)?.name)} ${fact}`;
+      this.emberWords.set(lane, ` · ${words}`);
+      // the floor's lanes off (the old docks): an org's dock only (a team has no door there)
+      if (!fl.on && !e.id.startsWith('org:')) { this.emberWords.delete(lane); continue; }
+      const v = fl.on ? fl.dockV(lane) : fx.dockV(e.id.slice(4));
+      if (w2v.some((x) => Math.abs(x - v) < 14)) continue; // groupfloor glows this dock already
+      const u = P.DOCK_U0 + 27, x = cam.x(u, v), y = cam.y(u, v, 0), rx = 44 * cam.s * 0.95;
+      pushN(em, x, y, rx, e.k, d.now - 1);
+      this.emberBoxes.push({ x: x - rx * 0.8, y: y - rx * 0.4, w: rx * 1.6, h: rx * 0.8, kind: 'ember', id: `group:${e.id}`, label: lane === e.id ? `${groupWord(e.id, ins.group(e.id)?.name)} · ${words}` : `other teams · ${words}` });
     }
     // the jam: crates bunch at the intake's mouth, chevrons push behind them
     this.jamUV = [];
@@ -570,9 +622,14 @@ export class Coffee {
     this.hotXY = [];
     for (const h of m.hot) {
       let at: [number, number, number] | null = null;
-      if (h.kind === 'cluster') at = [P.SCAN_U, 300, 70];
+      if (h.kind === 'cluster' || h.kind === 'flaky') {
+        // w2-glance2: at its heap on the return belt when the last hour parked one, else the scanner
+        const pg = f.lens.parkGroups.find((x) => x.cl === h.id);
+        at = pg ? [(pg.u0 + pg.u1) / 2, P.RETURN_V, 8] : [P.SCAN_U, 300, 70];
+      } else if (h.kind === 'red') { const sp = repoSpot(h.id); if (sp) at = [sp[0], sp[1], 6]; }
       else if (h.kind === 'jam') at = [(P.INTAKE_U0 + P.INTAKE_U1) / 2, 291, 10];
       else if (h.kind === 'down') { const bl = f.blockAt.get(h.id); if (bl) at = [bl.u + bl.d / 2, bl.v + bl.d / 2, bl.h + 2]; }
+      else if (fl.on && G.laneOfGroup(h.id) === h.id && fl.laneIndex(h.id) >= 0) at = [P.DOCK_U0 + 27, fl.dockV(h.id), 18]; // w2-glance2: the group's own dock (its lane)
       else { const s = this.groupSpot(h.id); if (s) at = [s[0], s[1], s[3]]; }
       this.hotXY.push(at ? cam.x(at[0], at[1]) : -1, at ? cam.y(at[0], at[1], at[2]) : -1);
     }
@@ -595,7 +652,7 @@ export class Coffee {
   private layoutLook(): void {
     const f = this.f, cam = f.cam, P = f.plan, m = this.dg.marks;
     this.lookXY = []; this.lookLen = []; this.lookHoles = [];
-    if (m.usual.rel !== 'worse' || m.verdict === 'flowing') return;
+    if (m.usual.rel !== 'worse' || m.verdict === 'flowing' || m.verdict === 'steady') return;
     const grp = m.hot.find((h) => h.kind === 'group'), cl = m.hot.find((h) => h.kind === 'cluster');
     if (!grp && !cl) return;
     const fl = f.floor, gi = grp ? fl.laneIndex(grp.id) : -1, geo = gi >= 0 ? fl.lanesNow[gi] : undefined;
@@ -854,10 +911,27 @@ export class Coffee {
 /** The walking light's glow: radius, opacity (outer to inner). */
 const LOOK_GLOW: [number, number][] = [[22, 0.05], [13, 0.09], [6, 0.2], [2.5, 0.6]];
 
-/** The stages' floor spots for embers: [u, v, r]. */
-const STAGE_SPOT: Record<string, [number, number, number]> = {
-  prs: [270, 300, 150], mains: [548, 290, 110], intake: [705, 291, 70], engines: [915, 300, 190], tests: [1104, 320, 70], deploy: [1165, 330, 80],
-};
+/** w2-glance2: a group ember's words, its first bad metric now against its 7 d, in the window's
+ *  terms (the last hour's for a short window, the day's for a long one): "pass 40% (usual 49%)",
+ *  "10 red (usual 8)", "builds 45s (usual 39s)". '' when the trend cannot say. */
+export function emberFact(t: import('../wire.ts').Trend | null, metrics: readonly string[], short: boolean): string {
+  if (!t) return '';
+  const k = metrics[0];
+  const m = k === 'pass_rate' ? t.pass_rate : k === 'red' ? t.red : k === 'intake_ms' ? t.intake_ms : k === 'run_ms' ? t.run_ms : k === 'pr_age_ms' ? t.pr_age_ms : null;
+  if (!m) return '';
+  const v = m.h1 ?? m.h24, ty = m.d7; // now (the card's last hour, the verdict's now), whatever the window
+  void short;
+  if (v === null || v === undefined) return '';
+  const sec = (x: number) => (x >= 3_600_000 ? `${Math.round(x / 86_400_000)}d` : `${Math.round(x / 1000)}s`);
+  const u = (s: string) => (ty === null || ty === undefined ? '' : ` (usual ${s})`);
+  switch (k) {
+    case 'pass_rate': return `pass ${Math.round(v * 100)}%${u(`${Math.round((ty ?? 0) * 100)}%`)}`;
+    case 'red': return `${Math.round(v)} red${u(String(Math.round(ty ?? 0)))}`;
+    case 'intake_ms': return `waits ${sec(v)}${u(sec(ty ?? 0))}`;
+    case 'run_ms': return `builds ${sec(v)}${u(sec(ty ?? 0))}`;
+    default: return `PRs ${sec(v)} old${u(sec(ty ?? 0))}`;
+  }
+}
 
 /** Copies the entries (`stride` numbers, the last one a time) whose time is ≤ T into `dst`
  *  without it. */

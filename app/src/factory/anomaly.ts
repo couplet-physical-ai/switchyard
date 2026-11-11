@@ -18,16 +18,31 @@
 //               jam     the intake's wait trend is bad, the queue grows, every slot is busy
 //               ember   a stage's or a group's v0.5 trend is `bad` (worse than its 7 d): a warm
 //                       glow under it. The 1 h view reads the server's h1 verdict; the 24 h and
-//                       7 d views compare h24 with d7 by the same rule
-//   verdict     broken (an app down, the watcher, a main line turned red in the window and still
-//               red) · jammed · slowed (a bad pass-rate / wait / run-time trend, or smoke) ·
-//               flowing; `sev` 0..1 places the dial's needle inside its sector
-//   usual       (fx-glance) the verdict is RELATIVE: the last hour's failures and the red main
-//               lines now against the 7-d same-hour p90 (agg/baseline.ts; the trend's typical ×
-//               1.25 while the ring holds too little): `worse` than usual, `usual`, or '' with no
-//               basis; and the window's failures against the typical for a window that long
-//   hotspots    the callouts' candidates: the worst cluster, the worst group, the jam, the app down
-//               (the floor draws ≤ 3, glance.ts)
+//                       7 d views compare h24 with d7 by the same rule, and (w2-glance2) only
+//                       while the last hour does not disagree (an h1 on the better side of d7 is
+//                       what the wall's arrow shows: an ember never contradicts it)
+//   verdict     (w2-glance2, REVIEW-iter3 #1) NOW against USUAL, never the window's news (the
+//               chips carry that):
+//                 broken   an app down now, the outage watcher, or a main line that turned red
+//                          in the last 60 min and is still red;
+//                 worse    ("worse than usual") the red main lines over their 7-d same-hour p90,
+//                          the last hour's failures over theirs, the pass rate 5 points under
+//                          its 7 d (or the server's `bad`), or a jam;
+//                 steady   none of that, but not all calm;
+//                 flowing  red at or under its typical, the pass rate at or over its 7 d.
+//               `fact` is the one fact that decided it ("pass 69% (usual 76%)", "40 red (usual
+//               36)", "net-control-plane red 12m"); `pct` is the needle: where now sits in the
+//               7-d distribution (the worst of red, failures/h and the fail share; -1 none)
+//   usual       (fx-glance) the last hour's failures, the red main lines and the pass rate now
+//               against the 7-d same-hour p90 (agg/baseline.ts; the trend's typical × 1.25 while
+//               the ring holds too little): `worse` than usual, `usual`, or '' with no basis;
+//               and the window's failures against the typical for a window that long
+//   hotspots    (w2-glance2, #4 #6) the callouts' candidates, each a name and ONE state fact, in
+//               slot order: a main line red < 1 h ("x broke main · 12m"), an app down ("· down
+//               3h"), an open cluster by the main lines it holds red ("security-scan · 7 mains
+//               red · 13h"), the worst group by red SHARE ("couplet · 10 of 17 red ▲"), the
+//               jam, then a flaky cluster ("esign-sync · flaky · 68 / 24h", gray-red), never
+//               first (the floor draws ≤ 3, glance.ts)
 //   totals      (fx-glance) red main lines, building, queued, apps down: ONE count, which the
 //               status line (app.ts overview) and the coffee header both show; stress mode's
 //               are the 10× fleet's own (every count × FACTOR, the city's hashed copies' health)
@@ -38,6 +53,7 @@ import type { Changes, Cluster, Metric, Trend } from '../wire.ts';
 import type { World } from '../world.ts';
 import { buildingIds, queueTruth } from '../yard/select.ts';
 import { failuresOf, threshold, typical } from './trendmarks.ts';
+import { baseline } from './agg/baseline.ts';
 
 export const HOUR = 3_600_000;
 export const DAY = 24 * HOUR;
@@ -59,6 +75,15 @@ export function windowSpan(win: Win, now: number, visitAt: number): number { ret
 
 /** Whether the window reads the last hour's trend verdict (h1) or the day's (h24 vs d7). */
 export function shortWindow(win: Win, now: number, visitAt: number): boolean { return windowSpan(win, now, visitAt) <= 3 * HOUR; }
+
+/** w2-glance2: an age in one unit, for a callout ("12m", "13h", "3d"; "now" under a minute). */
+export function age(ms: number): string {
+  if (!(ms >= 60_000)) return 'now';
+  const m = Math.floor(ms / 60_000);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  return h < 48 ? `${h}h` : `${Math.floor(h / 24)}d`;
+}
 
 /** "3h", "12m", "2d": how long ago. */
 export function ago(ms: number): string {
@@ -224,8 +249,12 @@ function fixedAt(recent: readonly { at: number; state: string }[] | undefined, s
 
 // ───────────────────────────── the marks ─────────────────────────────
 
-export type Verdict = 'flowing' | 'slowed' | 'jammed' | 'broken';
-export const VERDICTS: readonly Verdict[] = ['flowing', 'slowed', 'jammed', 'broken'];
+export type Verdict = 'flowing' | 'steady' | 'worse' | 'broken';
+export const VERDICTS: readonly Verdict[] = ['flowing', 'steady', 'worse', 'broken'];
+/** The verdict as the header says it. */
+export const VERDICT_WORD: Record<Verdict, string> = { flowing: 'flowing', steady: 'steady', worse: 'worse than usual', broken: 'broken' };
+/** What decided the verdict (the verdict lens opens on it). */
+export type FactKey = '' | 'watcher' | 'down' | 'acute' | 'pass' | 'red' | 'fails' | 'jam';
 
 export type Smoke = { id: string; step: string; repos: readonly string[]; repoN: number; n1h: number; fresh: boolean; k: number; at: number };
 export type Beacon = { kind: 'red' | 'down' | 'watcher'; id: string; at: number; sev: number };
@@ -234,23 +263,36 @@ export type Crack = { kind: 'red' | 'down'; id: string; since: number };
 export type Stage = 'prs' | 'mains' | 'intake' | 'engines' | 'tests' | 'deploy';
 export type Ember = { kind: 'stage' | 'group'; id: string; metrics: string[]; k: number };
 export type Jam = { waiting: number; oldest: number; k: number };
-export type Hotspot = { kind: 'cluster' | 'group' | 'jam' | 'down'; id: string; lead: string; rest: string; red: boolean };
-/** Against the usual (fx-glance): `rel` worse / usual ('' no basis); the last hour's failures
- *  and the red main lines now with their thresholds (the 7-d same-hour p90); the window's failures
- *  typical for its length (null: no basis) and its threshold. */
+/** A callout's candidate (w2-glance2): a name (`lead`) and one state fact (`rest`); `tone` its
+ *  colour (red: broken now; flaky: gray-red, a flake is not an incident; amber: the jam; ink),
+ *  `tri` a drawn ▲ after the words (the group's red trend rising). */
+export type Hotspot = { kind: 'red' | 'cluster' | 'flaky' | 'group' | 'jam' | 'down'; id: string; lead: string; rest: string; red: boolean; tone?: 'red' | 'flaky' | 'amber' | 'ink'; tri?: 0 | 1 };
+/** Against the usual (fx-glance; w2-glance2: + the pass rate, the typicals, the percentile):
+ *  `rel` worse / usual ('' no basis); the last hour's failures and the red main lines now with
+ *  their thresholds (the 7-d same-hour p90) and typicals (7 d); the pass rate now (h1) and its
+ *  7 d; the window's failures typical for its length (null: no basis) and its threshold; `pct`
+ *  where now sits in the 7-d distribution (0..1, the worst of red, failures/h and the fail share;
+ *  -1 none) and which one that was. */
 export type Usual = {
-  rel: '' | 'worse' | 'usual'; fails1h: number | null; failsThr: number | null; red: number; redThr: number | null;
+  rel: '' | 'worse' | 'usual'; fails1h: number | null; failsThr: number | null; failsTyp: number | null;
+  red: number; redThr: number | null; redTyp: number | null;
+  pass: number | null; passTyp: number | null; passBad: boolean;
   winUsual: number | null; winThr: number | null;
+  pct: number; pctOf: '' | 'red' | 'fails' | 'pass';
 };
 export type Marks = {
   smoke: Smoke[]; beacons: Beacon[]; cracks: Crack[]; jam: Jam | null; embers: Ember[];
   verdict: Verdict; why: string; sev: number; hot: Hotspot[]; usual: Usual;
+  /** w2-glance2: the one fact that decided the verdict ('' none), and which */
+  fact: string; factKey: FactKey;
 };
 
-export function noUsual(): Usual { return { rel: '', fails1h: null, failsThr: null, red: 0, redThr: null, winUsual: null, winThr: null }; }
+export function noUsual(): Usual {
+  return { rel: '', fails1h: null, failsThr: null, failsTyp: null, red: 0, redThr: null, redTyp: null, pass: null, passTyp: null, passBad: false, winUsual: null, winThr: null, pct: -1, pctOf: '' };
+}
 
 export function noMarks(): Marks {
-  return { smoke: [], beacons: [], cracks: [], jam: null, embers: [], verdict: 'flowing', why: '', sev: 0.04, hot: [], usual: noUsual() };
+  return { smoke: [], beacons: [], cracks: [], jam: null, embers: [], verdict: 'flowing', why: '', sev: 0.04, hot: [], usual: noUsual(), fact: '', factKey: '' };
 }
 
 /** How the fleet reads against its usual at `now` (pure; fx-glance): worse when the last hour's
@@ -270,12 +312,56 @@ export function usualOf(fleet: Trend | null, red: number, now: number, hours: nu
   u.failsThr = threshold(fm, 'fleet', 'failures', now) ?? (day ? sparkP90(fm.spark) : null);
   u.redThr = threshold(fleet.red, 'fleet', 'red', now) ?? (day ? sparkP90(fleet.red.spark) : null);
   const typ = typical(fm, 'fleet', 'failures') ?? (day ? sparkMean(fm.spark) : null);
+  u.failsTyp = typ;
+  u.redTyp = typical(fleet.red, 'fleet', 'red') ?? (day ? sparkMean(fleet.red.spark) : null);
+  // w2-glance2: the pass rate, the one fleet metric the server flags `bad` (#1): the last hour
+  // against its 7 d, worse 5 points under it (or the server's own `bad`)
+  const pr = fleet.pass_rate;
+  u.pass = pr.h1 ?? null;
+  u.passTyp = pr.d7 ?? (day ? sparkMean(pr.spark) : null);
+  u.passBad = u.pass !== null && u.passTyp !== null && (u.pass <= u.passTyp - 0.05 || (!!pr.bad && u.pass < u.passTyp));
   if (typ !== null && hours > 0) { u.winUsual = Math.round(typ * hours); u.winThr = u.failsThr !== null ? Math.round(u.failsThr * hours) : Math.round(typ * 1.25 * hours); }
   const fWorse = u.fails1h !== null && u.failsThr !== null && u.fails1h > u.failsThr;
   const rWorse = u.redThr !== null && red > u.redThr;
-  if (fWorse || rWorse) u.rel = 'worse';
-  else if ((u.fails1h !== null && u.failsThr !== null) || u.redThr !== null) u.rel = 'usual';
+  if (fWorse || rWorse || u.passBad) u.rel = 'worse';
+  else if ((u.fails1h !== null && u.failsThr !== null) || u.redThr !== null || u.passTyp !== null) u.rel = 'usual';
+  // the needle: where now sits among the 7 d's hours (the persisted ring, else the 24 h spark),
+  // the worst of the three (the fail share for the pass rate: high is bad for all three)
+  const dist = (metric: 'red' | 'failures' | 'pass_rate', spark: readonly (number | null)[]): number[] => {
+    const xs = ringValues(metric, now);
+    if (xs.length >= 12) return xs;
+    const out: number[] = [];
+    for (const v of spark) if (v !== null && v !== undefined && Number.isFinite(v)) out.push(v);
+    return out;
+  };
+  const cand: [number, 'red' | 'fails' | 'pass'][] = [];
+  if (day) {
+    cand.push([midRank(dist('red', fleet.red.spark), red), 'red']);
+    if (u.fails1h !== null) cand.push([midRank(dist('failures', fm.spark), u.fails1h), 'fails']);
+    if (u.pass !== null) cand.push([midRank(dist('pass_rate', pr.spark).map((v) => 1 - v), 1 - u.pass), 'pass']);
+  }
+  for (const [p, k] of cand) if (p >= 0 && p > u.pct) { u.pct = p; u.pctOf = k; }
   return u;
+}
+
+/** The persisted ring's fleet hours for a metric (the needle's week), read once a minute (672
+ *  map reads a digest otherwise; the slot that moves is the current hour's). */
+const ringCache = { at: -1, xs: new Map<string, number[]>() };
+function ringValues(metric: 'red' | 'failures' | 'pass_rate', now: number): number[] {
+  const at = Math.floor(now / 60_000);
+  if (ringCache.at !== at) { ringCache.at = at; ringCache.xs.clear(); }
+  let xs = ringCache.xs.get(metric);
+  if (!xs) { xs = baseline().values('fleet', metric); ringCache.xs.set(metric, xs); }
+  return xs;
+}
+
+/** Where `v` sits among `xs` (0..1, ties counted half: a flat week puts now in the middle);
+ *  -1 with fewer than 6 values. */
+export function midRank(xs: readonly number[], v: number): number {
+  if (xs.length < 6 || !Number.isFinite(v)) return -1;
+  let lo = 0, eq = 0;
+  for (const x of xs) { if (x < v - 1e-9) lo++; else if (Math.abs(x - v) <= 1e-9) eq++; }
+  return (lo + 0.5 * eq) / xs.length;
 }
 
 /** The 90th percentile of a 24 h spark's hours (≥ 6 of them, the current one left out: it is
@@ -336,10 +422,13 @@ export type MarkInput = {
   queue: QueueState;
   /** when an app went down (ms), or 0 when unknown */
   downSince: (app: string) => number;
-  /** the groups (the seam's: v0.5 tables, approximated on v0.4), with their red main lines now */
-  groups: readonly { id: string; red: number }[];
+  /** the groups (the seam's: v0.5 tables, approximated on v0.4), with their red main lines now
+   *  (and how many repos they hold: the red SHARE ranks them) */
+  groups: readonly { id: string; red: number; repos?: number }[];
   /** group id → its display word (`labs`, `software`) */
   groupWord: (id: string) => string;
+  /** a repo's group id ('' unknown): a group's main lines red in the last hour rank it */
+  groupOf?: (repo: string) => string;
 };
 
 /** The metrics where up is worse (pass rate is the other way); `pipelines` and `deploys` have no
@@ -358,10 +447,17 @@ export function metricBad(key: MetricKey, m: Metric | undefined | null, short: b
   const a = m.h24 ?? null, b = m.d7 ?? null;
   if (a === null || b === null || hours <= 25) return false;
   const d = a - b;
-  if (key === 'pass_rate') return d < -0.05;
-  if (key === 'red') return d >= Math.max(1, 0.15 * b);
-  if (key === 'pr_age_ms') return d > Math.max(0.15 * b, HOUR);
-  return d > Math.max(0.15 * b, 5000);
+  let bad: boolean;
+  if (key === 'pass_rate') bad = d < -0.05;
+  else if (key === 'red') bad = d >= Math.max(1, 0.15 * b);
+  else if (key === 'pr_age_ms') bad = d > Math.max(0.15 * b, HOUR);
+  else bad = d > Math.max(0.15 * b, 5000);
+  // w2-glance2 (#10): the last hour must not disagree. An h1 on the better side of d7 (the wall's
+  // arrow shows it) wins over the day's: the engine glowing "slower" (24 h 45 s vs 39 s) under a
+  // green ▼ (the last hour 21 s) was two trend marks contradicting each other
+  const h1 = m.h1 ?? null;
+  if (bad && h1 !== null && (key === 'pass_rate' ? h1 >= b : h1 <= b)) return false;
+  return bad;
 }
 
 /** The marks for this window. O(repos + apps + clusters + groups); no allocation per repo. */
@@ -415,66 +511,124 @@ export function marks(inp: MarkInput): Marks {
     for (const key of METRICS) if (metricBad(key, t[key], short, t.hours_7d)) { bad.push(key); k = Math.max(k, emberK(key, t[key], short)); }
     if (bad.length) out.embers.push({ kind: 'group', id: g, metrics: bad, k: clamp01(k + 0.15 * (bad.length - 1)) });
   }
-  // the verdict
-  const smokeN = out.smoke.length;
-  const passBad = stageBad.includes('pass_rate'), waitSlow = stageBad.includes('intake_ms'), runSlow = stageBad.includes('run_ms');
-  const pass = fleet?.pass_rate[short ? 'h1' : 'h24'] ?? null, passTyp = fleet?.pass_rate.d7 ?? fleet?.pass_rate.h24 ?? null;
-  if (down || w.watcher?.tripped || fresh.newRed.length) {
+  // against the usual (fx-glance): the red main lines now, the last hour's failures, the pass rate
+  // (w2-glance2) and the main lines red in the last hour, in the same pass
+  let redNow = 0;
+  const acute: { id: string; at: number }[] = [];
+  for (const r of w.repos.values()) {
+    if (!isRedMain(r.main?.state)) continue;
+    redNow++;
+    const s = r.main.since ?? 0;
+    if (s > 0 && s >= now - HOUR && s <= now) acute.push({ id: r.id, at: s });
+  }
+  const u = (out.usual = usualOf(fleet, redNow, now, Math.max(0, now - since) / HOUR));
+  // the verdict (w2-glance2, #1): NOW against USUAL; the window's news is the chips'
+  acute.sort((a, b) => b.at - a.at || (a.id < b.id ? -1 : 1));
+  const why: string[] = [];
+  const pctW = (v: number | null) => (v === null ? '?' : `${Math.round(v * 100)}%`);
+  const redFact = `${redNow} red${u.redTyp !== null ? ` (usual ${Math.round(u.redTyp)})` : ''}`;
+  const passFact = u.pass !== null ? `pass ${pctW(u.pass)}${u.passTyp !== null ? ` (usual ${pctW(u.passTyp)})` : ''}` : '';
+  const failsFact = u.fails1h !== null ? `${Math.round(u.fails1h)} fails this hour${u.failsTyp !== null ? ` (usual ${Math.round(u.failsTyp)})` : ''}` : '';
+  if (down || w.watcher?.tripped || acute.length) {
     out.verdict = 'broken';
-    const why: string[] = [];
-    if (fresh.newRed.length) why.push(`${fresh.newRed.length} newly red`);
+    if (w.watcher?.tripped) { out.fact = 'outage watcher tripped'; out.factKey = 'watcher'; }
+    else if (down) { out.fact = down === 1 ? `${appWord(downApp)} down${downAt > 0 && now - downAt < 7 * DAY ? ` ${age(now - downAt)}` : ''}` : `${down} apps down`; out.factKey = 'down'; }
+    else { out.fact = acute.length === 1 ? `${repoWord(acute[0].id)} red ${age(now - acute[0].at)}` : `${acute.length} mains red in the last hour`; out.factKey = 'acute'; }
+    if (acute.length) why.push(`${acute.length} main ${acute.length === 1 ? 'line' : 'lines'} red in the last hour`);
     if (down) why.push(`${down} ${down === 1 ? 'app' : 'apps'} down`);
     if (w.watcher?.tripped) why.push('outage watcher');
-    out.why = why.join(' · ');
-    out.sev = 0.76 + 0.24 * clamp01((fresh.newRed.length + 3 * down + (w.watcher?.tripped ? 4 : 0)) / 12);
-  } else if (out.jam) {
-    out.verdict = 'jammed';
-    out.why = `${q.waiting} waiting · every slot busy`;
-    out.sev = 0.51 + 0.22 * out.jam.k;
-  } else if (passBad || waitSlow || runSlow || smokeN) {
-    out.verdict = 'slowed';
-    const why: string[] = [];
-    if (passBad && pass !== null) why.push(`pass ${Math.round(pass * 100)}%${passTyp !== null ? ` (typ ${Math.round(passTyp * 100)}%)` : ''}`);
-    if (waitSlow) why.push('waits longer');
-    if (runSlow) why.push('builds slower');
-    if (smokeN && !why.length) why.push(`${out.smoke[0].step} failing${out.smoke[0].repoN > 1 ? ` in ${out.smoke[0].repoN} repos` : ''}`);
-    out.why = why.join(' · ');
-    out.sev = 0.27 + 0.21 * clamp01(((passBad ? 1 : 0) + (waitSlow ? 1 : 0) + (runSlow ? 1 : 0) + smokeN * 0.5) / 3);
+    out.sev = 0.76 + 0.24 * clamp01((acute.length + 3 * down + (w.watcher?.tripped ? 4 : 0)) / 12);
   } else {
-    out.sev = 0.04 + 0.16 * clamp01(fresh.failed.length / 20);
+    // worse than usual: the fact that is furthest past its line decides (each scored in units of
+    // its own margin: a red main line, a failure an hour, 5 points of pass rate)
+    const over: [number, FactKey, string][] = [];
+    if (u.redThr !== null && redNow > u.redThr) over.push([(redNow - u.redThr) / Math.max(1, u.redThr - (u.redTyp ?? u.redThr)), 'red', redFact]);
+    if (u.fails1h !== null && u.failsThr !== null && u.fails1h > u.failsThr) over.push([(u.fails1h - u.failsThr) / Math.max(1, u.failsThr - (u.failsTyp ?? u.failsThr)), 'fails', failsFact]);
+    if (u.passBad && u.pass !== null && u.passTyp !== null) over.push([(u.passTyp - u.pass) / 0.05, 'pass', passFact]);
+    if (out.jam) over.push([0.5 + out.jam.k, 'jam', `${q.waiting} waiting, every slot busy`]);
+    over.sort((a, b) => b[0] - a[0]);
+    if (over.length) {
+      out.verdict = 'worse';
+      out.fact = over[0][2]; out.factKey = over[0][1];
+      for (const o of over) why.push(o[2]);
+      out.sev = 0.62 + 0.13 * clamp01(over[0][0] / 3);
+    } else {
+      // steady or flowing: red at or under its typical and the pass rate at or over its 7 d flows
+      const redHigh = u.redTyp !== null ? redNow > u.redTyp + 0.5 : redNow > 0;
+      const passLow = u.pass !== null && u.passTyp !== null && u.pass < u.passTyp - 0.005;
+      if (!redHigh && !passLow) {
+        out.verdict = 'flowing';
+        if (passFact && u.passTyp !== null) { out.fact = passFact; out.factKey = 'pass'; }
+        else if (u.redTyp !== null) { out.fact = redFact; out.factKey = 'red'; }
+      } else {
+        out.verdict = 'steady';
+        if (redHigh) { out.fact = redFact; out.factKey = 'red'; } else { out.fact = passFact; out.factKey = 'pass'; }
+      }
+      if (out.fact) why.push(out.fact);
+      out.sev = out.verdict === 'flowing' ? 0.04 + 0.16 * clamp01(fresh.failed.length / 20) : 0.3 + 0.2 * clamp01(u.pct);
+    }
   }
-  // against the usual (fx-glance): the red main lines now, the last hour's failures
-  let redNow = 0;
-  for (const r of w.repos.values()) if (isRedMain(r.main?.state)) redNow++;
-  out.usual = usualOf(fleet, redNow, now, Math.max(0, now - since) / HOUR);
-  // hotspots: the worst cluster, the worst group, the jam
-  const s0 = out.smoke[0];
-  if (s0) out.hot.push({ kind: 'cluster', id: s0.id, lead: s0.step, rest: s0.repoN > 1 ? ` · ${s0.repoN} repos` : ` · ${s0.n1h} failed in 1 h`, red: true });
-  const g0 = worstGroup(inp);
+  out.why = why.join(' · ');
+  // hotspots (w2-glance2, #4 #6), in slot order: a main line red < 1 h, an app down, the open
+  // clusters by the main lines they hold red, the worst group by red share, the jam, then a flaky
+  // cluster (never first)
+  if (acute.length) {
+    const a = acute[0];
+    out.hot.push({ kind: 'red', id: a.id, lead: repoWord(a.id), rest: ` broke main · ${age(now - a.at)}${acute.length > 1 ? ` · ${acute.length - 1} more` : ''}`, red: true, tone: 'red' });
+  }
+  if (downApp) out.hot.push({ kind: 'down', id: downApp, lead: appWord(downApp), rest: ` · down${downAt > 0 && now - downAt < 7 * DAY ? ` ${age(now - downAt)}` : ''}${down > 1 ? ` · ${down - 1} more` : ''}`, red: true, tone: 'red' });
+  const open = inp.clusters.filter((c) => c.open > 0).sort((a, b) => b.open - a.open || b.count - a.count || (a.id < b.id ? -1 : 1));
+  for (const c of open.slice(0, 1)) out.hot.push({ kind: 'cluster', id: c.id, lead: c.step, rest: ` · ${c.open} ${c.open === 1 ? 'main' : 'mains'} red · ${age(Math.max(0, now - c.last_seen))}`, red: true, tone: 'red' });
+  const g0 = worstGroup(inp, acute);
   if (g0) out.hot.push(g0);
-  if (out.jam) out.hot.push({ kind: 'jam', id: 'intake', lead: 'jam', rest: ` · ${out.jam.waiting} waiting`, red: false });
-  // fx-glance: the app down (the newest), a candidate the floor calls out when a place is free
-  // (the worst cluster's callout gives way when the return belt's tallest heap already names it)
-  if (downApp) out.hot.push({ kind: 'down', id: downApp, lead: appWord(downApp), rest: down > 1 ? ` · down · ${down - 1} more` : ' · down', red: true });
+  if (out.jam) out.hot.push({ kind: 'jam', id: 'intake', lead: 'jam', rest: ` · ${out.jam.waiting} waiting`, red: false, tone: 'amber' });
+  const fl = flakiest(inp.clusters, w);
+  if (fl && out.hot.length) out.hot.push(fl);
   return out;
 }
 
 /** An app's short name ("org/name" → "name"). */
 function appWord(id: string): string { const i = id.lastIndexOf('/'); return i >= 0 ? id.slice(i + 1) : id; }
+/** A repo's short name ("org/name" → "name"). */
+export function repoWord(id: string): string { const i = id.lastIndexOf('/'); return i >= 0 ? id.slice(i + 1) : id; }
 
-/** The group where most went wrong in the window: the server's ranking (failures and new reds
- *  there), else the world's groups by red main lines. Null when nothing is red or failing. */
-function worstGroup(inp: MarkInput): Hotspot | null {
-  if (inp.srv?.groups.length) {
-    const g = inp.srv.groups.find((x) => x.red > 0 || x.failed > 0);
-    if (g) {
-      const red = inp.groups.find((x) => x.id === g.id)?.red ?? g.red;
-      return { kind: 'group', id: g.id, lead: inp.groupWord(g.id), rest: red ? ` · ${red} red` : ` · ${g.failed} failed`, red: red > 0 };
-    }
+/** A flaky cluster (w2-glance2, #6): one that holds no main line red and whose failures are a
+ *  third or more flaky (or flaky at all, failing ≥ 10 times a day): the cron that fails every
+ *  hour is not an incident. The one failing most. Its words say so, in gray-red. */
+function flakiest(cls: readonly Cluster[], w: World): Hotspot | null {
+  let best: Cluster | null = null;
+  for (const c of cls) {
+    const fk = c.flaky ?? 0;
+    if (c.open > 0 || fk <= 0 || !(fk >= c.count / 3 || c.count >= 10)) continue;
+    if (!best || c.count > best.count) best = c;
   }
-  let best: { id: string; red: number } | null = null;
-  for (const g of inp.groups) if (g.red > 0 && (!best || g.red > best.red)) best = { id: g.id, red: g.red };
-  return best ? { kind: 'group', id: best.id, lead: inp.groupWord(best.id), rest: ` · ${best.red} red`, red: true } : null;
+  if (!best) return null;
+  const cron = best.examples.some((id) => w.pipelines.get(id)?.event === 'cron');
+  return { kind: 'flaky', id: best.id, lead: best.step, rest: ` · flaky${cron ? ' cron' : ''} · ${best.count} / 24h`, red: false, tone: 'flaky' };
+}
+
+/** The worst group (w2-glance2, #4): by red SHARE × log(1 + red) + its main lines red in the last
+ *  hour, so a team with 10 of its 17 main lines red outranks one with 18 of 131. Its words: "couplet
+ *  · 10 of 17 red", a ▲ when its red trend is rising. Without red anywhere: the server's ranking
+ *  of the window's failures. Null when nothing is red or failing. */
+function worstGroup(inp: MarkInput, acute: readonly { id: string }[]): Hotspot | null {
+  const fresh = new Map<string, number>();
+  if (inp.groupOf) for (const a of acute) { const g = inp.groupOf(a.id); if (g) fresh.set(g, (fresh.get(g) ?? 0) + 1); }
+  let best: { id: string; red: number; repos: number; score: number } | null = null;
+  for (const g of inp.groups) {
+    if (!(g.red > 0)) continue;
+    const repos = Math.max(g.red, g.repos ?? 0);
+    const score = (repos > 0 ? g.red / repos : 0) * Math.log(1 + g.red) + (fresh.get(g.id) ?? 0);
+    if (!best || score > best.score + 1e-9 || (Math.abs(score - best.score) <= 1e-9 && g.red > best.red)) best = { id: g.id, red: g.red, repos, score };
+  }
+  if (best) {
+    const rt = inp.trend(best.id)?.red;
+    const rising = !!rt && (!!rt.bad || rt.dir > 0);
+    const known = (inp.groups.find((x) => x.id === best!.id)?.repos ?? 0) > 0;
+    return { kind: 'group', id: best.id, lead: inp.groupWord(best.id), rest: known ? ` · ${best.red} of ${best.repos} red` : ` · ${best.red} red`, red: true, tone: 'red', tri: rising ? 1 : 0 };
+  }
+  const g = inp.srv?.groups.find((x) => x.failed > 0);
+  return g ? { kind: 'group', id: g.id, lead: inp.groupWord(g.id), rest: ` · ${g.failed} failed`, red: false, tone: 'ink' } : null;
 }
 
 /** How far a bad metric is from its typical (0.3..1): the ember's warmth. */

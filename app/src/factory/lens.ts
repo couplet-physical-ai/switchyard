@@ -481,7 +481,7 @@ export class Lenses {
     const pt = this.part(h);
     if (pt === 'dock' && f.floor.on) {
       const lid = this.laneOf(h), G = floorGroups(), s = G.stats(lid), L = G.lane(lid);
-      if (s && L) return [`${groupLabel(L)} dock`, `${s.pushes1h} pushes/h \u00b7 ${s.repos} repos`, `${s.prsOpen} open PRs \u00b7 ${s.redMains} red mains${s.stale ? ` \u00b7 ${s.stale} stale` : ''}`, 'click: the group across the floor'];
+      if (s && L) return [`${groupLabel(L)} dock${f.coffee.emberWord(lid)}`, `${s.pushes1h} pushes/h \u00b7 ${s.repos} repos`, `${s.prsOpen} open PRs \u00b7 ${s.redMains} red mains${s.stale ? ` \u00b7 ${s.stale} stale` : ''}`, 'click: the group across the floor'];
     }
     if (pt === 'gate') return ['merge gate', `${c.flow.merges} merged/h`, 'click: what landed today, by lane'];
     switch (h.kind) {
@@ -2165,10 +2165,12 @@ export class Lenses {
           g.runs([[gr?.kind === 'team' ? 'team' : 'org', C.ink2, true], [` · ${gr?.repos ?? rel.repos.size} repos · ${gr?.apps ?? rel.apps.size} apps`, C.ink3], [gr?.red ? ` · ${gr.red} red` : '', C.redText]], x + 16, y + h + 15, SMALL, W - 16);
         }
         h += 20;
-        h += this.flowCells(g, rel, x, y + h + 6, W, paint) + 10;
-        if (paint) { g.hline(x, x + W, y + h + 0.5, '#232325', 1); g.text('last 24 h, by the hour', x, y + h + 15, C.ink3, SMALL); g.text('now', x + W, y + h + 15, C.ink3, SMALL, false, 'right'); }
+        // w2-glance2 (#9): ONE window, said: the cells are the last hour (states now), their fail %
+        // the server's 1 − pass rate of that hour, so it equals the pass row's end below
+        h += this.flowCells(g, rel, x, y + h + 6, W, paint, st.trend ?? null) + 10;
+        if (paint) { g.hline(x, x + W, y + h + 0.5, '#232325', 1); g.text('24 h, by the hour', x, y + h + 15, C.ink3, SMALL); g.text('last hour', x + W, y + h + 15, C.ink3, SMALL, false, 'right'); }
         h += 20;
-        h += trendRows(g, st.trend ?? null, x, y + h, W, paint, hue);
+        h += trendRows(g, lastHourOnly(st.trend ?? null), x, y + h, W, paint, hue);
         break;
       }
       case 'org': case 'repo': {
@@ -2390,29 +2392,59 @@ export class Lenses {
     return h;
   }
 
-  /** The group's flow, one cell per stage: pushes · PRs · merged · running · failures · apps. */
-  private flowCells(g: Gfx, rel: Rel, x: number, y: number, W: number, paint: boolean): number {
+  /** The group's flow, one cell per stage: PRs · merged · in CI · fail · red · apps (w2-glance2,
+   *  #9): ONE window, labelled: the last hour (the states now: open PRs, in CI, red, apps). The
+   *  fail % is 1 − the trend's pass rate of the last hour when the lens has a trend (it then equals
+   *  the pass row's end), else the lit repos' runs that finished in the last hour; '–' with none. */
+  private flowCells(g: Gfx, rel: Rel, x: number, y: number, W: number, paint: boolean, trend: Trend | null = null): number {
     const m = rel.m;
-    const fail = m.runs ? Math.round((m.failed / m.runs) * 100) : 0;
+    if (!paint) return 66;
+    const h1 = this.lastHour(rel);
+    const p1 = trend?.pass_rate.h1 ?? null;
+    const fail = p1 !== null ? Math.round((1 - p1) * 100) : h1.runs ? Math.round((h1.failed / h1.runs) * 100) : -1;
+    let prs = 0;
+    for (let i = 0; i < rel.stackN.length; i++) prs += rel.stackN[i]; // open PRs, not the bots' (the footer's and the dock's count)
     const cells: [LensKind, string, string, string][] = [
-      ['stack', String(m.prs), 'PRs', C.ink],
-      ['repo', String(m.merged24), 'merged', C.ink],
+      ['stack', String(prs), 'PRs', C.ink],
+      ['repo', String(h1.merged), 'merged', C.ink],
       ['pipeline', String(m.building + m.queued), 'in CI', m.building ? C.amberText : C.ink],
-      ['failure', `${fail}%`, 'fail', fail >= 25 ? C.redText : C.ink],
+      ['failure', fail < 0 ? '–' : `${fail}%`, 'fail', fail >= 25 ? C.redText : fail < 0 ? C.ink3 : C.ink],
       ['repo', String(m.red), 'red', m.red ? C.redText : C.ink],
       ['app', String(m.apps), m.down ? `${m.down} down` : 'apps', m.down ? C.redText : C.ink],
     ];
-    if (!paint) return 50;
+    g.text('last hour', x, y + 9, C.ink3, SMALL);
+    const yc = y + 16;
     const cw = W / cells.length;
     cells.forEach(([k, n, word, col], i) => {
       const cx = x + i * cw;
-      glyph(g, k, cx + 6, y + 7, col === C.ink ? C.ink3 : col);
-      g.text(n, cx, y + 31, col, 13, true);
-      g.text(word, cx, y + 46, C.ink3, SMALL);
-      if (i) g.vline(g.crisp(cx - 6), y, y + 46, '#232325');
+      glyph(g, k, cx + 6, yc + 7, col === C.ink ? C.ink3 : col);
+      g.text(n, cx, yc + 31, col, 13, true);
+      g.text(word, cx, yc + 46, C.ink3, SMALL);
+      if (i) g.vline(g.crisp(cx - 6), yc, yc + 46, '#232325');
     });
-    return 50;
+    return 66;
   }
+
+  /** The lit repos' last hour (w2-glance2): PRs merged and runs finished (and failed) in it, cached
+   *  per lit set and world version (a card paints every frame). */
+  private lastHour(rel: Rel): { merged: number; runs: number; failed: number } {
+    const f = this.f, w = f.world, now = f.tl.playhead;
+    if (this.lhRel === rel && this.lhVer === w.ver && Math.abs(this.lhAt - now) < 5000) return this.lh;
+    this.lhRel = rel; this.lhVer = w.ver; this.lhAt = now;
+    const R = rel.repos, out = { merged: 0, runs: 0, failed: 0 };
+    for (const p of w.prs.values()) if (p.merged_at && p.merged_at > now - HOUR && p.merged_at <= now && R.has(p.repo)) out.merged++;
+    for (const p of w.pipelines.values()) {
+      if (!p.finished || p.finished <= now - HOUR || p.finished > now || !R.has(p.repo)) continue;
+      out.runs++;
+      if (p.state === 'failure' || p.state === 'error') out.failed++;
+    }
+    this.lh = out;
+    return out;
+  }
+  private lh = { merged: 0, runs: 0, failed: 0 };
+  private lhRel: Rel | null = null;
+  private lhVer = -1;
+  private lhAt = -1e12;
 
   private sparkRow(g: Gfx, word: string, s: number[], x: number, y: number, W: number, paint: boolean, col: string, max: number, unit: string): number {
     if (!paint) return 18;
@@ -2744,4 +2776,18 @@ export class HostHistory {
     for (let i = 0; i < s.n; i++) out.push(s[k][(s.head - s.n + i + HostHistory.N) % HostHistory.N]);
     return out;
   }
+}
+
+/** w2-glance2 (#9): a group card's trend rows end on the LAST HOUR only: a metric with no value
+ *  for it shows '–', never the day's value under a "last hour" header (cached per trend). */
+const h1Only = new WeakMap<Trend, Trend>();
+export function lastHourOnly(t: Trend | null): Trend | null {
+  if (!t) return null;
+  let o = h1Only.get(t);
+  if (!o) {
+    const k = (m: Trend['red']): Trend['red'] => (m.h1 === null || m.h1 === undefined ? { ...m, h24: null } : m);
+    o = { ...t, intake_ms: k(t.intake_ms), run_ms: k(t.run_ms), pass_rate: k(t.pass_rate), pipelines: k(t.pipelines), deploys: k(t.deploys), pr_age_ms: k(t.pr_age_ms), red: k(t.red) };
+    h1Only.set(t, o);
+  }
+  return o;
 }

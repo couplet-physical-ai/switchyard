@@ -3,7 +3,9 @@
 // by side, A in its hue and B in its, each row one bar per side on ONE scale, and one row of
 // sparks on one scale, chosen by what the two are:
 //
-//   two groups    runs/h · pass · red mains · open PRs, and runs per hour over 24 h (v0.5 Trend)
+//   two groups    runs/h · pass · red mains · open PRs, and runs per hour over 24 h (v0.5 Trend);
+//                 (w2-glance2, #9) ONE window, said: the rows are the last hour (h1, '–' with none)
+//                 or now, the spark the 24 h; the other pairs say their windows in their rows
 //   two engines   busy · cpu · mem · queued, and busy over time (the server's 24 h when it answered)
 //   two apps      deploys 24 h · latency · behind · up share 7 d, and health over 7 d
 //   two clusters  open · this hour · 24 h · repos, and the failures on one 24 h axis: a shared
@@ -12,11 +14,12 @@
 
 import type { Gfx } from '../yard/gfx.ts';
 import { C, withAlpha } from '../yard/theme.ts';
-import { HOUR } from './census.ts';
+import { HOUR, phaseRow } from './census.ts';
 import { appHist7, busySeries, clamp, healthSegs, machineEngines, spark } from './lenses.ts';
 import type { ClusterFacts } from './lenses.ts';
 import type { Lens, Lenses } from './lens.ts';
-import { HUE_A, HUE_B, glyph } from './lens.ts';
+import { HUE_A, HUE_B, glyph, isBot } from './lens.ts';
+import type { World } from '../world.ts';
 import { insights, trend } from '../insights.ts';
 
 /** What a side of the compare knows (the lens system's lit set and story, reduced). */
@@ -31,6 +34,22 @@ type Sparks = { word: string; a: (number | null)[] | null; b: (number | null)[] 
 
 export const DOCK_W = 360, DOCK_H = 140;
 
+/** w2-glance2: a group's open PRs, not the bots' (the count its dock and its card say), cached
+ *  per world version. */
+const prsBy = { ver: -1, w: null as World | null, n: new Map<string, number>() };
+function humanPrs(w: World, group: string): number {
+  if (prsBy.w !== w || prsBy.ver !== w.ver) {
+    prsBy.w = w; prsBy.ver = w.ver; prsBy.n.clear();
+    const ins = insights();
+    for (const p of w.prs.values()) {
+      if (phaseRow(p) < 0 || isBot(p)) continue;
+      const g = ins.groupOf(p.repo);
+      prsBy.n.set(g, (prsBy.n.get(g) ?? 0) + 1);
+    }
+  }
+  return prsBy.n.get(group) ?? 0;
+}
+
 /** Draws the dock with its bottom-right corner at (right, bottom); registers its close hit. */
 export function drawCompare(L: Lenses, g: Gfx, A: Side, B: Side, right: number, bottom: number): void {
   const f = L.f, w = f.world, c = f.census, now = f.tl.playhead;
@@ -39,14 +58,15 @@ export function drawCompare(L: Lenses, g: Gfx, A: Side, B: Side, right: number, 
   const ka = A.lens.kind, kb = B.lens.kind;
   let rows: Row[] = [];
   let sp: Sparks | null = null;
-  const pct = (v: number) => `${Math.round(v * 100)}%`, num = (v: number) => String(Math.round(v)), per = (v: number) => `${v < 10 ? v.toFixed(1) : Math.round(v)}/h`;
+  const pct = (v: number) => (Number.isFinite(v) ? `${Math.round(v * 100)}%` : '–'), num = (v: number) => (Number.isFinite(v) ? String(Math.round(v)) : '–'), per = (v: number) => (Number.isFinite(v) ? `${v < 10 ? v.toFixed(1) : Math.round(v)}/h` : '–');
   if (ka === 'group' && kb === 'group') {
     const ta = trend(A.lens.id), tb = trend(B.lens.id), ga = insights().group(A.lens.id), gb = insights().group(B.lens.id);
+    const h1 = (v: number | null | undefined) => (v === null || v === undefined ? NaN : v);
     rows = [
-      ['runs/h', ta?.pipelines.h1 ?? ta?.pipelines.h24 ?? 0, tb?.pipelines.h1 ?? tb?.pipelines.h24 ?? 0, per],
-      ['pass', ta?.pass_rate.h24 ?? ta?.pass_rate.h1 ?? 0, tb?.pass_rate.h24 ?? tb?.pass_rate.h1 ?? 0, pct],
-      ['red mains', ga?.red ?? A.m.red, gb?.red ?? B.m.red, num],
-      ['open PRs', A.m.prs, B.m.prs, num],
+      ['runs 1h', h1(ta?.pipelines.h1), h1(tb?.pipelines.h1), per],
+      ['pass 1h', h1(ta?.pass_rate.h1), h1(tb?.pass_rate.h1), pct],
+      ['red now', ga?.red ?? A.m.red, gb?.red ?? B.m.red, num],
+      ['PRs now', humanPrs(w, A.lens.id), humanPrs(w, B.lens.id), num], // the dock's and the card's count (bots' PRs ride their pallets)
     ];
     const s1 = ta?.pipelines.spark ?? null, s2 = tb?.pipelines.spark ?? null;
     sp = { word: 'runs 24 h', a: s1, b: s2, max: Math.max(1, ...[...(s1 ?? []), ...(s2 ?? [])].map((v) => v ?? 0)), kind: 'line' };
@@ -77,7 +97,7 @@ export function drawCompare(L: Lenses, g: Gfx, A: Side, B: Side, right: number, 
     sp = { word: 'when', a: null, b: null, max: 1, kind: 'ticks', ta: a.held.map(([, , at]) => [at, HUE_A]), tb: b.held.map(([, , at]) => [at, HUE_B]) };
   } else {
     const rate = (m: Side['m']) => (m.runs ? m.failed / m.runs : 0);
-    rows = [['merged 24h', A.m.merged24, B.m.merged24, num], ['runs 24h', A.m.runs, B.m.runs, num], ['fail rate', rate(A.m), rate(B.m), pct], ['red mains', A.m.red, B.m.red, num], ['in CI', A.m.building + A.m.queued, B.m.building + B.m.queued, num]];
+    rows = [['merged 24h', A.m.merged24, B.m.merged24, num], ['runs 24h', A.m.runs, B.m.runs, num], ['fail 24h', rate(A.m), rate(B.m), pct], ['red now', A.m.red, B.m.red, num], ['in CI now', A.m.building + A.m.queued, B.m.building + B.m.queued, num]];
   }
   const H = DOCK_H;
   g.fillRect(x, y, DOCK_W, H, withAlpha('#111112', 0.96));
