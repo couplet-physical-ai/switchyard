@@ -12,6 +12,7 @@ const WEB_SHA = import.meta.env.SWITCHYARD_WEB_SHA ?? '';
 setDefaultServer(DEFAULT_SERVER);
 import { DEMO_REPLAY, DemoUpstream } from './src/demo.ts';
 import { EngineHistory } from './src/enginehist.ts';
+import { bindInsights } from './src/insights.ts';
 import { drawFleetLoad } from './src/fleetload.ts';
 import { fleet, journeyView, prDetailView, search } from './src/project.ts';
 import { MainlinesModel, stateWords } from './src/table/mainlines.ts';
@@ -52,6 +53,8 @@ tl.listener = (e, w) => { yard.pool.onEvent(e, w, clock); factory.onEvent(e, w, 
 const mlTable = new MainlinesModel();
 /** The engines' cpu/mem/load, the last few minutes of it (the Fleet view's sparklines). */
 const engineHist = new EngineHistory();
+/** The Factory Floor's data seam (src/insights.ts): v0.5 tables, or approximations on v0.4. */
+bindInsights(tl, () => up, engineHist);
 const prTable = new PrsModel();
 
 /** `asking`: called from a source's answer, so it may fetch (a fetch started elsewhere, in

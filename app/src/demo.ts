@@ -5,9 +5,9 @@
 // Its "last hour, sped up" is a rewind: a new simulation started an hour before now plays
 // forward at 60× until it reaches now, and then simply carries on as the live one.
 
-import { createSim, type Sim } from '../server/sim.ts';
+import { createSim, PROTOCOL, type Sim } from '../server/sim.ts';
 import type { Upstream } from './api.ts';
-import type { Frame as WireFrame, History, Journey, Meta, PrDetail, SearchResults, Snapshot } from './wire.ts';
+import type { Changes, Frame as WireFrame, History, Insights, Journey, Meta, PrDetail, SearchResults, Snapshot } from './wire.ts';
 
 export async function yieldTurn(): Promise<void> {
   const s = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
@@ -64,6 +64,13 @@ export class DemoUpstream implements Upstream {
     return this.sim.search(q);
   }
   async meta(): Promise<Meta | null> {
-    return { protocol: '0.2', version: 'demo', git_sha: '', mode: 'demo', adapters: [{ name: 'demo', state: 'ok' }], orgs: [] };
+    return { protocol: PROTOCOL, version: 'demo', git_sha: '', mode: 'demo', adapters: [{ name: 'demo', state: 'ok' }], orgs: [] };
+  }
+  /** The simulation's Factory Floor (contract v0.5, server/floor.ts): fresh copies. */
+  async insights(): Promise<Insights | null> {
+    return JSON.parse(JSON.stringify(this.sim.insights())) as Insights;
+  }
+  async changes(since: number, until?: number): Promise<Changes | null> {
+    return this.sim.changes(since, until);
   }
 }
