@@ -21,7 +21,7 @@ import type { Gfx } from '../yard/gfx.ts';
 import { C, withAlpha } from '../yard/theme.ts';
 import type { Frame } from '../../app.contract.d.ts';
 import { HOUR, PHASES, phaseRow } from './census.ts';
-import { appHist, appHist7, bars, busySeries, clamp, clusterFacts, groupFlow, groupForApps, groupForOrg, healthSegs, hueHex, spark } from './lenses.ts';
+import { appHist, appHist7, bars, busySeries, machineEngines, clamp, clusterFacts, groupFlow, groupForApps, groupForOrg, healthSegs, hueHex, spark } from './lenses.ts';
 import type { Lenses } from './lens.ts';
 import { BLOCKERS, ageBucket, blocker, botName, healthCol, isBot } from './lens.ts';
 import { groupOf as insGroupOf } from '../insights.ts';
@@ -108,7 +108,7 @@ export class Hover {
         const gi = h.kind === 'engine' ? -1 : Number(h.id);
         const gr = c.groups[gi];
         if (!gr) return null;
-        const bs = busySeries(L.hosts, gr);
+        const bs = busySeries(L.hosts, gr, machineEngines(w, gr));
         if (bs) return { k: 'spark', s: bs, col: C.packet, max: 100 };
         return { k: 'progress', u: gr.slots ? gr.running.length / gr.slots : 0, over: false };
       }

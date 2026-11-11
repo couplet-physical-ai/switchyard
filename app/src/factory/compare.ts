@@ -13,7 +13,7 @@
 import type { Gfx } from '../yard/gfx.ts';
 import { C, withAlpha } from '../yard/theme.ts';
 import { HOUR } from './census.ts';
-import { appHist7, busySeries, clamp, healthSegs, spark } from './lenses.ts';
+import { appHist7, busySeries, clamp, healthSegs, machineEngines, spark } from './lenses.ts';
 import type { ClusterFacts } from './lenses.ts';
 import type { Lens, Lenses } from './lens.ts';
 import { HUE_A, HUE_B, glyph } from './lens.ts';
@@ -59,7 +59,7 @@ export function drawCompare(L: Lenses, g: Gfx, A: Side, B: Side, right: number, 
       ['mem', Math.max(0, pc(ga?.mem ?? -1)) / 100, Math.max(0, pc(gb?.mem ?? -1)) / 100, pct],
       ['queued', q(ga), q(gb), num],
     ];
-    sp = { word: 'busy', a: busySeries(L.hosts, ga), b: busySeries(L.hosts, gb), max: 100, kind: 'line' };
+    sp = { word: 'busy', a: busySeries(L.hosts, ga, machineEngines(w, ga)), b: busySeries(L.hosts, gb, machineEngines(w, gb)), max: 100, kind: 'line' };
   } else if (ka === 'app' && kb === 'app') {
     const a1 = w.apps.get(A.lens.id), a2 = w.apps.get(B.lens.id);
     const h1 = appHist7(A.lens.id), h2 = appHist7(B.lens.id);

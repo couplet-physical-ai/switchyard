@@ -12,7 +12,7 @@
 // Cost: parking runs when the census recounts (≤ 1/s), O(failures in the last hour); the group and
 // cluster facts when a lens is pushed or the relation refreshes (≤ 1/s), O(entities).
 
-import { appHistory, clusterOf, clusters, engineHistory, groupHue, groupOf, groups, insights, trend } from '../insights.ts';
+import { appHistory, clusterOf, clusters, engineHistory, flakes, groupHue, groupOf, groups, insights, trend } from '../insights.ts';
 import type { AppHistoryView, EngineHistoryView } from '../insights.ts';
 import type { Cluster, FailClass, Group, Metric, Trend } from '../wire.ts';
 import type { World } from '../world.ts';
@@ -90,6 +90,9 @@ export type ClusterFacts = {
   first: number; last: number; examples: string[];
   /** The failures of this cluster the world still holds (≈ 2 h): [pipeline id, repo, at], newest first. */
   held: [string, string, number][];
+  /** The pressed run is flaky (Pipeline.flaky: passed on the same sha), and its step's flips in 24 h
+   *  (v0.5 flakes table; 0 unknown). */
+  meFlaky: boolean; flips: number;
 };
 
 /** The cluster of a failed run, with what the world holds of it. v0.5: `Step.cluster` and the
@@ -117,7 +120,15 @@ export function clusterFacts(w: World, pid: string): ClusterFacts | null {
     open: cl?.open ?? 0, flaky: cl?.flaky ?? (p.flaky ? 1 : 0), repos, repoCount: Math.max(cl?.repo_count ?? 0, repos.length),
     groups: cl?.groups?.length ? cl.groups : [...new Set(repos.map((r) => groupOf(r)))],
     first: cl?.first_seen ?? at, last: cl?.last_seen ?? at, examples: cl?.examples ?? held.slice(0, 5).map((h) => h[0]), held,
+    meFlaky: p.flaky === true, flips: p.flaky ? flipsOf(p.repo, cl?.step ?? '') : 0,
   };
+}
+
+/** A repo's step's flips in 24 h (v0.5 flakes: passed and failed on one sha), 0 when unlisted. */
+function flipsOf(repo: string, step: string): number {
+  let n = 0;
+  for (const f of flakes()) if (f.repo === repo && (!step || f.step === step || step.includes(f.step))) n = Math.max(n, f.flips_24h);
+  return n;
 }
 
 /** The cluster's rank in the Insights order (0: the worst), -1 when not listed. */
@@ -353,9 +364,13 @@ export function clusterBody(g: Gfx, cf: ClusterFacts | null | undefined, w: Worl
     g.text(`last ${agoW(now - cf.last)} ago`, x + W, ty + 29, INK3, S, false, 'right');
   }
   h += 34;
-  // flaky: passed on the same sha
-  if (cf.flaky > 0) {
-    if (paint) { hatch(g, x, y + h + 5, 14, 10, '#4A3436', 'rgba(14,14,14,0.9)'); g.runs([[`${cf.flaky}`, INK, true], [` of ${cf.count} flaky · passed on the same sha`, INK3]], x + 20, y + h + 14, S, W - 20); }
+  // flaky: passed on the same sha (this run, and how many of the cluster)
+  if (cf.meFlaky || cf.flaky > 0) {
+    if (paint) {
+      hatch(g, x, y + h + 5, 14, 10, '#4A3436', 'rgba(14,14,14,0.9)');
+      if (cf.meFlaky) g.runs([['flaky', '#E5B567', true], [' · this run passed on the same sha', INK3], [cf.flips ? ` · flipped ${cf.flips}× in 24 h` : '', INK2]], x + 20, y + h + 14, S, W - 20);
+      else g.runs([[`${cf.flaky}`, INK, true], [` of ${cf.count} flaky · passed on the same sha`, INK3]], x + 20, y + h + 14, S, W - 20);
+    }
     h += 18;
   }
   // the repos it hit (most recent first)
@@ -521,9 +536,9 @@ function hcol(h: string | undefined): string { return h === 'down' ? '#E06464' :
 
 /** An engine group's busy share over time: the server's 24 h (per 15 min) when it answered, else
  *  the half hour the floor sampled since it opened. */
-export function busySeries(hosts: { series(id: string, k: 'busy'): number[] }, gr: { id: string; slots: number; engines: string[] } | undefined): (number | null)[] | null {
+export function busySeries(hosts: { series(id: string, k: 'busy'): number[] }, gr: { id: string; slots: number; engines: string[] } | undefined, ids: string[] = gr?.engines ?? []): (number | null)[] | null {
   if (!gr) return null;
-  const e24 = gr.engines.map((id) => engineHist24(id)).find((x) => x);
+  const e24 = ids.map((id) => engineHist24(id)).find((x) => x && x.busy?.length);
   if (e24?.busy?.length) {
     const s: (number | null)[] = [];
     for (let i = 0; i < e24.busy.length; i += 15) {
@@ -540,11 +555,20 @@ export function busySeries(hosts: { series(id: string, k: 'busy'): number[] }, g
 /** An engine group's utilisation for its lens: the server's 24 h (15 min buckets) when it answered,
  *  else the half hour the floor sampled since it opened. `full`: a bucket where every slot was busy
  *  (work queued behind a full machine). */
+/** The engines whose history speaks for a machine: its Dagger engine first (the census keeps it out
+ *  of `engines`, but it carries the host's busy/slots and cpu / mem / load), then its agents. */
+export function machineEngines(w: World, gr: { id: string; engines: string[] } | undefined): string[] {
+  if (!gr) return [];
+  const out: string[] = [];
+  for (const e of w.engines.values()) if (e.kind === 'dagger' && (e.host ?? e.label ?? e.id) === gr.id) out.push(e.id);
+  return [...out, ...gr.engines];
+}
+
 export type EngSeries = { busy: (number | null)[]; cpu: (number | null)[]; mem: (number | null)[]; load: (number | null)[]; full: boolean[]; span: string; repos: { repo: string; runs: number }[] };
-export function engineSeries(hosts: { series(id: string, k: 'busy' | 'cpu' | 'mem' | 'load'): number[] }, gr: { id: string; slots: number; engines: string[] } | undefined): EngSeries | null {
+export function engineSeries(hosts: { series(id: string, k: 'busy' | 'cpu' | 'mem' | 'load'): number[] }, gr: { id: string; slots: number; engines: string[] } | undefined, ids: string[] = gr?.engines ?? []): EngSeries | null {
   if (!gr) return null;
   // the machine's own engine (a Dagger host: busy, slots, cpu, mem, load) before its agents
-  const hs = gr.engines.map((id) => engineHist24(id)).filter((x): x is EngineHist24 => !!x && !!x.busy?.length);
+  const hs = ids.map((id) => engineHist24(id)).filter((x): x is EngineHist24 => !!x && !!x.busy?.length);
   const e24 = hs.find((x) => x.cpu?.some((v) => v !== null)) ?? hs[0];
   if (e24) {
     const out: EngSeries = { busy: [], cpu: [], mem: [], load: [], full: [], span: '24 h', repos: e24.repos ?? [] };
