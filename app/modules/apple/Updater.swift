@@ -37,6 +37,9 @@ final class Updater: ExactModule {
         case "check": SYUpdateEngine.shared.check(manual: request["manual"] as? Bool ?? true) { reply.send($0) }
         case "install": SYUpdateEngine.shared.install { reply.send($0) }
         case "state": reply.send(SYUpdateEngine.shared.snapshot())
+        case "tokenGet": SYToken.get(request, context, reply: reply) // fx-kc: the token at rest (Keychain.swift), never on the main thread
+        case "tokenSet": SYToken.set(request, context, reply: reply) // fx-kc
+        case "tokenForget": SYToken.forget(request, context, reply: reply) // fx-kc
         default: reply.fail("updater answers check, install and state")
         }
     }
@@ -83,6 +86,8 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
     private(set) var writable = false
     /// Under the agent, with no test feed: an in-process stub feed (SYStubFeed), never the network.
     private(set) var stub = false
+    /// This copy's signer (SYSign.running), read once at launch on `queue`: the pin's reference.
+    private var signer: Result<SYSigner, Error> = .failure(SYRefusal.unsigned("not read yet"))
 
     // State, under `lock`.
     private let lock = NSLock()
@@ -153,9 +158,11 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
             installed = bundleURL.pathExtension == "app" && (parent.path == "/Applications" || parent.path == home + "/Applications")
             writable = FileManager.default.isWritableFile(atPath: parent.path)
             makeSession()
+            signer = Result { try SYSign.running() }
             log("launch: \(bundleID) \(current) (build \(currentBuild)) pid \(getpid()) at \(bundleURL.path); installed=\(installed) writable=\(writable) agent=\(agent) prerelease=\(prerelease) auto=\(auto)\(updateNow ? " UPDATE-NOW" : "")"
                 + (testFeed.map { " TEST FEED \($0.absoluteString)" } ?? "") + (stub ? " STUB FEED (agent)" : "")
                 + (testFeedRefused.map { " REFUSED TEST FEED \($0) (https, or http only on 127.0.0.1)" } ?? ""))
+            log(pinLine)
             // Copper's timing: what an earlier run left goes at launch, before the first check.
             // (A swap's aside is the bundle the previous process ran from until it quit.)
             sweep()
@@ -481,16 +488,22 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
     }
 
     private func stage(_ rel: SYRelease, zip: URL, sha256 want: String, in dir: URL) {
-        let verifier = SYVerifier(bundleID: bundleID, currentBuild: currentBuild)
+        var verifier = SYVerifier(bundleID: bundleID, currentBuild: currentBuild)
+        let mine = signer
+        verifier.runningSigner = { try mine.get() }
         do {
             let ok = try verifier.verify(zip: zip, sha256: want, version: rel.version, build: rel.build, into: dir)
             let app = ok.app
             try? FileManager.default.removeItem(at: zip)
-            log("verify: sha256 \(want) == latest.json; ditto -x -k unpacked one Switchyard.app; bundle id \(bundleID) == this app's; version \(rel.version), build \(rel.build) > \(currentBuild); SecStaticCodeCheckValidity strict+all-arch+nested passed; codesign --verify --deep --strict passed; cdhash \(ok.cdhash); no quarantine")
+            let pin = ok.running.leaf.map { "pin: on, running leaf sha256 \($0) == new \(ok.signer.leaf ?? "?")" } ?? "pin: off (running ad-hoc); new \(ok.signer)"
+            log("verify: sha256 \(want) == latest.json; ditto -x -k unpacked one Switchyard.app; bundle id \(bundleID) == this app's; version \(rel.version), build \(rel.build) > \(currentBuild); SecStaticCodeCheckValidity strict+all-arch+nested passed; codesign --verify --deep --strict passed; cdhash \(ok.cdhash); no quarantine; \(pin)")
             set { s in s.stagedApp = app; s.stagedVersion = rel.version; s.state = "ready"; s.progress = 1 }
             log("ready: \(rel.version) staged at \(app.path)")
             if updateNow { installNow() }
         } catch {
+            if case .otherSigner(let got, let want)? = error as? SYRefusal {
+                log("verify: pin refused: running leaf sha256 \(want), new \(got == "ad hoc" ? got : "leaf sha256 \(got)")")
+            }
             cleanStaging()
             fail(describe(error), quiet: false)
         }
@@ -590,6 +603,15 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
         set { s in
             if checked { s.checks += 1; s.lastChecked = Date().timeIntervalSince1970 * 1000 }
             s.state = "error"; s.error = reason; s.quiet = q
+        }
+    }
+
+    /// The pin's state for the launch line: hashes of public certificates only, never a secret.
+    private var pinLine: String {
+        switch signer {
+        case .success(.adhoc): return "pin: off (running ad-hoc)"
+        case .success(.cert(let leaf)): return "pin: on (running leaf sha256 \(leaf))"
+        case .failure(let e): return "pin: this app's signer is unreadable (\(describe(e))); updates are refused"
         }
     }
 

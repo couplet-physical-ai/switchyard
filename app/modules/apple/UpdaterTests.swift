@@ -4,6 +4,7 @@
 // into a CLI on a Mac and runs it; it exits nonzero when a case fails.
 
 #if SWITCHYARD_UPDATER_TESTS
+import CryptoKit
 import Foundation
 
 enum SYUpdaterTests {
@@ -35,12 +36,18 @@ enum SYUpdaterTests {
     }
 
     static func run() -> Int32 {
+        // The pin's real-process case: a copy of this CLI, signed with a throwaway certificate,
+        // prints what SYSign.running() reads of itself.
+        if CommandLine.arguments.contains("--print-running-signer") {
+            do { print(try SYSign.running()); return 0 } catch { print("error: \(error)"); return 1 }
+        }
         let started = Date()
         print("== versions"); versions()
         print("== latest.json"); latestJSON()
         print("== SHA256SUMS and the releases API"); sumsAndAPI()
         print("== hosts"); hosts()
         print("== the verify chain"); verifyChain()
+        print("== the signer pin (throwaway certificates in a temp keychain)"); pinCases()
         print("== the swap"); swapCases()
         print("== the test hooks (HooksCore.swift)"); hooks()
         try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent("sy-updater-tests-\(getpid())"))
@@ -254,6 +261,109 @@ enum SYUpdaterTests {
             check(ran == ["ditto", "codesign", "xattr"], "the chain: sha256, ditto, plist, codesign, xattr", ran.joined(separator: ","))
         } catch {
             check(false, "the verify chain ran", "\(error)")
+        }
+    }
+
+    // MARK: the signer pin
+
+    /// Throwaway code-signing certificates in a keychain file of their own, made per run and
+    /// deleted after (sy-ship's recipe): `openssl req -x509` (codeSigning, CA:false) → p12 →
+    /// `security import -k <tmp> -T /usr/bin/codesign`. The keychain is never added to the search
+    /// list; the login keychain and trust settings are never touched.
+    struct Keychain {
+        let file: URL
+        let password = UUID().uuidString
+
+        static func make(in dir: URL) throws -> Keychain {
+            let k = Keychain(file: dir.appendingPathComponent("sy-pin-tests.keychain"))
+            try SYProcess.run("/usr/bin/security", ["create-keychain", "-p", k.password, k.file.path], deadline: 30)
+            try SYProcess.run("/usr/bin/security", ["set-keychain-settings", k.file.path], deadline: 30)
+            try SYProcess.run("/usr/bin/security", ["unlock-keychain", "-p", k.password, k.file.path], deadline: 30)
+            return k
+        }
+
+        /// A self-signed code-signing identity named `name`; its leaf's SHA-256 is that of `der`.
+        func identity(_ name: String, in dir: URL) throws -> (SYFixture.Identity, der: Data) {
+            let ssl = "/usr/bin/openssl", key = dir.appendingPathComponent("\(name).key").path
+            let pem = dir.appendingPathComponent("\(name).pem").path, p12 = dir.appendingPathComponent("\(name).p12").path
+            let der = dir.appendingPathComponent("\(name).der").path, pass = UUID().uuidString
+            try SYProcess.run(ssl, ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", pem, "-days", "2", "-subj", "/CN=\(name)",
+                                    "-addext", "basicConstraints=critical,CA:false", "-addext", "keyUsage=critical,digitalSignature",
+                                    "-addext", "extendedKeyUsage=critical,codeSigning"], deadline: 60)
+            try SYProcess.run(ssl, ["pkcs12", "-export", "-inkey", key, "-in", pem, "-out", p12, "-passout", "pass:\(pass)", "-name", name], deadline: 60)
+            try SYProcess.run(ssl, ["x509", "-in", pem, "-outform", "der", "-out", der], deadline: 30)
+            try SYProcess.run("/usr/bin/security", ["import", p12, "-k", file.path, "-P", pass, "-T", "/usr/bin/codesign"], deadline: 30)
+            try SYProcess.run("/usr/bin/security", ["set-key-partition-list", "-S", "apple-tool:,apple:", "-s", "-k", password, file.path], deadline: 30)
+            let data = try Data(contentsOf: URL(fileURLWithPath: der))
+            let sha1 = Insecure.SHA1.hash(data: data).map { String(format: "%02X", $0) }.joined()
+            return (SYFixture.Identity(sha1: sha1, keychain: file), data)
+        }
+
+        func delete() {
+            _ = try? SYProcess.run("/usr/bin/security", ["delete-keychain", file.path], deadline: 30)
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
+    static func pinCases() {
+        let dir = scratch("pin")
+        let keychain: Keychain
+        do { keychain = try Keychain.make(in: dir) } catch { return check(false, "a temp keychain for the throwaway certificates", "\(error)") }
+        defer {
+            keychain.delete()
+            check(!FileManager.default.fileExists(atPath: keychain.file.path), "the temp keychain is deleted after the run")
+        }
+        do {
+            let (a, aDER) = try keychain.identity("Switchyard Pin Test A", in: dir)
+            let (b, bDER) = try keychain.identity("Switchyard Pin Test B", in: dir)
+            let leafA = SYDigest.hex(SHA256.hash(data: aDER)), leafB = SYDigest.hex(SHA256.hash(data: bDER))
+            print("        throwaway leaf A sha256 \(leafA), B \(leafB)")
+            let zipA = try SYFixture.zip(in: dir.appendingPathComponent("a"), id: id, version: "0.0.3", identity: a)
+            let zipB = try SYFixture.zip(in: dir.appendingPathComponent("b"), id: id, version: "0.0.3", identity: b)
+            let zipAdhoc = try SYFixture.zip(in: dir.appendingPathComponent("adhoc"), id: id, version: "0.0.3")
+            var n = 0
+            func verify(_ zip: URL, running: SYSigner) throws -> SYVerifier.Verified {
+                var v = SYVerifier(bundleID: id, currentBuild: 2)
+                v.runningSigner = { running }
+                n += 1
+                return try v.verify(zip: zip, sha256: try SYDigest.sha256(of: zip), version: "0.0.3", build: 3, into: dir.appendingPathComponent("stage\(n)"))
+            }
+
+            // What the pin reads: the leaf of kSecCodeInfoCertificates, or the ad-hoc flag.
+            let signedA = try verify(zipA, running: .adhoc)
+            check(signedA.signer == .cert(leafA), "a bundle signed with A reads as A's leaf (SHA-256 of its DER)", "\(signedA.signer)")
+            check(try verify(zipAdhoc, running: .adhoc).signer == .adhoc, "an ad-hoc bundle reads as ad hoc (kSecCodeSignatureAdhoc)")
+
+            // Running cert-signed: the pin is on.
+            let same = try verify(zipA, running: .cert(leafA))
+            check(same.signer == .cert(leafA) && same.running == .cert(leafA), "pin on: running A + new A (matching cert) → accepted")
+            let other = refusal { _ = try verify(zipB, running: .cert(leafA)) }
+            check(other == .otherSigner(got: leafB, want: leafA) && other?.errorDescription == "update signed by a different certificate",
+                  "pin on: running A + new B (a different self-signed cert) → refused (otherSigner: update signed by a different certificate)",
+                  "\(String(describing: other))")
+            let adhocNew = refusal { _ = try verify(zipAdhoc, running: .cert(leafA)) }
+            check(adhocNew == .otherSigner(got: "ad hoc", want: leafA), "pin on: running A + new ad hoc → refused (otherSigner)", "\(String(describing: adhocNew))")
+
+            // Running ad hoc (every release today): the pin is off, both are taken as before.
+            check(try verify(zipA, running: .adhoc).signer == .cert(leafA), "pin off: running ad hoc + new cert-signed → accepted (the one-time ad hoc → cert step)")
+            check(try verify(zipAdhoc, running: .adhoc).running == .adhoc, "pin off: running ad hoc + new ad hoc → accepted (as today)")
+            check(try verify(zipB, running: .adhoc).signer == .cert(leafB), "pin off: running ad hoc takes any certificate")
+
+            // The seam's default, SYSign.running(), in real processes: this CLI (linked ad hoc)
+            // and a copy of it signed with A.
+            check((try? SYSign.running()) == .adhoc, "SYSign.running(): this test CLI (linker-signed) is ad hoc")
+            let me = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+            let copy = dir.appendingPathComponent("updater-tests-signed-A")
+            try FileManager.default.copyItem(at: me, to: copy)
+            try SYProcess.run("/usr/bin/codesign", ["--force", "--sign", a.sha1, "--keychain", a.keychain.path, copy.path], deadline: 60)
+            let said = (try? SYProcess.run(copy.path, ["--print-running-signer"], deadline: 60)) ?? "?"
+            check(said == "leaf sha256 \(leafA)", "SYSign.running(): a copy of this CLI signed with A reads A's leaf", said)
+            var unread = SYVerifier(bundleID: id, currentBuild: 2)
+            unread.runningSigner = { throw SYRefusal.unsigned("cannot read this app's own signature") }
+            check(refusal { _ = try unread.verify(zip: zipA, sha256: try SYDigest.sha256(of: zipA), version: "0.0.3", build: 3, into: dir.appendingPathComponent("unread")) }
+                  == .unsigned("cannot read this app's own signature"), "a copy that cannot read its own signer takes no update")
+        } catch {
+            check(false, "the pin cases ran", "\(error)")
         }
     }
 

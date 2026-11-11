@@ -16,10 +16,10 @@ except the two singleton snapshot fields, which are `null` before their first va
 |---|---|
 | `GET /api/v1/snapshot` | the whole fleet now: `Snapshot` (send `Accept-Encoding: gzip`; ~2.7 MB raw, ~0.5 MB gz). Header `x-switchyard-seq`, `ETag` (`If-None-Match` → 304). Served from a pre-encoded cache refreshed ≤ 1/s, so it may trail the stream by up to a second: always resume with `since=snapshot.seq`. |
 | `GET /api/v1/stream?since=<seq>` | **WebSocket** (upgrade). Server pushes `Frame`s (text messages). With `since`, frames after it are replayed from the ring first; if `since` is too old (or from before a restart), the first message is `{"t":"reset"}`. |
-| `GET /api/v1/snapshot?at=<ms>` | the fleet as it was at `at` (within the last 24 h): a `Snapshot` with `at` = the requested time. |
+| `GET /api/v1/snapshot?at=<ms>` | the fleet as it was at `at` (within the last 24 h): a `Snapshot` with `at` = the requested time. See "Past states" below for which tables a past state carries. |
 | `GET /api/v1/stream/sse?since=<seq>` | same frames as Server-Sent Events (`data: <frame>`), fallback. |
 | `GET /api/v1/tstream?token=<device token>&since=<seq>` (WS), `GET /api/v1/tstream/sse?token=…` | the same streams for native clients that cannot set headers on a WebSocket: they accept ONLY our own tokens in the query: a device token (`syd_…`) or a read-only service token (`sys_…`) (see Auth). |
-| `GET /api/v1/history?from=<ms>&to=<ms>[&base=0]` | replay window (≤ 3 h, within the last 24 h): `History`. `base=0`: no base snapshot, only what happened after `from`. |
+| `GET /api/v1/history?from=<ms>&to=<ms>[&base=0]` | replay window (≤ 3 h, within the last 24 h): `History`. `base=0`: no base snapshot, only what happened after `from`. Groups as in "Past states". |
 | `GET /api/v1/commit/{owner}/{name}/{sha}` | `Journey` for one commit (sha may be abbreviated). |
 | `GET /api/v1/pr/{owner}/{name}/{number}` | `PrDetail`. |
 | `GET /api/v1/search?q=&limit=` | ⌘K: `{q, results: Hit[]}` across repos / apps / PRs / commits / pipelines. |
@@ -35,6 +35,21 @@ except the two singleton snapshot fields, which are `null` before their first va
 | `GET /api/v1/whoami`, `GET /api/v1/tokens`, `DELETE /api/v1/tokens/{id}` | the caller, their device tokens, revoke one. |
 
 `AdapterStatus = {name, state: "disabled"|"starting"|"syncing"|"ok"|"degraded"|"error", last_ok?, last_error?, last_error_at?, lag_ms?, synced, backfilling?, note?, requests}` (an adapter back to `ok` keeps its `last_error`; `last_error_at` says when it was)
+
+### Past states (`/snapshot?at=`, `/history`)
+
+- **Groups are always there.** Every `Repo` carries `group` and the `groups` table is
+  present, as live. History recorded by a server ≥ 0.5 carries the groups of its time.
+  Older history (before 0.5, which had none) is filled from the **live** repo → group
+  map, i.e. the team each repo is in now, not then (team moves are rare; the map is not
+  persisted). The `groups` table is recounted (`repos`, `apps`, `red`) from the state at
+  that time, and `/history` frames carry `group` ops whenever those counts move, so a
+  replay keeps its lanes and their red counts.
+- **Clusters, flakes, trends** (and `Pipeline.flaky`, `Step.cluster`): as recorded at
+  that time by a server ≥ 0.5; older history has none (empty tables). They are never
+  recomputed for the past: failure signatures need step logs read at the time.
+- A time before the oldest recorded history is answered with the oldest recorded state
+  (its `at` says which).
 
 ### Auth
 

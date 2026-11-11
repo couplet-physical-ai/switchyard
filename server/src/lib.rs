@@ -13,6 +13,7 @@ pub mod ledger;
 pub mod model;
 pub mod query;
 pub mod record;
+pub mod regroup;
 pub mod runtime;
 pub mod signature;
 pub mod store;
