@@ -219,6 +219,8 @@ pub struct ReducerCfg {
     /// Hourly trend rollups (`<data-dir>/rollups.jsonl`): loaded at boot, appended as
     /// hours close, kept 8 days. None: in memory only.
     pub rollups: Option<std::path::PathBuf>,
+    /// Refresh the Factory Floor tables at most this often (they scan the fleet).
+    pub insights_every_ms: Ms,
 }
 
 /// Load the persisted rollups (dropping those older than the keep window) and rewrite
@@ -271,6 +273,7 @@ impl Default for ReducerCfg {
             settle_quiet_ms: 5_000,
             settle_max_ms: 600_000,
             rollups: None,
+            insights_every_ms: 1_000,
         }
     }
 }
@@ -294,6 +297,7 @@ pub async fn run_reducer(
     let at = clock();
     let boot_at = at;
     let mut rollups_written: Ms = 0;
+    let mut last_insights: Ms = 0;
     if let Some(p) = &cfg.rollups {
         let (rs, last) = load_rollups(p, at);
         tracing::info!(hours = rs.len(), "trend rollups loaded");
@@ -334,8 +338,12 @@ pub async fn run_reducer(
             _ = frame.tick() => {
                 let now = clock();
                 let mut s = store.write();
-                if s.has_dirty() {
-                    let ops = s.flush(now);
+                let ins = now - last_insights >= cfg.insights_every_ms;
+                if s.has_dirty_core() || (ins && s.has_dirty()) {
+                    let ops = s.flush_with(now, ins);
+                    if ins {
+                        last_insights = now;
+                    }
                     // A big flush (a boot backfill) goes out as several frames.
                     for chunk in encode_ops_chunked(&ops) {
                         hub.publish(&chunk, now);

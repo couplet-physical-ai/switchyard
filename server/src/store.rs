@@ -256,6 +256,17 @@ impl Store {
             .collect()
     }
 
+    /// Recompute the Factory Floor (groups, clusters, flakes, trends) on the next flush.
+    pub fn mark_insights(&mut self) {
+        self.insights_dirty = true;
+        self.trends_dirty = true;
+    }
+
+    /// Anything to flush other than the Factory Floor tables.
+    pub fn has_dirty_core(&self) -> bool {
+        !self.events.is_empty() || self.dirty.iter().any(|d| !d.is_empty())
+    }
+
     pub fn has_dirty(&self) -> bool {
         !self.events.is_empty()
             || self.insights_dirty
@@ -1136,6 +1147,13 @@ impl Store {
     /// Recompute every dirty derived entity at time `now` and return the ops
     /// (upserts/removes for what changed, then the transient events).
     pub fn flush(&mut self, now: Ms) -> Vec<OpOut> {
+        self.flush_with(now, true)
+    }
+
+    /// [`Store::flush`], leaving the Factory Floor tables pending when `insights` is
+    /// false (they read the whole fleet: the reducer refreshes them at most once a second
+    /// while entities change at up to 30 frames/s).
+    pub fn flush_with(&mut self, now: Ms, insights: bool) -> Vec<OpOut> {
         self.now = self.now.max(now);
         let now = self.now;
         let mut ops: Vec<OpOut> = Vec::new();
@@ -1202,7 +1220,9 @@ impl Store {
                 }
             }
         }
-        self.flush_insights(now, &mut ops);
+        if insights {
+            self.flush_insights(now, &mut ops);
+        }
         if !ops.is_empty() {
             self.version += 1;
         }

@@ -192,9 +192,23 @@ fn bench_ingest(c: &mut Criterion) {
                 for (i, f) in events.iter().enumerate() {
                     s.apply(f.clone(), true);
                     if i % 64 == 63 {
-                        s.flush(NOW);
+                        s.flush_with(NOW, false);
                     }
                 }
+                s.flush_with(NOW, false)
+            },
+            criterion::BatchSize::LargeInput,
+        )
+    });
+    g.finish();
+    // The Factory Floor (groups, clusters, flakes, trends) over the whole fleet: the
+    // reducer runs this at most once a second.
+    let mut g = c.benchmark_group("insights");
+    g.bench_function("recompute_fleet", |b| {
+        b.iter_batched(
+            fleet,
+            |mut s| {
+                s.mark_insights();
                 s.flush(NOW)
             },
             criterion::BatchSize::LargeInput,

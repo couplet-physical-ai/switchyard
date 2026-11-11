@@ -60,6 +60,17 @@ Then `curl -s localhost:8080/api/v1/meta | jq` or open `ws://localhost:8080/api/
   `/api/v1/history?from&to` returns the fleet at `from` (`base`) and the frames after it;
   `&base=0` drops the base (replay in chunks). A server restart inside the window goes out
   as one delta (only what changed across it), never a whole snapshot.
+- **Factory Floor** (`src/store/insights.rs`, `src/signature.rs`, `src/ledger.rs`; contract
+  0.5): every repo gets a `group` (its app's team from the apps catalog, else its org).
+  The log of each failed Roadrunner step is read once and reduced to a signature (step +
+  class + the decisive normalized line, the repo's own names masked), and failures with
+  the same signature across the fleet form a `cluster` (24 h, with first-seen kept 7 d).
+  A step that failed and passed on the same sha within 6 h is a `flake`. `trend`s compare
+  the last hour with 24 h and 7 d per stage, for the fleet and each group, in 5-minute
+  buckets, from the registers plus hourly rollups persisted in `<data-dir>/rollups.jsonl`.
+  `/api/v1/changes?since=` answers "since my last visit" from a 24 h ledger kept off the
+  stream (rebuilt from history at boot). All of it is computed from the registers like
+  every other entity, so the order-independence properties cover it.
 - **Restart settling** (`Hub::begin_settle` / `end_settle`, `Adapters::settled`): a new
   process starts empty and backfills the whole fleet (GitHub's inventory and PR pages take
   ~4 min). While it does, frames still reach live clients, but history records nothing;

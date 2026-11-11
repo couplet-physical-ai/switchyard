@@ -193,14 +193,27 @@ impl M {
 }
 
 /// One failed step, as clusters and flakes see it.
-struct Failure {
+struct Failure<'a> {
     cid: String,
-    repo: String,
-    sha: String,
-    wf: String,
-    step: String,
-    pipeline: String,
+    repo: &'a str,
+    sha: &'a str,
+    wf: &'a str,
+    step: &'a str,
+    pipeline: &'a str,
     at: Ms,
+}
+
+/// What one pass over the runs of a window finds (see `Store::scan_runs`).
+#[derive(Default)]
+#[allow(clippy::type_complexity)]
+struct Scan<'a> {
+    fails: Vec<Failure<'a>>,
+    /// (repo, branch, workflow, step) → (at, pipeline, cluster when it failed).
+    latest: BTreeMap<(&'a str, &'a str, &'a str, &'a str), (Ms, &'a str, Option<String>)>,
+    /// (repo, workflow, step) → sha → outcomes (at, passed).
+    outcomes: BTreeMap<(&'a str, &'a str, &'a str), BTreeMap<&'a str, Vec<(Ms, bool)>>>,
+    /// cluster id → (key, signature).
+    sigs: BTreeMap<String, (String, Signature)>,
 }
 
 /// The live (fact-backed) numbers of one group in one window.
@@ -466,23 +479,10 @@ impl Store {
     }
 
     /// Failed steps of runs finished in the window, plus each step's latest outcome per
-    /// (repo, branch) and every outcome per (repo, step, sha).
-    #[allow(clippy::type_complexity)]
-    fn scan_runs(
-        &self,
-        lo: Ms,
-    ) -> (
-        Vec<Failure>,
-        BTreeMap<(String, String, String, String), (Ms, String, Option<String>)>,
-        BTreeMap<(String, String, String), BTreeMap<String, Vec<(Ms, bool)>>>,
-        BTreeMap<String, (String, Signature)>,
-    ) {
-        let mut fails = Vec::new();
-        let mut latest: BTreeMap<(String, String, String, String), (Ms, String, Option<String>)> =
-            BTreeMap::new();
-        let mut outcomes: BTreeMap<(String, String, String), BTreeMap<String, Vec<(Ms, bool)>>> =
-            BTreeMap::new();
-        let mut sigs: BTreeMap<String, (String, Signature)> = BTreeMap::new();
+    /// (repo, branch) and every outcome per (repo, step, sha). Keys borrow from the
+    /// registers (this runs over the whole fleet once a second).
+    fn scan_runs(&self, lo: Ms) -> Scan<'_> {
+        let mut sc = Scan::default();
         for p in self.pipelines.values() {
             if !p.state.is_done() || p.state == CiState::Canceled {
                 continue;
@@ -501,43 +501,42 @@ impl Store {
                     let at = s.finished.unwrap_or(t);
                     let cid = bad.then(|| {
                         let (k, id, sig) = self.failure_sig(&p.id, &w.name, s);
-                        sigs.entry(id.clone()).or_insert((k, sig));
+                        sc.sigs.entry(id.clone()).or_insert((k, sig));
                         id
                     });
                     let lk = (
-                        p.repo.clone(),
-                        p.branch.clone(),
-                        w.name.clone(),
-                        s.name.clone(),
+                        p.repo.as_str(),
+                        p.branch.as_str(),
+                        w.name.as_str(),
+                        s.name.as_str(),
                     );
-                    let cand = (at, p.id.clone(), cid.clone());
-                    match latest.get(&lk) {
-                        Some(cur) if (cur.0, &cur.1) >= (cand.0, &cand.1) => {}
+                    match sc.latest.get(&lk) {
+                        Some(cur) if (cur.0, cur.1) >= (at, p.id.as_str()) => {}
                         _ => {
-                            latest.insert(lk, cand);
+                            sc.latest.insert(lk, (at, p.id.as_str(), cid.clone()));
                         }
                     }
-                    outcomes
-                        .entry((p.repo.clone(), w.name.clone(), s.name.clone()))
+                    sc.outcomes
+                        .entry((p.repo.as_str(), w.name.as_str(), s.name.as_str()))
                         .or_default()
-                        .entry(p.sha.clone())
+                        .entry(p.sha.as_str())
                         .or_default()
                         .push((at, ok));
                     if let Some(cid) = cid {
-                        fails.push(Failure {
+                        sc.fails.push(Failure {
                             cid,
-                            repo: p.repo.clone(),
-                            sha: p.sha.clone(),
-                            wf: w.name.clone(),
-                            step: s.name.clone(),
-                            pipeline: p.id.clone(),
+                            repo: &p.repo,
+                            sha: &p.sha,
+                            wf: &w.name,
+                            step: &s.name,
+                            pipeline: &p.id,
                             at,
                         });
                     }
                 }
             }
         }
-        (fails, latest, outcomes, sigs)
+        sc
     }
 
     fn compute_floor(&self, now: Ms) -> (Table, Table, Table) {
@@ -593,12 +592,17 @@ impl Store {
             .collect();
 
         // ---- clusters + flakes ----
-        let (fails, latest, outcomes, sigs) = self.scan_runs(now - WINDOW_MS);
+        let Scan {
+            fails,
+            latest,
+            outcomes,
+            sigs,
+        } = self.scan_runs(now - WINDOW_MS);
         // (repo, wf, step, sha) → flipped (failed and passed within FLAKE_MS).
-        let mut flipped: BTreeSet<(String, String, String, String)> = BTreeSet::new();
+        let mut flipped: BTreeSet<(&str, &str, &str, &str)> = BTreeSet::new();
         let mut flakes: BTreeMap<String, Flake> = BTreeMap::new();
         for ((repo, wf, step), by_sha) in &outcomes {
-            let mut shas: Vec<(Ms, String)> = Vec::new();
+            let mut shas: Vec<(Ms, &str)> = Vec::new();
             let mut failures = 0u32;
             for (sha, evs) in by_sha {
                 failures += evs.iter().filter(|e| !e.1).count() as u32;
@@ -614,8 +618,8 @@ impl Store {
                     }
                 }
                 if let Some(t) = flip_at {
-                    shas.push((t, sha.clone()));
-                    flipped.insert((repo.clone(), wf.clone(), step.clone(), sha.clone()));
+                    shas.push((t, sha));
+                    flipped.insert((repo, wf, step, sha));
                 }
             }
             if shas.is_empty() {
@@ -627,21 +631,21 @@ impl Store {
                 id.clone(),
                 Flake {
                     id,
-                    repo: repo.clone(),
-                    workflow: wf.clone(),
-                    step: step.clone(),
+                    repo: repo.to_string(),
+                    workflow: wf.to_string(),
+                    step: step.to_string(),
                     flips_24h: shas.len() as u32,
                     failures_24h: failures,
                     last_at: shas[0].0,
-                    shas: shas.iter().take(5).map(|x| x.1.clone()).collect(),
+                    shas: shas.iter().take(5).map(|x| x.1.to_string()).collect(),
                 },
             );
         }
         // Open: repos where a (branch, step)'s latest run failed with this cluster.
-        let mut open: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut open: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
         for ((repo, _, _, _), (_, _, cid)) in &latest {
             if let Some(c) = cid {
-                open.entry(c.clone()).or_default().insert(repo.clone());
+                open.entry(c.clone()).or_default().insert(*repo);
             }
         }
         // First sightings from the rollups (7 d).
@@ -652,16 +656,16 @@ impl Store {
                 *e = (*e).min(s.first);
             }
         }
-        struct Acc {
+        struct Acc<'a> {
             count: u32,
             count_1h: u32,
-            repos: BTreeMap<String, Ms>,
+            repos: BTreeMap<&'a str, Ms>,
             groups: BTreeSet<String>,
             first: Ms,
-            last: (Ms, String),
-            examples: BTreeSet<(Ms, String)>,
+            last: (Ms, &'a str),
+            examples: BTreeSet<(Ms, &'a str)>,
             flaky: u32,
-            exit: (Ms, String, Option<i32>),
+            exit: (Ms, &'a str, Option<i32>),
         }
         let mut acc: BTreeMap<String, Acc> = BTreeMap::new();
         for f in &fails {
@@ -671,38 +675,38 @@ impl Store {
                 repos: BTreeMap::new(),
                 groups: BTreeSet::new(),
                 first: Ms::MAX,
-                last: (Ms::MIN, String::new()),
+                last: (Ms::MIN, ""),
                 examples: BTreeSet::new(),
                 flaky: 0,
-                exit: (Ms::MIN, String::new(), None),
+                exit: (Ms::MIN, "", None),
             });
             a.count += 1;
             if f.at >= now - H {
                 a.count_1h += 1;
             }
-            let r = a.repos.entry(f.repo.clone()).or_insert(f.at);
+            let r = a.repos.entry(f.repo).or_insert(f.at);
             *r = (*r).max(f.at);
-            a.groups.insert(self.group_of(&f.repo));
+            a.groups.insert(self.group_of(f.repo));
             a.first = a.first.min(f.at);
-            if (f.at, &f.pipeline) > (a.last.0, &a.last.1) {
-                a.last = (f.at, f.pipeline.clone());
+            if (f.at, f.pipeline) > a.last {
+                a.last = (f.at, f.pipeline);
             }
-            a.examples.insert((f.at, f.pipeline.clone()));
+            a.examples.insert((f.at, f.pipeline));
             if a.examples.len() > 5 {
                 let lo = a.examples.iter().next().cloned().expect("non-empty");
                 a.examples.remove(&lo);
             }
-            if flipped.contains(&(f.repo.clone(), f.wf.clone(), f.step.clone(), f.sha.clone())) {
+            if flipped.contains(&(f.repo, f.wf, f.step, f.sha)) {
                 a.flaky += 1;
             }
-            if (f.at, &f.pipeline) > (a.exit.0, &a.exit.1) {
+            if (f.at, f.pipeline) > (a.exit.0, a.exit.1) {
                 let code = self
                     .pipelines
-                    .get(&f.pipeline)
+                    .get(f.pipeline)
                     .and_then(|p| p.workflows.iter().find(|w| w.name == f.wf))
                     .and_then(|w| w.steps.iter().find(|s| s.name == f.step))
                     .and_then(|s| s.exit_code);
-                a.exit = (f.at, f.pipeline.clone(), code);
+                a.exit = (f.at, f.pipeline, code);
             }
         }
         let mut clusters_t = BTreeMap::new();
@@ -710,9 +714,8 @@ impl Store {
             let Some((key, sig)) = sigs.get(&cid) else {
                 continue;
             };
-            let mut repos: Vec<(Ms, String)> =
-                a.repos.iter().map(|(r, t)| (*t, r.clone())).collect();
-            repos.sort_by(|x, y| y.0.cmp(&x.0).then(x.1.cmp(&y.1)));
+            let mut repos: Vec<(Ms, &str)> = a.repos.iter().map(|(r, t)| (*t, *r)).collect();
+            repos.sort_by(|x, y| y.0.cmp(&x.0).then(x.1.cmp(y.1)));
             let first = seen
                 .get(cid.as_str())
                 .map_or(a.first, |s| (*s).min(a.first));
@@ -726,11 +729,15 @@ impl Store {
                 count: a.count,
                 count_1h: a.count_1h,
                 repo_count: repos.len() as u32,
-                repos: repos.into_iter().take(12).map(|x| x.1).collect(),
+                repos: repos
+                    .into_iter()
+                    .take(12)
+                    .map(|x| x.1.to_string())
+                    .collect(),
                 groups: a.groups.into_iter().collect(),
                 first_seen: first,
                 last_seen: a.last.0,
-                examples: a.examples.iter().rev().map(|x| x.1.clone()).collect(),
+                examples: a.examples.iter().rev().map(|x| x.1.to_string()).collect(),
                 open: open.get(&cid).map_or(0, |s| s.len() as u32),
                 flaky: a.flaky,
             };
@@ -828,7 +835,7 @@ impl Store {
             h += H;
         }
         if with_clusters {
-            let (fails, ..) = self.scan_runs(lo);
+            let fails = self.scan_runs(lo).fails;
             for f in fails.iter().filter(|f| f.at < hi) {
                 if let Some(r) = out.get_mut(&hour_of(f.at)) {
                     let e = r
