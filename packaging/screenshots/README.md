@@ -6,7 +6,8 @@ or the built-in demo fleet; nothing internal in frame (no private hostnames or I
 
 | File | What |
 |---|---|
-| `yard-macos.png` | hero: the Yard, LIVE, on macOS |
+| `factory-macos.png` | hero: the Factory (default tab), on macOS |
+| `yard-macos.png` | the Yard, LIVE, on macOS |
 | `yard-web.png` | the Yard in a browser |
 | `mainlines.png` | Mainlines: every repo's default branch as commit dots, a culprit labelled |
 | `prs.png` | PRs: the step-chip tracks, one stuck PR highlighted |
@@ -16,7 +17,12 @@ How they are made (Exact's agent renders the app's own drawing; no screen-record
 
 ```sh
 cd app && bun exact.mjs agent macos --size 1440x900 --storage shots --reset-storage \
-  "clock data" "tap setup-demo" "clock data" "clock +4000" "screenshot ../packaging/screenshots/yard-macos.png" \
+  "clock data" "tap setup-demo" "clock data" "clock +6000" \
+  "tap tab-yard" "clock data" "clock +4000" "screenshot ../packaging/screenshots/yard-macos.png" \
+  "tap tab-factory" "clock data" "clock +5000 real" "screenshot ../packaging/screenshots/factory-macos.png" \
   "tap tab-mainlines" "clock settle" "screenshot ../packaging/screenshots/mainlines.png" \
   "tap tab-prs" "clock settle" "screenshot ../packaging/screenshots/prs.png"
 ```
+
+The Factory draws on a display link: it needs `clock +N real` (a plain `clock +N` leaves the
+floor empty) and the demo loaded before the tab is shown.
