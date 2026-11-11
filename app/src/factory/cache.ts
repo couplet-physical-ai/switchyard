@@ -191,8 +191,9 @@ export class Retained {
     if (!this.own) { this.st = { ...this.st }; this.own = true; }
     this.stIdx = -1;
   }
-  get fillStyle(): Paint { return this.st.fill; } set fillStyle(v: Paint) { this.set('fill', typeof v === 'string' || v instanceof RGrad ? v : String(v)); }
-  get strokeStyle(): Paint { return this.st.stroke; } set strokeStyle(v: Paint) { this.set('stroke', typeof v === 'string' || v instanceof RGrad ? v : String(v)); }
+  // fab-w7b: an empty colour is ignored, as a canvas ignores it (a partial flush skips items)
+  get fillStyle(): Paint { return this.st.fill; } set fillStyle(v: Paint) { if (v !== '') this.set('fill', typeof v === 'string' || v instanceof RGrad ? v : String(v)); }
+  get strokeStyle(): Paint { return this.st.stroke; } set strokeStyle(v: Paint) { if (v !== '') this.set('stroke', typeof v === 'string' || v instanceof RGrad ? v : String(v)); }
   get lineWidth(): number { return this.st.lw; } set lineWidth(v: number) { if (v > 0 && Number.isFinite(v)) this.set('lw', v); }
   get lineCap(): string { return this.st.cap; } set lineCap(v: string) { this.set('cap', v); }
   get lineJoin(): string { return this.st.join; } set lineJoin(v: string) { this.set('join', v); }

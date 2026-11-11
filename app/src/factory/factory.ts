@@ -27,6 +27,7 @@ import type { Hud } from '../yard/hud.ts';
 import { C, clamp } from '../yard/theme.ts';
 import { BoxBatch } from './batch.ts';
 import { Retained, fastArcs } from './cache.ts';
+import { FloorCache } from './floorcache.ts'; // fab-w7b
 import { Census } from './census.ts';
 import { Drawer } from './drawer.ts';
 import { FacHud, type FacHudInfo } from './hud.ts';
@@ -61,6 +62,9 @@ export class FacBudget extends Budget {
     super.record(estMs, ops, texts, interval, predictUp);
   }
 }
+
+/** At most one data repaint of the static floor a second (fab-w7b: "current within 2 s"). */
+export const FLOOR_COALESCE_MS = 1000;
 
 /** The layers whose live drawing goes to the top canvas (the last in `order`: words over all). */
 const TOP_LAYERS = new Set(['groups', 'labels']);
@@ -321,15 +325,65 @@ export class Factory {
    *  painted here, not every frame), and whether the ladder wants the low-detail floor. */
   get floorKey(): string { return `${this.cam.key}|${this.census.sig}|${this.census.healthSig}|${this.census.carSig}|${this.budget.quality >= 3 ? 'lo' : 'hi'}|${this.w2.sig}|${this.plant.sig}|${this.city.sig}`; } // fab-w2: |w2.sig · fab-w6: |plant.sig (the machine walls' 24 h) · fab-w5: |city.sig (heights, ghosts, rings)
 
+  // ---- the static floor's repaints (fab-w7b; floorcache.ts, PERF.md "The static floor by dirty
+  // tiles"). While the camera moves (a pan, a zoom, a flight), the ladder changes the detail or the
+  // accordion opens, the floor is painted directly every frame, as it always was. The first still
+  // frame after that, a new bitmap or new fonts record it into floorcache's list and send it whole:
+  // from then on the canvas shows exactly that list. A data change (a car, a stack, a storey, a
+  // light) is recorded, diffed against it and sent as the tiles that changed, at most one a second
+  // (FLOOR_COALESCE_MS: current within 2 s), never in a turn that recounted the census. ----
+  /** The floor canvas's retained list. */
+  readonly fc = new FloorCache();
+  /** The camera and detail rung the floor canvas was last painted at. */
+  private fcCam = '';
+  /** When the last recorded repaint went out (module clock). */
+  private fcAt = -1e12;
+  /** Debug: every data repaint is sent whole (the reference a partial one must match), or
+   *  painted directly as before the cache. */
+  static floorWhole = false;
+  static floorDirect = false;
+
   drawFloor(ctx: Ctx2D, f: Frame, t: number): boolean {
     this.applyStress();
-    if (freshBitmap(f)) this.floorFresh = true;
+    const fresh = freshBitmap(f);
+    if (fresh) { this.floorFresh = true; this.fc.invalidate(); }
     if (this.ensure(f, t)) return true;
     // Contract hands the layer its arguments again whenever the overview it reads from
     // answers (every 250 ms), equal or not: the floor repaints only when what it shows moved
     // (the canvas keeps its picture meanwhile).
     const want = `${this.floorKey}|${this.selected ? 's' : ''}`;
-    if (want === this.floorSig && (f.causes.length ? f.causes.every((c) => c === 'args' || c === 'frame') : f.cause === 'args')) return false;
+    const lo = this.budget.quality >= 3;
+    const camKey = `${this.cam.key}|${lo ? 'lo' : 'hi'}|${f.scale}`;
+    const calmCause = f.causes.length ? f.causes.every((c) => c === 'args' || c === 'frame') : f.cause === 'args' || f.cause === 'frame';
+    const st = this.stat;
+    if (Factory.floorDirect) {
+      if (want === this.floorSig && calmCause) return false;
+      this.paintFloor(ctx, f); this.floorSig = want; st.floorDraws++;
+      return this.gpuClaim('floor') || this.floor.animating;
+    }
+    if (camKey !== this.fcCam || this.floor.animating) {
+      // moving: paint it all, now, every frame it moves (and ask for one more: the still one)
+      this.paintFloor(ctx, f);
+      this.floorSig = want; this.fcCam = camKey;
+      this.fc.invalidate();
+      st.floorDraws++;
+      return true;
+    }
+    const whole = !this.fc.valid || !calmCause;
+    if (!whole) {
+      if (want === this.floorSig) return false;
+      // the fleet's data moved: at most one repaint a second
+      if (t - this.fcAt < FLOOR_COALESCE_MS && t >= this.fcAt) return true;
+    }
+    this.paintFloor(this.fc.begin(f.width, f.height, ctx), f);
+    const ops = this.fc.flush(ctx, whole || Factory.floorWhole);
+    this.floorSig = want; this.fcAt = t;
+    if (ops) { st.floorDraws++; st.floorOps = ops; st.floorMs = this.budget.estimate(ops, 0, 0, 0); }
+    return this.gpuClaim('floor');
+  }
+
+  /** The static floor, painted into `ctx` (the canvas, or floorcache's recorder). */
+  private paintFloor(ctx: Ctx2D, f: Frame): void {
     const g = this.gf, cam = this.cam;
     const lo = this.budget.quality >= 3;
     const idle = this.census.skeleton;
@@ -338,7 +392,6 @@ export class Factory {
     ctx.resetTransform();
     ctx.clearRect(0, 0, f.width, f.height);
     g.fillRect(0, 0, f.width, f.height, C.canvas);
-    this.floorSig = want;
     // the layers, back to front: each paints its ground now and hands its extruded things to one
     // depth sort (far to near across every layer, each culled by its floor box); then what sits
     // over them (the cars, the city), in the order asked
@@ -354,12 +407,9 @@ export class Factory {
     for (const it of items) it.f();
     for (const fn of afters) fn();
     const st = this.stat;
-    st.floorDraws++;
     st.floorOps = g.ops;
     st.floorMs = this.budget.estimate(g.ops, g.arcs, g.texts, 0);
     if (!this.heavy) this.heavy = 2;
-    // fab-w1: the accordion's 600 ms keeps the floor redrawing
-    return this.gpuClaim('floor') || this.floor.animating;
   }
 
   /** A canvas is given to the macOS host's GPU module (Vello, Metal) only if the first draw with
@@ -384,8 +434,11 @@ export class Factory {
   drawLive(ctx: Ctx2D, f: Frame, t: number, wheel: number): boolean {
     const wants = this.drawLive0(ctx, f, t, wheel);
     this.liveWants = wants;
+    if (Factory.floorOnly) { ctx.resetTransform(); ctx.clearRect(0, 0, f.width, f.height); } // fab-w7b: debug
     return wants;
   }
+  /** Debug (fab-w7b): the live and top canvases show nothing (stills of the floor canvas alone). */
+  static floorOnly = false;
 
   private drawLive0(ctx: Ctx2D, f: Frame, t: number, wheel: number): boolean {
     this.applyStress();
@@ -544,6 +597,7 @@ export class Factory {
     // routing starts with the next live frame; until then the live canvas still draws the words
     if (t - was >= 1000) this.ret.invalidate();
     fastArcs(ctx, f.scale);
+    if (Factory.floorOnly) { ctx.resetTransform(); ctx.clearRect(0, 0, f.width, f.height); this.ret.invalidate(); return true; }
     this.ret.flush(ctx, f.width, f.height, f.scale);
     const claim = this.topFresh;
     this.topFresh = false;
