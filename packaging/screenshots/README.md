@@ -7,6 +7,7 @@ or the built-in demo fleet; nothing internal in frame (no private hostnames or I
 | File | What |
 |---|---|
 | `factory-macos.png` | hero: the Factory (default tab), on macOS |
+| `factory-journey.png` | a lens: one pipeline's journey across the floor, drawer open |
 | `yard-macos.png` | the Yard, LIVE, on macOS |
 | `yard-web.png` | the Yard in a browser |
 | `mainlines.png` | Mainlines: every repo's default branch as commit dots, a culprit labelled |
@@ -20,9 +21,12 @@ cd app && bun exact.mjs agent macos --size 1440x900 --storage shots --reset-stor
   "clock data" "tap setup-demo" "clock data" "clock +6000" \
   "tap tab-yard" "clock data" "clock +4000" "screenshot ../packaging/screenshots/yard-macos.png" \
   "tap tab-factory" "clock data" "clock +5000 real" "screenshot ../packaging/screenshots/factory-macos.png" \
+  "tap factory-live" "clock +3000 real" "screenshot ../packaging/screenshots/factory-journey.png" \
   "tap tab-mainlines" "clock settle" "screenshot ../packaging/screenshots/mainlines.png" \
   "tap tab-prs" "clock settle" "screenshot ../packaging/screenshots/prs.png"
 ```
 
 The Factory draws on a display link: it needs `clock +N real` (a plain `clock +N` leaves the
-floor empty) and the demo loaded before the tab is shown.
+floor empty) and the demo loaded before the tab is shown. `tap factory-live` clicks the floor's
+centre (the intake, so a pipeline lens); `tap factory-live drag dx dy` pans the floor first to
+bring another target under the centre.
