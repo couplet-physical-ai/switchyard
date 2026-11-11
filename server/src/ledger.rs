@@ -37,7 +37,10 @@ struct Inner {
     finishes: VecDeque<Finish>,
     deploys: VecDeque<(String, String, DeployState, Ms)>,
     health: VecDeque<(String, Health, Health, Ms)>,
-    merges: VecDeque<Ms>,
+    /// (repo, at) of merged PRs.
+    merges: VecDeque<(String, Ms)>,
+    /// PR id → (created, repo), for PRs seen with `created` inside the window.
+    opened: BTreeMap<String, (Ms, String)>,
     /// (pipeline, workflow/step) → (finished, cluster, repo).
     failures: BTreeMap<(String, String), (Ms, String, String)>,
 }
@@ -126,8 +129,18 @@ impl Ledger {
                         Event::Health { app, from, to, at } => {
                             g.health.push_back((app, from, to, at))
                         }
-                        Event::Merge { at, .. } => g.merges.push_back(at),
+                        Event::Merge { repo, at, .. } => g.merges.push_back((repo, at)),
                         _ => {}
+                    }
+                }
+                Some("upsert") | Some("patch") if s(op, "kind") == "pr" => {
+                    let id = s(op, "id");
+                    if let Some(p) = view.get(Kind::Pr, id)
+                        && let Some(c) = p.get("created").and_then(Value::as_i64)
+                        && c >= at - KEEP_MS
+                    {
+                        g.opened
+                            .insert(id.to_string(), (c, s(p, "repo").to_string()));
                     }
                 }
                 Some("upsert") | Some("patch") if s(op, "kind") == "pipeline" => {
@@ -181,8 +194,11 @@ impl Ledger {
         while g.health.front().is_some_and(|x| x.3 < cut) {
             g.health.pop_front();
         }
-        while g.merges.front().is_some_and(|x| *x < cut) {
+        while g.merges.front().is_some_and(|x| x.1 < cut) {
             g.merges.pop_front();
+        }
+        if g.opened.values().any(|x| x.0 < cut) {
+            g.opened.retain(|_, x| x.0 >= cut);
         }
         g.failures.retain(|_, v| v.0 >= cut);
     }
@@ -326,20 +342,76 @@ impl Ledger {
             .count();
         let fins: Vec<&Finish> = g.finishes.iter().filter(|f| inw(f.at)).collect();
         let failed = fins.iter().filter(|f| f.failed).count();
-        let mut groups: BTreeMap<String, (u32, u32)> = BTreeMap::new();
+        // Per group: failed runs, reds, and PRs opened / merged / stuck.
+        #[derive(Default)]
+        struct G {
+            failed: u32,
+            red: u32,
+            opened: u32,
+            merged: u32,
+            stuck: u32,
+        }
+        let group_or_org = |repo: &str| -> String {
+            group(repo)
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("org:{}", repo.split('/').next().unwrap_or(repo)))
+        };
+        let mut groups: BTreeMap<String, G> = BTreeMap::new();
         for f in fins.iter().filter(|f| f.failed) {
             if let Some(gr) = group(&f.repo).as_str() {
-                groups.entry(gr.to_string()).or_default().0 += 1;
+                groups.entry(gr.to_string()).or_default().failed += 1;
             }
         }
         for o in &reds {
             if let Some(gr) = o["group"].as_str() {
-                groups.entry(gr.to_string()).or_default().1 += 1;
+                groups.entry(gr.to_string()).or_default().red += 1;
             }
         }
-        let mut gl: Vec<(String, u32, u32)> =
-            groups.into_iter().map(|(k, (f, r))| (k, f, r)).collect();
-        gl.sort_by(|a, b| (b.2, b.1).cmp(&(a.2, a.1)).then(a.0.cmp(&b.0)));
+        // Opened: PRs created in the window (seen on the stream, or still open in the view).
+        let mut opened: BTreeMap<&str, &str> = BTreeMap::new();
+        for (id, (c, repo)) in &g.opened {
+            if inw(*c) {
+                opened.insert(id.as_str(), repo.as_str());
+            }
+        }
+        for (id, p) in view.iter(Kind::Pr) {
+            if p.get("created").and_then(Value::as_i64).is_some_and(inw) {
+                opened.insert(id.as_str(), s(p, "repo"));
+            }
+        }
+        for repo in opened.values() {
+            groups.entry(group_or_org(repo)).or_default().opened += 1;
+        }
+        let merged: Vec<&str> = g
+            .merges
+            .iter()
+            .filter(|m| inw(m.1))
+            .map(|m| m.0.as_str())
+            .collect();
+        for repo in &merged {
+            groups.entry(group_or_org(repo)).or_default().merged += 1;
+        }
+        // Stuck: open, not a draft, no activity for 3 days (`stale_ms`), as of now.
+        let (mut stuck, mut stuck_bot) = (0usize, 0usize);
+        for (_, p) in view.iter(Kind::Pr) {
+            let open = !matches!(s(p, "phase"), "merged" | "closed" | "deployed" | "draft");
+            if !open || p.get("stale_ms").is_none() {
+                continue;
+            }
+            if p.get("bot").and_then(Value::as_bool) == Some(true) {
+                stuck_bot += 1;
+            } else {
+                stuck += 1;
+                groups.entry(group_or_org(s(p, "repo"))).or_default().stuck += 1;
+            }
+        }
+        let mut gl: Vec<(String, G)> = groups.into_iter().collect();
+        gl.sort_by(|a, b| {
+            (b.1.red, b.1.failed, b.1.stuck)
+                .cmp(&(a.1.red, a.1.failed, a.1.stuck))
+                .then(a.0.cmp(&b.0))
+        });
         let flakes = view
             .iter(Kind::Flake)
             .filter(|(_, f)| f.get("last_at").and_then(Value::as_i64).is_some_and(inw))
@@ -352,7 +424,8 @@ impl Ledger {
                 "red": reds.len(), "recovered": recovered.len(), "still_red": still.len(),
                 "pipelines": fins.len(), "failed": failed, "deploys": deploys_n,
                 "deploys_failed": deploys_failed, "clusters_new": clusters_new, "flakes": flakes,
-                "prs_merged": g.merges.iter().filter(|t| inw(**t)).count(),
+                "prs_opened": opened.len(), "prs_merged": merged.len(),
+                "prs_stuck": stuck, "prs_stuck_bot": stuck_bot,
                 "apps_down": apps_down, "apps_recovered": apps_recovered,
             },
             "red": reds,
@@ -361,7 +434,8 @@ impl Ledger {
             "clusters": cl,
             "deploys": deploys,
             "apps": apps,
-            "groups": gl.into_iter().map(|(id, f, r)| json!({"id": id, "failed": f, "red": r})).collect::<Vec<_>>(),
+            "groups": gl.into_iter().map(|(id, x)| json!({"id": id, "failed": x.failed, "red": x.red,
+                "prs": {"opened": x.opened, "merged": x.merged, "stuck": x.stuck}})).collect::<Vec<_>>(),
         })
     }
 }

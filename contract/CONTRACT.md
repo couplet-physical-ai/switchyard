@@ -380,7 +380,10 @@ type Changes = {                         // GET /api/v1/changes?since=<ms>[&unti
                                          // retained history, ≤ 24 h); `since` is clamped to 24 h
   counts: { red: number, recovered: number, still_red: number, pipelines: number,
             failed: number, deploys: number, deploys_failed: number, clusters_new: number,
-            flakes: number, prs_merged: number, apps_down: number, apps_recovered: number },
+            flakes: number, prs_opened: number, prs_merged: number,
+            prs_stuck: number,       // open, not draft, human, no activity > 3 d (now)
+            prs_stuck_bot: number,   // the same for bot PRs (Renovate, Dependabot, …)
+            apps_down: number, apps_recovered: number },
   red: { repo: string, group?: string, at: number, culprit?: string /* sha */,
          cluster?: string }[],          // main went red after `since` and is still red, newest first
   recovered: { repo: string, group?: string, at: number, red_ms?: number }[],
@@ -388,7 +391,9 @@ type Changes = {                         // GET /api/v1/changes?since=<ms>[&unti
   clusters: { id: string, count: number /* failures after since */, new: boolean }[],  // ≤ 20
   deploys: { app: string, sha: string, state: string, at: number }[],                  // ≤ 50, newest first
   apps: { app: string, from: string, to: string, at: number }[],                       // health changes
-  groups: { id: string, failed: number, red: number }[]            // where it happened, worst first
+  groups: { id: string, failed: number, red: number,
+            prs: { opened: number, merged: number, stuck: number } }[]  // where it happened,
+                                                                         // worst first (red, failed, stuck)
 }
 ```
 

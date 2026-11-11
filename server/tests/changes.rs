@@ -19,6 +19,14 @@ fn failed_run(id: &str, repo: &str, at: i64, cluster: &str) -> Value {
             {"name": "rust", "state": "failure", "cluster": cluster}]}]}})
 }
 
+fn pr(id: &str, repo: &str, created: i64, phase: &str, extra: Value) -> Value {
+    let mut v = json!({"id": id, "repo": repo, "created": created, "phase": phase});
+    if let (Some(o), Some(x)) = (v.as_object_mut(), extra.as_object()) {
+        o.extend(x.clone());
+    }
+    json!({"op": "upsert", "kind": "pr", "id": id, "v": v})
+}
+
 fn ev(e: Value) -> Value {
     json!({"op": "event", "e": e})
 }
@@ -96,6 +104,37 @@ fn scripted() -> (Ledger, WireState) {
             ev(
                 json!({"k": "merge", "repo": "volt/grid", "number": 4, "sha": "def5678", "at": T0 + 29 * MIN}),
             ),
+            // Opened after the visit; one already merged (it stays in the ledger).
+            pr("acme/web#5", "acme/web", T0 + 15 * MIN, "review", json!({})),
+            pr(
+                "volt/grid#4",
+                "volt/grid",
+                T0 + 12 * MIN,
+                "merged",
+                json!({}),
+            ),
+            // Opened long ago and idle > 3 d: stuck (a human one and a bot one; drafts never).
+            pr(
+                "acme/api#1",
+                "acme/api",
+                T0 - 9 * 86_400_000,
+                "review",
+                json!({"stale_ms": 432_000_000}),
+            ),
+            pr(
+                "acme/api#2",
+                "acme/api",
+                T0 - 9 * 86_400_000,
+                "checks",
+                json!({"stale_ms": 432_000_000, "bot": true}),
+            ),
+            pr(
+                "acme/api#3",
+                "acme/api",
+                T0 - 9 * 86_400_000,
+                "draft",
+                json!({"stale_ms": 432_000_000}),
+            ),
         ],
     );
     (l, w)
@@ -133,7 +172,10 @@ fn changes_since_a_visit() {
     );
     assert_eq!(
         c["groups"],
-        json!([{"id": "team:software", "failed": 1, "red": 1}])
+        json!([
+            {"id": "team:software", "failed": 1, "red": 1, "prs": {"opened": 1, "merged": 0, "stuck": 1}},
+            {"id": "team:power", "failed": 0, "red": 0, "prs": {"opened": 1, "merged": 1, "stuck": 0}},
+        ])
     );
     let n = &c["counts"];
     assert_eq!(n["red"], 1);
@@ -144,6 +186,9 @@ fn changes_since_a_visit() {
     assert_eq!(n["deploys"], 1);
     assert_eq!(n["clusters_new"], 1);
     assert_eq!(n["prs_merged"], 1);
+    assert_eq!(n["prs_opened"], 2);
+    assert_eq!(n["prs_stuck"], 1);
+    assert_eq!(n["prs_stuck_bot"], 1);
     assert_eq!(n["apps_recovered"], 1);
     assert_eq!(n["apps_down"], 0);
 }
