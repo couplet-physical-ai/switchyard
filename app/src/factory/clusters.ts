@@ -118,6 +118,23 @@ export function flakeOf(step: string, repos: readonly string[]): { flips: number
   return best;
 }
 
+/** p3 (#5): the coffee check's flaky test (anomaly.ts `flakiest`, the gray-red callout): a cluster
+ *  that holds no main line red, whose failures are a third or more flaky, or flaky at all while
+ *  failing ≥ 10 times a day (the cron that fails every hour is not an incident). */
+export function flakyCalled(c: { open: number; count: number; flaky?: number | null }): boolean {
+  const fk = c.flaky ?? 0;
+  return c.open <= 0 && fk > 0 && (fk >= c.count / 3 || c.count >= 10);
+}
+
+/** p3 (#5): whether the callouts call a step flaky on any of these repos (a cluster of that step,
+ *  on one of them, passes `flakyCalled`): the belt's heap of that step says so too, so the callout
+ *  and the belt never disagree (a cron's cluster opened again keeps its healed sibling's word). */
+export function stepCalledFlaky(step: string, repos: readonly string[]): boolean {
+  const R = new Set(repos);
+  for (const c of insights().clusters()) if (c.step === step && flakyCalled(c) && c.repos?.some((r) => R.has(r))) return true;
+  return false;
+}
+
 /** The heap is drawn hatched (a flaky cluster's). */
 export function flakyHeap(h: Heap): boolean { return h.flakyCl; }
 
@@ -171,7 +188,8 @@ export function heapUp(parked: Parked[], groups: ParkGroup[], u1: number, uMin: 
     const flaky = new Set(xs.filter((x) => x.flaky).map((x) => x.id));
     heaps.push({
       k, cl: pg.cl, step: pg.step, u0: a, u1: b, h: xs.length * unit, unit, n: xs.length, repos, repoList,
-      ids: xs.map((x) => x.id), flaky, newest: pg.newest || xs[0]!.id, flakyCl: flakyCluster(cl, { n: xs.length, flaky: flaky.size }, flakeOf(cl?.step ?? pg.step, repoList)),
+      ids: xs.map((x) => x.id), flaky, newest: pg.newest || xs[0]!.id,
+      flakyCl: flakyCluster(cl, { n: xs.length, flaky: flaky.size }, flakeOf(cl?.step ?? pg.step, repoList)) || stepCalledFlaky(cl?.step ?? pg.step, repoList),
     });
   });
   heapCache.set(parked, heaps);
@@ -188,6 +206,13 @@ export function tallest(heaps: readonly Heap[]): Heap | null {
   let best: Heap | null = null;
   for (const h of heaps) if (!best || h.repos > best.repos || (h.repos === best.repos && (h.n > best.n || (h.n === best.n && h.u1 > best.u1)))) best = h;
   return best;
+}
+
+/** p3 (#5): the heap the belt NAMES (plant.ts heapMarks; the callouts give way to it): the widest
+ *  of the solid (not flaky) heaps, a flaky one only when no solid one is on the belt; null none. */
+export function namedHeap(heaps: readonly Heap[]): Heap | null {
+  const solid = heaps.filter((h) => !h.flakyCl);
+  return tallest(solid.length ? solid : heaps);
 }
 
 /** The first failed step of a pipeline (its name), '' when none. */

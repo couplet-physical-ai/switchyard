@@ -369,9 +369,9 @@ const redSince = (s: Snapshot, from: number) => list(s.repos).filter((r) => (r.m
   // worst cluster's callout gives way when that heap is its subject; the other hotspots keep theirs
   {
     const { tallestCluster } = await import('../src/factory/glance.ts');
-    const { heapsOf, tallest } = await import('../src/factory/clusters.ts');
+    const { heapsOf, namedHeap } = await import('../src/factory/clusters.ts');
     eq(tallestCluster([{ cl: 'a', n: 3, open: true, repos: 4 }, { cl: 'b', n: 9, open: false, repos: 9 }, { cl: 'c', n: 5, open: true, repos: 2 }, { cl: 'd', n: 6, open: true, repos: 4 }]), 'd', 'named heap: the open group reaching the most repos (ties: the most failures)');
-    const gl = f.coffee.glance0, hot = f.coffee.dg.marks.hot, hs = heapsOf(f.lens.parked), tall = hs ? (tallest(hs)?.cl ?? '') : tallestCluster(f.lens.parkGroups);
+    const gl = f.coffee.glance0, hot = f.coffee.dg.marks.hot, hs = heapsOf(f.lens.parked), tall = hs ? (namedHeap(hs)?.cl ?? '') : tallestCluster(f.lens.parkGroups); // p3 (#5): the belt's own pick (a solid heap first)
     const srcs = gl.callouts.map((o) => o.src);
     ok(tall !== '' && gl.callouts.length >= 1 && gl.callouts.length <= 3, `callouts: ≤ 3 drawn (${srcs.join(' | ')}; the tallest heap ${tall})`);
     ok(!srcs.includes(`cluster:${tall}`), `callouts: none names the tallest heap's cluster (${tall}), the heap names itself`);

@@ -50,7 +50,7 @@ import { R_BEAM, R_DOOR, R_RING, beltSpeedPx, breathe } from './motion.ts';
 import { AFTER_MS, DAY_MS, PlantHist, TICKS_MS, afterK, dataRuns, dealSlots, historyIds, laneArrivals, type SlotPast, type SlotRun, type Tide } from './planthist.ts';
 import { F, SMALL, box, dur, hash, pipeWords, poly, quad, ring } from './prims.ts';
 import type { Bay, FloorPass, Layer, LiveFrame, Pt } from './types.ts';
-import { flakyHeap, heapsOf, tallest, type Heap } from './clusters.ts';
+import { flakyHeap, heapsOf, namedHeap, type Heap } from './clusters.ts';
 import { beat } from './motion.ts';
 import { HALO_D, emberPass, metricOf, typical as typicalOf, type EmberAsk, type MetricKey } from './trendmarks.ts';
 import { insights } from '../insights.ts';
@@ -968,8 +968,7 @@ export class Plant implements Layer {
     this.flakyHeaps(g, heaps);
     if (f.lens.topLens) return;
     // w2-engine2 (#6): a flaky heap is named only when no broken one is on the belt, as flaky
-    const solid = heaps.filter((h) => !h.flakyCl);
-    const top = tallest(solid.length ? solid : heaps);
+    const top = namedHeap(heaps);
     if (!top) return;
     const fl = top.flakyCl;
     const mid = (top.u0 + top.u1) / 2;

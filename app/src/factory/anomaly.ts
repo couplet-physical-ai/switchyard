@@ -53,6 +53,7 @@ import type { Changes, Cluster, Metric, Trend } from '../wire.ts';
 import type { World } from '../world.ts';
 import { buildingIds, queueTruth } from '../yard/select.ts';
 import { failuresOf, threshold, typical } from './trendmarks.ts';
+import { flakyCalled } from './clusters.ts'; // p3 (#5): one flaky test for the callout and the belt
 import { baseline } from './agg/baseline.ts';
 
 export const HOUR = 3_600_000;
@@ -598,8 +599,7 @@ export function repoWord(id: string): string { const i = id.lastIndexOf('/'); re
 function flakiest(cls: readonly Cluster[], w: World): Hotspot | null {
   let best: Cluster | null = null;
   for (const c of cls) {
-    const fk = c.flaky ?? 0;
-    if (c.open > 0 || fk <= 0 || !(fk >= c.count / 3 || c.count >= 10)) continue;
+    if (!flakyCalled(c)) continue; // p3 (#5): clusters.ts's test, the belt's too
     if (!best || c.count > best.count) best = c;
   }
   if (!best) return null;

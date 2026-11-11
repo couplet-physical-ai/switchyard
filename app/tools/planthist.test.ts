@@ -169,6 +169,15 @@ const fixture = await Bun.file(new URL('../../contract/fixtures/snapshot.json', 
   eq([flakyCluster({ count: 1 }, { n: 1, flaky: 0 }, { flips: 27, failures: 67 }), flakyCluster({ count: 1 }, { n: 1, flaky: 0 }, { flips: 1, failures: 67 })], [true, false], 'flakyCluster: a cluster opened again today keeps its step\'s flakes (the cron: 27 of 67)');
 }
 
+// p3 (#5): one flaky test for the callout and the belt: the coffee check's (a third flaky, or
+// flaky at all at ≥ 10 a day, holding no main line red); the belt names a solid heap first
+{
+  const { flakyCalled, namedHeap } = await import('../src/factory/clusters.ts');
+  eq([flakyCalled({ open: 0, count: 73, flaky: 3 }), flakyCalled({ open: 0, count: 6, flaky: 2 }), flakyCalled({ open: 0, count: 6, flaky: 1 }), flakyCalled({ open: 1, count: 73, flaky: 30 }), flakyCalled({ open: 0, count: 72, flaky: null }), flakyCalled({ open: 0, count: 1, flaky: 1 })], [true, true, false, false, false, true], 'flakyCalled: the callout\'s test (≥ ⅓ flaky, or any flake at ≥ 10 a day; never a cluster holding a main line red)');
+  const H = (cl: string, repos: number, n: number, flakyCl: boolean) => ({ k: 0, cl, step: cl, u0: 0, u1: 1, h: n, unit: 1, n, repos, repoList: [], ids: [], flaky: new Set<string>(), newest: '', flakyCl });
+  eq([namedHeap([H('cron', 3, 9, true), H('build', 1, 2, false)])?.cl, namedHeap([H('cron', 3, 9, true)])?.cl, namedHeap([]) ?? null], ['build', 'cron', null], 'namedHeap: the widest solid heap, a flaky one only when no solid one is on the belt');
+}
+
 // w2-engine2 (WOW #1): a failed run's light packet drops off the scanner into its heap
 {
   const { cutAtHeap } = await import('../src/factory/packets.ts');
