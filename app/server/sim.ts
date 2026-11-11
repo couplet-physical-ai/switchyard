@@ -17,7 +17,7 @@ import { ACTIVE, newPr, prOnPipeline, prPhase, prPush, wave } from './prs.ts';
 import { seedFleet, seedFleetSteps } from './seed.ts';
 import { Floor } from './floor.ts';
 import { floorSeedSteps, type StoryCast } from './stories.ts';
-import { Agenda, DAY, HOUR, MIN, SEC, TICK, clamp, diurnal, hash32, makeRng, median, round2, type Rng } from './util.ts';
+import { Agenda, DAY, HOUR, MIN, SEC, TICK, clamp, diurnal, hash32, makeRng, round2, type Rng } from './util.ts';
 import { journeyOf, prDetailOf, searchFleet } from './views.ts';
 
 /** The contract version the mock speaks (CONTRACT.md v0.5: the Factory Floor). */
@@ -96,6 +96,11 @@ export class Sim {
   mergedFrom = new Map<string, PrX>();
   recCommits: number[] = [];
   recPipes: PipeRec[] = [];
+  /** recPipes' queue waits, and the successful ones' build times, each kept sorted as runs finish
+   *  and age out: computeStats' medians are a lookup (it sorted the 24 h of runs twice every 10 s
+   *  of fleet time: two thirds of a day's simulation, PERF.md "The demo's last misses"). */
+  private recQ: number[] = [];
+  private recB: number[] = [];
   recDeploys: number[] = [];
   preCum = new Float64Array(1441);
   openPrs = 0;
@@ -644,7 +649,10 @@ export class Sim {
       this.running[p.lane]--;
     }
     this.queueDirty[p.lane] = true;
-    this.recPipes.push({ t: now, s: state, q: (p.started ?? now) - p.created, b: p.started ? now - p.started : 0 });
+    const rec: PipeRec = { t: now, s: state, q: (p.started ?? now) - p.created, b: p.started ? now - p.started : 0 };
+    this.recPipes.push(rec);
+    sortedAdd(this.recQ, rec.q);
+    if (state === 'success') sortedAdd(this.recB, rec.b);
     const verdictWfs = p.workflows.filter((_, i) => i !== px.deployWf).map((w) => w.state);
     const verdict: CiState = state === 'canceled' ? 'canceled' : verdictWfs.includes('error') ? 'error' : verdictWfs.includes('failure') ? 'failure' : 'success';
     this.setCommit(px, (c) => {
@@ -856,18 +864,23 @@ export class Sim {
     // seed, thousands of them were one 5 ms turn in Bun, ~50 ms on a slow Mac's Hermes)
     const drop = <T>(a: T[], old: (v: T) => boolean): void => { let k = 0; while (k < a.length && old(a[k]!)) k++; if (k) a.splice(0, k); };
     drop(this.recCommits, (t) => t < ws);
-    drop(this.recPipes, (r) => r.t < ws);
+    drop(this.recPipes, (r) => {
+      if (r.t >= ws) return false;
+      sortedDel(this.recQ, r.q);
+      if (r.s === 'success') sortedDel(this.recB, r.b);
+      return true;
+    });
     drop(this.recDeploys, (t) => t < ws);
     const idx = clamp(Math.floor((ws - (this.t0 - DAY)) / MIN), 0, 1440);
     const pre = this.preCum[1440]! - this.preCum[idx]!;
-    const done = this.recPipes;
-    const ok = done.filter((r) => r.s === 'success');
+    const done = this.recPipes, okN = this.recB.length;
     const s = {
       commits_24h: this.recCommits.length + Math.round(pre),
       pipelines_24h: done.length + Math.round(pre * 0.86),
-      success_rate_24h: done.length ? Math.round((ok.length / done.length) * 1000) / 1000 : 0.9,
-      p50_queue_ms: median(done.map((r) => r.q)),
-      p50_build_ms: median(ok.map((r) => r.b)),
+      success_rate_24h: done.length ? Math.round((okN / done.length) * 1000) / 1000 : 0.9,
+      // util.median's value: the sorted list's element at floor(n / 2), 0 when empty
+      p50_queue_ms: this.recQ.length ? this.recQ[this.recQ.length >> 1]! : 0,
+      p50_build_ms: okN ? this.recB[okN >> 1]! : 0,
       deploys_24h: this.recDeploys.length + Math.round(pre * 0.07),
       apps_up: this.apps.filter((a) => a.a.health === 'up').length,
       apps_down: this.apps.filter((a) => a.a.health === 'down').length,
@@ -934,3 +947,12 @@ export class Sim {
 }
 
 export function createSim(o: SimOptions): Sim { return new Sim(o); }
+
+/** The first index in sorted `a` whose value is ≥ `v`. */
+function lowerBound(a: number[], v: number): number {
+  let lo = 0, hi = a.length;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (a[m]! < v) lo = m + 1; else hi = m; }
+  return lo;
+}
+function sortedAdd(a: number[], v: number): void { a.splice(lowerBound(a, v), 0, v); }
+function sortedDel(a: number[], v: number): void { const i = lowerBound(a, v); if (a[i] === v) a.splice(i, 1); }

@@ -343,3 +343,90 @@ In the tables below, the first FPS is the window that includes the HUD tap; then
   did not repaint (`floor0/s`), so they are not the static floor's. The demo's own simulation
   runs in the data module, and its live list is ~40 % bigger than 8090's (1,720 vs 1,200 ops).
   That is the next place to look.
+
+### Factory B, round 3 (fx-demo): the demo's last misses
+
+The demo at 1× stayed at 57–57.7 fps (wave C, above). The lead was its simulation, which
+`advance()` pumps from every draw. **Measured, the simulation was not the cause.** The cause was the
+coffee check's walking light: the light moving along the worst path "when the floor is worse than
+usual". The 8090 recording never shows that light: it has no worst path.
+
+**The mini** (2026-11-11 12:40–13:15Z, 1440×900, Metal, HUD on, q0 in every window). Each run:
+connect by taps, 14 s from the tap, the HUD tap, then 6-second `perf frames live` windows at 1×,
+then stress mode (10×). Load average 1.0–3.3, logged before and after each run. The top processes were a VM, WindowServer and the 8090 server, with no other worker's build or app. The
+build is incremental, 20 s a variant, in one clone. "Work" is the frame work's median; "late" is
+work records past the frame's deadline, of ~360. Every demo run here opened on "broken · worse than
+usual", so the light was on.
+
+| Tree (what differs) | Fleet | FPS by 6 s window | Missed slots a window | Work median (late) |
+|---|---|---|---|---|
+| before: main `e2685c9` | demo 1× | 56.7 / 57.0 / 57.8 | 20 / 18 / 13 | 17.5–21 ms (199–301) |
+| before | demo 10× | 56.0 / 56.8 / 56.3 | 24 / 19 / 22 | 20–21.5 ms (308–322) |
+| before | 8090 1× (control) | 59.8 / 60.0 / 60.0 | 1 / 0 / 0 | 15–16 ms (46–59) |
+| before | 8090 10× | 60.0 / 60.0 / 59.8 | 0 / 0 / 1 | 16–17 ms (175–179) |
+| sim pumped only from the 250 ms tick, made 400 ms ahead and handed out at the playhead, run 1 | demo 1× | 59.2 / 59.8 / 59.8 | 5 / 1 / 1 | 16–19.5 ms |
+| the same build, run 2 | demo 1× | 56.2 / 56.7 / 57.3 | 23 / 20 / 16 | 16.5–19.5 ms |
+| before + the light's `look()` off | demo 1× | 59.7 / 60.0 / 60.0 / 59.8 / 60.0 | 2 / 0 / 0 / 1 / 0 | 15–16.5 ms |
+| the same, again | demo 1× | 58.2 / 59.8 / 60.0 / 60.0 / 60.0 | 11 / 1 / 0 / 0 / 0 | 11–13 ms (9–68) |
+| sim off the draws + the light off | demo 1× | 59.7 / 60.0 / 60.0 / 60.0 / 60.0 | 2 / 0 / 0 / 0 / 0 | 15–16.5 ms |
+| the light on the live canvas (`069efd4`) | demo 1× | 57.0 / 57.5 / 57.8 / 57.7 / 58.0 | 18 / 15 / 13 / 14 / 12 | 11.5–13.5 ms (13–28) |
+| the same, again | demo 1× | 57.3 / 58.0 / 58.0 / 57.7 / 57.5 | 16 / 12 / 12 / 14 / 15 | 11–13 ms (9–20) |
+| path on the retained top canvas, glow on the live one | demo 1× | 58.0 / 58.0 / 57.7 / 58.3 / 58.2 | 12 / 12 / 14 / 10 / 11 | 10–11 ms (5–10) |
+| the same | demo 10× | 57.8 / 58.0 / 58.3 | 13 / 12 / 10 | 12–13.5 ms (16–29) |
+| the path as 24 px separate strokes, on the live canvas | demo 1× | 57.0 / 57.7 / 57.8 / 57.8 / 57.7 | 18 / 14 / 13 / 13 / 14 | 11–11.5 ms (5–13) |
+| the path stroke only, no glow | demo 1× | 58.2 / 57.7 / 57.5 / 58.7 | 11 / 14 / 15 / 8 | 11–12 ms (7–13) |
+| **the glow only, on the live canvas: no path stroke (= this commit)** | demo 1× | **59.5 / 60.0 / 60.0 / 60.0** | **3 / 0 / 0 / 0** | 11.5–13 ms (12–16) |
+
+- **The simulation is not the cause.** The same build pumped from the tick read 59.2–59.8 once
+  and 56.2–57.3 the next time. The light off read 59.7–60 with the simulation pumped from the
+  draws (as before) and from the tick. That change was dropped. It was not free either: the
+  simulation's answers ran up to 400 ms ahead of the playhead, so the coffee check's 24 h window
+  (`changes(since)`, `complete` against `now − 24 h`) came back incomplete, and its chip went dashed.
+- **The light's path stroke is.** The light was a faint path (one 1.2 px stroke, 9 % white, ≤ 7
+  points, round joins) and a glow (4 circles). It used to draw on the retained top canvas, so
+  `factoryTop` was re-sent every frame (Bun: 1,684 of 1,742 flushes sent, median 3.7 KB, vs 873 /
+  1.1 KB with the glow on the live canvas). Moving it to the live canvas cut the top canvas's GPU
+  replays from ~110/s to ~81/s, but the misses stayed. A bisect put them on the stroke alone. The
+  stroke cost ~2 fps on the live canvas, on the top canvas even when not re-sent, and cut into
+  24 px separate strokes. The glow alone costs nothing measurable.
+- **The fix** (`coffee.ts`, marked `// fx-demo`): the glow draws on the live canvas through the Gfx
+  `under()` remembered (it moves every frame), and the faint path line is not drawn. The light
+  still walks the worst path, and the veil's holes still mark it. Stills, before and after:
+  `/tmp/sy-preview/b-iter-3/fx-demo-look-before-after*.png` (the glow mid-walk) and
+  `fx-demo-intro-before-after.png`.
+- **Open question:** a 1.2 px, 9 % white polyline costs ~2 fps on macOS wherever it is drawn, and
+  the mechanism is unknown. Canvas stats are the same with and without it (~81 GPU replays/s,
+  1.8 ms each). The frame work is low (median 10–13 ms, ≤ 30 late of 360). The missed slots fall
+  outside the work Exact measures. Another long, thin translucent stroke on a per-frame canvas
+  may cost the same.
+- **Not measured on the mini:** demo 10× and 8090 after the final change. 8090 draws no light (no
+  worst path), and this commit's other change (`sim.ts`) only runs in the demo and the mock.
+
+**The simulation, cheaper anyway** (`app/server/sim.ts`). `computeStats` sorted the last 24 h of
+finished runs twice every 10 s of fleet time (`median`). That was 65 % of a simulated day's CPU,
+and after a few hours of demo it was a ~1–2 ms (Bun) spike every 10 s inside a draw. The queue
+waits and the successful runs' build times are now kept sorted as runs finish and age out, so the
+medians are a lookup. The output is the same frame for frame: a lite sim over 26 h made 9,360
+frames with the same hash (`f7fba4f3`) and 8,763 stats changes before and after. The mock's
+selftest passes, 81/81.
+
+**How fast the demo can simulate** (`bun tools/demo-speed.ts`, new; for fx-day's "24 h in 2 min"
+at 720×). The demo starts 24 h back, then is pumped to now in fixed slices: `DemoUpstream.pump`
+plus `World.apply`.
+
+| Measure | Before (`e2685c9`) | After |
+|---|---|---|
+| 24 h of fleet, Bun JIT, 12 s slices (720×'s per-frame step) | 32.1 s of CPU, 2,690 fleet-ms per CPU-ms (11,500 in hour 1, falling to 1,800 by hour 24) | **8.5 s, 10,174** (8,000–14,000 every hour) |
+| the same, per 12 s slice | p50 4.24, p95 10.6, max 15.9 ms | p50 0.86, p95 3.06, max 8.4 ms |
+| 24 h, interpreter (`BUN_JSC_useJIT=0`, nearer Hermes) | — | 18.1 s, 4,765 fleet-ms per CPU-ms |
+| a 2 h busy stretch, slices that keep a turn ≤ 4 ms (Bun) | — | 30 s slices: p95 2.8, max 4.2 ms (~18,000 fleet-ms per CPU-ms) |
+
+- **At the 250 ms tick:** a ≤ 4 ms turn makes ~30 s of fleet, so ≤ ~120×.
+- **At 720×:** a turn would need 180 s (~18 ms Bun), or 12 s every display frame (0.9 ms Bun median,
+  3 ms p95).
+- **On the mini:** Hermes runs ~10–25× slower than Bun's JIT, so that is ~10–75 ms a frame. The
+  demo cannot simulate 720× live. A 24 h demo replay must start where the demo can keep up, play
+  slower, or be simulated ahead in slices.
+- **What remains of the simulation's cost:** `prune` 21 % (every 60 s of fleet, `for…in` sweeps
+  over the commits, pipelines, deploys and PRs, with deletes from those objects), JSON parse 20 % and
+  stringify 17 % (the frames' copies).
