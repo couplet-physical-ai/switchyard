@@ -17,8 +17,14 @@
 // stream at that speed (a server's boot burst), the replay jumps the stretch with a snapshot
 // (`rebaseReplay`), taken when the playhead gets there. The playhead never passes what is
 // loaded: it waits (`waiting`; counted in `stalls`/`stallMs`), and the strip says so.
+//
+// A replay keeps NOW's groups: a server's past fleet may carry none (`/snapshot?at=` and the
+// frames from before its v0.5 groups existed: the live server's before 04:41 UTC, 2026-11-11), and
+// without them the floor loses its lanes, hues, docks and districts. The live world's groups and
+// each repo's group are kept when a replay starts and given to every replayed world (and every
+// repo a replayed frame brings) that has none (`carryGroups`).
 
-import type { Frame as WireFrame, History, Snapshot } from './wire.ts';
+import type { Frame as WireFrame, Group, History, Snapshot } from './wire.ts';
 import { World, type Listener } from './world.ts';
 
 export type Mode = 'live' | 'paused' | 'behind' | 'replay';
@@ -92,6 +98,10 @@ export class Timeline {
   /** Paused from a replay (the frames are kept; play resumes it) and its speed then. */
   private pausedReplay = false;
   private pausedSpeed = 60;
+  /** The live world's groups and each repo's, as the last replay started (`keepGroups`). */
+  private liveGroups: { groups: Map<string, Group>; of: Map<string, string> } | null = null;
+  /** The replayed world was given the live groups: repos its frames bring get theirs too. */
+  private carried = false;
   /** The world no longer follows the server (replay, or too much kept): refetch to go live. */
   stale = false;
   /** Bumps when the world is replaced or jumps: the motion system re-syncs. */
@@ -186,7 +196,7 @@ export class Timeline {
         const cap = this.pendingBase ? this.jumpFrom : Math.max(this.replayLoadedTo, this.replayFrom);
         this.playhead = Math.min(want, cap);
         while (this.replayIdx < this.replay.length && atOf(this.replay[this.replayIdx]) <= this.playhead) {
-          this.world.apply(this.replay[this.replayIdx++], this.listener);
+          this.applyReplayed(this.replay[this.replayIdx++], true);
         }
         if (this.playhead >= this.replayTo) { this.playhead = this.replayTo; if (!this.endClock) this.endClock = clock; }
         // held at what is loaded, short of the end: waiting for the stream
@@ -250,8 +260,10 @@ export class Timeline {
    *  chunks arrive by `appendReplay`; by default the window is `h` alone). */
   startReplay(h: History, to = h.to, speed = 60): boolean {
     if (!h.base) return false;
+    this.keepGroups();
     const w = new World();
     w.load(h.base);
+    this.carried = this.carryGroups(w);
     this.world = w;
     const frames: WireFrame[] = [];
     for (const f of h.frames ?? []) {
@@ -260,6 +272,7 @@ export class Timeline {
         // A server restart inside the window: what came before it no longer applies.
         frames.length = 0;
         w.load(f.v);
+        this.carried = this.carryGroups(w);
       }
     }
     frames.sort((a, b) => atOf(a) - atOf(b));
@@ -275,7 +288,7 @@ export class Timeline {
     // History may start later than asked (a young server): the replay starts where it does.
     this.replayLoadedTo = Math.max(h.to, this.playhead);
     // Frames before `from` only fast-forward the base (no motion for them).
-    while (this.replayIdx < frames.length && atOf(frames[this.replayIdx]) <= this.playhead) w.apply(frames[this.replayIdx++]);
+    while (this.replayIdx < frames.length && atOf(frames[this.replayIdx]) <= this.playhead) this.applyReplayed(frames[this.replayIdx++], false);
     this.clearKept();
     this.stale = true;
     this.beginReplay(speed);
@@ -302,6 +315,7 @@ export class Timeline {
     if ((this.mode !== 'replay' && !this.replayPaused) || this.pendingBase) return;
     const w = new World();
     w.load(s);
+    if (this.carryGroups(w)) this.carried = true;
     // (loaded here, in the answer's turn: the swap in a draw's tick is a pointer). Chunks go on
     // from the jump's far side while the playhead plays up to its near one.
     const near = Math.max(this.replayLoadedTo, this.replayFrom);
@@ -355,6 +369,39 @@ export class Timeline {
       if (o.e.k === 'finish' && (o.e.state === 'failure' || o.e.state === 'error') && this.fails[b] < 65535) this.fails[b]++;
     }
     this.densityVer++;
+  }
+
+  /** A replayed frame, applied; a repo it brings without a group gets its live one. */
+  private applyReplayed(f: WireFrame, animate: boolean): void {
+    this.world.apply(f, animate ? this.listener : undefined);
+    const g = this.liveGroups;
+    if (!this.carried || !g || f.t !== 'delta') return;
+    for (const o of f.ops) {
+      if (o.op !== 'upsert' || o.kind !== 'repo') continue;
+      const r = this.world.repos.get(o.id);
+      if (r && !r.group) { const id = g.of.get(o.id); if (id) r.group = id; }
+    }
+  }
+
+  /** Keeps the live world's groups (v0.5: its tables and each repo's) for the replays: taken from
+   *  a world that follows the server, never from a replayed one (a seek keeps the last). */
+  private keepGroups(): void {
+    const w = this.world;
+    if (this.mode === 'replay' || this.pausedReplay || this.stale || !w.loaded || !w.groups.size) return;
+    const of = new Map<string, string>();
+    for (const r of w.repos.values()) if (r.group) of.set(r.id, r.group);
+    this.liveGroups = { groups: new Map(w.groups), of };
+  }
+
+  /** Gives a replayed world without groups the live ones (true when it did). */
+  private carryGroups(w: World): boolean {
+    const g = this.liveGroups;
+    if (!g || w.groups.size) return false;
+    w.groups = new Map(g.groups);
+    for (const r of w.repos.values()) if (!r.group) { const id = g.of.get(r.id); if (id) r.group = id; }
+    w.kv.group++;
+    w.ver++;
+    return true;
   }
 
   /** Where the next replay chunk starts, or 0 when none is needed yet (or ever). The lookahead is

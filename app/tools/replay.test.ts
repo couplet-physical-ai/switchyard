@@ -101,6 +101,36 @@ const chunk = (from: number, to: number, every = MIN): History => ({ from, to, b
   ok(t2.replayTo === T0 + 10 * MIN, 'the replay ends on a whole ms (the server answers whole ms)');
 }
 
+// ---- a replay keeps NOW's groups (the server's past may carry none) ------------------------------------
+{
+  const G = { 'team:software': { id: 'team:software', name: 'software', kind: 'team', repos: 1, apps: 0, red: 0 }, 'org:o': { id: 'org:o', name: 'o', kind: 'org', repos: 1, apps: 0, red: 0 } };
+  const live = snap(T0 + 24 * 60 * MIN) as unknown as Record<string, unknown>;
+  live.groups = G;
+  live.repos = [{ id: 'o/r', org: 'o', name: 'r', group: 'team:software', main: { state: 'success', recent: [] } }, { id: 'o/s', org: 'o', name: 's', group: 'org:o', main: { state: 'success', recent: [] } }];
+  const past = snap(T0) as unknown as Record<string, unknown>;
+  past.repos = [{ id: 'o/r', org: 'o', name: 'r', main: { state: 'success', recent: [] } }];
+  const tl = new Timeline();
+  let clock = 0;
+  tl.load(live as unknown as Snapshot, 0);
+  tl.startReplay({ from: T0, to: T0, base: past, frames: [] } as unknown as History, T0 + 60 * MIN, 720);
+  ok(tl.world.groups.size === 2 && tl.world.repos.get('o/r')?.group === 'team:software', 'a replayed world without groups gets the live ones, and its repos their live group');
+  tl.appendReplay({ from: T0, to: T0 + 30 * MIN, base: null, frames: [{ t: 'delta', seq: 5, at: T0 + MIN, ops: [{ op: 'upsert', kind: 'repo', id: 'o/s', v: { id: 'o/s', org: 'o', name: 's', main: { state: 'failure', recent: [] } } }] }] } as unknown as History);
+  for (let t = 0; t < 400; t += 16) { clock += 16; tl.tick(clock); }
+  ok(tl.world.repos.get('o/s')?.group === 'org:o' && tl.world.repos.get('o/s')?.main?.state === 'failure', 'a repo a replayed frame brings gets its live group');
+  // a seek inside the replay keeps NOW's groups (never the replayed world's)
+  tl.startReplay({ from: T0, to: T0, base: past, frames: [] } as unknown as History, T0 + 60 * MIN, 720);
+  ok(tl.world.groups.size === 2 && tl.world.repos.get('o/r')?.group === 'team:software', 'a seek keeps them');
+  // a jump to a past fleet without groups: the same
+  tl.rebaseReplay(past as unknown as Snapshot);
+  for (let t = 0; t < 400; t += 16) { clock += 16; tl.tick(clock); }
+  ok(tl.world.groups.size === 2, 'a jump keeps them');
+  // a past fleet that has its own keeps its own
+  const own = snap(T0) as unknown as Record<string, unknown>;
+  own.groups = { 'org:x': { id: 'org:x', name: 'x', kind: 'org', repos: 1, apps: 0, red: 0 } };
+  tl.startReplay({ from: T0, to: T0, base: own, frames: [] } as unknown as History, T0 + 60 * MIN, 720);
+  ok(tl.world.groups.size === 1 && tl.world.groups.has('org:x'), 'a replayed world with its own groups keeps them');
+}
+
 // ---- the data module: the demo's day ---------------------------------------------------------------
 {
   const { sources } = await import('../app.ts');
