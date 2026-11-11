@@ -130,6 +130,7 @@ export class Sim {
   }
 
   private seeding: Generator<void, void, void> | null = null;
+  private needSeeded = false;
   private seeded(): void {
     this.computeStats();
     this.dirty.clear();
@@ -140,9 +141,11 @@ export class Sim {
   /** Runs up to `sliceMs` more of the warm-up; true once the simulation has reached its epoch. */
   warm(sliceMs: number): boolean {
     if (this.seeding) {
-      if (this.seeding.next().done) { this.seeding = null; this.seeded(); }
+      // the stats and the first checkpoint get a call of their own
+      if (this.seeding.next().done) this.seeding = null, this.needSeeded = true;
       return false;
     }
+    if (this.needSeeded) { this.needSeeded = false; this.seeded(); return false; }
     if (this.now < this.epoch) this.step(Math.min(this.epoch, this.now + sliceMs), false);
     if (this.lite) this.log.drop();
     return this.now + TICK > this.epoch;
@@ -783,9 +786,12 @@ export class Sim {
 
   computeStats(): void {
     const ws = this.now - DAY;
-    while (this.recCommits.length && this.recCommits[0]! < ws) this.recCommits.shift();
-    while (this.recPipes.length && this.recPipes[0]!.t < ws) this.recPipes.shift();
-    while (this.recDeploys.length && this.recDeploys[0]! < ws) this.recDeploys.shift();
+    // one splice per list, not a shift per entry (a shift moves the whole array: after the
+    // seed, thousands of them were one 5 ms turn in Bun, ~50 ms on a slow Mac's Hermes)
+    const drop = <T>(a: T[], old: (v: T) => boolean): void => { let k = 0; while (k < a.length && old(a[k]!)) k++; if (k) a.splice(0, k); };
+    drop(this.recCommits, (t) => t < ws);
+    drop(this.recPipes, (r) => r.t < ws);
+    drop(this.recDeploys, (t) => t < ws);
     const idx = clamp(Math.floor((ws - (this.t0 - DAY)) / MIN), 0, 1440);
     const pre = this.preCum[1440]! - this.preCum[idx]!;
     const done = this.recPipes;

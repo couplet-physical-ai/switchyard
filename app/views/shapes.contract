@@ -260,12 +260,44 @@ shape PPhase
   note: string
   ago: string
 
+shape PCheck
+  name: string
+  state: string
+  required: bool
+
+shape PDot
+  state: string
+  sha: string
+  title: string
+
+shape PDeploy
+  app: string
+  state: string
+  via: string
+  ago: string
+
+shape PLink
+  label: string
+  url: string
+
 shape PrDetail
   ok: bool
   row: option<PrRow>
   commits: PCommit[]
   pipelines: PPipe[]
   timeline: PPhase[]
+  meta: string
+  blocked: string
+  checkList: PCheck[]
+  passed: number
+  landsName: string
+  landsState: string
+  landsWords: string
+  landsNote: string
+  lands: PDot[]
+  deploys: PDeploy[]
+  note: string
+  links: PLink[]
 
 shape WebVer
   stale: bool

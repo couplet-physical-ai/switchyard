@@ -46,8 +46,8 @@ component JourneyView
                 text j.total font-size=11 color="sy.ink3"
               for p in j.pipelines key=p.id
                 row gap=12 padding="2px 0" align-items="baseline"
-                  text `#${p.number}` width=56 font-size=12 font-weight=700 color="sy.ink"
-                  text `${p.lane}${p.engine != "" ? ` · ${p.engine}` : ""}` width=260 font-size=12 color="sy.ink3" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+                  text `#${p.number}` width=104 font-size=12 font-weight=700 color="sy.ink" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
+                  text `${p.lane}${p.engine != "" ? ` · ${p.engine}` : ""}` width=212 font-size=12 color="sy.ink3" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
                   text p.state width=72 font-size=12 color=(p.state == "failure" or p.state == "error" ? "sy.red-text" : (p.state == "running" ? "sy.amber-text" : (p.state == "success" ? "sy.green-ink" : "sy.ink3")))
                   text `waited ${p.wait} · ran ${p.dur}` font-size=12 color="sy.ink3" white-space="nowrap"
               column gap=2 testId="waterfall"

@@ -33,7 +33,7 @@ export class DemoUpstream implements Upstream {
     // The seeding is one turn and the warm-up others: on a busy Mac (efficiency cores) the
     // two together went over a turn's 100 ms budget.
     await yieldTurn();
-    while (!d.sim.warm(4_000)) await yieldTurn();
+    while (!d.sim.warm(2_000)) await yieldTurn();
     await yieldTurn(); // the caller loads the world next: give it a turn of its own
     return d;
   }

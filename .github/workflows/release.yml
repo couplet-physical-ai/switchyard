@@ -118,6 +118,13 @@ jobs:
           "$d/Switchyard.app/Contents/MacOS/$exe" > "$d/out.log" 2>&1 & pid=$!
           sleep 5
           if kill -0 $pid 2>/dev/null; then echo "running after 5 s"; kill $pid; else echo "exited early:"; cat "$d/out.log"; wait $pid; exit 1; fi
+      - name: macOS tests (app/tests/*.test.contract on the macOS host)
+        if: env.MODE == 'app'
+        # Gating: a release is published only after every macOS suite passes on this runner
+        # (GitHub's 3-core M1 is the slow-Mac canary for Exact's 100 ms turn budget; e3bfe34).
+        env:
+          EXACT2: ${{ runner.temp }}/exact
+        run: app/scripts/build.sh test macos
       - uses: actions/upload-artifact@v4
         with:
           name: switchyard-${{ steps.v.outputs.version }}-${{ env.MODE }}
@@ -152,12 +159,3 @@ jobs:
           fi
           gh release view "v$V" --json url,assets --jq '.url, (.assets[] | "  \(.name) \(.size)")'
           echo "The tap's bump-switchyard workflow picks this up within 20 min; scripts/release.sh triggers it at once."
-      - name: macOS tests (app/tests/*.test.contract on the macOS host)
-        if: env.MODE == 'app'
-        # Runs after the release is published (it takes ~17 min) and only reports, for now: on GitHub's 3-core runner the demo's `connect` takes
-        # 230-340 ms of one turn, over Exact's 100 ms budget, so Exact refuses it and 6 of 13
-        # tests fail (they pass on the Mac mini). Make it gating once the client yields there.
-        continue-on-error: true
-        env:
-          EXACT2: ${{ runner.temp }}/exact
-        run: app/scripts/build.sh test macos

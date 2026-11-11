@@ -240,15 +240,53 @@ export function journeyView(j: Journey | null, now: number, error = '', offsetMi
 /** Same-instant events read in the order they happen: a push, then its queueing, start, end. */
 const EV_ORDER: Record<string, number> = { push: 0, enqueue: 1, queued: 1, start: 2, finish: 3, deploy: 4, deployed: 5, health: 6 };
 
+const EMPTY_PR_DETAIL = { ok: false, row: null, commits: [], pipelines: [], timeline: [], meta: '', blocked: '', checkList: [], passed: 0, landsName: '', landsState: '', landsWords: '', landsNote: '', lands: [], deploys: [], note: '', links: [] };
+
 export function prDetailView(d: PrDetail | null, now: number, w: World) {
-  if (!d || typeof d !== 'object' || !d.pr || typeof d.pr !== 'object') return { ok: false, row: null, commits: [], pipelines: [], timeline: [] };
+  if (!d || typeof d !== 'object' || !d.pr || typeof d.pr !== 'object') return EMPTY_PR_DETAIL;
+  const pr = d.pr;
+  const all = Array.isArray(d.checks) ? d.checks.filter((c) => c && typeof c === 'object') : [];
+  // v0.4's detail lists every check, so its passes replace the count; a detail that lists only
+  // the unpassed ones (an older server, a sparse fixture) keeps the PR's own count.
+  const listsPasses = all.some((c) => c.state === 'success');
+  const passed = listsPasses ? all.filter((c) => c.state === 'success').length : num(pr.checks_passed);
+  const checks = all.length ? all : arr(pr.checks);
+  const rank = (st: string) => (st === 'failure' || st === 'error' ? 0 : st === 'running' || st === 'pending' ? 1 : st === 'success' ? 3 : 2);
+  const checkList = checks
+    .map((c) => ({ name: str(c.name), state: str(c.state) || 'pending', required: !!c.required }))
+    .sort((a, b) => rank(a.state) - rank(b.state) || a.name.localeCompare(b.name))
+    .slice(0, 40);
+  const repo = d.repo_state && typeof d.repo_state === 'object' ? d.repo_state : w.repos.get(str(pr.repo));
+  const recent = arr(repo?.main?.recent).slice(-12);
+  const st = repo ? mainState(repo) : '';
+  const since = num(repo?.main?.since);
+  const branch = [str(pr.head), str(pr.base)].filter(Boolean).join(' → ');
+  const meta = [pr.bot ? `${str(pr.author)} · bot` : str(pr.author), branch, pr.created ? `opened ${ago(now, pr.created)}` : '', pr.updated ? `updated ${ago(now, pr.updated)}` : '']
+    .filter(Boolean).join(' · ');
+  const links: { label: string; url: string }[] = [];
+  if (str(pr.url)) links.push({ label: 'github ↗', url: str(pr.url) });
+  const cicd = str((repo as { links?: { cicd?: string } } | undefined)?.links?.cicd);
+  if (cicd) links.push({ label: 'cicd ↗', url: cicd });
+  const commits = arr(d.commits).slice(-20).reverse().map((c) => ({ sha: str(c.sha), short: short(c.sha), title: str(c.title), author: str(c.author), ci: str(c.ci), ago: ago(now, c.at), repo: str(c.repo) }));
+  const pipelines = arr(d.pipelines).slice(-12).reverse().map((p) => ({ number: num(p.number), lane: str(p.lane), state: str(p.state), dur: fmtDur(num(p.finished ?? now) - num(p.started ?? p.created)), sha: short(p.sha), ago: ago(now, p.created) }));
   return {
     ok: true,
-    // v0.4's detail lists every check: the full set replaces the PR's short list and count.
-    row: prRow(Array.isArray(d.checks) && d.checks.length ? { ...d.pr, checks: d.checks, checks_passed: 0 } : d.pr, now, w),
-    commits: arr(d.commits).slice(-20).reverse().map((c) => ({ sha: str(c.sha), short: short(c.sha), title: str(c.title), author: str(c.author), ci: str(c.ci), ago: ago(now, c.at), repo: str(c.repo) })),
-    pipelines: arr(d.pipelines).slice(-12).reverse().map((p) => ({ number: num(p.number), lane: str(p.lane), state: str(p.state), dur: fmtDur(num(p.finished ?? now) - num(p.started ?? p.created)), sha: short(p.sha), ago: ago(now, p.created) })),
+    row: prRow(all.length ? { ...pr, checks: all.filter((c) => c.state !== 'success' || c.required), checks_passed: listsPasses ? all.filter((c) => c.state === 'success' && !c.required).length : num(pr.checks_passed) } : pr, now, w),
+    commits,
+    pipelines,
     timeline: arr(d.timeline).map((t) => ({ phase: str(t.phase), note: str(t.note), ago: ago(now, t.at) })),
+    meta,
+    blocked: str(pr.blocked_by),
+    checkList,
+    passed,
+    landsName: repo ? `${str(repo.name) || str(pr.repo)} · ${str(repo.default_branch) || 'main'}` : '',
+    landsState: st,
+    landsWords: !repo ? '' : st === 'red' ? `red ${since ? fmtDur(now - since) : ''}`.trim() : st === 'green' && since ? `green since ${ago(now, since).replace(/ ago$/, '')}` : st,
+    landsNote: repo && str(pr.base) && str(pr.base) !== (str(repo.default_branch) || 'main') ? `this pull request targets ${str(pr.base)}, not ${str(repo.default_branch) || 'main'}` : '',
+    lands: recent.map((x) => ({ state: str(x.state), sha: short(x.sha), title: str(x.title) })),
+    deploys: arr(d.deploys).slice(-6).reverse().map((x) => ({ app: str(x.app), state: str(x.state), via: str(x.via), ago: ago(now, x.started) })),
+    note: !commits.length && !pipelines.length ? 'No commit or pipeline of this pull request ran in the server\'s window (the last 24 h).' : '',
+    links,
   };
 }
 
