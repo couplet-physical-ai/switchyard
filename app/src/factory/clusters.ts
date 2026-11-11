@@ -143,10 +143,12 @@ export function heapUp(parked: Parked[], groups: ParkGroup[], u1: number, uMin: 
 /** The heaps already laid for this parked list (heapUp), or null. */
 export function heapsOf(parked: readonly Parked[]): Heap[] | null { return heapCache.get(parked) ?? null; }
 
-/** The tallest open heap (most failures; ties: nearest the scanner), or null. */
+/** The heap the belt names (and fires arcs from): the WIDEST repo spread (a shared cause tells
+ *  more than one repo's pile; overseer, after the iter-2 reel), ties: most failures, then nearest
+ *  the scanner; null when none. (The name `tallest` stays for its callers.) */
 export function tallest(heaps: readonly Heap[]): Heap | null {
   let best: Heap | null = null;
-  for (const h of heaps) if (!best || h.n > best.n || (h.n === best.n && h.u1 > best.u1)) best = h;
+  for (const h of heaps) if (!best || h.repos > best.repos || (h.repos === best.repos && (h.n > best.n || (h.n === best.n && h.u1 > best.u1)))) best = h;
   return best;
 }
 

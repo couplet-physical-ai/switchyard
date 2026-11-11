@@ -299,8 +299,9 @@ const redSince = (s: Snapshot, from: number) => list(s.repos).filter((r) => (r.m
   // worst cluster's callout gives way when that heap is its subject; the other hotspots keep theirs
   {
     const { tallestCluster } = await import('../src/factory/glance.ts');
-    eq(tallestCluster([{ cl: 'a', n: 3, open: true }, { cl: 'b', n: 9, open: false }, { cl: 'c', n: 5, open: true }, { cl: 'd', n: 5, open: true }]), 'c', 'tallest heap: the open group holding the most (ties: nearest the scanner)');
-    const gl = f.coffee.glance0, hot = f.coffee.dg.marks.hot, tall = tallestCluster(f.lens.parkGroups);
+    const { heapsOf, tallest } = await import('../src/factory/clusters.ts');
+    eq(tallestCluster([{ cl: 'a', n: 3, open: true, repos: 4 }, { cl: 'b', n: 9, open: false, repos: 9 }, { cl: 'c', n: 5, open: true, repos: 2 }, { cl: 'd', n: 6, open: true, repos: 4 }]), 'd', 'named heap: the open group reaching the most repos (ties: the most failures)');
+    const gl = f.coffee.glance0, hot = f.coffee.dg.marks.hot, hs = heapsOf(f.lens.parked), tall = hs ? (tallest(hs)?.cl ?? '') : tallestCluster(f.lens.parkGroups);
     const srcs = gl.callouts.map((o) => o.src);
     ok(tall !== '' && gl.callouts.length >= 1 && gl.callouts.length <= 3, `callouts: ≤ 3 drawn (${srcs.join(' | ')}; the tallest heap ${tall})`);
     ok(!srcs.includes(`cluster:${tall}`), `callouts: none names the tallest heap's cluster (${tall}), the heap names itself`);
@@ -310,10 +311,14 @@ const redSince = (s: Snapshot, from: number) => list(s.repos).filter((r) => (r.m
     // the worst cluster made the tallest heap: its callout gives way, the group's stays
     if (clh) {
       const pgs = f.lens.parkGroups;
-      f.lens.parkGroups = [{ ...(pgs[0] ?? { u0: 0, u1: 0, step: '', cls: '', flaky: 0, repos: 1, newest: '' }), cl: clh.id, n: 999, open: true }, ...pgs.slice(1)];
+      // (the glance asks the belt's heaps first: with none laid, it picks from the park groups)
+      const parked0 = f.lens.parked;
+      f.lens.parked = [];
+      f.lens.parkGroups = [{ ...(pgs[0] ?? { u0: 0, u1: 0, step: '', cls: '', flaky: 0, repos: 1, newest: '' }), cl: clh.id, n: 999, repos: 999, open: true }, ...pgs.slice(1)];
       for (let i = 0; i < 2; i++) { const tt = t + 16 * (i + 1); tl.tick(tt); f.drawLive(rec, frame(tt), tt, 0); }
       const s2 = gl.callouts.map((o) => o.src);
       ok(!s2.includes(`cluster:${clh.id}`) && hot.filter((h) => h.kind !== 'cluster').every((h) => s2.includes(`${h.kind}:${h.id}`)), `callouts: the worst cluster as the tallest heap → no cluster callout, the rest kept (${s2.join(' | ')})`);
+      f.lens.parked = parked0;
       f.lens.parkGroups = pgs;
     }
   }

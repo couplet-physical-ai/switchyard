@@ -1,5 +1,5 @@
 // The floor's chrome rows (fab-w0, from factory.ts; fx-glance owns the strip). Along the bottom
-// edge, THE TIME STRIP: the replay controls (replay the last hour · 24 h at 60×; "live" is the
+// edge, THE TIME STRIP: the replay control (the last hour at 60×; "live" is the
 // status line's one control, app.contract), then the last 24 h across the whole bar as a
 // BUTTERFLY, ten-minute bars: activity (runs finished) gray, up; failures red, down. Yesterday is
 // dashed behind it (the persisted hourly ring's same hours a day back; the 7-d typical while the
@@ -107,7 +107,8 @@ export class Strip {
     g.hline(0, W, g.crisp(y0), '#1F1F21');
     // the replay controls (live is the status line's: one control)
     const mode = tl.mode;
-    const opts: [string, string][] = [[mode === 'replay' ? 'replaying the hour' : 'replay last hour', 'replay'], ['24 h at 60×', 'replay24']];
+    // one control, as it is: the last hour at 60× (a real 24 h replay is next round's)
+    const opts: [string, string][] = [[mode === 'replay' ? 'replaying the last hour at 60×' : 'last hour at 60×', 'replay']];
     let x = 16;
     g.fillRect(x, y0 + 13, 4 + opts.reduce((a, [s]) => a + g.width(s, 13) + 22, 0), 28, '#1A1A1C');
     x += 2;
