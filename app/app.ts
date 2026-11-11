@@ -47,6 +47,10 @@ let seenEpoch = -1;
 const yard = new Yard(tl);
 /** The factory floor (src/factory/): the default view, the same world. */
 const factory = new Factory(tl);
+factory.hud = yard.hud;
+/** Stress mode (a 10× synthetic fleet for the renderers): one switch for the yard and the floor. */
+let stressOn = false;
+function setStress(on: boolean): void { stressOn = on; yard.setStress(on); factory.setStress(on); }
 tl.listener = (e, w) => { yard.pool.onEvent(e, w, clock); factory.onEvent(e, w, clock); };
 /** The canvas tables (src/table/): one per view, alive across visits (scroll and focus kept). */
 const mlTable = new MainlinesModel();
@@ -260,7 +264,8 @@ function overview(): Result<'overview'> {
     status: w.loaded ? 'ready' : 'waiting', mode: tl.mode, speed: tl.speed, sentence, summary, layoutKey: `${S?.key ?? ''}|${yard.budget.quality >= 3 ? 'lo' : 'hi'}`, repos: w.repos.size,
     building, queued, red, appsUp, appsTotal: w.apps.size, behind, seq: w.seq,
     tick: Math.floor(clock / 250), host: hostLabel(), dial, dialPad: Math.round(((S?.m ?? 16) + 22) * k), dialFont: Math.round(11 * k), dialH: Math.round(34 * k),
-    hud: yard.hud.on, stress: yard.stress.on, quality: yard.budget.quality, facKey: factory.floorKey,
+    hud: yard.hud.on, stress: stressOn, quality: yard.budget.quality, facKey: factory.floorKey,
+    facDrawer: factory.selected !== '', facQ: factory.budget.quality, facStress: factory.stress.on, facStats: factory.statsLine(),
   };
 }
 
@@ -376,7 +381,7 @@ export const sources: Sources = {
     const best = yard.hitAt(x / k, y / k);
     if (!best) { yard.selected = ''; return { kind: '', id: '', label: '', route: '' }; }
     if (best.kind === 'pipeline') yard.selected = yard.selected === best.id ? '' : best.id;
-    else if (best.kind === 'stress') yard.setStress(!yard.stress.on);
+    else if (best.kind === 'stress') setStress(!stressOn);
     else if (best.kind === 'quality') yard.budget.pinned = yard.budget.pinned >= 4 ? -1 : yard.budget.pinned + 1;
     return { kind: best.kind, id: best.id, label: best.label, route: route(best.kind, best.id) };
   },
@@ -386,7 +391,16 @@ export const sources: Sources = {
     return h ? { kind: h.kind, id: h.id, label: h.label, route: '' } : { kind: '', id: '', label: '', route: '' };
   },
   facPointer: ([kind, x, y, buttons]) => {
+    // a key on the floor (it takes the focus): Escape lets the selection go
+    if (String(kind).startsWith('key:')) {
+      const key = String(kind).slice(4);
+      if (key === 'Escape' && factory.selected) factory.select('', '');
+      return { kind: key === 'Escape' ? 'escape' : '', id: '', label: '', route: `${factory.cam.key}|${factory.selected}` };
+    }
     const h = factory.pointer(String(kind), Number(x), Number(y), Number(buttons) || 0, clock);
+    // the HUD's buttons are floor hits too
+    if (kind === 'up' && h?.kind === 'stress') setStress(!stressOn);
+    else if (kind === 'up' && h?.kind === 'quality') factory.budget.pinned = factory.budget.pinned >= 4 ? -1 : factory.budget.pinned + 1;
     // a newly picked crate: fetch its journey for the drawer (a source may fetch; a draw never does)
     const sel = factory.selected;
     if (sel && factory.journeyFor !== sel && up) {
@@ -399,7 +413,7 @@ export const sources: Sources = {
   },
   devToggle: ([what, on]) => {
     if (what === 'hud') yard.hud.on = on === 1;
-    else if (what === 'stress') yard.setStress(on === 1);
+    else if (what === 'stress') setStress(on === 1);
     return { ok: true, status: `${what} ${on === 1 ? 'on' : 'off'}` };
   },
   search: ([q, t]) => {
@@ -447,7 +461,7 @@ const NO_HIT = { kind: '', id: '', label: '', route: '' };
 const EMPTY_OV: Result<'overview'> = {
   status: 'waiting', mode: 'live', speed: 1, sentence: 'waiting for the fleet', summary: 'The delivery yard, waiting for data.', layoutKey: '', repos: 0,
   building: 0, queued: 0, red: 0, appsUp: 0, appsTotal: 0, behind: '', seq: 0,
-  tick: 0, host: '', dial: '1 hour, sped up', dialPad: 38, dialFont: 11, dialH: 34, hud: false, stress: false, quality: 0, facKey: '',
+  tick: 0, host: '', dial: '1 hour, sped up', dialPad: 38, dialFont: 11, dialH: 34, hud: false, stress: false, quality: 0, facKey: '', facDrawer: false, facQ: 0, facStress: false, facStats: '',
 };
 const EMPTY_FLEET = {
   apps: [], engines: [], queues: [], stats: [], up: 0, total: 0, down: 0, degraded: 0, attention: [], behindN: 0, never: 0, hasLatency: false, watcher: '', watcherTripped: false,
@@ -550,7 +564,9 @@ let topView = '';
 
 export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame): boolean {
   if ((surface === 'yardLive' || surface === 'yardInfo' || surface === 'yardTop') && topView !== '' && topView !== 'yard') return true;
-  if (surface === 'factoryLive' && topView !== '' && topView !== 'factory') return true;
+  // Covered, the floor's live layer sleeps; the 250 ms tick (a surface argument) wakes it when
+  // it is on top again.
+  if (surface === 'factoryLive' && topView !== '' && topView !== 'factory') return false;
   try {
     return drawSurface(surface, args, ctx, frame);
   } catch (e) {

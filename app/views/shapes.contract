@@ -61,6 +61,10 @@ shape Overview
   stress: bool
   quality: number
   facKey: string
+  facDrawer: bool
+  facQ: number
+  facStress: bool
+  facStats: string
 
 shape SearchHit
   kind: string

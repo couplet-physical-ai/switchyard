@@ -6,6 +6,7 @@ import type { App, Pipeline, Pr } from '../wire.ts';
 import type { World } from '../world.ts';
 import { BOTS } from '../world.ts';
 import { ORG_ORDER, buildingIds, isRed, queueTruth } from '../yard/select.ts';
+import { hash, unit } from '../yard/stress.ts';
 
 export const HOUR = 3_600_000;
 export const PHASES = ['draft', 'checks', 'review', 'approved'] as const;
@@ -62,20 +63,111 @@ export class Census {
   densRed = new Float32Array(288);
   /** A shape signature: when it changes the static floor redraws. */
   sig = '';
+  /** The apps' health, as the static floor paints it (counts and which ones are not up). */
+  healthSig = '';
+  /** The main lines' cars and the engines' gauges, as the static floor paints them. */
+  carSig = '';
+  /** Stress mode: every count × FACTOR, engines with ten times the slots, a city ten times as
+   *  big (virtual app ids `<id>~<k>`; nothing here is an entity). */
+  factor = 1;
+  /** No fleet yet (connecting, offline, setup): an idle floor of the usual shape. */
+  skeleton = false;
 
   /** The count runs in two turns (sources/PRs/main lines, then queues/engines/apps/flow), so
    *  no single turn walks the whole world. */
   private half = 0;
   private carry: { opened15: number; merged15: number; merges: number } = { opened15: 0, merged15: 0, merges: 0 };
 
+  /** Recount at the next draw (stress toggled, a reset). */
+  invalidate(): void { this.ver = -1; this.at = -1e12; this.half = 0; }
+
   update(w: World, now: number, t: number): boolean {
-    if (this.half === 1) { this.half = 0; this.countB(w, this.now); return true; }
-    if (w.ver === this.ver && t - this.at < 5000) return false;
-    if (t - this.at < 250 && this.ver >= 0) return false;
+    if (!w.loaded) {
+      if (this.skeleton) return false;
+      this.idle();
+      return true;
+    }
+    if (this.half === 1) { this.half = 0; this.countB(w, this.now); this.stretch(); return true; }
+    if (w.ver === this.ver && t - this.at < 5000 && !this.skeleton) return false;
+    if (t - this.at < 250 && this.ver >= 0 && !this.skeleton) return false;
+    this.skeleton = false;
     this.ver = w.ver; this.at = t; this.now = now;
     this.countA(w, now);
     this.half = 1;
     return true;
+  }
+
+  /** The idle floor: every stage in its usual shape, nothing on it (no fleet loaded). */
+  private idle(): void {
+    this.skeleton = true;
+    this.ver = -1;
+    this.docks = [...ORG_ORDER, BOTS].map((o) => ({ org: o, short: short(o), perHour: 0, repos: 0 }));
+    for (const row of this.stacks) for (const s of row) { s.n = 0; s.stuck = 0; s.red = 0; s.oldest = 0; s.ids.length = 0; }
+    this.phaseN = [0, 0, 0, 0];
+    this.pallets = [];
+    this.botN = 0;
+    this.rails = ORG_ORDER.map((o) => ({ org: o, short: short(o), cars: [], merges1h: 0, red: 0, repos: 0 }));
+    const machine = (id: string, slots: number, hosted: boolean): Group => ({ id, name: '', platform: '', slots, running: [], engines: [], cpu: -1, mem: -1, load: -1, online: false, hosted });
+    this.groups = [machine('a', 6, false), machine('b', 6, false), machine('gha', 6, true)];
+    this.rr = []; this.gha = []; this.waiting = 0; this.oldestWait = 0;
+    const n = [48, 36, 24, 16, 12, 10];
+    this.districts = n.map((k, d) => ({ team: '', apps: Array.from({ length: k }, (_, i) => `~idle${d}.${i}`) }));
+    this.deploys24.clear();
+    this.flow = { pushes: 0, merges: 0, enqueued: 0, started: 0, finished: 0, failed: 0, deploys: 0, byVia: {} };
+    this.heat = {}; this.bottleneck = ''; this.redLines = 0; this.building = 0; this.deploying = [];
+    this.focal = null; this.redNames = []; this.failing = [];
+    this.dens.fill(0); this.densRed.fill(0);
+    this.sig = 'idle';
+    this.healthSig = 'idle';
+    this.carSig = 'idle';
+  }
+
+  /** Stress mode: the counts the floor shows, × factor (after a real count; never entities). */
+  private stretch(): void {
+    const F = this.factor;
+    if (F <= 1) return;
+    for (const d of this.docks) d.perHour *= F;
+    for (const row of this.stacks) for (const s of row) { s.n *= F; s.stuck *= F; s.red *= F; }
+    this.phaseN = this.phaseN.map((n) => n * F);
+    for (const p of this.pallets) { p.n *= F; p.stuck *= F; }
+    this.botN *= F;
+    // main lines: every rail as full as it gets (18 cars), the real cars newest
+    for (const r of this.rails) {
+      r.merges1h *= F; r.red *= F;
+      const real = r.cars.length;
+      const fake: Car[] = [];
+      for (let k = 0; fake.length + real < 18; k++) {
+        const u = unit(k, r.org.length * 7 + 3);
+        fake.push({ sha: `~${k}`, repo: r.cars[0]?.repo ?? r.org, at: 0, state: u < 0.06 ? 'failure' : u < 0.2 ? 'running' : 'success', title: '', culprit: u < 0.06, deployed: false });
+      }
+      r.cars = [...fake, ...r.cars];
+    }
+    this.redLines *= F;
+    this.building *= F;
+    // engines: ten times the slots (their busy bays are hashed per frame, stress.ts)
+    for (const g of this.groups) g.slots *= F;
+    // the queue: ten times as long (the line shows its first crates and a count)
+    this.waiting *= F;
+    // the city: nine copies of every app beside it, in its district
+    let vi = 0;
+    for (const d of this.districts) {
+      const real = d.apps.length;
+      for (let k = 1; k < F; k++) {
+        for (let i = 0; i < real; i++) {
+          const id = `${d.apps[i]}~${k}`;
+          d.apps.push(id);
+          const n = hash(vi++, 17) % 7;
+          if (n > 2) this.deploys24.set(id, n - 2);
+        }
+      }
+    }
+    const dep = this.deploying.length;
+    for (let k = 0; this.deploying.length < Math.min(36, dep * F + 12); k++) this.deploying.push({ app: '', via: k % 3, started: this.now - (k % 9) * 9000, sha: `~${k}` });
+    const f = this.flow;
+    f.pushes *= F; f.merges *= F; f.enqueued *= F; f.started *= F; f.finished *= F; f.failed *= F; f.deploys *= F;
+    for (const k in f.byVia) f.byVia[k] *= F;
+    for (let i = 0; i < 288; i++) { this.dens[i] *= F; this.densRed[i] *= F; }
+    this.sig += `|x${F}`;
   }
 
   private countA(w: World, now: number): void {
@@ -187,14 +279,22 @@ export class Census {
     hosted.slots = Math.max(6, hosted.running.length);
     groups.push(hosted);
     this.groups = groups;
-    // apps: districts by team (tiny teams share one)
+    // apps: districts by team (tiny teams share one); their health as the floor paints it
     const teams = new Map<string, string[]>();
+    let hUp = 0, hDeg = 0, hDown = 0, hSum = 0;
     for (const a of w.apps.values()) {
       const t = teamOf(a);
       const l = teams.get(t) ?? [];
       l.push(a.id ?? '');
       teams.set(t, l);
+      if (a.health === 'up') hUp++;
+      else {
+        const code = a.health === 'down' ? 3 : a.health === 'degraded' ? 2 : 1;
+        if (code === 3) hDown++; else if (code === 2) hDeg++;
+        hSum = (hSum + Math.imul(strHash(a.id ?? ''), code)) | 0;
+      }
     }
+    this.healthSig = `${hUp}.${hDeg}.${hDown}.${hSum}`;
     const big: District[] = [], small: string[] = [];
     for (const [team, apps] of teams) { if (apps.length >= 5 && team !== 'other') big.push({ team, apps }); else small.push(...apps); }
     big.sort((a, b) => b.apps.length - a.apps.length);
@@ -249,8 +349,18 @@ export class Census {
     let best = '', bv = 0.25;
     for (const k in this.heat) if (this.heat[k] > bv) { bv = this.heat[k]; best = k; }
     this.bottleneck = best;
+    let cs = 0;
+    for (const r of this.rails) for (const car of r.cars) cs = (Math.imul(cs, 31) + strHash(car.sha) + (car.culprit ? 7 : car.state === 'running' || car.state === 'pending' ? 3 : 1)) | 0;
+    this.carSig = `${cs}|${groups.map((g) => `${g.cpu < 0 ? -1 : Math.round(g.cpu / 5)}.${g.mem < 0 ? -1 : Math.round(g.mem / 5)}.${g.running.length}`).join(',')}`;
     this.sig = `${this.docks.length}|${this.stacks.map((r) => r.map((s) => Math.min(60, s.n)).join(',')).join(';')}|${this.pallets.map((p) => p.n).join(',')}|${groups.map((g) => `${g.id}:${g.slots}`).join(',')}|${this.districts.map((d) => d.apps.length).join(',')}|${w.apps.size}|${[...this.deploys24.values()].reduce((a, b) => a + b, 0)}`;
   }
+}
+
+/** A string's 32-bit hash (FNV-1a). */
+export function strHash(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193);
+  return h >>> 0;
 }
 
 export function phaseRow(p: Pr): number {

@@ -170,6 +170,8 @@ component App
     send fac = facPointer("move", e.offsetX, e.offsetY, e.buttons)
   action facUp(e: PointerEvent)
     send fac = facPointer("up", e.offsetX, e.offsetY, e.buttons)
+  action facKey(k: string)
+    send fac = facPointer(`key:${k}`, 0, 0, 0)
   action facWheeled(e: WheelEvent)
     facWheel = facWheel + e.deltaY
     preventDefault()
@@ -256,23 +258,26 @@ component App
             column flex=1 min-height=0 position="relative" testId="factory"
               canvas surface=factoryFloor(ov.facKey, facNow.route, facWheel) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="factory-floor"
               canvas surface=factoryLive(reduced ? "reduced" : "full", facNow.route, facWheel, ov.tick) position="absolute" left=0 top=0 width="100%" height="100%"
-                role="img" aria-label=ov.summary pointerdown=facDown pointermove=facMove pointerup=facUp wheel=facWheeled touch-action="none" testId="factory-live"
+                tabindex=0 role="img" aria-label=ov.summary pointerdown=facDown pointermove=facMove pointerup=facUp wheel=facWheeled key=facKey touch-action="none" testId="factory-live"
               // The strip's "last hour" is this button too (its words and its press, for tests and keyboards).
               button appearance="none" press=startReplay testId="replay" aria-label="Replay the last hour, sped up" disabled=(ov.mode == "replay" or not conn.ok)
                 position="absolute" bottom=0 left=0 width=1 height=1 opacity=0
                 text "last hour"
+              // Offline or not set up: a card over the floor (the idle floor, or the last fleet
+              // it showed, dimmed behind it), never a black void.
               if not conn.ok and conn.status != "connecting"
-                column position="absolute" inset=0 align-items="center" justify-content="center" background-color="sy.canvas" gap=14 testId="setup"
-                  text (conn.needsSetup ? "Connect Switchyard to a server" : "The server is not answering") font-weight=700 font-size=16
-                  text (conn.error != "" ? conn.error : "Its address and a token, or watch the built-in demo fleet.") color="sy.ink3" font-size=13 max-width=560 text-align="center" testId="setup-error"
-                  row gap=10
-                    if conn.signIn != ""
-                      link href=conn.signIn class=Primary testId="setup-signin"
-                        text "Sign in on the web…"
-                    button press=openSettings class=(conn.signIn != "" ? Quiet : Primary) testId="setup-connect"
-                      text (conn.signIn != "" ? "Use a token…" : "Connect…")
-                    button press=useDemo testId="setup-demo" class=Quiet
-                      text "Watch the demo"
+                column position="absolute" inset=0 align-items="center" justify-content="center" background-color="#0E0E0EB3" testId="setup"
+                  column align-items="center" gap=14 padding="26px 32px" border-radius=12 border="1px solid sy.edge" background-color="sy.raised" max-width=620
+                    text (conn.needsSetup ? "Connect Switchyard to a server" : "The server is not answering") font-weight=700 font-size=16
+                    text (conn.error != "" ? conn.error : "Its address and a token, or watch the built-in demo fleet.") color="sy.ink3" font-size=13 max-width=560 text-align="center" testId="setup-error"
+                    row gap=10
+                      if conn.signIn != ""
+                        link href=conn.signIn class=Primary testId="setup-signin"
+                          text "Sign in on the web…"
+                      button press=openSettings class=(conn.signIn != "" ? Quiet : Primary) testId="setup-connect"
+                        text (conn.signIn != "" ? "Use a token…" : "Connect…")
+                      button press=useDemo testId="setup-demo" class=Quiet
+                        text "Watch the demo"
           if e.name == "yard"
             column flex=1 min-height=0 position="relative" testId="yard"
               canvas surface=yardStatic(ov.layoutKey, ov.stress) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-static"
@@ -339,8 +344,9 @@ component App
               button role="radio" appearance="none" aria-checked=(ov.speed == 0.25 and ov.mode != "paused") press=playAt(0.25) testId="speed-quarter" padding="1px 9px" border-radius=4 disabled=(not conn.ok)
                 background-color=(ov.speed == 0.25 and ov.mode != "paused" ? "sy.control-on" : "transparent")
                 text "¼×" font-size=11 color=(ov.speed == 0.25 and ov.mode != "paused" ? "sy.ink" : "sy.ink3")
-      WebReload(v=webVer, go=webReload)
-      UpdatePill(u=upd, notesOpen=updNotes, check=checkUpdates, install=installUpdate, toggleNotes=updToggleNotes)
+      // Over the factory they sit above its time strip (58 px over the status line); elsewhere just over the status line.
+      WebReload(v=webVer, go=webReload, lift=(top(nav).name == "factory" ? 92 : 60))
+      UpdatePill(u=upd, notesOpen=updNotes, check=checkUpdates, install=installUpdate, toggleNotes=updToggleNotes, lift=(top(nav).name == "factory" ? 92 : 60))
       dialog id="palette" aria-label="Search" testId="palette" color="sy.ink" width=640 max-width="90vw" padding=0 border-radius=12 background-color="sy.raised" border="1px solid sy.edge"
         column padding=10 gap=6
           input type="text" value=q input=typed key=palKey aria-label="Search" autofocus=true placeholder="repo, #pr, sha, app" testId="palette-input" class=Field
