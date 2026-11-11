@@ -25,15 +25,17 @@ OPEN_ENV=(); [[ -n "${SY_UPDATE_FEED:-}" ]] && OPEN_ENV=(--env "SWITCHYARD_UPDAT
 feed=$(curl -fsSL --retry 3 "$FEED" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')
 [[ "$feed" == "$TO" ]] || { echo "latest.json names $feed, not $TO" >&2; exit 1; }
 
-timeout 1800 "${SSH[@]}" "bash -s" <<EOF
+# The script goes to a file first: run from stdin, a command that reads stdin (sudo, brew) would
+# swallow the rest of it and the run would "pass" having done nothing. PASS must be printed.
+out=$(timeout 1800 "${SSH[@]}" 'f=$(mktemp); cat > "$f"; bash "$f" </dev/null 2>&1; rc=$?; rm -f "$f"; exit $rc' <<EOF
 set -euo pipefail
 A=/Applications/Switchyard.app
 v() { /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "\$A/Contents/Info.plist"; }
 pkill -f 'Switchyard.app/Contents/MacOS/Switchyard' || true
 # Dev builds registered with LaunchServices (sy-client's targets, old release dirs) would take
-# switchyard:// links or be what `open` finds: unregister every Switchyard.app but /Applications'.
+# switchyard:// links or be what open(1) finds: unregister every Switchyard.app but /Applications'.
 LSR=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
-\$LSR -dump 2>/dev/null | sed -nE 's/^path: +(.*Switchyard[^/]*\\.app)( \\(0x.*)?\$/\\1/p' | sort -u | grep -v '^/Applications/' \\
+\$LSR -dump 2>/dev/null | sed -nE 's/^path: +(.*Switchyard[^/]*\\.app)( \\(0x.*)?\$/\\1/p' | sort -u | { grep -v '^/Applications/' || true; } \\
   | while IFS= read -r p; do \$LSR -u "\$p" 2>/dev/null || true; echo "unregistered \$p"; done
 if [[ "${SY_FROM_TAP:-}" != 1 ]]; then
 $BREW uninstall --cask switchyard >/dev/null 2>&1 || true)
@@ -46,7 +48,7 @@ fi
 echo "installed: \$(v)"; [[ "\$(v)" == "$FROM" ]]
 mkdir -p ~/Library/Logs/Switchyard; : > ~/Library/Logs/Switchyard/update.log
 \$LSR -f "\$A"
-launchctl asuser \$(id -u) open ${OPEN_ENV[*]:-} "\$A" --args $ARG
+sudo -n launchctl asuser \$(id -u) sudo -n -u \$(id -un) open ${OPEN_ENV[*]:-} "\$A" --args $ARG
 for i in \$(seq 1 120); do
   sleep 2
   [[ "\$(v)" == "$TO" ]] && pgrep -f 'Switchyard.app/Contents/MacOS/Switchyard' >/dev/null && break
@@ -56,7 +58,11 @@ echo "--- update.log"; tail -20 ~/Library/Logs/Switchyard/update.log || true
 [[ "\$(v)" == "$TO" ]] || { echo "FAIL: bundle is \$(v), expected $TO" >&2; exit 1; }
 codesign --verify --deep --strict "\$A" && echo "signature: ok"
 sleep 10; [[ ! -e "\$A.old" ]] && echo ".old: swept" || { ls -ld "\$A.old"; echo "FAIL: .old not swept" >&2; exit 1; }
-echo "brew: \$($BREW info --cask switchyard 2>&1 | head -1))"
+echo "--- brew info"; $BREW info --cask switchyard 2>&1 | head -3) || true
 if [[ "$KEEP" != --keep ]]; then pkill -f 'Switchyard.app/Contents/MacOS/Switchyard' || true; rm -rf "\$A"; fi
+echo E2E-PASS
 EOF
+) || { echo "$out"; echo "update e2e: FAILED" >&2; exit 1; }
+echo "$out"
+grep -qx E2E-PASS <<<"$out" || { echo "update e2e: did not reach the end" >&2; exit 1; }
 echo "update e2e: $FROM → $TO OK"
