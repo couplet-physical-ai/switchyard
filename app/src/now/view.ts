@@ -296,7 +296,7 @@ function needs(w: World, v: FlowView, now: number, filter: Filter): Need[] {
     const p = d.pipeline ? w.pipelines.get(d.pipeline) : undefined;
     const at = d.finished ?? d.started;
     out.push({ id: `deploy:${d.app}`, kind: 'deploy', what: d.app, word: 'deploy failed', detail: `${repoName(d.repo)} ${sha7(d.sha)}`, ago: ago(Math.max(0, now - at)), at, rank: 1,
-      links: [...L('ci', d.via === 'roadrunner' ? 'Roadrunner' : 'GitHub Actions', (d as { links?: { cicd?: string } }).links?.cicd || d.url || (p ? runUrl(w, p.id) : '')), ...L('app', 'Open app', a?.url), ...L('status', 'Status', statusUrl(w, d.app))] });
+      links: [...L('ci', d.via === 'roadrunner' ? 'Roadrunner' : 'GitHub Actions', (d as { links?: { cicd?: string } }).links?.cicd || d.url || (p ? runUrl(w, String(p.id)) : '') || ''), ...L('app', 'Open app', a?.url), ...L('status', 'Status', statusUrl(w, d.app))] });
   }
   for (const e of v.events) {
     if (e.band !== 'now') continue;
@@ -334,7 +334,7 @@ function needs(w: World, v: FlowView, now: number, filter: Filter): Need[] {
     }
     const since = r.main.since || dot?.at || 0;
     out.push({ id: `main:${r.id}`, kind: 'main', what: repoName(r.id), word: 'main failing', detail: fit(dot ? `${sha7(dot.sha)} ${dot.title}${dot.author ? ` · ${dot.author}` : ''}` : '', 96), ago: since ? ago(Math.max(0, now - since)) : '', at: since, rank: 5,
-      links: [...L('commit', 'Commit', commitUrl(w, r.id, culprit)), ...L('ci', red?.lane === 'gha' ? 'GitHub Actions' : 'Roadrunner', red ? runUrl(w, red.id) : (r.links as { cicd?: string } | undefined)?.cicd ?? r.links?.woodpecker)] });
+      links: [...L('commit', 'Commit', commitUrl(w, r.id, culprit)), ...L('ci', red?.lane === 'gha' ? 'GitHub Actions' : 'Roadrunner', red ? runUrl(w, String(red.id)) : (r.links as { cicd?: string } | undefined)?.cicd ?? r.links?.woodpecker ?? '')] });
   }
   out.sort((a, b) => a.rank - b.rank || b.at - a.at);
   return out.slice(0, BROKEN_CAP).map(({ rank: _r, at: _a, ...n }) => n);

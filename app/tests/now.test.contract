@@ -1,0 +1,81 @@
+// Live (views/now.contract): the default view. Every test starts the built-in demo fleet (no
+// network), so it runs the same on every host.
+
+test "Live is the first view: the status line, what runs now, and its sections"
+  clock data
+  expect tree has "now-setup"
+  tap "now-setup-demo"
+  clock data
+  clock +1500
+  expect state here == "now"
+  expect state nowData.ok == true
+  expect tree has "now-status"
+  expect tree has "now-live"
+  expect tree has "now-counts"
+  expect tree has "now-machines"
+  expect tree has "now-h-now"
+  expect tree missing "timebar"
+
+test "the status line's count is the running jobs listed (totals agree)"
+  clock data
+  tap "now-setup-demo"
+  clock data
+  clock +1500
+  expect state nowData.running == nowData.now.flatMap(b => b.jobs).filter(j => j.state == "running").length
+  expect state nowData.queued == nowData.now.flatMap(b => b.jobs).filter(j => j.state == "queued").length
+  expect state nowData.needsN == nowData.needs.length
+
+test "a job opens its steps inline, and closes"
+  clock data
+  tap "now-setup-demo"
+  clock data
+  clock +1500
+  tap "now-jobpress-0-0"
+  clock +600
+  expect tree has "now-detail"
+  expect tree has "now-steps"
+  tap "now-detail-close"
+  clock +300
+  expect tree missing "now-detail"
+
+test "a machine shows what runs there"
+  clock data
+  tap "now-setup-demo"
+  clock data
+  clock +1500
+  tap "now-mach-0"
+  clock +600
+  expect tree has "now-detail"
+  expect state nowSel.startsWith("machine:") == true
+
+test "a repo shows only that repo, and Show everything goes back"
+  clock data
+  tap "now-setup-demo"
+  clock data
+  clock +1500
+  tap "now-repo-0"
+  clock settle
+  clock +1200
+  expect tree has "now-filter"
+  expect state nowRepo != "" == true
+  tap "now-filter-clear"
+  clock settle
+  clock +1200
+  expect tree missing "now-filter"
+  expect state nowRepo == ""
+
+test "the nav: Live, Factory, Yard"
+  clock data
+  tap "now-setup-demo"
+  clock data
+  clock +800
+  tap "tab-yard"
+  clock settle
+  expect tree has "yard-live"
+  expect tree has "timebar"
+  tap "tab-factory"
+  clock settle
+  expect tree has "factory-live"
+  tap "tab-now"
+  clock settle
+  expect tree has "now-status"
