@@ -26,16 +26,22 @@
 // world changes, O(entities); nothing here runs in a turn that also counted the census.
 
 import type { Ctx2D, Frame } from '../../app.contract.d.ts';
-import type { App, Pipeline, Pr } from '../wire.ts';
+import type { App, Pipeline, Pr, Trend } from '../wire.ts';
 import type { World } from '../world.ts';
 import { BOTS } from '../world.ts';
 import type { Gfx } from '../yard/gfx.ts';
 import { C, TAU, clamp, withAlpha } from '../yard/theme.ts';
 import { isRed } from '../yard/select.ts';
 import { AGES, HOUR, PHASES, failingStep, phaseRow, short, teamOf } from './census.ts';
-import { appHistory, beat, beatPhase, clusterKey, clusterStep, groupOf } from './seams.ts';
+import { appHistory, beat, beatPhase, groupOf } from './seams.ts';
 import type { Census } from './census.ts';
 import type { Factory } from './factory.ts';
+import { clusterOf, groupOf as insGroupOf, insights, insightsVer } from '../insights.ts';
+import { Hover } from './hover.ts';
+import { drawCompare } from './compare.ts';
+import { appHist, appHist7, engineSeries, healthSegs, wantAppHistory, wantEngineHistory } from './lenses.ts';
+import { classGlyph, clusterBody, clusterFacts, groupApps, groupFlow, groupForApps, groupForOrg, groupTrend, parkByCluster, ribbonW, trendRows } from './lenses.ts';
+import type { ClusterFacts, GroupFlow, ParkGroup, Parked } from './lenses.ts';
 
 /** What the lens system reaches inside the floor (indexed access: a rename fails the build). */
 export type FactoryFx = {
@@ -47,14 +53,15 @@ export type FactoryFx = {
 type Hit = Factory['hits'][number];
 type Pt = [number, number];
 
-export type LensKind = 'org' | 'repo' | 'stack' | 'pallet' | 'pipeline' | 'bay' | 'vm' | 'queue' | 'scanner' | 'failure' | 'track' | 'app' | 'district' | 'fresh' | 'gate';
+export type LensKind = 'group' | 'org' | 'repo' | 'stack' | 'pallet' | 'pipeline' | 'bay' | 'vm' | 'queue' | 'scanner' | 'failure' | 'track' | 'app' | 'district' | 'fresh' | 'gate';
 export type Lens = { kind: LensKind; id: string; name: string; sub: string };
 
 /** The lit set of a lens. */
 type Rel = {
   repos: Set<string>; orgs: Set<string>; apps: Set<string>; pipes: Set<string>; cars: Set<string>;
-  /** Lit open PRs per PR-yard stack (phase row × age bucket) and per bot pallet. */
-  stackN: Int16Array; palletN: Map<string, number>;
+  /** Lit open PRs per PR-yard stack (phase row × age bucket) and per bot pallet; `stackRed` of
+   *  them with CI failing. */
+  stackN: Int16Array; stackRed: Int16Array; palletN: Map<string, number>;
   groups: Set<number>; tracks: Set<number>; districts: Set<number>; fails: Set<string>;
   scanner: boolean; intake: boolean;
   m: Metrics;
@@ -68,6 +75,8 @@ type Metrics = {
 // palette: the lens's outline is ink; a compare lights its two sides in two group hues
 // (OKLCH L .72 C .07 at 250° and 310°: away from amber, red and the green-gray of "ok").
 const F_RED = '#E06464'; // the factory's red crate top (factory.ts F.redTop)
+/** A parked failure whose cluster recovered (`open` 0): no longer failing, so not red. */
+const F_HEALED = '#6A5C5D';
 const LIT = '#F2F2F0';
 export const HUE_A = '#83A8CF';
 export const HUE_B = '#B299C6';
@@ -78,8 +87,8 @@ const SMALL = 12;
 const TITLE = 15;
 
 const KIND_WORD: Record<LensKind, string> = {
-  org: 'org', repo: 'repo', stack: 'PR stack', pallet: 'bot pallet', pipeline: 'run', bay: 'bay', vm: 'machine', queue: 'intake',
-  scanner: 'tests', failure: 'failure', track: 'deploy track', app: 'app', district: 'team', fresh: 'since you looked', gate: 'merge gate',
+  group: 'group', org: 'org', repo: 'repo', stack: 'PR stack', pallet: 'bot pallet', pipeline: 'run', bay: 'bay', vm: 'machine', queue: 'intake',
+  scanner: 'tests', failure: 'failure cluster', track: 'deploy track', app: 'app', district: 'team', fresh: 'since you looked', gate: 'merge gate',
 };
 
 export class Lenses {
@@ -91,11 +100,21 @@ export class Lenses {
   /** The floor's old always-on key is retired: the key is on demand. */
   readonly legacyKey = false;
   readonly hosts = new HostHistory();
-  /** Failures of the last hour parked on the return conveyor, newest nearest the scanner. */
-  parked: { id: string; u: number; repo: string; step: string; at: number }[] = [];
+  /** fab-w3: hover previews with a micro-chart per kind (hover.ts). */
+  readonly hoverCard = new Hover(this);
+  /** fab-w3: a press is held (the floor shows no hover while it is: factory.ts pointer). */
+  down = false;
+  private lastKey = '';
+  private lastKeyT = -1;
+  /** Failures of the last hour parked on the return conveyor by CLUSTER (fab-w3, overseer note 4):
+   *  the same signature together, the biggest open cluster nearest the scanner. */
+  parked: Parked[] = [];
+  /** The clusters' runs of crates on the conveyor (index = Parked.k). */
+  parkGroups: ParkGroup[] = [];
   private rel: Rel | null = null;
   private relB: Rel | null = null;
   private story: Story | null = null;
+  private storyB: Story | null = null;
   private relVer = -1;
   private relAt = -1e12;
   parkedKey = '';
@@ -142,12 +161,27 @@ export class Lenses {
     else if (f.selected) f.select('', '');
     this.rel = null; this.story = null; this.relVer = -1;
     if (top && top.kind !== 'pipeline') this.refresh(true);
+    // fab-w3: a lens that reads a server history asks for it here (a pointer turn may fetch; a draw
+    // never does): an engine's 24 h, an app's 7 d (lenses.ts, cached a minute)
+    this.want(top);
+  }
+
+  /** fab-w3: asks for the server history a lens reads (engine 24 h, app 7 d). */
+  private want(l: Lens | null): void {
+    const f = this.f, clk = f.tl.clock;
+    // the machine's Dagger engine first (it carries cpu / mem / load), then a few of its agents
+    if (l?.kind === 'vm') for (const id of [...(f.census.groups[Number(l.id)]?.engines ?? [])].sort((a, b) => Number(b.startsWith('dagger')) - Number(a.startsWith('dagger'))).slice(0, 3)) wantEngineHistory(id, clk);
+    if (l?.kind === 'app') wantAppHistory(l.id, clk);
   }
 
   // ---- input -------------------------------------------------------------------------------------
   /** A key on the floor: Esc / Backspace walk back up the stack, ? toggles the key. */
   key(k: string, t: number): Hit | null {
-    if (k === 'Escape' || k === 'Backspace') {
+    // fab-w3: one key press reaches both the canvas and the floor's column (both take `key`), in
+    // one dispatch at one clock: act on it once, or Esc walks back two steps
+    const dup = k === this.lastKey && t === this.lastKeyT;
+    this.lastKey = k; this.lastKeyT = t;
+    if (dup) { /* already handled */ } else if (k === 'Escape' || k === 'Backspace') {
       if (this.legend) this.legend = false;
       else if (this.stack.length || this.cmp) this.pop(t);
       else if (this.f.selected) this.f.select('', '');
@@ -184,8 +218,10 @@ export class Lenses {
     if (shift && top && top.kind !== 'pipeline' && l.kind !== 'pipeline' && !(top.kind === l.kind && top.id === l.id)) {
       this.cmp = l;
       this.relB = null;
+      this.want(l);
       this.refresh(true);
-      return h;
+      // fab-w3: the press answers what it did: a compare of the top and this (the dock shows them)
+      return { ...h, kind: 'compare', id: `${top.kind}:${top.id}|${l.kind}:${l.id}`, label: `${top.name} vs ${l.name}` };
     }
     // the bay on top, clicked again: its job's journey (the drawer)
     if (top && top.kind === 'bay' && l.kind === 'bay' && top.id === l.id && top.sub) {
@@ -208,6 +244,9 @@ export class Lenses {
     const f = this.f, w = f.world, c = f.census, P = f.plan;
     switch (h.kind) {
       case 'dock': case 'rail': {
+        // fab-w3: a dock opens its GROUP (insights.groupOf: team:/org:); the bots siding stays an org
+        const gr = h.id === BOTS ? null : groupForOrg(w, h.id);
+        if (gr) return { kind: 'group', id: gr.id, name: gr.name, sub: h.id };
         const d = c.docks.find((x) => x.org === h.id);
         return { kind: 'org', id: h.id, name: d?.short ?? short(h.id), sub: '' };
       }
@@ -218,7 +257,7 @@ export class Lenses {
         if (car) {
           if (car.culprit || car.state === 'failure' || car.state === 'error') {
             const p = failedRunOf(w, repo, sha);
-            if (p?.id) return { kind: 'failure', id: p.id, name: `${repoName(repo)} · ${failingStep(p)}`, sub: '' };
+            if (p?.id) return { kind: 'failure', id: p.id, name: clusterOf(p.id)?.step || failingStep(p), sub: '' };
           }
           return { kind: 'repo', id: repo, name: repoName(repo), sub: sha };
         }
@@ -226,7 +265,7 @@ export class Lenses {
       }
       case 'pipeline': case 'failure': {
         const p = w.pipelines.get(h.id);
-        if (p && (p.state === 'failure' || p.state === 'error')) return { kind: 'failure', id: h.id, name: `${repoName(p.repo)} · ${failingStep(p)}`, sub: '' };
+        if (p && (p.state === 'failure' || p.state === 'error')) return { kind: 'failure', id: h.id, name: clusterOf(h.id)?.step || failingStep(p), sub: '' };
         const bay = this.fx.bays.find((b) => b.pid === h.id);
         if (bay && p?.state === 'running') return { kind: 'bay', id: `${bay.group},${bay.slot}`, name: `${c.groups[bay.group]?.name ?? 'bay'} · ${bay.slot + 1}`, sub: h.id };
         return { kind: 'pipeline', id: h.id, name: p ? `${repoName(p.repo)} #${p.number}` : h.id, sub: 'pipeline' };
@@ -247,7 +286,13 @@ export class Lenses {
       case 'scanner': case 'return': return { kind: 'scanner', id: 'tests', name: 'tests', sub: '' };
       case 'track': return { kind: 'track', id: h.id, name: VIA_WORDS[Number(h.id)] ?? 'track', sub: '' };
       case 'app': return { kind: 'app', id: h.id, name: h.id, sub: '' };
-      case 'district': case 'districtArea': return { kind: 'district', id: h.label.replace(/ \d+$/, ''), name: h.label.replace(/ \d+$/, ''), sub: '' };
+      case 'district': case 'districtArea': {
+        // fab-w3: a district opens the same group lens as its team's dock ("other teams": the district)
+        const team = h.label.replace(/ \d+$/, '');
+        const gr = groupForApps(w, c.districts.find((x) => x.team === team)?.apps ?? []);
+        if (gr) return { kind: 'group', id: gr.id, name: gr.name, sub: 'district' };
+        return { kind: 'district', id: team, name: team, sub: '' };
+      }
       case 'fresh': return { kind: 'fresh', id: h.id, name: h.label, sub: '' };
       default: return null;
     }
@@ -259,13 +304,15 @@ export class Lenses {
     switch (h.kind) {
       case 'dock': case 'rail': {
         const d = c.docks.find((x) => x.org === h.id), r = c.rails.find((x) => x.org === h.id);
+        const gr = h.id === BOTS ? null : groupForOrg(w, h.id);
+        if (gr) return [gr.name, `${gr.repos} repos · ${d?.perHour ?? 0} pushes/h`, `${gr.red} red mains · ${r?.merges1h ?? 0} merged/h`];
         return [`${d?.short ?? short(h.id)}`, `${d?.perHour ?? 0} pushes/h · ${d?.repos ?? 0} repos`, `${r?.red ?? 0} red · ${r?.merges1h ?? 0} merged/h`];
       }
       case 'stack': {
         const [r, b] = h.id.split(',').map(Number);
         const s = c.stacks[r]?.[b];
         if (!s) return null;
-        return [`${PHASES[r]} · ${AGE_WORDS_L[b]}`, `${s.n} PRs${s.red ? ` · ${s.red} blocked` : ''}${s.stuck ? ` · ${s.stuck} stale` : ''}`, 'click: what blocks them'];
+        return [`${PHASES[r]} · ${AGE_WORDS_L[b]}`, `${s.n} PRs${s.red ? ` · ${s.red} blocked` : ''}${s.stuck ? ` · ${s.stuck} stale` : ''}`, s.oldest > 0 ? `oldest ${ago(s.oldest)}` : 'what blocks them:'];
       }
       case 'pallet': {
         const p = c.pallets.find((x) => x.bot === h.id);
@@ -274,19 +321,35 @@ export class Lenses {
       case 'machine': case 'gauge': {
         const g = c.groups[Number(h.id)];
         if (!g) return null;
-        return [g.name, `${g.running.length}/${g.slots} busy${g.cpu >= 0 ? ` · cpu ${Math.round(pct(g.cpu))}%` : ''}${g.mem >= 0 ? ` · mem ${Math.round(pct(g.mem))}%` : ''}`, 'click: load over time, its queue'];
+        const q = g.hosted ? c.gha.length : c.rr.length;
+        return [g.name, `${g.running.length}/${g.slots} busy${g.cpu >= 0 ? ` · cpu ${Math.round(pct(g.cpu))}%` : ''}${g.mem >= 0 ? ` · mem ${Math.round(pct(g.mem))}%` : ''}`, `${q} queued · busy over time:`];
       }
       case 'intake': return ['intake', `${c.waiting} queued${c.oldestWait > 0 ? ` · oldest ${ago(c.oldestWait)}` : ''}`, 'click: each wait'];
       case 'gate': return ['merge gate', `${c.flow.merges} merged/h`, 'click: 24 h of merges'];
       case 'scanner': case 'return': {
         const f1 = c.flow;
         const sm = f.coffee.smokeWords();
-        return ['tests', `${f1.finished ? Math.round(((f1.finished - f1.failed) / f1.finished) * 100) : 100}% pass · ${f1.failed} failed/h`, sm ? `smoke: ${sm}` : 'click: the failure mix'];
+        const top = this.parkGroups[0];
+        return ['tests', `${f1.finished ? Math.round(((f1.finished - f1.failed) / f1.finished) * 100) : 100}% pass · ${f1.failed} failed/h`, sm ? `smoke: ${sm}` : top ? `worst: ${short2(top.step)} ×${top.n}` : 'runs and failures, 24 h:'];
       }
       case 'failure': {
         const p = w.pipelines.get(h.id);
         if (!p) return null;
-        return [`${repoName(p.repo)} #${p.number}`, `failed at ${failingStep(p)} · ${ago(now - (p.finished ?? p.created))} ago`, 'click: its failure cluster'];
+        const cl = clusterOf(h.id);
+        if (!cl) return [`${repoName(p.repo)} #${p.number}`, `failed at ${failingStep(p)} · ${ago(now - (p.finished ?? p.created))} ago`, p.flaky ? 'flaky: passed on the same sha' : 'click: its failure cluster'];
+        return [`${repoName(p.repo)} · ${short2(cl.step)}`, `${cl.class}${p.flaky ? ' · flaky' : ''} · ${ago(now - (p.finished ?? p.created))} ago`, `${cl.count_1h} this hour · ${cl.count} in 24 h · ${cl.open ? `${cl.open} open` : 'healed'}`];
+      }
+      case 'pipeline': {
+        const p = w.pipelines.get(h.id);
+        if (!p) return null;
+        const el = p.started ? (p.finished ?? now) - p.started : now - p.created;
+        const step = p.state === 'running' ? (p.workflows ?? []).flatMap((x) => x.steps ?? []).find((x) => x.state === 'running')?.name : '';
+        return [`${repoName(p.repo)} #${p.number}`, `${p.state} · ${ago(el)}${p.expected_ms ? ` of ~${ago(p.expected_ms)}` : ''}`, step ? `at ${step}` : `${p.event} · ${p.branch}`.slice(0, 44)];
+      }
+      case 'app': {
+        const a = w.apps.get(h.id);
+        if (!a) return null;
+        return [h.id, `${a.health}${a.latency_ms ? ` · ${a.latency_ms} ms` : ''}${a.team ? ` · ${a.team}` : ''}`, `${c.deploys24.get(h.id) ?? 0} deploys in 24 h${a.behind ? ` · ${a.behind} behind` : ''}`];
       }
       case 'track': {
         const i = Number(h.id);
@@ -297,7 +360,8 @@ export class Lenses {
         if (!d) return null;
         let down = 0;
         for (const id of d.apps) { const a = w.apps.get(id); if (a && a.health !== 'up' && a.health !== 'unknown') down++; }
-        return [`${d.team} · ${d.apps.length} apps`, down ? `${down} not up` : 'all up', 'click: the team\'s pipeline'];
+        const gr = groupForApps(w, d.apps);
+        return [`${gr?.name ?? d.team} · ${d.apps.length} apps`, down ? `${down} not up` : 'all up', gr ? `${gr.repos} repos · ${gr.red} red mains` : 'small teams together'];
       }
       case 'commit': {
         const at = h.id.indexOf('@');
@@ -326,7 +390,7 @@ export class Lenses {
     this.relVer = w.ver; this.relAt = clk;
     const [rel, story] = this.relate(top);
     this.rel = rel; this.story = story;
-    this.relB = this.cmp ? this.relate(this.cmp)[0] : null;
+    if (this.cmp) { const [rb, sb] = this.relate(this.cmp); this.relB = rb; this.storyB = sb; } else { this.relB = null; this.storyB = null; }
   }
 
   private relate(l: Lens): [Rel, Story] {
@@ -342,6 +406,10 @@ export class Lenses {
         rel.orgs.add(l.id);
         break;
       }
+      case 'group': {
+        for (const r of w.repos.values()) if (insGroupOf(r.id) === l.id) R.add(r.id);
+        break;
+      }
       case 'repo': {
         R.add(l.id);
         const r = w.repos.get(l.id);
@@ -353,6 +421,7 @@ export class Lenses {
         const [row, b] = l.kind === 'stack' ? l.id.split(',').map(Number) : [-1, -1];
         const counts = new Map<string, number>();
         let oldest: Pr | null = null, n = 0, stale = 0;
+        const prs: [number, string][] = (st.prs = []);
         for (const p of w.prs.values()) {
           const r = phaseRow(p);
           if (r < 0) continue;
@@ -364,6 +433,7 @@ export class Lenses {
           const k = blocker(p);
           counts.set(k, (counts.get(k) ?? 0) + 1);
           if (!oldest || p.created < oldest.created) oldest = p;
+          if (prs.length < 400) prs.push([Math.max(0, now - p.created), BLOCKERS.find((x) => x[0] === k)?.[1] ?? '#8A8A8E']);
         }
         st.n = n;
         st.blockers = BLOCKERS.filter(([k]) => counts.get(k)).map(([k, col]) => [k, counts.get(k) ?? 0, col] as [string, number, string]);
@@ -432,26 +502,20 @@ export class Lenses {
         break;
       }
       case 'failure': {
-        // its CLUSTER: the same failing step (signature, digits stripped) across repos, 24 h
+        // fab-w3: its CLUSTER (v0.5 Step.cluster through insights.ts): the server's 24 h counts,
+        // open, flaky, first/last seen and examples; the repos it hit lit across the floor
         const p = w.pipelines.get(l.id);
-        const key = p ? clusterKey(p) : '';
-        const step = clusterStep(key);
+        const cf = clusterFacts(w, l.id);
+        st.cf = cf;
         st.items = [];
-        let same = 0;
-        for (const q of w.pipelines.values()) {
-          if (q.state !== 'failure' && q.state !== 'error') continue;
-          if ((q.finished ?? q.created) < now - 24 * HOUR) continue;
-          const k = clusterKey(q);
-          if (!k || clusterStep(k) !== step) continue;
-          if (k === key) same++;
-          R.add(q.repo);
-          rel.fails.add(q.id ?? '');
-          st.items.push({ id: q.id ?? '', label: repoName(q.repo), v: q.finished ?? q.created, state: q.repo });
-        }
-        st.items.sort((a, b) => b.v - a.v);
-        st.note = step || (p ? failingStep(p) : ''); st.n = same; st.pid = l.id;
+        for (const r of cf?.repos ?? []) R.add(r);
+        for (const [id, repo, at] of cf?.held ?? []) { rel.fails.add(id); st.items.push({ id, label: repoName(repo), v: at, state: repo }); }
+        const me = this.parked.find((x) => x.id === l.id);
+        const key = me?.cl ?? cf?.id ?? '';
+        for (const x of this.parked) if (key && x.cl === key) rel.fails.add(x.id);
+        st.k = me ? me.k : this.parkGroups.findIndex((pg) => pg.cl === key);
+        st.note = cf?.step || (p ? failingStep(p) : ''); st.n = cf?.count ?? 0; st.pid = l.id;
         onlyFails = true;
-        rel.scanner = true;
         break;
       }
       case 'track': {
@@ -522,7 +586,9 @@ export class Lenses {
       }
       default: break;
     }
+    if (l.kind === 'group') { for (const id of groupApps(w, l.id)) rel.apps.add(id); }
     this.fill(R, rel, onlyFails);
+    if (l.kind === 'group') { st.gf = groupFlow(w, l.id, rel.repos, rel.apps, now); st.trend = groupTrend(l.id); }
     return [rel, st];
   }
 
@@ -551,7 +617,9 @@ export class Lenses {
       if (r < 0) continue;
       m.prs++;
       if (isBot(p)) { const b = botName(p.author); rel.palletN.set(b, (rel.palletN.get(b) ?? 0) + 1); continue; }
-      rel.stackN[r * 6 + ageBucket(now - p.created)]++;
+      const si = r * 6 + ageBucket(now - p.created);
+      rel.stackN[si]++;
+      if (p.ci === 'failure' || p.ci === 'error') rel.stackRed[si]++;
     }
     for (const a of w.apps.values()) if (a.repo && R.has(a.repo) && a.id) rel.apps.add(a.id);
     for (const id of rel.apps) {
@@ -577,40 +645,90 @@ export class Lenses {
     f.coffee.under(g, t);
   }
 
-  /** The last hour's failures, parked along the return conveyor by when they failed (newest nearest
-   *  the scanner), at least a crate apart: a burst bunches, a quiet hour leaves the belt empty. */
+  /** fab-w3: the last hour's failures parked along the return conveyor BY CLUSTER (lenses.ts
+   *  parkByCluster): each signature a tight run of crates, a gap between clusters, the biggest open
+   *  cluster nearest the scanner. Recounted with the census (≤ 1/s) or when the clusters change. */
   private park(): void {
     const c = this.f.census, P = this.f.plan;
-    const key = `${c.at}|${c.failing.length}`;
+    const key = `${c.at}|${c.failing.length}|${insightsVer('clusters')}`;
     if (key === this.parkedKey) return;
     this.parkedKey = key;
-    const now = c.now, span = P.SCAN_U - 90;
-    this.parked = [];
-    let last = 1e9;
-    for (const x of c.failing) {
-      let u = P.SCAN_U - 22 - clamp((now - x.at) / HOUR, 0, 1) * span;
-      if (u > last - 11) u = last - 11;
-      if (u < 40) break;
-      last = u;
-      this.parked.push({ id: x.id, u, repo: x.repo, step: x.step, at: x.at });
-    }
+    const r = parkByCluster(c.failing, this.f.world, P.SCAN_U - 22, 40);
+    this.parked = r.parked;
+    this.parkGroups = r.groups;
   }
 
+  /** fab-w3: parked failures, grouped. Each cluster of ≥ 2 a thin bracket on the conveyor's front
+   *  edge with a tiny count (the nearest open one also names its step); open clusters red, those
+   *  that recovered (`open` 0) muted; a flaky failure hatched. */
   private drawParked(g: Gfx): void {
-    const f = this.f, P = f.plan, cam = f.cam, fx = this.fx;
-    // perf: small on screen (fleet zoom), a parked failure is a red square in ONE path (n + 2 calls,
-    // not ~18 per crate: on native every canvas call is a host round trip); zoomed in, a crate
+    const f = this.f, P = f.plan, cam = f.cam, fx = this.fx, V = P.RETURN_V;
+    if (!this.parked.length) return;
+    // perf: small on screen (fleet zoom), parked failures are squares in one path per colour (on
+    // native every canvas call is a host round trip); zoomed in, crates
     const small = 8 * cam.s < 11;
+    const r = Math.max(2.5, 4 * cam.s);
     if (small) {
-      const r = Math.max(2.5, 4 * cam.s);
-      g.begin_();
-      for (const x of this.parked) g.ctx.rect(cam.x(x.u, P.RETURN_V) - r, cam.y(x.u, P.RETURN_V, 6) - r, r * 2, r * 2);
-      if (this.parked.length) g.fill(F_RED);
-    }
+      for (const open of [true, false]) {
+        let any = false;
+        g.begin_();
+        for (const x of this.parked) if (x.open === open) { g.ctx.rect(cam.x(x.u, V) - r, cam.y(x.u, V, 6) - r, r * 2, r * 2); any = true; }
+        if (any) g.fill(open ? F_RED : F_HEALED);
+      }
+    } else for (const x of this.parked) fx.crate(g, x.u, V, 8, x.open, !x.open);
+    // flaky: hatched (it passed on the same sha: noise, not breakage)
+    let fl = false;
+    g.begin_();
     for (const x of this.parked) {
-      if (!small) fx.crate(g, x.u, P.RETURN_V, 8, true, false);
-      fx.hit(cam.x(x.u, P.RETURN_V) - 7, cam.y(x.u, P.RETURN_V, 8) - 7, 14, 14, 'failure', x.id, `${repoName(x.repo)} · ${x.step}`);
+      if (!x.flaky) continue;
+      fl = true;
+      if (small) {
+        const cx = cam.x(x.u, V), cy = cam.y(x.u, V, 6);
+        g.move(cx - r, cy + r * 0.2); g.line(cx - r * 0.2, cy - r);
+        g.move(cx - r * 0.6, cy + r); g.line(cx + r, cy - r * 0.6);
+        g.move(cx + r * 0.2, cy + r); g.line(cx + r, cy + r * 0.2);
+      } else {
+        const z = 2 + 6.4, u0 = x.u - 4, v0 = V - 4;
+        for (const k of [0.45, 0.95, 1.45]) {
+          const a: Pt = k <= 1 ? [u0 + 8 * k, v0] : [u0 + 8, v0 + 8 * (k - 1)], b: Pt = k <= 1 ? [u0, v0 + 8 * k] : [u0 + 8 * (k - 1), v0 + 8];
+          g.move(cam.x(a[0], a[1]), cam.y(a[0], a[1], z)); g.line(cam.x(b[0], b[1]), cam.y(b[0], b[1], z));
+        }
+      }
     }
+    if (fl) g.stroke(withAlpha(C.canvas, 0.85), Math.max(1, r * 0.32));
+    this.brackets(g, -1);
+    for (const x of this.parked) fx.hit(cam.x(x.u, V) - 5, cam.y(x.u, V, 8) - 7, 10, 14, 'failure', x.id, `${repoName(x.repo)} · ${x.step}`);
+  }
+
+  /** The clusters' brackets on the conveyor's front edge and their counts; `only` ≥ 0 draws that
+   *  group alone, lit (the cluster lens). */
+  private brackets(g: Gfx, only: number): void {
+    const f = this.f, P = f.plan, cam = f.cam, V = P.RETURN_V, vb = V + 8.5, vt = V + 5;
+    const gs = this.parkGroups;
+    for (const open of only >= 0 ? [true] : [true, false]) {
+      let any = false;
+      g.begin_();
+      gs.forEach((pg, k) => {
+        if (only >= 0 ? k !== only : pg.n < 2 || pg.open !== open) return;
+        const a = pg.u1 + 4.5, b = pg.u0 - 4.5;
+        g.move(cam.x(b, vt), cam.y(b, vt, 0.5)); g.line(cam.x(b, vb), cam.y(b, vb, 0.5)); g.line(cam.x(a, vb), cam.y(a, vb, 0.5)); g.line(cam.x(a, vt), cam.y(a, vt, 0.5));
+        any = true;
+      });
+      if (any) g.stroke(only >= 0 ? LIT : open ? withAlpha(C.red, 0.8) : '#5E5E62', only >= 0 ? 1.4 : 1);
+    }
+    let named = only >= 0;
+    gs.forEach((pg, k) => {
+      if (only >= 0 ? k !== only : pg.n < 2) return;
+      const um = (pg.u0 + pg.u1) / 2, x = cam.x(um, vb), y = cam.y(um, vb, 0.5) + 14;
+      const n = String(pg.n);
+      const name = !named && pg.open ? ` ${short2(pg.step)}` : '';
+      if (name) named = true;
+      const wv = g.width(n, SMALL, true) + (name ? g.width(name, SMALL) : 0);
+      const x0 = Math.round(x - g.width(n, SMALL, true) / 2);
+      g.fillRect(x0 - 3, y - 11, wv + 6, 14, withAlpha(C.canvas, 0.8));
+      g.runs([[n, only >= 0 ? C.ink : pg.open ? C.redText : C.ink3, true], [name, C.ink3]], x0, y, SMALL);
+      if (only < 0) this.fx.hit(cam.x(pg.u0 - 4, vb), cam.y(pg.u1, V - 4, 8) - 4, cam.x(pg.u1 + 4, V) - cam.x(pg.u0 - 4, vb), y - cam.y(pg.u1, V - 4, 8) + 8, 'failure', pg.newest, `${pg.step} · ${pg.n} failures`);
+    });
   }
 
   /** The screen rectangle around a floor box (u0, v0, du, dv, h). */
@@ -681,6 +799,8 @@ export class Lenses {
     this.lit(g, rel, tint, t);
     if (two) this.lit(g, this.relB!, HUE_B, t);
     this.storyFloor(g, top, t);
+    // fab-w3: a compared group draws its own ribbon too (each side in its compare hue)
+    if (two && this.cmp?.kind === 'group' && this.storyB) this.groupStory(g, this.storyB, HUE_B, this.relB!);
   }
 
   /** Dims to ~25 % and desaturates what is drawn so far: a saturation pass (the live layer's
@@ -740,15 +860,24 @@ export class Lenses {
       if (!rel.orgs.has(d.org)) continue;
       fx.box(g, P.DOCK_U0, fx.dockV(d.org) - 30, P.DOCK_U1 - P.DOCK_U0, 60, 14, '#2C2C2F', '#1E1E21', '#19191B', tint, hw);
     }
-    // the PR yard: the lit share of each stack, a core as tall as its count
+    // the PR yard (fab-w3, overseer note 2): in each stack, the lens's share of its open PRs as a
+    // core as tall as that share of the stack, its outline heavier and its top fuller the more PRs
+    // it holds, its red slice (CI failing) on the front; the count on top. The card's key says so.
+    let maxN = 1;
+    for (let i = 0; i < 24; i++) if (rel.stackN[i] > maxN) maxN = rel.stackN[i];
     for (let r = 0; r < 4; r++) for (let b = 0; b < 6; b++) {
-      const n = rel.stackN[r * 6 + b];
+      const i = r * 6 + b, n = rel.stackN[i];
       if (!n) continue;
-      const u0 = P.ROW_U[r] - P.ROW_DU / 2, v0 = P.AGE_V[b];
-      const layers = Math.min(16, Math.ceil(n / 3));
-      fx.box(g, u0 + 10, v0 + 10, P.ROW_DU - 20, P.STACK_DV - 20, 2 + layers * 2.6, '#47474B', '#323235', '#2A2A2D', tint, hw);
-      const x = cam.x(u0 + P.ROW_DU / 2, v0 + P.STACK_DV / 2), y = cam.y(u0 + P.ROW_DU / 2, v0 + P.STACK_DV / 2, 4 + layers * 2.6) - 5;
-      this.num(g, String(n), x + ndx, y, ncol);
+      const all = Math.max(n, c.stacks[r]?.[b]?.n ?? n);
+      const full = 2 + Math.min(16, Math.ceil(all / 3)) * 2.6, z = Math.max(3, full * (n / all));
+      const k = Math.sqrt(n / maxN);
+      const u0 = P.ROW_U[r] - P.ROW_DU / 2 + 9, v0 = P.AGE_V[b] + 9, du = P.ROW_DU - 18, dv = P.STACK_DV - 18;
+      fx.box(g, u0, v0, du, dv, z, '#3E3E42', '#2C2C2F', '#252528', withAlpha(tint, 0.55 + 0.45 * k), hw * (0.6 + 1.8 * k));
+      g.begin_(); fx.quad(g, u0, v0, u0 + du, v0 + dv, z); g.fill(withAlpha(tint, 0.08 + 0.42 * k));
+      const red = rel.stackRed[i];
+      if (red) { g.begin_(); fx.poly(g, [u0, v0 + dv, 0, u0 + du, v0 + dv, 0, u0 + du, v0 + dv, z * (red / n), u0, v0 + dv, z * (red / n)]); g.fill(withAlpha(C.red, 0.8)); }
+      const x = cam.x(u0 + du / 2, v0 + dv / 2), y = cam.y(u0 + du / 2, v0 + dv / 2, Math.max(z, full)) - 5;
+      this.num(g, String(n), x + ndx, y, red ? (side ? HUE_B : C.redText) : ncol);
     }
     c.pallets.forEach((p, i) => {
       const n = rel.palletN.get(p.bot);
@@ -828,12 +957,16 @@ export class Lenses {
       const u = P.SCAN_U + 16 + (P.TRACK_U1 - P.SCAN_U - 24) * k;
       fx.crate(g, u, P.TRACK_V[d.via], 8, false, false);
     }
-    // failures parked on the return conveyor
+    // failures parked on the return conveyor: the lit ones over the veil, as the floor draws them
+    // (fab-w3: no ring per crate; a cluster's run reads as one group)
+    const small = 8 * cam.s < 11, pr = Math.max(2.5, 4 * cam.s);
+    let anyP = false;
+    g.begin_();
     for (const x of this.parked) {
       if (!rel.fails.has(x.id)) continue;
-      fx.crate(g, x.u, P.RETURN_V, 8, true, false);
-      this.ring(g, x.u, P.RETURN_V, 7, 2, C.red);
+      if (small) { g.ctx.rect(cam.x(x.u, P.RETURN_V) - pr, cam.y(x.u, P.RETURN_V, 6) - pr, pr * 2, pr * 2); anyP = true; } else fx.crate(g, x.u, P.RETURN_V, 8, x.open, !x.open);
     }
+    if (anyP) g.fill(F_RED);
   }
 
   // ---- stories on the floor ------------------------------------------------------------------------
@@ -848,6 +981,7 @@ export class Lenses {
       case 'queue': return this.queueStory(g, st);
       case 'scanner': return this.scannerStory(g, st);
       case 'failure': return this.clusterStory(g, st, t);
+      case 'group': return this.groupStory(g, st, this.cmp && this.relB ? HUE_A : '', this.rel!);
       case 'track': return this.trackStory(g, l, st);
       case 'app': return this.appStory(g, l, st);
       case 'gate': return this.gateStory(g);
@@ -903,6 +1037,7 @@ export class Lenses {
     g.stroke(withAlpha(C.ink3, 0.7), 1.2);
     g.dash(false);
     this.ring(g, u, v, 18, z, LIT);
+    this.ageLadder(g, l, st, cam.x(u, v), cam.y(u, v, z));
     const bl = st.blockers ?? [];
     const total = bl.reduce((a, x) => a + x[1], 0);
     if (!total) return;
@@ -917,6 +1052,35 @@ export class Lenses {
     const top2 = [...bl].sort((a, b) => b[1] - a[1]).slice(0, 2);
     let tx = x;
     for (const [k, n, col] of top2) { tx = g.runs([[`${n} `, C.ink, true], [k, textCol(col)]], tx, y + 4, SMALL) + 12; }
+  }
+
+  /** fab-w3: the stack EXPLODED by age (FACTORY-SPEC §D "its PRs exploded by age; age ladder"):
+   *  every PR a tile on a log-age ladder rising beside the stack, in its blocker's colour, the
+   *  oldest at the top; the ladder's ends say the ages it spans. */
+  private ageLadder(g: Gfx, l: Lens, st: Story, sx: number, sy: number): void {
+    const prs = st.prs ?? [];
+    if (!prs.length) return;
+    const b = l.kind === 'stack' ? Number(l.id.split(',')[1]) : -1;
+    const maxAge = Math.max(...prs.map((p) => p[0]));
+    const lo = b > 0 ? AGES[b - 1] : b === 0 ? 60_000 : Math.max(60_000, Math.min(...prs.map((p) => p[0]))), hi = b >= 0 && b < 5 ? AGES[b] : Math.max(lo * 2, maxAge);
+    const H = 132, ax = sx - 40, y0 = sy - 26, y1 = y0 - H;
+    const at = (age: number) => y0 - clamp(Math.log(Math.max(age, lo) / lo) / Math.log(hi / lo), 0, 1) * H;
+    g.fillRect(ax - 4 - 11 * 7, y1 - 16, 11 * 7 + 44, H + 26, withAlpha(CARD, 0.88));
+    g.vline(g.crisp(ax), y1, y0, '#6A6A6E', 1);
+    g.begin_(); g.move(sx, sy); g.line(ax, y0); g.stroke('#4A4A4E', 1);
+    // tiles: by age, those in the same 5 px bin side by side (leftwards), at most 7 a row
+    const bins = new Map<number, number>();
+    const sorted = [...prs].sort((p, q) => q[0] - p[0]);
+    for (const [age, col] of sorted) {
+      const y = at(age), k = Math.round(y / 5);
+      const n = bins.get(k) ?? 0;
+      if (n >= 7) continue;
+      bins.set(k, n + 1);
+      g.fillRect(ax - 4 - (n + 1) * 11, k * 5 - 2, 9, 4, col);
+    }
+    const word = (ms: number) => (ms >= 30 * 24 * HOUR ? `${Math.round(ms / (24 * HOUR))} d` : ms >= 24 * HOUR ? `${Math.round(ms / (24 * HOUR))} d` : ms >= HOUR ? `${Math.round(ms / HOUR)} h` : `${Math.max(1, Math.round(ms / 60_000))} m`);
+    g.text(word(hi === Infinity ? maxAge : hi), ax + 5, y1 + 4, C.ink3, SMALL);
+    g.text(word(lo), ax + 5, y0 + 4, C.ink3, SMALL);
   }
 
   /** bay: its job's steps as a strip of chips over the bay (dashed: pending; amber: running; red:
@@ -965,6 +1129,31 @@ export class Lenses {
       const u0 = P.ENG_U1 + 12 + k * 13, vv = P.ENG_V0 + gi * P.ENG_STEP + 34;
       this.fx.box(g, u0, vv, 9, 9, hh, pct(val) >= 90 ? C.red : '#C9C9CC', '#8A8A8E', '#6E6E72', LIT, g.hair);
     });
+    // fab-w3: the machine's back wall becomes its 24 h chart (FACTORY-SPEC §D): busy share as an
+    // amber tide, cpu and mem as lines, a red tick under every stretch with every slot busy
+    const es = engineSeries(this.hosts, gr);
+    if (!es || es.busy.length < 2) return;
+    const fx = this.fx, vb = P.ENG_V0 + gi * P.ENG_STEP, z0 = P.ENG_H + 1, WH = 54, ua = P.ENG_U0 + 4, ub = P.ENG_U1 - 4;
+    const n = es.busy.length, du = (ub - ua) / (n - 1);
+    const X = (i: number) => cam.x(ua + du * i, vb), Y = (i: number, k: number) => cam.y(ua + du * i, vb, z0 + clamp(k, 0, 1) * WH);
+    g.begin_(); fx.poly(g, [ua, vb, z0, ub, vb, z0, ub, vb, z0 + WH, ua, vb, z0 + WH]); g.fill(withAlpha('#111113', 0.94));
+    g.begin_(); fx.poly(g, [ua, vb, z0, ub, vb, z0, ub, vb, z0 + WH, ua, vb, z0 + WH]); g.stroke('#3A3A3E', 1);
+    // the hours: a hairline every 6 h of a 24 h wall
+    if (es.span === '24 h') { g.begin_(); for (let hh = 6; hh < 24; hh += 6) { const i = (hh / 24) * (n - 1); g.move(X(i), Y(i, 0)); g.line(X(i), Y(i, 1)); } g.stroke('#232326', 1); }
+    g.begin_(); g.move(X(0), Y(0, 0));
+    for (let i = 0; i < n; i++) g.line(X(i), Y(i, (es.busy[i] ?? 0) / 100));
+    g.line(X(n - 1), Y(n - 1, 0)); g.ctx.closePath(); g.fill(withAlpha(C.packet, 0.5));
+    const ln = (s: (number | null)[], col: string) => {
+      g.begin_(); let first = true;
+      for (let i = 0; i < s.length; i++) { const v = s[i]; if (v === null) { first = true; continue; } if (first) { g.move(X(i), Y(i, v / 100)); first = false; } else g.line(X(i), Y(i, v / 100)); }
+      g.stroke(col, 1.2);
+    };
+    ln(es.cpu, C.ink); ln(es.mem, '#7E8FA6');
+    g.begin_(); for (let i = 0; i < n; i++) if (es.full[i]) g.rect(X(i) - 1, Y(i, 0) - 1, Math.max(2, X(Math.min(n - 1, i + 1)) - X(i)), 3); g.fill(C.red);
+    // its words: the span, and the line colours
+    const lx = X(0) + 4, ly = Y(0, 1) + 14;
+    g.fillRect(lx - 3, ly - 11, g.width(`${es.span}  busy  cpu  mem`, SMALL, true) + 6, 15, withAlpha('#111113', 0.9));
+    g.runs([[es.span, C.ink2, true], ['  busy', C.amberText], ['  cpu', C.ink], ['  mem', '#9AA8BC']], lx, ly, SMALL);
   }
 
   /** intake: each queued crate's wait as a bar over it. */
@@ -1013,15 +1202,23 @@ export class Lenses {
   private clusterStory(g: Gfx, st: Story, t: number): void {
     const f = this.f, P = f.plan, cam = f.cam, c = f.census, w = f.world, rel = this.rel;
     if (!rel) return;
-    const kx = cam.x(P.SCAN_U, 250), ky = cam.y(P.SCAN_U, 250, 56) - 34;
+    // fab-w3: the knot rides over the cluster's own run of crates on the return conveyor (its
+    // bracket lit), threads from there to every repo the cluster hit
+    const pg = st.k !== undefined && st.k >= 0 ? this.parkGroups[st.k] : undefined;
+    const ku = pg ? (pg.u0 + pg.u1) / 2 : P.SCAN_U - 30;
+    const kx = cam.x(ku, P.RETURN_V), ky = cam.y(ku, P.RETURN_V, 8) - 46;
+    if (pg) {
+      this.brackets(g, st.k ?? -1);
+      g.begin_(); g.move(kx, ky); g.line(cam.x(ku, P.RETURN_V), cam.y(ku, P.RETURN_V, 8) - 6); g.stroke(withAlpha(C.red, 0.5), 1);
+    }
     const ends: [number, number, string][] = [];
     const seen = new Set<string>();
-    for (const x of this.parked) if (rel.fails.has(x.id)) { ends.push([cam.x(x.u, P.RETURN_V), cam.y(x.u, P.RETURN_V, 8), repoName(x.repo)]); seen.add(x.repo); }
-    // older members: at their repo's red car on its rail, else at their org's dock
-    for (const it of st.items ?? []) {
-      const repo = it.state ?? '';
-      if (seen.has(repo)) continue;
+    // members: at their repo's red car on its rail, else at their org's dock
+    const repos = [...new Set([...(st.cf?.repos ?? []), ...(st.items ?? []).map((i) => i.state ?? '')])];
+    for (const repo of repos) {
+      if (!repo || seen.has(repo)) continue;
       seen.add(repo);
+      const it = { label: repoName(repo) };
       const ri = c.rails.findIndex((r) => r.org === w.orgOf(repo));
       const rail = c.rails[ri];
       const k = rail ? rail.cars.findIndex((x) => x.repo === repo && x.culprit) : -1;
@@ -1053,10 +1250,69 @@ export class Lenses {
     const pulse = beat(t);
     g.begin_(); g.circle(kx, ky, 7 + pulse * 3); g.fill(withAlpha(C.red, 0.18));
     g.begin_(); g.circle(kx, ky, 4.5); g.fill(C.red);
-    const s = `${st.note ?? ''} ×${(st.items ?? []).length}`;
-    const wv = g.width(s, SMALL, true);
+    // its signature, by its class glyph, and the 24 h count
+    const s = `${short2(st.note ?? '')} ×${st.cf?.count ?? (st.items ?? []).length}`;
+    const wv = g.width(s, SMALL, true) + 16;
     const at = this.fx.placeAt(Math.round(kx - wv / 2), Math.round(ky - 12), wv, 15, 4, true);
-    if (at) { g.fillRect(at[0] - 4, at[1] - 12, wv + 8, 16, withAlpha(CARD, 0.92)); g.text(s, at[0], at[1], C.redText, SMALL, true); }
+    if (at) {
+      g.fillRect(at[0] - 4, at[1] - 12, wv + 8, 16, withAlpha(CARD, 0.92));
+      classGlyph(g, st.cf?.cls ?? '', at[0] + 5, at[1] - 4, C.redText);
+      g.text(s, at[0] + 16, at[1], C.redText, SMALL, true);
+    }
+  }
+
+  /** fab-w3, group: ONE coloured ribbon in the group's hue through every stage (FACTORY-SPEC §D,
+   *  a one-group Sankey), its width the group's share of the fleet's flow there: commits from each
+   *  of its orgs' docks, open PRs through the yard, merges over the gate onto the rails, runs
+   *  through the intake and the engine, deploys down the track into its districts; at the scanner
+   *  a red side-ribbon (its failures) peels off home along the return conveyor. */
+  private groupStory(g: Gfx, st: Story, hue: string, rel: Rel): void {
+    const gf0 = st.gf;
+    if (!gf0 || !rel) return;
+    const gf = hue ? { ...gf0, hue } : gf0;
+    const f = this.f, P = f.plan, cam = f.cam, c = f.census, fx = this.fx, z = cam.zoom;
+    const F_ = gf.fleet, share = (a: number, b: number) => (b > 0 ? a / b : 0);
+    const segs: [Pt[], number, string][] = [];
+    const MID = 291;
+    // a stage the group sent nothing through keeps a hairline thread, so the way stays legible
+    const thin = 'thin';
+    for (const [org, o] of gf.byOrg) {
+      if (!o.commits && !o.prs && !o.merged) continue;
+      const dv = fx.dockV(org), ri = c.rails.findIndex((r) => r.org === org);
+      segs.push([[[P.DOCK_U1, dv], [P.COLLECT_U, dv], [P.COLLECT_U, P.AISLE_V]], o.commits ? ribbonW(share(o.commits, F_.commits), z) : 1.2, o.commits ? gf.hue : thin]);
+      segs.push([[[P.COLLECT_U, P.AISLE_V], [P.YARD_U1, P.AISLE_V]], o.prs ? ribbonW(share(o.prs, F_.prs), z) : 1.2, o.prs ? gf.hue : thin]);
+      if (ri >= 0) segs.push([[[P.YARD_U1, P.AISLE_V], [P.GATE_U + 4, P.AISLE_V], [P.RAIL_U0, P.RAIL_V[ri]], [P.RAIL_U1, P.RAIL_V[ri]], [P.INTAKE_U0, MID]], o.merged ? ribbonW(share(o.merged, F_.merged), z) : 1.2, o.merged ? gf.hue : thin]);
+    }
+    segs.push([[[P.INTAKE_U0, MID], [P.DIST_U, MID], [P.SCAN_U, MID]], gf.runs ? ribbonW(share(gf.runs, F_.runs), z) : 1.2, gf.runs ? gf.hue : thin]);
+    if (gf.deploys) {
+      const wd = ribbonW(share(gf.deploys, F_.deploys), z);
+      segs.push([[[P.SCAN_U, MID], [P.SCAN_U + 12, P.TRACK_V[1]], [P.TRACK_U1, P.TRACK_V[1]]], wd, gf.hue]);
+      for (const di of rel.districts) {
+        const d = fx.districtBox[di];
+        if (d) segs.push([[[P.TRACK_U1, P.TRACK_V[1]], [P.CITY_U0 - 4, (d.v0 + d.v1) / 2], [d.u0 + 6, (d.v0 + d.v1) / 2]], Math.max(2, wd * 0.7), gf.hue]);
+      }
+    }
+    if (gf.failed) {
+      // home along the return conveyor, as far as the group's own parked failures
+      let uEnd = P.SCAN_U - 160;
+      for (const x of this.parked) if (rel.repos.has(x.repo) && x.u - 8 < uEnd) uEnd = x.u - 8;
+      segs.push([[[P.SCAN_U, MID], [P.SCAN_U, P.RETURN_V], [uEnd, P.RETURN_V]], ribbonW(share(gf.failed, F_.runs), z), C.red]);
+    }
+    const ctx = g.ctx;
+    ctx.save();
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    for (const [pts, wv, col] of segs) {
+      g.begin_();
+      pts.forEach(([u, v], i) => (i ? g.line(cam.x(u, v), cam.y(u, v, 1)) : g.move(cam.x(u, v), cam.y(u, v, 1))));
+      g.stroke(col === 'thin' ? withAlpha(gf.hue, 0.32) : withAlpha(col, col === C.red ? 0.7 : 0.62), wv);
+    }
+    ctx.restore();
+    // the peel's words: its failures, where it leaves the flow
+    if (gf.failed) {
+      const s = `${gf.failed} failed`, wv = g.width(s, SMALL, true);
+      const at = this.place(cam.x(P.SCAN_U, 470), cam.y(P.SCAN_U, 470, 1), wv, 0);
+      if (at) { g.fillRect(at[0] - 4, at[1] - 12, wv + 8, 16, withAlpha(CARD, 0.9)); g.text(s, at[0], at[1], C.redText, SMALL, true); }
+    }
   }
 
   /** deploy track: thin lines from the track's end to every app it deployed in 24 h. */
@@ -1086,7 +1342,7 @@ export class Lenses {
     const b = fx.blockAt.get(l.id);
     if (!a || !b) return;
     const cu = b.u + b.d / 2, cv = b.v + b.d / 2;
-    this.ring(g, cu, cv, 9, 0, LIT);
+    this.healthRing(g, l.id, cam.x(cu, cv), cam.y(cu, cv, 0), 9 * cam.s + 9);
     const behind = Math.min(12, a.behind ?? 0);
     // ghost storeys: dashed, hollow, faint; each a commit main has and the app does not
     g.dash(true, 2, 2);
@@ -1112,6 +1368,28 @@ export class Lenses {
     g.begin_(); g.move(x0, y0); g.ctx.quadraticCurveTo((x0 + x1) / 2, Math.min(y0, y1) - 70, x1, y1);
     if (behind) g.stroke(withAlpha(C.packet, 0.8), 1.4);
     else { g.dash(true, 3, 4); g.stroke(withAlpha(LIT, 0.35), 1); g.dash(false); }
+  }
+
+  /** fab-w3: an app's 7-day HEALTH RING round its building (FACTORY-SPEC §D): from the back,
+   *  clockwise, a week of health (the server's GET /app/{id}; else what the stream reported since
+   *  the app opened) with a pin out of the ring for each deploy (green ok, red failed, amber in
+   *  flight); now is at the back, ticked. */
+  private healthRing(g: Gfx, id: string, x: number, y: number, rx: number): void {
+    const now = this.f.tl.playhead, ry = rx * 0.6, span = 7 * 24 * HOUR;
+    const h7 = appHist7(id), ah = appHist(id), a = this.f.world.apps.get(id);
+    const hist = h7?.health ?? (ah?.transitions ?? []).map((t) => ({ from: t.from, to: t.to, at: t.at }));
+    const segs = healthSegs(hist, a?.health ?? 'unknown', now, h7?.since ?? ah?.since ?? 0);
+    const ang = (k: number) => -Math.PI / 2 + k * TAU;
+    g.begin_(); g.ctx.ellipse(x, y, rx, ry, 0, 0, TAU); g.stroke('#2A2A2D', 4);
+    for (const [k0, k1, col] of segs) { g.begin_(); g.ctx.ellipse(x, y, rx, ry, 0, ang(k0), ang(Math.max(k0 + 0.002, k1))); g.stroke(col, 3); }
+    const deps = h7?.deploys?.length ? h7.deploys.map((d) => ({ at: d.at || d.started, state: d.state })) : (ah?.deploys ?? []).map((d) => ({ at: d.at, state: d.state as string }));
+    for (const d of deps) {
+      const k = 1 - (now - d.at) / span;
+      if (k < 0 || k > 1) continue;
+      const t = ang(k), cx = Math.cos(t), cy = Math.sin(t);
+      g.begin_(); g.move(x + cx * (rx + 2), y + cy * (ry + 1.5)); g.line(x + cx * (rx + 8), y + cy * (ry + 5)); g.stroke(d.state === 'success' ? OK : d.state === 'failure' ? C.red : C.packet, 1.6);
+    }
+    g.vline(x, y - ry - 6, y - ry + 3, LIT, 1.4);
   }
 
   /** since you looked: a ring on each counted thing where it is (its newest car, its block). */
@@ -1143,8 +1421,9 @@ export class Lenses {
     this.crumbs(g);
     const top = this.topLens;
     if (top && top.kind !== 'pipeline' && this.rel && this.story) {
-      if (this.cmp && this.relB) this.compareCard(g, top, this.cmp, this.rel.m, this.relB.m, fr.height);
-      else this.card(g, top, this.story, this.rel, t, fr.height);
+      this.card(g, top, this.story, this.rel, t, fr.height);
+      // fab-w3: shift-click's second subject: the compare dock, bottom-right, 360 × 140 (compare.ts)
+      if (this.cmp && this.relB) drawCompare(this, g, { lens: top, m: this.rel.m, cf: this.story.cf }, { lens: this.cmp, m: this.relB.m, cf: this.storyB?.cf }, right - 16, fr.height - 58 - 12);
     }
     // the key: a small "?" at the floor's top right
     const kx = right - 16 - 24, ky = 46;
@@ -1167,6 +1446,7 @@ export class Lenses {
       g.vline(g.crisp(f.px), tk.y - 4, tk.y + tk.h + 3, C.ink, 1);
     }
     this.logAnchors();
+    this.hoverCard.draw(g, fr, this.down); // fab-w3: over everything, the hovered thing's micro-chart
   }
 
   /** For drivers (tools/factory-shots.mjs lens): one target of each kind, logged once per layout
@@ -1252,7 +1532,10 @@ export class Lenses {
     // bottom-left, over the floor's emptiest corner (the lens's own things stay in view)
     const x = 16, W = 324, P = 12;
     const body = this.cardBody(g, l, st, rel, x + P, 0, W - P * 2, false);
-    const H = 46 + body + 10;
+    // fab-w3 (overseer note 2): what the lit cores in the PR yard are, when this lens lights some
+    let yn = 0, yr = 0;
+    if (l.kind !== 'stack' && l.kind !== 'pallet') for (let i = 0; i < 24; i++) { yn += rel.stackN[i]; yr += rel.stackRed[i]; }
+    const H = 46 + body + (yn ? 22 : 0) + 10;
     const y = Math.max(102, fh - 58 - 12 - H);
     g.fillRect(x, y, W, H, withAlpha(CARD, 0.95));
     g.begin_(); g.rect(x + 0.5, y + 0.5, W - 1, H - 1); g.stroke(CARD_EDGE, 1);
@@ -1261,7 +1544,19 @@ export class Lenses {
     const name = g.fit(l.name, TITLE, W - P * 2, true);
     g.text(name, x + P, y + 40, l.kind === 'failure' ? C.redText : C.ink, TITLE, true);
     this.cardBody(g, l, st, rel, x + P, y + 46, W - P * 2, true);
+    if (yn) this.yardKey(g, x + P, y + 46 + body + 4, W - P * 2, yn, yr);
     void c; void w; void now; void m;
+  }
+
+  /** The PR yard's key under a story card: a lit core (its red slice: CI failing) = these repos'
+   *  open PRs, by phase × age. */
+  private yardKey(g: Gfx, x: number, y: number, W: number, n: number, red: number): void {
+    g.hline(x, x + W, y + 0.5, '#232325', 1);
+    const cx = x + 8, cy = y + 13;
+    g.begin_(); g.move(cx - 7, cy); g.line(cx, cy - 4); g.line(cx + 7, cy); g.line(cx, cy + 4); g.ctx.closePath(); g.fill(withAlpha(LIT, 0.3));
+    g.begin_(); g.move(cx - 7, cy); g.line(cx, cy - 4); g.line(cx + 7, cy); g.line(cx, cy + 4); g.ctx.closePath(); g.stroke(LIT, 1.2);
+    if (red) { g.begin_(); g.move(cx - 7, cy); g.line(cx, cy + 4); g.line(cx, cy + 7); g.line(cx - 7, cy + 3); g.ctx.closePath(); g.fill(C.red); }
+    g.runs([[`${n}`, C.ink, true], [` open PR${n === 1 ? '' : 's'} of these repos`, C.ink3], [red ? ` · ${red} CI red` : '', C.redText]], x + 22, y + 17, SMALL, W - 22);
   }
 
   /** Draws (or, `paint` false, measures) the card's body; returns its height. */
@@ -1296,6 +1591,20 @@ export class Lenses {
         }
         h += 48;
         line([[`${st.n ?? 0}`, C.ink, true], [' merged in 24 h · open → merged ', C.ink3], [`p50 ${ago(st.p50 ?? 0)}`, C.ink, true], [` · p90 ${ago(st.p90 ?? 0)}`, C.ink3]]);
+        break;
+      }
+      case 'group': {
+        // fab-w3: what the group is, its flow by stage, and its v0.5 Trend as small multiples
+        const gr = insights().group(l.id), hue = st.gf?.hue ?? C.ink3;
+        if (paint) {
+          g.fillRect(x, y + h + 6, 10, 10, hue);
+          g.runs([[gr?.kind === 'team' ? 'team' : 'org', C.ink2, true], [` · ${gr?.repos ?? rel.repos.size} repos · ${gr?.apps ?? rel.apps.size} apps`, C.ink3], [gr?.red ? ` · ${gr.red} red` : '', C.redText]], x + 16, y + h + 15, SMALL, W - 16);
+        }
+        h += 20;
+        h += this.flowCells(g, rel, x, y + h + 6, W, paint) + 10;
+        if (paint) { g.hline(x, x + W, y + h + 0.5, '#232325', 1); g.text('last 24 h, by the hour', x, y + h + 15, C.ink3, SMALL); g.text('now', x + W, y + h + 15, C.ink3, SMALL, false, 'right'); }
+        h += 20;
+        h += trendRows(g, st.trend ?? null, x, y + h, W, paint, hue);
         break;
       }
       case 'org': case 'district': case 'repo': {
@@ -1339,12 +1648,20 @@ export class Lenses {
         break;
       }
       case 'vm': {
+        // fab-w3: the server's 24 h (GET /engine/{id}/history) when it answered, else since open
         const gr = c.groups[st.gi ?? 0];
-        const id = gr?.id ?? '';
-        h += this.sparkRow(g, 'busy', this.hosts.series(id, 'busy'), x, y + h + 4, W, paint, C.packet, 100, '%');
-        h += this.sparkRow(g, 'cpu', this.hosts.series(id, 'cpu'), x, y + h + 2, W, paint, C.ink, 100, '%');
-        h += this.sparkRow(g, 'mem', this.hosts.series(id, 'mem'), x, y + h + 2, W, paint, C.ink2, 100, '%');
-        h += this.sparkRow(g, 'load', this.hosts.series(id, 'load'), x, y + h + 2, W, paint, C.ink3, 0, '') + 4;
+        const es = engineSeries(this.hosts, gr);
+        const nan = (a: (number | null)[] | undefined) => (a ?? []).map((v) => (v === null ? NaN : v));
+        if (paint) g.text(es ? es.span : 'no samples yet', x + W, y + h + 12, C.ink3, SMALL, false, 'right');
+        h += 16;
+        h += this.sparkRow(g, 'busy', nan(es?.busy), x, y + h + 4, W, paint, C.packet, 100, '%');
+        h += this.sparkRow(g, 'cpu', nan(es?.cpu), x, y + h + 2, W, paint, C.ink, 100, '%');
+        h += this.sparkRow(g, 'mem', nan(es?.mem), x, y + h + 2, W, paint, C.ink2, 100, '%');
+        h += this.sparkRow(g, 'load', nan(es?.load), x, y + h + 2, W, paint, C.ink3, 0, '') + 4;
+        const full = es ? es.full.filter(Boolean).length : 0;
+        if (es && full) line([[`${Math.round((full / es.full.length) * 100)}%`, C.redText, true], [` of ${es.span} with every slot busy`, C.ink3]]);
+        const top3 = (es?.repos ?? []).slice().sort((a, b) => b.runs - a.runs).slice(0, 3);
+        if (top3.length) line([['served ', C.ink3], [top3.map((r) => `${repoName(r.repo)} ${r.runs}`).join(' · '), C.ink2]]);
         const q = gr?.hosted ? c.gha.length : c.rr.length;
         line([[`${gr?.running.length ?? 0}/${gr?.slots ?? 0}`, C.amberText, true], [' busy · ', C.ink3], [`${q} queued`, q ? C.ink : C.ink3, true], [c.oldestWait > 0 && q ? ` · oldest ${ago(c.oldestWait)}` : '', C.ink3]]);
         break;
@@ -1384,18 +1701,7 @@ export class Lenses {
         break;
       }
       case 'failure': {
-        const items = st.items ?? [];
-        const repos = new Set(items.map((i) => i.state)).size;
-        line([[`${items.length}`, C.redText, true], [items.length === 1 ? ' failure · ' : ' failures · ', C.ink3], [`${repos}`, C.ink, true], [repos === 1 ? ' repo' : ' repos', C.ink3], [repos >= 3 ? ' · shared cause?' : '', C.redText]]);
-        if (paint) {
-          // when they failed: a tick each across the last 24 h
-          g.hline(x, x + W, y + h + 18, '#2A2A2C');
-          for (const it of items) { const k = 1 - clamp((now - it.v) / (24 * HOUR), 0, 1); g.fillRect(x + k * (W - 2), y + h + 6, 2, 12, it.id === st.pid ? C.ink : C.red); }
-          g.text('24 h', x, y + h + 32, C.ink3, SMALL); g.text('now', x + W, y + h + 32, C.ink3, SMALL, false, 'right');
-        }
-        h += 36;
-        const names = [...new Set(items.map((i) => i.label))].slice(0, 4).join(' · ');
-        if (names) line([[names, C.ink2]]);
+        h += clusterBody(g, st.cf, w, st.pid ?? '', x, y + h, W, paint, now);
         break;
       }
       case 'track': {
@@ -1437,6 +1743,20 @@ export class Lenses {
         }
         if (paint) this.ticks(g, st.items ?? [], x, y + h + 2, W, now);
         h += 32;
+        // fab-w3: 7 d of health (the server's GET /app/{id}) and its up share; else 24 h seen since open
+        const h7 = appHist7(l.id);
+        if (h7) {
+          if (paint) {
+            const segs = healthSegs(h7.health ?? [], a?.health ?? 'unknown', now, h7.since);
+            g.text('7 d', x, y + h + 13, C.ink3, SMALL);
+            const hx = x + 30, hw = W - 30 - 64;
+            for (const [k0, k1, col] of segs) g.fillRect(hx + k0 * hw, y + h + 5, Math.max(1, (k1 - k0) * hw), 8, col);
+            const m = h7.health_ms, up = m?.up ?? 0, tot = up + (m?.degraded ?? 0) + (m?.down ?? 0) + (m?.unknown ?? 0);
+            g.text(tot ? `${(Math.floor((up / tot) * 1000) / 10).toFixed(1)}% up` : '–', x + W, y + h + 13, tot && up / tot < 0.99 ? C.amberText : C.greenInk, SMALL, false, 'right');
+          }
+          h += 18;
+          break;
+        }
         const hlog = st.health ?? [];
         if (paint && hlog.length) {
           g.text('health', x, y + h + 13, C.ink3, SMALL); // seen since this window opened (H7: the server's history later)
@@ -1529,42 +1849,6 @@ export class Lenses {
     g.text('now', x + W, y + 28, C.ink3, SMALL, false, 'right');
   }
 
-  /** Two lenses side by side: the same rows, each side in its hue. */
-  private compareCard(g: Gfx, a: Lens, b: Lens, ma: Metrics, mb: Metrics, fh: number): void {
-    const W = 372, P = 12, x = 16;
-    const rate = (m: Metrics) => (m.runs ? m.failed / m.runs : 0);
-    const rows: [string, number, number, (v: number) => string][] = [
-      ['merged 24 h', ma.merged24, mb.merged24, (v) => String(v)],
-      ['runs 24 h', ma.runs, mb.runs, (v) => String(v)],
-      ['fail rate', rate(ma), rate(mb), (v) => `${Math.round(v * 100)}%`],
-      ['queue wait', p50(ma.waits), p50(mb.waits), (v) => ago(v)],
-      ['red mains', ma.red, mb.red, (v) => String(v)],
-      ['PRs open', ma.prs, mb.prs, (v) => String(v)],
-      ['running', ma.building + ma.queued, mb.building + mb.queued, (v) => String(v)],
-      ['apps up', ma.up, mb.up, (v) => String(v)],
-    ];
-    const H = 48 + rows.length * 19 + 8;
-    const y = Math.max(102, fh - 58 - 12 - H);
-    g.fillRect(x, y, W, H, withAlpha(CARD, 0.95));
-    g.begin_(); g.rect(x + 0.5, y + 0.5, W - 1, H - 1); g.stroke(CARD_EDGE, 1);
-    const colW = (W - P * 2 - 92) / 2;
-    const ax = x + P + 92, bx = ax + colW;
-    glyph(g, a.kind, ax + 5, y + 18, HUE_A); g.text(g.fit(a.name, SMALL, colW - 18, true), ax + 14, y + 22, HUE_A, SMALL, true);
-    glyph(g, b.kind, bx + 5, y + 18, HUE_B); g.text(g.fit(b.name, SMALL, colW - 18, true), bx + 14, y + 22, HUE_B, SMALL, true);
-    g.text('compare', x + P, y + 22, C.ink3, SMALL);
-    g.hline(x + P, x + W - P, y + 34, '#232325');
-    rows.forEach(([k, va, vb, fmt], i) => {
-      const yy = y + 48 + i * 19;
-      g.text(k, x + P, yy + 9, C.ink3, SMALL);
-      const mx = Math.max(va, vb) || 1;
-      const bwMax = colW - 56;
-      g.fillRect(ax, yy, Math.max(1, (va / mx) * bwMax), 9, withAlpha(HUE_A, 0.85));
-      g.text(fmt(va), ax + bwMax + 4, yy + 9, C.ink2, SMALL);
-      g.fillRect(bx, yy, Math.max(1, (vb / mx) * bwMax), 9, withAlpha(HUE_B, 0.85));
-      g.text(fmt(vb), bx + bwMax + 4, yy + 9, C.ink2, SMALL);
-    });
-  }
-
   /** The key: the floor's visual grammar, drawn, with few words. */
   private legendPanel(g: Gfx, right: number, y: number, t: number): void {
     const W = 360, x = right - W;
@@ -1634,11 +1918,17 @@ type Story = {
   hours?: number[]; p50?: number; p90?: number;
   app?: App | null;
   health?: [number, string][];
+  /** fab-w3: the cluster lens's facts and its run on the conveyor (index into parkGroups). */
+  cf?: ClusterFacts | null; k?: number;
+  /** fab-w3: the group lens's flow against the fleet's and its Trend. */
+  gf?: GroupFlow; trend?: Trend | null;
+  /** fab-w3: a PR stack's PRs, [age, blocker colour], for its age ladder. */
+  prs?: [number, string][];
 };
 
 function newRel(): Rel {
   return {
-    repos: new Set(), orgs: new Set(), apps: new Set(), pipes: new Set(), cars: new Set(), stackN: new Int16Array(24), palletN: new Map(),
+    repos: new Set(), orgs: new Set(), apps: new Set(), pipes: new Set(), cars: new Set(), stackN: new Int16Array(24), stackRed: new Int16Array(24), palletN: new Map(),
     groups: new Set(), tracks: new Set(), districts: new Set(), fails: new Set(), scanner: false, intake: false,
     m: { repos: 0, prs: 0, merged24: 0, runs: 0, failed: 0, waits: [], red: 0, apps: 0, up: 0, down: 0, deploys24: 0, building: 0, queued: 0, pushes: 0 },
   };
@@ -1651,10 +1941,10 @@ const AGE_WORDS_L = ['under an hour', 'under a day', 'under 3 days', 'under a we
 function viaIndex(via: string): number { return via === 'gha' ? 1 : via === 'roadrunner' ? 0 : 2; }
 
 /** What blocks a PR, worst first (the card's bar and the stack's story). */
-const BLOCKERS: [string, string][] = [
+export const BLOCKERS: [string, string][] = [
   ['red check', C.red], ['conflict', '#B04848'], ['changes', C.redText], ['checks', C.packet], ['review', '#8A8A8E'], ['draft', '#4E4E52'], ['ready', '#5A6E5F'],
 ];
-function blocker(p: Pr): string {
+export function blocker(p: Pr): string {
   const b = (p.blocked_by ?? '').toLowerCase();
   if (p.ci === 'failure' || p.ci === 'error' || b.startsWith('failing')) return 'red check';
   if (p.phase === 'conflict' || b.includes('conflict')) return 'conflict';
@@ -1675,7 +1965,7 @@ export function botName(a: string): string {
   if (s.includes('woodpecker')) return 'woodpecker';
   return s.replace(/\[bot\]$/, '').replace(/^northwind-/, '');
 }
-function ageBucket(age: number): number { let b = 0; while (b < AGES.length - 1 && Math.max(0, age) >= AGES[b]) b++; return b; }
+export function ageBucket(age: number): number { let b = 0; while (b < AGES.length - 1 && Math.max(0, age) >= AGES[b]) b++; return b; }
 /** A failure's workflow/step (a cluster's second key: the same workflow and step across repos). */
 function wfStep(p: Pipeline): string {
   for (const wf of p.workflows ?? []) for (const s of wf.steps ?? []) if (s.state === 'failure' || s.state === 'error') return `${wf.name}/${s.name}`;
@@ -1692,6 +1982,12 @@ function failedRunOf(w: World, repo: string, sha: string): Pipeline | null {
   return best;
 }
 export function repoName(repo: string): string { return repo.split('/')[1] ?? repo; }
+/** A step's words for a 12 px label: whole, or cut at a separator before 22 characters. */
+export function short2(step: string): string {
+  if (step.length <= 22) return step;
+  const cut = Math.max(step.lastIndexOf(' / ', 22), step.lastIndexOf('/', 22), step.lastIndexOf(' ', 22));
+  return cut > 6 ? `${step.slice(0, cut).trim()}…` : `${step.slice(0, 21)}…`;
+}
 export function pct(v: number): number { return v <= 1 ? v * 100 : v; }
 function p50(a: number[]): number { if (!a.length) return 0; const s = a.slice().sort((x, y) => x - y); return s[s.length >> 1]; }
 export function healthCol(h: string | undefined): string { return h === 'down' ? C.red : h === 'degraded' ? C.packet : h === 'up' ? '#6FA27C' : C.ink4; }
@@ -1722,6 +2018,7 @@ export function cube(g: Gfx, x: number, y: number, s: number, top: string, side:
 /** A lens kind's glyph, ~10 px, centred on (x, y): the floor's shapes in miniature. */
 export function glyph(g: Gfx, k: LensKind, x: number, y: number, col: string): void {
   switch (k) {
+    case 'group': g.begin_(); g.move(x - 6, y + 4); g.line(x - 1, y - 4); g.line(x + 6, y - 4); g.line(x + 1, y + 4); g.ctx.closePath(); g.fill(col); return;
     case 'org': g.begin_(); g.rect(x - 5, y - 4, 10, 8); g.stroke(col, 1); g.fillRect(x + 2, y - 2, 3, 4, col); return;
     case 'repo': g.hline(x - 6, x + 6, y - 2, col, 1); g.hline(x - 6, x + 6, y + 2, col, 1); g.fillRect(x - 2, y - 4, 4, 4, col); return;
     case 'stack': case 'pallet': for (let i = 0; i < 3; i++) g.fillRect(x - 5, y + 2 - i * 3.5, 10, 2.5, col); return;
