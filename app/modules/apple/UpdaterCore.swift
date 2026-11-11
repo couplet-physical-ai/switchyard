@@ -87,6 +87,9 @@ enum SYRefusal: Error, Equatable, LocalizedError {
     case otherVolume
     case leftover(String)
     case move(String)
+    /// The pin: this copy is signed with a certificate and the download is not signed with the
+    /// same one. `got` is the download's leaf SHA-256 (or "ad hoc"), `want` this copy's.
+    case otherSigner(got: String, want: String)
 
     var errorDescription: String? {
         switch self {
@@ -110,6 +113,7 @@ enum SYRefusal: Error, Equatable, LocalizedError {
         case .otherVolume: return "no staging folder on the app's volume"
         case .leftover(let path): return "\(path) is in the way"
         case .move(let why): return "could not swap the app: \(why)"
+        case .otherSigner: return "update signed by a different certificate"
         }
     }
 }
@@ -256,7 +260,8 @@ enum SYFeed {
 
 // MARK: - which hosts may answer
 
-/// The trust anchor (releases are signed ad hoc, so there is no Team ID to pin): an https feed,
+/// The trust anchor (releases are signed ad hoc, so there is no Team ID to pin; a copy signed
+/// with a certificate also pins its leaf, SYVerifier): an https feed,
 /// a zip at https://github.com/<repo>/releases/…, and redirects only to GitHub's release CDN
 /// (objects.githubusercontent.com, release-assets.githubusercontent.com), checked on every hop.
 /// The one exception is the env-only test feed (SWITCHYARD_UPDATE_FEED) on a non-GitHub origin:
@@ -328,14 +333,20 @@ struct SYTools {
 /// A bundle is not trusted because it arrived: its zip's SHA-256 is the feed's, it is this app,
 /// it is the version and build the feed named, its build is newer than this one's, and its
 /// signature holds under SecStaticCodeCheckValidity's strict checks (and `codesign --verify
-/// --deep --strict`). No Team ID: the releases are signed ad hoc.
+/// --deep --strict`). No Team ID (the certificate is self-signed): instead the pin, last. A copy
+/// signed with a certificate takes only a build whose leaf certificate is the same one (its DER's
+/// SHA-256); an ad-hoc copy takes a build signed either way (the one-time ad hoc → certificate
+/// step).
 struct SYVerifier {
     let bundleID: String
     /// The running bundle's CFBundleVersion.
     let currentBuild: Int
     var tools: SYTools = .live
+    /// The running app's signer: a seam, as `tools` is, so tests inject one. Updater.swift reads
+    /// it once at launch.
+    var runningSigner: () throws -> SYSigner = { try SYSign.running() }
 
-    struct Verified { let app: URL; let cdhash: String }
+    struct Verified { let app: URL; let cdhash: String; let signer: SYSigner; let running: SYSigner }
 
     /// Checks `zip` and unpacks it into `dir` (on the app's volume).
     func verify(zip: URL, sha256 want: String, version: String, build: Int, into dir: URL) throws -> Verified {
@@ -358,13 +369,18 @@ struct SYVerifier {
         let rawBuild = info["CFBundleVersion"] as? String ?? ""
         guard let b = Int(rawBuild), b == build else { throw SYRefusal.buildMismatch(got: rawBuild, want: build) }
         guard b > currentBuild else { throw SYRefusal.notNewer(build: b, current: currentBuild) }
-        let cdhash = try SYSign.check(app)
+        let (cdhash, signer) = try SYSign.check(app)
         do { _ = try tools.run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path]) }
         catch { throw SYRefusal.unsigned((error as? LocalizedError)?.errorDescription ?? "codesign") }
         // URLSession downloads carry no quarantine flag; a zip copied by hand may. Harmless.
         _ = try? tools.run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", app.path])
         guard !SYDigest.quarantined(app) else { throw SYRefusal.quarantine }
-        return Verified(app: app, cdhash: cdhash)
+        // The pin, after every other check.
+        let running = try runningSigner()
+        if case .cert(let mine) = running, signer != running {
+            throw SYRefusal.otherSigner(got: signer.leaf ?? "\(signer)", want: mine)
+        }
+        return Verified(app: app, cdhash: cdhash, signer: signer, running: running)
     }
 }
 
@@ -378,7 +394,11 @@ enum SYDigest {
             guard let chunk, !chunk.isEmpty else { break }
             hasher.update(data: chunk)
         }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        return hex(hasher.finalize())
+    }
+
+    static func hex<D: Sequence>(_ bytes: D) -> String where D.Element == UInt8 {
+        bytes.map { String(format: "%02x", $0) }.joined()
     }
 
     static func quarantined(_ url: URL) -> Bool {
@@ -386,10 +406,21 @@ enum SYDigest {
     }
 }
 
+/// Who signed some code, as the pin sees it.
+enum SYSigner: Equatable, CustomStringConvertible {
+    /// No certificate: `kSecCodeInfoFlags` has `kSecCodeSignatureAdhoc`.
+    case adhoc
+    /// The SHA-256 of the leaf certificate's DER (`kSecCodeInfoCertificates[0]`), lower-case hex.
+    case cert(String)
+
+    var leaf: String? { if case .cert(let h) = self { return h }; return nil }
+    var description: String { leaf.map { "leaf sha256 \($0)" } ?? "ad hoc" }
+}
+
 enum SYSign {
     /// SecStaticCodeCheckValidity with strict validation, every architecture and nested code;
-    /// returns the cdhash (kSecCodeInfoUnique) for the log.
-    static func check(_ bundle: URL) throws -> String {
+    /// returns the cdhash (kSecCodeInfoUnique) for the log and the signer for the pin.
+    static func check(_ bundle: URL) throws -> (cdhash: String, signer: SYSigner) {
         var code: SecStaticCode?
         guard SecStaticCodeCreateWithPath(bundle as CFURL, [], &code) == errSecSuccess, let code else {
             throw SYRefusal.unsigned("no code at the bundle")
@@ -399,9 +430,36 @@ enum SYSign {
         guard status == errSecSuccess else { throw SYRefusal.unsigned("SecStaticCodeCheckValidity \(status)") }
         var info: CFDictionary?
         guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
-              let unique = (info as? [String: Any])?[kSecCodeInfoUnique as String] as? Data
+              let dict = info as? [String: Any], let unique = dict[kSecCodeInfoUnique as String] as? Data
         else { throw SYRefusal.unsigned("no cdhash") }
-        return unique.map { String(format: "%02x", $0) }.joined()
+        return (SYDigest.hex(unique), try signer(dict))
+    }
+
+    /// This process's signer (SecCodeCopySelf). Throws when it cannot be read: a copy that cannot
+    /// say who signed it takes no update.
+    static func running() throws -> SYSigner {
+        var me: SecCode?
+        guard SecCodeCopySelf([], &me) == errSecSuccess, let me else { throw SYRefusal.unsigned("cannot read this app's own signature") }
+        var code: SecStaticCode?
+        guard SecCodeCopyStaticCode(me, [], &code) == errSecSuccess, let code else { throw SYRefusal.unsigned("cannot read this app's own signature") }
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
+              let dict = info as? [String: Any]
+        else { throw SYRefusal.unsigned("cannot read this app's own signature") }
+        return try signer(dict)
+    }
+
+    /// A certificate chain's leaf → `.cert`; none, with the ad-hoc flag → `.adhoc`. Anything else
+    /// (no signature at all) is refused.
+    static func signer(_ info: [String: Any]) throws -> SYSigner {
+        if let chain = info[kSecCodeInfoCertificates as String] as? [AnyObject], let first = chain.first {
+            guard CFGetTypeID(first) == SecCertificateGetTypeID() else { throw SYRefusal.unsigned("an unreadable certificate") }
+            let der = SecCertificateCopyData(first as! SecCertificate) as Data
+            return .cert(SYDigest.hex(SHA256.hash(data: der)))
+        }
+        let flags = (info[kSecCodeInfoFlags as String] as? NSNumber)?.uint32Value ?? 0
+        guard flags & SecCodeSignatureFlags.adhoc.rawValue != 0 else { throw SYRefusal.unsigned("neither a certificate nor ad hoc") }
+        return .adhoc
     }
 }
 
@@ -537,9 +595,14 @@ struct SYToolFailure: LocalizedError {
 // MARK: - a minimal bundle, for the agent's stub feed and the unit tests
 
 /// `<dir>/Switchyard.app`: an Info.plist with `id` and `version`, a copy of /usr/bin/true as
-/// its executable, signed ad hoc, so `codesign --verify --deep --strict` holds.
+/// its executable, signed ad hoc (or with `identity`), so `codesign --verify --deep --strict`
+/// holds.
 enum SYFixture {
-    static func bundle(in dir: URL, id: String, version: String, build: Int? = nil, name: String = "Switchyard.app", sign: Bool = true) throws -> URL {
+    /// A code-signing identity in a keychain file (the unit tests' throwaway certificates).
+    struct Identity { let sha1: String; let keychain: URL }
+
+    static func bundle(in dir: URL, id: String, version: String, build: Int? = nil, name: String = "Switchyard.app", sign: Bool = true,
+                       identity: Identity? = nil) throws -> URL {
         let app = dir.appendingPathComponent(name, isDirectory: true)
         let macos = app.appendingPathComponent("Contents/MacOS", isDirectory: true)
         try FileManager.default.createDirectory(at: macos, withIntermediateDirectories: true)
@@ -553,15 +616,18 @@ enum SYFixture {
         let exe = macos.appendingPathComponent("Switchyard")
         try? FileManager.default.removeItem(at: exe)
         try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/bin/true"), to: exe)
-        if sign { try SYProcess.run("/usr/bin/codesign", ["--force", "--sign", "-", app.path], deadline: 60) }
+        if sign {
+            let who = identity.map { ["--sign", $0.sha1, "--keychain", $0.keychain.path] } ?? ["--sign", "-"]
+            try SYProcess.run("/usr/bin/codesign", ["--force"] + who + [app.path], deadline: 60)
+        }
         return app
     }
 
     /// The bundle, zipped the way a release is (`ditto -c -k --sequesterRsrc --keepParent`).
-    static func zip(in dir: URL, id: String, version: String, build: Int? = nil, sign: Bool = true) throws -> URL {
+    static func zip(in dir: URL, id: String, version: String, build: Int? = nil, sign: Bool = true, identity: Identity? = nil) throws -> URL {
         let src = dir.appendingPathComponent("src", isDirectory: true)
         try FileManager.default.createDirectory(at: src, withIntermediateDirectories: true)
-        let app = try bundle(in: src, id: id, version: version, build: build, sign: sign)
+        let app = try bundle(in: src, id: id, version: version, build: build, sign: sign, identity: identity)
         let zip = dir.appendingPathComponent(SYFeed.zipName(version))
         try? FileManager.default.removeItem(at: zip)
         try SYProcess.run("/usr/bin/ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", app.path, zip.path], deadline: 60)
