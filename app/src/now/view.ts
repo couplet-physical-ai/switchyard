@@ -204,13 +204,15 @@ export type NowFeed = {
   machines: Mach[];
   needs: Need[]; needsN: number; needsMore: string;
   now: EvBlock[]; just: EvBlock[]; earlier: EvBlock[];
+  /** the Yard's intake: "3 waiting · oldest 20m" (or "empty") */
+  intake: string;
   idle: boolean; idleText: string;
   filtered: boolean; filterText: string;
   summary: string;
 };
 export const EMPTY_FEED: NowFeed = {
   ok: false, tick: 0, clock: '', running: 0, queued: 0, waiting: 0, busy: 0, slots: 0, machines: [],
-  needs: [], needsN: 0, needsMore: '', now: [], just: [], earlier: [], idle: true, idleText: '', filtered: false, filterText: '', summary: '',
+  needs: [], needsN: 0, needsMore: '', now: [], just: [], earlier: [], intake: '', idle: true, idleText: '', filtered: false, filterText: '', summary: '',
 };
 
 function kindText(e: FlowEvent): string {
@@ -231,6 +233,7 @@ function whereOf(j: FlowJob): string {
 }
 
 const CHAIN_STEPS = 4;
+const CHAIN_CHARS = 52;
 const trimTo = (t: string, n: number) => (t.length <= n ? t : `${t.slice(0, n - 1)}…`);
 function stepSt(state: string): string {
   return state === 'success' ? 'ok' : state === 'failure' || state === 'error' ? 'bad' : state === 'running' ? 'active' : state === 'skipped' || state === 'canceled' ? 'skip' : 'idle';
@@ -258,8 +261,13 @@ function chainOf(w: World, j: FlowJob, now: number): Chip[] {
     let act = steps.findIndex((x) => x.state === 'running' || x.state === 'failure' || x.state === 'error');
     if (act < 0) act = Math.max(0, steps.findIndex((x) => x.state !== 'success' && x.state !== 'skipped'));
     if (act < 0) act = steps.length - 1;
-    let lo = Math.max(0, act - 2), hi = Math.min(steps.length, lo + CHAIN_STEPS);
-    lo = Math.max(0, hi - CHAIN_STEPS);
+    // a window around the live step that fits one line (~CHAIN_CHARS of chip text)
+    const len = (i: number) => Math.min(16, steps[i].name.length) + 4;
+    let lo = act, hi = act + 1, used = len(act);
+    while (hi - lo < CHAIN_STEPS) {
+      const r = hi < steps.length && used + len(hi) <= CHAIN_CHARS, l = lo > 0 && used + len(lo - 1) <= CHAIN_CHARS;
+      if (r && (hi - act <= act - lo || !l)) { used += len(hi); hi++; } else if (l) { lo--; used += len(lo); } else break;
+    }
     if (lo > 0) add('done', `${lo} done`, 'ok', true);
     for (let i = lo; i < hi; i++) {
       const x = steps[i];
@@ -315,8 +323,7 @@ function noteOf(w: World, j: FlowJob, now: number): string {
   const steps = wf?.steps ?? [];
   const done = steps.filter((x) => x.state === 'success').length;
   const el = now - (j.started ?? j.created);
-  const parts = [steps.length ? `${done} of ${steps.length} steps${wf?.name && (p?.workflows?.length ?? 0) > 1 ? ` in ${wf.name}` : ''}` : ''];
-  if ((p?.workflows?.length ?? 0) > 1) parts.push(`${p!.workflows!.filter((x) => x.state === 'success').length} of ${p!.workflows!.length} workflows done`);
+  const parts = [steps.length ? `${done} of ${steps.length} steps` : ''];
   if (j.expectedMs) parts.push(`typical ${dur(j.expectedMs)}`);
   if (j.expectedMs && el > j.expectedMs * 1.5) parts.push(`${dur(el - j.expectedMs)} over`);
   return parts.filter(Boolean).join(' · ');
@@ -474,13 +481,17 @@ export function feedAnswer(d: NowDeps, [tick, repo, app, sha]: FeedArgs): NowFee
       busy: b, slots: s, offline: m.online === false, url: engineUrl(w, m),
     };
   });
+  let oldest = 0;
+  for (const e of v.events) if (e.band === 'now') for (const j of e.jobs) if ((j.state === 'queued' || j.state === 'waiting') && (!oldest || j.created < oldest)) oldest = j.created;
+  const nWait = v.queued + (v.waiting ?? 0);
+  const intake = nWait ? `${nWait} waiting${oldest ? ` · oldest ${short(Math.max(0, now - oldest))}` : ''}` : 'empty';
   const last = v.lastEventAt;
   const filterText = filter.sha ? `commit ${sha7(shaOnly)}${shaRepo ? ` in ${repoName(shaRepo)}` : ''}` : filter.app ? `app ${filter.app}` : filter.repo ? `repo ${repoName(filter.repo)}` : '';
   const feed: NowFeed = {
     ok: true, tick, clock: hhmm(now, off, true),
     running: v.running, queued: v.queued, waiting: v.waiting ?? 0, busy, slots, machines,
     needs: all, needsN: all.length, needsMore: needsMore(all, BROKEN_SHOWN),
-    now: nowEv, just, earlier,
+    now: nowEv, just, earlier, intake,
     idle: nowEv.length === 0, idleText: `Nothing running right now.${last ? ` Last event ${ago(Math.max(0, now - last))} ago.` : ''}`,
     filtered: filterText !== '', filterText,
     summary: `${v.running} running, ${v.queued} queued, ${all.length} need a human`,
