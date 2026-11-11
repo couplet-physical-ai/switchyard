@@ -247,7 +247,7 @@ const redSince = (s: Snapshot, from: number) => list(s.repos).filter((r) => (r.m
   const g0 = sm.hot.find((h) => h.kind === 'group');
   eq(g0 ? `${g0.lead}${g0.rest}` : '', 'couplet · 10 of 17 red', '#4 worstGroup by red share × log(1 + red): "couplet · 10 of 17 red"');
   // #6 callouts: a name and one state fact, in slot order, a flaky cluster never first
-  const order = ['red', 'down', 'cluster', 'group', 'jam', 'flaky'];
+  const order = ['red', 'down', 'conc', 'cluster', 'group', 'jam', 'flaky']; // v4-verdict: the concentrated repo after the breaks
   const ks = m.hot.map((h) => order.indexOf(h.kind));
   ok(ks.every((k, i) => k >= 0 && (i === 0 || k >= ks[i - 1]!)) && m.hot[0]?.kind !== 'flaky', `#6 the slots in order (${m.hot.map((h) => h.kind).join(' · ')}), a flaky cluster never first`);
   const cl = m.hot.find((h) => h.kind === 'cluster');
@@ -404,6 +404,113 @@ const redSince = (s: Snapshot, from: number) => list(s.repos).filter((r) => (r.m
   t = run(t, 12);
   const rp = check('replay', f, tl, t, 1);
   ok(painted(f.coffee.now.building, ' building') && painted(f.coffee.now.queued, ' queued'), 'header (replay): the replayed moment\'s building and queued');
+  // v4-verdict (REVIEW-iter3b #7): the replay's header runs the same verdict over the replayed hour,
+  // with its clock: never the bare "replay", never "broken · replay"
+  const { clockWords } = await import('../src/factory/prims.ts');
+  const word = { flowing: 'flowing', steady: 'steady', worse: 'worse than usual', broken: 'broken' }[f.coffee.dg.marks.verdict];
+  const clk = ` · ${clockWords(f.coffee.dg.now, f.offsetMin).slice(0, 5)}`;
+  ok(rp.includes(word) && !rp.includes('replay') && !rp.some((s) => s.includes(' · replay')), `#7 header (replay): the verdict word "${word}" (${rp.slice(0, 3).join('|')})`);
+  ok(rp.some((s) => s.endsWith(clk)), `#7 header (replay): the replayed moment's clock "${clk}" ends the suffix (${rp.slice(0, 4).join('|')})`);
+}
+
+// ── v4-verdict (REVIEW-iter3b #1 #7): the verdict names a failure CONCENTRATION; a flapping main is
+// not a break; a replay reads its own hour ──
+{
+  const M = 60_000;
+  // a world whose last hour is the 15:40Z one: 26 runs, 8 failures, all legal-tracker's crons
+  // (HTTP 000), the rest of the fleet green; pass 69 % against 76 % over 7 d, the server's `bad`
+  const build = (others: number, otherFails: number) => {
+    const s = clone(fixture), now = s.at;
+    const lt = list(s.repos).find((r) => r.main?.state === 'success')!;
+    const ps = list(s.pipelines);
+    const proto = ps[0];
+    s.pipelines = ps.filter((p) => !((p.finished ?? p.started ?? p.created) > now - 2 * HOUR) && p.state !== 'running' && p.state !== 'pending');
+    let n = 0;
+    const add = (repo: string, state: 'success' | 'failure', ago: number, event: 'cron' | 'push', step: string) => {
+      const p = clone(proto);
+      p.id = `wp:${repo}:${90000 + n++}`; p.repo = repo; p.state = state; p.event = event; p.branch = lt.default_branch || 'main';
+      p.created = now - ago - 3 * M; p.started = now - ago - 2 * M; p.finished = now - ago; delete p.flaky; delete p.pr;
+      p.workflows = [{ ...(proto.workflows?.[0] ?? {}), name: 'ci', state, steps: [{ name: step, state }] }] as never;
+      (s.pipelines as typeof ps).push(p);
+    };
+    for (let i = 0; i < 8; i++) add(lt.id, 'failure', (3 + i * 7) * M, 'cron', ['notification-outbox', 'esign-sync', 'patent-integrity-cron'][i % 3]);
+    const greens = list(s.repos).filter((r) => r.id !== lt.id).slice(0, 6);
+    for (let i = 0; i < others; i++) add(greens[i % 6].id, i < otherFails ? 'failure' : 'success', (2 + i * 3) * M, 'push', 'test');
+    const fl = list(s.trends ?? []).find((x) => x.id === 'fleet')!;
+    fl.pass_rate = { ...fl.pass_rate, h1: 0.69, d7: 0.76, bad: true };
+    fl.red = { ...fl.red, h1: 1, h24: 40, d7: 40 };
+    // nothing broken now: no main red under an hour, no app down
+    for (const r of list(s.repos)) if (r.main && (r.main.state === 'failure' || r.main.state === 'error')) r.main.since = Math.min(r.main.since || now - 2 * HOUR, now - 2 * HOUR);
+    for (const a of list(s.apps)) a.health = 'up';
+    s.watcher = { id: 'outage', tripped: false, gh_status: 'ok' };
+    return { s, now, lt };
+  };
+  const run = (s: Snapshot, now: number, extra: Partial<MarkInput> = {}) => {
+    const tl = new Timeline(); tl.load(s, 0); bindInsights(tl, () => null);
+    const w = tl.world;
+    return { w, m: marks({ ...markInput(w, now - DAY, now, emptyFresh(), false), ...extra }) };
+  };
+  const { emptyFresh } = await import('../src/factory/anomaly.ts');
+  // #1 the fleet without legal-tracker passes 18 of 18 (≥ its 76 %): steady, but legal-tracker in red
+  {
+    const { s, now, lt } = build(18, 0);
+    const { m } = run(s, now);
+    const name = lt.name ?? lt.id.split('/')[1];
+    eq([m.verdict, m.factKey, m.factLead, m.factRed, m.fact], ['steady', 'conc', 'but ', `${name} crons 0 / 8`, `but ${name} crons 0 / 8`], '#1 8 of 8 fails one repo\'s crons, the rest of the fleet as usual → "steady · but legal-tracker crons 0 / 8"');
+    ok(m.why.includes(`8 of 8 fails ${name} crons`) && m.why.includes('pass 69% (usual 76%)') && m.why.includes(`without ${name} crons pass 100%`), `#1 the rate stays in the hover: "${m.why}"`);
+    const h = m.hot.find((x) => x.kind === 'conc');
+    eq(h ? [h.id, `${h.lead}${h.rest}`, m.hot.indexOf(h)] : null, [lt.id, `${name} crons · 8 / h`, 0], '#1 the callout\'s slot 1: the repo, in the belt\'s words, at its rail');
+  }
+  // #1 the 16:30Z hour: pass 72 % against 76 % (not the server's `bad`), steady; the low rate is all
+  // legal-tracker's: the fact names it, not the rate
+  {
+    const { s, now, lt } = build(21, 0);
+    const fl = list(s.trends ?? []).find((x) => x.id === 'fleet')!;
+    fl.pass_rate = { ...fl.pass_rate, h1: 0.72, d7: 0.76, bad: false };
+    const { m } = run(s, now);
+    const name = lt.name ?? lt.id.split('/')[1];
+    eq([m.verdict, m.factKey, m.fact], ['steady', 'conc', `but ${name} crons 0 / 8`], `#1 steady under the usual pass rate, all one repo's: "steady · but legal-tracker crons 0 / 8" (why: ${m.why})`);
+  }
+  // #1 the rest of the fleet failing too (5 of 10, under its usual): still worse than usual, but the
+  // news is the repo
+  {
+    const { s, now, lt } = build(10, 5);
+    const { m } = run(s, now);
+    const name = lt.name ?? lt.id.split('/')[1];
+    eq([m.verdict, m.factKey, m.fact, m.factRed], ['worse', 'conc', `8 of 13 fails ${name} crons`, ''], '#1 8 of 13 fails one repo and the rest is under its usual too → "worse than usual · 8 of 13 fails legal-tracker crons"');
+  }
+  // #1 spread out (no repo holds 60 %): the rate decides, as before
+  {
+    const { s, now } = build(18, 8);
+    const { m } = run(s, now);
+    eq([m.verdict, m.factKey, m.conc], ['worse', 'pass', null], `#1 failures spread out: "${m.fact}"`);
+  }
+  // #1 a main line red < 1 h is broken, unless it flaps (failed on main earlier in the 24 h)
+  {
+    const { s, now, lt } = build(18, 0);
+    const r = list(s.repos).find((x) => x.id === lt.id)!;
+    r.main = { ...r.main, state: 'failure', since: now - 20 * M, culprit: 'abc', recent: (r.main.recent ?? []).map((d) => ({ ...d, state: 'success' as const })) };
+    const fresh = run(clone(s), now);
+    // its crons failing all hour are on main: the main line has failed before its red began
+    eq([fresh.m.verdict, fresh.m.hot.some((h) => h.kind === 'red')], ['steady', false], `#1 legal-tracker's main red 20m while its crons failed all hour: flapping, not broken (${fresh.m.verdict} · ${fresh.m.fact})`);
+    const s2 = clone(s);
+    s2.pipelines = list(s2.pipelines).filter((p) => p.repo !== lt.id || (p.finished ?? 0) > now - 20 * M);
+    const brk = run(s2, now);
+    eq([brk.m.verdict, brk.m.factKey], ['broken', 'acute'], `#1 a main line red 20m that was green all day before: broken (${brk.m.fact})`);
+    const s3 = clone(s2);
+    const r3 = list(s3.repos).find((x) => x.id === lt.id)!;
+    r3.main.recent = [...r3.main.recent, { sha: 'old', at: now - 5 * HOUR, state: 'failure', author: 'x', title: 'earlier' }].sort((a, b) => a.at - b.at);
+    eq(run(s3, now).m.verdict === 'broken', false, '#1 a main line red 20m with a red dot 5 h before it: flapping, not broken');
+  }
+  // #7 a replayed hour: its pass rate from the replayed world's runs, not the trend's (today's) h1
+  {
+    const { s, now } = build(18, 8);
+    const fl = list(s.trends ?? []).find((x) => x.id === 'fleet')!;
+    fl.pass_rate = { ...fl.pass_rate, h1: 0.95, d7: 0.76, bad: false };
+    const live = run(clone(s), now).m, rep = run(clone(s), now, { replay: true }).m;
+    eq([live.factKey === 'pass' && live.verdict === 'worse', rep.verdict, rep.factKey, rep.fact], [false, 'worse', 'pass', 'pass 38% (usual 76%)'], `#7 the replayed hour's own runs (10 of 26 passed), not the trend's 95 %: "${rep.fact}" (live: "${live.fact}")`);
+    eq(rep.usual.pass !== null && Math.round(rep.usual.pass * 100), 38, '#7 usualOf reads the moment');
+  }
 }
 void windowStart;
 console.log(fails ? `${fails} FAILED` : 'coffee: all ok');

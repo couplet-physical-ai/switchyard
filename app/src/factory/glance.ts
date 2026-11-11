@@ -10,8 +10,12 @@
 //   verdict   (w2-glance2, REVIEW-iter3 #1) NOW against USUAL: "broken" (an app down, the watcher,
 //             a main red < 1 h) · "worse than usual" · "steady" · "flowing", then the one fact
 //             that decided it: "worse than usual · pass 69% (usual 76%)", "steady · 40 red (usual
-//             36)", "broken · edge-scheduler down 12m". In a replay: the moment's "broken", else
-//             "replay" (the usual is today's, not the moment's)
+//             36)", "broken · edge-scheduler down 12m". (v4-verdict, REVIEW-iter3b #1) When one
+//             repo holds ≥ 60 % of the hour's failures the fact names it: "worse than usual · 8
+//             of 8 fails legal-tracker crons", or "steady · but legal-tracker crons 0 / 8" (in
+//             red) when the fleet without it is as usual; the rate is in the dial's hover. (#7)
+//             In a replay: the same verdict over the replayed hour, with its clock: "worse than
+//             usual · pass 61% (usual 76%) · 05:42"
 //   chips     at most four, WORDED, each a lens (it lights what it counts; hover names it):
 //               "32 red · 26 new"         the red main lines now, the window's new ones
 //               "119 recovered"           main lines fixed in the window
@@ -45,6 +49,7 @@ import type { Coffee } from './coffee.ts';
 import { K_CARD, K_INK, K_RED, pulse, tint } from './fx.ts';
 import { FACTOR } from './stress.ts';
 import { heapsOf, namedHeap } from './clusters.ts'; // the heap the belt names, the same pick
+import { clockWords } from './prims.ts';
 
 const SMALL = 12;
 const OK = '#7FC48F';
@@ -94,6 +99,9 @@ export class Glance {
   private suffixTri: -1 | 0 | 1 = 0;
   private suffixPost = '';
   private suffixCol: string = C.ink3;
+  /** v4-verdict (#1): words after the suffix in red (the concentrated repo's: "legal-tracker crons
+   *  0 / 8"), '' none */
+  private suffixRed = '';
   private wordCol: string = C.ink;
   /** The needle's place: now's percentile in the week (-1: none, the verdict's own place). */
   private pct = -1;
@@ -128,11 +136,16 @@ export class Glance {
     const m = d.marks, u = m.usual, F = T.factor > 1 ? T.factor : 1;
     // w2-glance2 (#1): the verdict word, then the one fact that decided it; a replayed moment has
     // no usual of its own (the trend is today's): "broken" when it was, else "replay"
-    const held = replay && m.verdict !== 'broken';
-    this.word = held ? (f.tl.mode === 'paused' ? 'paused' : 'replay') : VERDICT_WORD[m.verdict];
-    this.wordCol = held ? C.ink2 : COL[m.verdict];
-    this.suffix = replay ? (held ? '' : ' · replay') : m.fact ? ` · ${m.fact}` : '';
-    this.suffixTri = 0; this.suffixPost = '';
+    // v4-verdict (REVIEW-iter3b #7): a replayed moment runs the same verdict over ITS hour (anomaly.ts
+    // `moment`), said with its clock: "worse than usual · pass 61% (usual 76%) · 05:42"
+    const when = replay ? ` · ${clockWords(d.now, f.offsetMin).slice(0, 5)}` : '';
+    this.word = VERDICT_WORD[m.verdict];
+    this.wordCol = COL[m.verdict];
+    this.suffixTri = 0; this.suffixPost = ''; this.suffixRed = '';
+    // v4-verdict (#1): the concentrated repo, in red, when the fleet without it is as usual:
+    // "steady · but " + "legal-tracker crons 0 / 8"
+    if (m.factRed) { this.suffix = ` · ${m.factLead}`; this.suffixRed = m.factRed; this.suffixPost = when; }
+    else this.suffix = m.fact ? ` · ${m.fact}${when}` : when;
     this.suffixCol = C.ink2;
     // p3 (#4): the last hour's fail RATE is one item, the verdict's own numbers: when the pass rate
     // decided the verdict it carries the trend mark ("pass 54% ▼ (usual 76%)") and the fails chip
@@ -140,12 +153,13 @@ export class Glance {
     // usual 24%"), never a count that falls only because the volume did
     const rate = u.pass !== null ? 1 - u.pass : null, rateTyp = u.passTyp !== null ? 1 - u.passTyp : null;
     const rateTri: -1 | 0 | 1 = rate === null || rateTyp === null ? 0 : u.passBad || rate >= rateTyp + 0.05 ? 1 : rate <= rateTyp - 0.05 ? -1 : 0;
-    const passFolded = !replay && m.factKey === 'pass' && u.pass !== null;
-    if (passFolded && rateTri) {
+    // v4-verdict (#1): a concentration is the verdict's own failure fact too (the rate is in its hover)
+    const passFolded = !replay && (m.factKey === 'pass' || m.factKey === 'conc') && u.pass !== null;
+    if (m.factKey === 'pass' && passFolded && rateTri) {
       const i = this.suffix.indexOf(' (');
       if (i > 0) { this.suffixPost = this.suffix.slice(i); this.suffix = this.suffix.slice(0, i); this.suffixTri = rateTri > 0 ? -1 : 1; }
     }
-    this.pct = held ? -1 : u.pct;
+    this.pct = u.pct;
     const usualWhy: string[] = [];
     if (u.fails1h !== null && u.failsThr !== null) usualWhy.push(`${Math.round(u.fails1h)} fails in the last hour (p90 ${Math.round(u.failsThr)})`);
     if (u.redThr !== null) usualWhy.push(`${u.red} red (p90 ${Math.round(u.redThr)})`);
@@ -247,7 +261,9 @@ export class Glance {
       x += g.text(this.word, x, y + 16.5, e > 0.5 ? col : C.ink3, 15, true);
       if (this.suffix && e > 0.5) {
         x += g.text(this.suffix, x, y + 16, this.suffixCol, 13);
-        if (this.suffixTri) { tri(g, x + 7, y + 11.5, this.suffixTri, this.suffixTri < 0 ? C.red : '#8FA898'); x += 14; x += g.text(this.suffixPost, x, y + 16, this.suffixCol, 13); }
+        if (this.suffixTri) { tri(g, x + 7, y + 11.5, this.suffixTri, this.suffixTri < 0 ? C.red : '#8FA898'); x += 14; }
+        if (this.suffixRed) x += g.text(this.suffixRed, x, y + 16, C.redText, 13);
+        if (this.suffixPost) x += g.text(this.suffixPost, x, y + 16, this.suffixCol, 13);
       }
       x += 14;
     } else x += g.text('looking…', x, y + 16.5, C.ink3, 15, true) + 14;
@@ -365,7 +381,9 @@ export class Glance {
         if (!(ax >= 0) || this.callouts.length >= 2) return; // ≤ 2: the fleet frame's text budget (40 items, sy-client)
         if ((h.kind === 'cluster' || h.kind === 'flaky') && h.id === tall) return;
         if (h.kind === 'flaky' && tallFlaky && h.lead === tallFlaky) return;
-        if (h.kind === 'red' && h.id === focal) return;
+        if ((h.kind === 'red' || h.kind === 'conc') && h.id === focal) return;
+        // v4-verdict (#1): the belt's named heap is the concentrated repo's (its words, the same): one name
+        if (h.kind === 'conc' && named && named.repoList.length > 0 && named.repoList.every((r) => r === h.id)) return;
         // a flaky cluster never takes the first slot (w2-glance2, #6)
         if (h.kind === 'flaky' && !this.callouts.length) return;
         // counts × the stress factor, never the ages ("13h", "24h")
@@ -386,7 +404,7 @@ export class Glance {
         // each callout is a lens: the cluster's (a failing run of it the world holds, else the
         // tests), the group's dock or district, the intake
         let kind = 'scanner', id = 'tests', label = 'tests';
-        if (h.kind === 'red') { kind = 'repo'; id = h.id; label = h.lead; }
+        if (h.kind === 'red' || h.kind === 'conc') { kind = 'repo'; id = h.id; label = h.lead; }
         else if (h.kind === 'cluster' || h.kind === 'flaky') {
           const ex = insights().cluster(h.id)?.examples.find((pid) => f.world.pipelines.has(pid));
           if (ex) { kind = 'failure'; id = ex; label = h.lead; }

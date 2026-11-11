@@ -33,6 +33,18 @@
 //               `fact` is the one fact that decided it ("pass 69% (usual 76%)", "40 red (usual
 //               36)", "net-control-plane red 12m"); `pct` is the needle: where now sits in the
 //               7-d distribution (the worst of red, failures/h and the fail share; -1 none)
+//               (v4-verdict, REVIEW-iter3b #1) CONCENTRATION: when ≥ 60 % of the last hour's
+//               failures are one repo (or one repo's crons; clusters.ts `concentration`) and the
+//               failures decided "worse", the fact names it, not the rate: "8 of 8 fails
+//               legal-tracker crons"; and when the fleet WITHOUT it passes at or over its usual,
+//               the verdict is "steady · but legal-tracker crons 0 / 8" (`factRed`: the repo's
+//               words in red). The rate stays in the needle's hover (`why`).
+//               A main line red < 1 h that FLAPS (it failed on its default branch earlier in
+//               the 24 h before this red began: a cron failing all day) is not a break: it
+//               gets its beacon, but not "broken" nor "broke main".
+//               (#7) A replay runs the same verdict over the replayed hour (`moment`): its
+//               pass rate and failures counted from the replayed world's runs, against the
+//               same 7-d usual (the same-hour p90 of the replayed hour)
 //   usual       (fx-glance) the last hour's failures, the red main lines and the pass rate now
 //               against the 7-d same-hour p90 (agg/baseline.ts; the trend's typical × 1.25 while
 //               the ring holds too little): `worse` than usual, `usual`, or '' with no basis;
@@ -53,7 +65,9 @@ import type { Changes, Cluster, Metric, Trend } from '../wire.ts';
 import type { World } from '../world.ts';
 import { buildingIds, queueTruth } from '../yard/select.ts';
 import { failuresOf, threshold, typical } from './trendmarks.ts';
-import { flakyCalled } from './clusters.ts'; // p3 (#5): one flaky test for the callout and the belt
+// p3 (#5): one flaky test for the callout and the belt; v4 (REVIEW-iter3b #1): one concentration
+// for the verdict, the chute and the belt (v4-heaps')
+import { concentration, flakyCalled, type Concentration } from './clusters.ts';
 import { baseline } from './agg/baseline.ts';
 
 export const HOUR = 3_600_000;
@@ -255,7 +269,7 @@ export const VERDICTS: readonly Verdict[] = ['flowing', 'steady', 'worse', 'brok
 /** The verdict as the header says it. */
 export const VERDICT_WORD: Record<Verdict, string> = { flowing: 'flowing', steady: 'steady', worse: 'worse than usual', broken: 'broken' };
 /** What decided the verdict (the verdict lens opens on it). */
-export type FactKey = '' | 'watcher' | 'down' | 'acute' | 'pass' | 'red' | 'fails' | 'jam';
+export type FactKey = '' | 'watcher' | 'down' | 'acute' | 'pass' | 'red' | 'fails' | 'jam' | 'conc';
 
 export type Smoke = { id: string; step: string; repos: readonly string[]; repoN: number; n1h: number; fresh: boolean; k: number; at: number };
 export type Beacon = { kind: 'red' | 'down' | 'watcher'; id: string; at: number; sev: number };
@@ -267,7 +281,7 @@ export type Jam = { waiting: number; oldest: number; k: number };
 /** A callout's candidate (w2-glance2): a name (`lead`) and one state fact (`rest`); `tone` its
  *  colour (red: broken now; flaky: gray-red, a flake is not an incident; amber: the jam; ink),
  *  `tri` a drawn ▲ after the words (the group's red trend rising). */
-export type Hotspot = { kind: 'red' | 'cluster' | 'flaky' | 'group' | 'jam' | 'down'; id: string; lead: string; rest: string; red: boolean; tone?: 'red' | 'flaky' | 'amber' | 'ink'; tri?: 0 | 1 };
+export type Hotspot = { kind: 'red' | 'conc' | 'cluster' | 'flaky' | 'group' | 'jam' | 'down'; id: string; lead: string; rest: string; red: boolean; tone?: 'red' | 'flaky' | 'amber' | 'ink'; tri?: 0 | 1 };
 /** Against the usual (fx-glance; w2-glance2: + the pass rate, the typicals, the percentile):
  *  `rel` worse / usual ('' no basis); the last hour's failures and the red main lines now with
  *  their thresholds (the 7-d same-hour p90) and typicals (7 d); the pass rate now (h1) and its
@@ -286,6 +300,11 @@ export type Marks = {
   verdict: Verdict; why: string; sev: number; hot: Hotspot[]; usual: Usual;
   /** w2-glance2: the one fact that decided the verdict ('' none), and which */
   fact: string; factKey: FactKey;
+  /** v4-verdict (#1): the fact's words after `factLead` are the concentrated repo's, in red
+   *  ("but " + "legal-tracker crons 0 / 8"); '' none */
+  factLead: string; factRed: string;
+  /** v4-verdict (#1): the last hour's failure concentration (null: none, spread out) */
+  conc: Concentration | null;
 };
 
 export function noUsual(): Usual {
@@ -293,19 +312,23 @@ export function noUsual(): Usual {
 }
 
 export function noMarks(): Marks {
-  return { smoke: [], beacons: [], cracks: [], jam: null, embers: [], verdict: 'flowing', why: '', sev: 0.04, hot: [], usual: noUsual(), fact: '', factKey: '' };
+  return { smoke: [], beacons: [], cracks: [], jam: null, embers: [], verdict: 'flowing', why: '', sev: 0.04, hot: [], usual: noUsual(), fact: '', factKey: '', factLead: '', factRed: '', conc: null };
 }
 
 /** How the fleet reads against its usual at `now` (pure; fx-glance): worse when the last hour's
  *  failures are over their same-hour 7-d p90 or the red main lines are over theirs; usual when
  *  either has a basis and neither is over; '' when neither has one. `hours`: the window's length
  *  (its failures' typical = the 7-d hourly typical × hours). */
-export function usualOf(fleet: Trend | null, red: number, now: number, hours: number): Usual {
+export function usualOf(fleet: Trend | null, red: number, now: number, hours: number, moment: Moment | null = null): Usual {
   const u = noUsual();
   u.red = red;
   if (!fleet) return u;
   const fm = failuresOf(fleet);
-  u.fails1h = fm.h1;
+  // v4-verdict (#7): a replayed hour's own failures and pass rate (the replayed world's runs), the
+  // trend's 7 d as the usual; the server's `bad` was said of its own hour, not this one (too few
+  // runs held: the trend recorded then, CONTRACT "Past states")
+  const mo = moment && moment.runs >= MOMENT_MIN ? moment : null;
+  u.fails1h = mo ? mo.fails : fm.h1;
   // the 7-d same-hour p90 (or typical × 1.25); a server holding a day but no week yet: the day's
   // hourly p90; one holding less (a v0.4 server: hours_7d 0, sparks of the 2 h the world holds)
   // has no usual at all, and says so by saying nothing
@@ -318,9 +341,9 @@ export function usualOf(fleet: Trend | null, red: number, now: number, hours: nu
   // w2-glance2: the pass rate, the one fleet metric the server flags `bad` (#1): the last hour
   // against its 7 d, worse 5 points under it (or the server's own `bad`)
   const pr = fleet.pass_rate;
-  u.pass = pr.h1 ?? null;
+  u.pass = mo ? 1 - mo.fails / mo.runs : pr.h1 ?? null;
   u.passTyp = pr.d7 ?? (day ? sparkMean(pr.spark) : null);
-  u.passBad = u.pass !== null && u.passTyp !== null && (u.pass <= u.passTyp - 0.05 || (!!pr.bad && u.pass < u.passTyp));
+  u.passBad = u.pass !== null && u.passTyp !== null && (u.pass <= u.passTyp - 0.05 || (!mo && !!pr.bad && u.pass < u.passTyp));
   if (typ !== null && hours > 0) { u.winUsual = Math.round(typ * hours); u.winThr = u.failsThr !== null ? Math.round(u.failsThr * hours) : Math.round(typ * 1.25 * hours); }
   const fWorse = u.fails1h !== null && u.failsThr !== null && u.fails1h > u.failsThr;
   const rWorse = u.redThr !== null && red > u.redThr;
@@ -343,6 +366,37 @@ export function usualOf(fleet: Trend | null, red: number, now: number, hours: nu
   }
   for (const [p, k] of cand) if (p >= 0 && p > u.pct) { u.pct = p; u.pctOf = k; }
   return u;
+}
+
+/** v4-verdict (#7): a replayed hour, counted from the replayed world: its finished runs and their
+ *  failures. Under MOMENT_MIN runs it says nothing (no pass rate from three runs). */
+export type Moment = { runs: number; fails: number };
+export const MOMENT_MIN = 5;
+
+/** The runs that finished in (now − 1 h, now] and how many failed (a run's time: finished, else
+ *  started, else created; the same window `concentration` counts). O(pipelines). */
+export function momentOf(w: World, now: number): Moment {
+  let runs = 0, fails = 0;
+  for (const p of w.pipelines.values()) {
+    const s = p.state;
+    if (s !== 'success' && s !== 'failure' && s !== 'error') continue;
+    const at = p.finished ?? p.started ?? p.created;
+    if (!(at > now - HOUR && at <= now)) continue;
+    runs++;
+    if (s !== 'success') fails++;
+  }
+  return { runs, fails };
+}
+
+/** v4-verdict (#1): whether a main line red since `since` FLAPS: it failed on its default branch
+ *  (a red dot, or a failed run on it the world holds) in the 24 h before this red began, more
+ *  than a minute before it. A cron failing all day turns its main red again and again; that is
+ *  not a break. `failedOn` (repo → its default-branch failures' times) is built once per pass. */
+export function flapping(recent: readonly { at: number; state: string }[] | undefined, since: number, failedOn: readonly number[] | undefined): boolean {
+  const lo = since - DAY, hi = since - 60_000;
+  for (const d of recent ?? []) if (isRedMain(d.state) && d.at >= lo && d.at < hi) return true;
+  for (const at of failedOn ?? []) if (at >= lo && at < hi) return true;
+  return false;
 }
 
 /** The persisted ring's fleet hours for a metric (the needle's week), read once a minute (672
@@ -430,6 +484,8 @@ export type MarkInput = {
   groupWord: (id: string) => string;
   /** a repo's group id ('' unknown): a group's main lines red in the last hour rank it */
   groupOf?: (repo: string) => string;
+  /** v4-verdict (#7): `now` is a replayed moment: the verdict reads the replayed hour's runs */
+  replay?: boolean;
 };
 
 /** The metrics where up is worse (pass rate is the other way); `pipelines` and `deploys` have no
@@ -522,7 +578,29 @@ export function marks(inp: MarkInput): Marks {
     const s = r.main.since ?? 0;
     if (s > 0 && s >= now - HOUR && s <= now) acute.push({ id: r.id, at: s });
   }
-  const u = (out.usual = usualOf(fleet, redNow, now, Math.max(0, now - since) / HOUR));
+  // v4-verdict (#1): a main line that flaps (it failed on its default branch in the 24 h before this
+  // red began) is not a break: no "broken", no "broke main" (its beacon stays)
+  if (acute.length) {
+    const failedOn = new Map<string, number[]>();
+    for (const a of acute) failedOn.set(a.id, []);
+    for (const p of w.pipelines.values()) {
+      const l = failedOn.get(p.repo);
+      if (!l || (p.state !== 'failure' && p.state !== 'error') || p.event === 'pull_request' || p.branch !== w.repos.get(p.repo)?.default_branch) continue;
+      l.push(p.finished ?? p.started ?? p.created);
+    }
+    for (let i = acute.length - 1; i >= 0; i--) if (flapping(w.repos.get(acute[i].id)?.main?.recent, acute[i].at, failedOn.get(acute[i].id))) acute.splice(i, 1);
+  }
+  const conc = (out.conc = concentration(w, now, HOUR));
+  const u = (out.usual = usualOf(fleet, redNow, now, Math.max(0, now - since) / HOUR, inp.replay ? momentOf(w, now) : null));
+  // v4-verdict (#1): the fleet WITHOUT the concentrated repo, this hour: its pass rate (null: under
+  // MOMENT_MIN runs left) and whether it is at or over its usual (the pass rate's 7 d, the failures'
+  // same-hour p90)
+  let cx: { pass: number | null; ok: boolean } | null = null;
+  if (conc) {
+    const exRuns = conc.fleetRuns - conc.runs, exFails = conc.total - conc.fails;
+    const pass = exRuns >= MOMENT_MIN ? 1 - exFails / exRuns : null;
+    cx = { pass, ok: pass !== null && u.passTyp !== null && pass >= u.passTyp - 0.005 && (u.failsThr === null || exFails <= u.failsThr) };
+  }
   // the verdict (w2-glance2, #1): NOW against USUAL; the window's news is the chips'
   acute.sort((a, b) => b.at - a.at || (a.id < b.id ? -1 : 1));
   const why: string[] = [];
@@ -553,6 +631,17 @@ export function marks(inp: MarkInput): Marks {
       out.fact = over[0][2]; out.factKey = over[0][1];
       for (const o of over) why.push(o[2]);
       out.sev = 0.62 + 0.13 * clamp01(over[0][0] / 3);
+      // v4-verdict (#1): the failures decided it and one repo holds ≥ 60 % of them: the news is that
+      // repo. Without it the fleet at or over its usual (and no other line crossed): "steady · but
+      // legal-tracker crons 0 / 8"; else "worse than usual · 8 of 8 fails legal-tracker crons"
+      if (conc && cx && (over[0][1] === 'pass' || over[0][1] === 'fails')) {
+        const others = over.some((o) => o[1] === 'red' || o[1] === 'jam');
+        why.unshift(`${conc.fails} of ${conc.total} fails ${conc.label}`);
+        if (cx.pass !== null) why.push(`without ${conc.label} pass ${pctW(cx.pass)}`);
+        out.factKey = 'conc';
+        if (cx.ok && !others) { out.verdict = 'steady'; concBut(out, conc); out.sev = 0.3 + 0.2 * clamp01(u.pct); }
+        else out.fact = `${conc.fails} of ${conc.total} fails ${conc.label}`;
+      }
     } else {
       // steady or flowing: red at or under its typical and the pass rate at or over its 7 d flows
       const redHigh = u.redTyp !== null ? redNow > u.redTyp + 0.5 : redNow > 0;
@@ -565,7 +654,15 @@ export function marks(inp: MarkInput): Marks {
         out.verdict = 'steady';
         if (redHigh) { out.fact = redFact; out.factKey = 'red'; } else { out.fact = passFact; out.factKey = 'pass'; }
       }
-      if (out.fact) why.push(out.fact);
+      // v4-verdict (#1): the pass rate under its usual is one repo's doing (the fleet without it at or
+      // over its usual): that is the news, "steady · but legal-tracker crons 0 / 8"
+      if (out.verdict === 'steady' && passLow && conc && cx?.ok) {
+        why.push(`${conc.fails} of ${conc.total} fails ${conc.label}`);
+        if (out.fact) why.push(out.fact);
+        if (passFact && out.factKey !== 'pass') why.push(passFact);
+        if (cx.pass !== null) why.push(`without ${conc.label} pass ${pctW(cx.pass)}`);
+        out.factKey = 'conc'; concBut(out, conc);
+      } else if (out.fact) why.push(out.fact);
       out.sev = out.verdict === 'flowing' ? 0.04 + 0.16 * clamp01(fresh.failed.length / 20) : 0.3 + 0.2 * clamp01(u.pct);
     }
   }
@@ -578,6 +675,9 @@ export function marks(inp: MarkInput): Marks {
     out.hot.push({ kind: 'red', id: a.id, lead: repoWord(a.id), rest: ` broke main · ${age(now - a.at)}${acute.length > 1 ? ` · ${acute.length - 1} more` : ''}`, red: true, tone: 'red' });
   }
   if (downApp) out.hot.push({ kind: 'down', id: downApp, lead: appWord(downApp), rest: ` · down${downAt > 0 && now - downAt < 7 * DAY ? ` ${age(now - downAt)}` : ''}${down > 1 ? ` · ${down - 1} more` : ''}`, red: true, tone: 'red' });
+  // v4-verdict (#1): the repo the verdict names, at its rail, in the belt's words ("legal-tracker
+  // crons · HTTP 000 · 8 / h"; glance.ts gives way when the belt names the same repo)
+  if (conc && out.factKey === 'conc') out.hot.push({ kind: 'conc', id: conc.repo, lead: conc.label, rest: ` · ${conc.error ? `${conc.error} · ` : ''}${conc.fails} / h`, red: true, tone: 'red' });
   const open = inp.clusters.filter((c) => c.open > 0).sort((a, b) => b.open - a.open || b.count - a.count || (a.id < b.id ? -1 : 1));
   for (const c of open.slice(0, 1)) out.hot.push({ kind: 'cluster', id: c.id, lead: c.step, rest: ` · ${c.open} ${c.open === 1 ? 'main' : 'mains'} red · ${age(Math.max(0, now - c.last_seen))}`, red: true, tone: 'red' });
   const g0 = worstGroup(inp, acute);
@@ -586,6 +686,13 @@ export function marks(inp: MarkInput): Marks {
   const fl = flakiest(inp.clusters, w);
   if (fl && out.hot.length) out.hot.push(fl);
   return out;
+}
+
+/** v4-verdict (#1): "but " + the concentrated repo's passes of its runs, in red ("legal-tracker
+ *  crons 0 / 8"). */
+function concBut(out: Marks, c: Concentration): void {
+  out.factLead = 'but '; out.factRed = `${c.label} ${c.runs - c.fails} / ${c.runs}`;
+  out.fact = out.factLead + out.factRed;
 }
 
 /** An app's short name ("org/name" → "name"). */

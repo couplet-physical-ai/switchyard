@@ -279,6 +279,7 @@ export class Coffee {
       else if (k === 'jam') this.f.lens.push({ kind: 'queue', id: 'intake', name: 'intake', sub: '' }, t);
       else if (k === 'pass' || k === 'fails') this.f.lens.push({ kind: 'scanner', id: 'tests', name: 'tests', sub: '' }, t);
       else if (k === 'red' && this.now.red) this.f.lens.push({ kind: 'fresh', id: 'red', name: `${this.now.red} main lines red`, sub: '' }, t);
+      else if (k === 'conc' && m.conc && this.f.world.repos.has(m.conc.repo)) this.f.lens.push({ kind: 'repo', id: m.conc.repo, name: m.conc.label, sub: '' }, t); // v4-verdict (#1): the repo the verdict names
       return true;
     }
     return false;
@@ -383,6 +384,7 @@ export class Coffee {
       w, now, since, short: shortWindow(win, now, this.visitAt), clusters, trend: (id) => ins.trend(id), srv, fresh, queue,
       downSince: (app) => downAt.get(app) ?? (agesKnown ? now - 8 * DAY : 0),
       groups, groupWord: (id) => groupWord(id, ins.group(id)?.name), groupOf: (repo) => ins.groupOf(repo),
+      replay: replayed(f.tl), // v4-verdict (#7): the replayed hour's own runs
     });
     return { win, since, now, fresh, marks: mk, complete: srv ? srv.complete : true };
   }
@@ -626,7 +628,7 @@ export class Coffee {
         // w2-glance2: at its heap on the return belt when the last hour parked one, else the scanner
         const pg = f.lens.parkGroups.find((x) => x.cl === h.id);
         at = pg ? [(pg.u0 + pg.u1) / 2, P.RETURN_V, 8] : [P.SCAN_U, 300, 70];
-      } else if (h.kind === 'red') { const sp = repoSpot(h.id); if (sp) at = [sp[0], sp[1], 6]; }
+      } else if (h.kind === 'red' || h.kind === 'conc') { const sp = repoSpot(h.id); if (sp) at = [sp[0], sp[1], 6]; } // v4-verdict: the concentrated repo at its rail
       else if (h.kind === 'jam') at = [(P.INTAKE_U0 + P.INTAKE_U1) / 2, 291, 10];
       else if (h.kind === 'down') { const bl = f.blockAt.get(h.id); if (bl) at = [bl.u + bl.d / 2, bl.v + bl.d / 2, bl.h + 2]; }
       else if (fl.on && G.laneOfGroup(h.id) === h.id && fl.laneIndex(h.id) >= 0) at = [P.DOCK_U1, fl.dockV(h.id), 4]; // w2-glance2: the group's own dock's right edge (its lane; the callout sits beside it)
@@ -968,6 +970,10 @@ export function groupWord(id: string, name?: string): string {
   const n = name ?? id.slice(id.indexOf(':') + 1);
   return n.length <= 4 && n === n.toUpperCase() ? n : n.toLowerCase();
 }
+
+/** v4-verdict (#7): the floor shows a replayed moment (a replay, or a world held off the server: a
+ *  replay paused, too much kept), so the verdict reads that hour, and the header says when. */
+export function replayed(tl: { mode: string; stale: boolean }): boolean { return tl.mode === 'replay' || (tl.mode !== 'live' && tl.stale); }
 
 function serverKey(server: string): string { return server.trim() || 'origin'; }
 
