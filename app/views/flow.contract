@@ -442,8 +442,8 @@ component JustRow
           path d=r.moreFan fill="none" stroke="sy.ink4" stroke-width=1 stroke-dasharray="2 3"
       column flex=1 min-width=0
         for j, ji in r.jobs key=j.id
-          row height=24 align-items="center" testId=`flow-job-just-${ri}-${ji}`
-            row width=480 flex-shrink=0 gap=8 align-items="center" padding="0px 8px" border-radius=6 background-color=(sel == j.id ? "sy.control" : "transparent")
+          row height=j.hgt align-items="flex-start" testId=`flow-job-just-${ri}-${ji}`
+            row width=480 height=24 flex-shrink=0 gap=8 align-items="center" padding="0px 8px" border-radius=6 background-color=(sel == j.id ? "sy.control" : "transparent")
               button appearance="none" press=open("job", j.id) testId=`flow-pipe-just-${ri}-${ji}` aria-label=`${j.kind} pipeline ${j.name}, ${stateWord(j.state)}. Show its steps.` flex=1 min-width=0 padding=0 text-align="left"
                 row gap=8 align-items="center"
                   KindChip(word=j.kind, tone="off")

@@ -20,8 +20,10 @@ import { flowJob, flowMachine, flowOf, type FlowEvent, type FlowFilter, type Flo
 export const COL = { event: 400, fan: 40, job: 480, hop: 32, result: 440 } as const;
 /** A pipeline's sub-row: two lines in flight (the progress line), one line once finished. */
 export const SUB_NOW = 44, SUB_JUST = 24;
-/** A pipeline's sub-row height: two lines while it is in flight in the now band, else one. */
-const subH = (band: string, state: FlowState) => (band === 'now' && live(state) ? SUB_NOW : SUB_JUST);
+/** A pipeline's sub-row height: two lines while it is in flight in the now band (its progress) or
+ *  when it failed with an error line (the line under the result), else one. */
+const SUB_ERR = 42;
+const subH = (band: string, state: FlowState, err: boolean) => (band === 'now' && live(state) ? SUB_NOW : err ? SUB_ERR : SUB_JUST);
 /** The event cell's first line's centre: where the fan starts. */
 const ANCHOR_NOW = 12, ANCHOR_JUST = 12;
 /** The event cell's height in the now band (three lines and padding) and the just band (two). */
@@ -106,6 +108,7 @@ export type Flow = {
   repos: Opt[]; teams: Opt[]; branches: Opt[]; filtered: boolean; summary: string; tick: number;
 };
 
+const stateWordOf = (s: FlowState) => (s === 'pass' ? 'deployed' : s === 'fail' ? 'failed' : s);
 const live = (s: FlowState) => s === 'running' || s === 'queued' || s === 'waiting';
 const toneOf = (s: FlowState): string => (s === 'running' ? 'run' : s === 'queued' || s === 'waiting' ? 'wait' : s === 'fail' ? 'fail' : s === 'pass' ? 'pass' : 'off');
 
@@ -168,7 +171,8 @@ function resultOf(j: FlowJob, w: World, now: number, budget: number): Pick<JobRo
       // in flight: when it should be done (its usual), what it will deploy
       const el = now - (j.started ?? j.created);
       const app = j.kind === 'deploy' ? w.repos.get(w.pipelines.get(j.id)?.repo ?? '')?.app : undefined;
-      out.result = j.expectedMs ? (el < j.expectedMs ? `due in ~${clockDur(j.expectedMs - el)}` : 'past its usual') : '';
+      // (past its usual, the pipeline's own line says by how much)
+      out.result = j.expectedMs && el < j.expectedMs ? `due in ~${clockDur(j.expectedMs - el)}` : '';
       if (app) out.result = fit(`${out.result ? `${out.result} · ` : ''}→ ${app}`, budget);
       out.rtone = 'wait';
       break;
@@ -193,7 +197,7 @@ function jobRow(j: FlowJob, top: number, band: string, w: World, now: number): J
   if (j.state === 'running') {
     const el = now - (j.started ?? j.created);
     timer = clockDur(el);
-    if (j.expectedMs) { usual = `usual ${clockDur(j.expectedMs)}`; pct = Math.min(1, el / j.expectedMs); over = el > j.expectedMs; }
+    if (j.expectedMs) { usual = `usual ${clockDur(j.expectedMs)}`; pct = Math.min(1, el / j.expectedMs); over = el - j.expectedMs >= 1000; }
     else if (j.step?.count) pct = Math.min(0.97, (j.step.index - 0.5) / j.step.count);
     if (over) usual = `${clockDur(el - (j.expectedMs ?? 0))} over usual`;
     if (j.step) step = fit(`${j.step.index}/${j.step.count} ${j.step.name}`, cols(inner - 140 - 12 - (timer.length + 3 + usual.length) * ch(12) - 8, 12));
@@ -209,7 +213,7 @@ function jobRow(j: FlowJob, top: number, band: string, w: World, now: number): J
     step, timer, usual, pct: Math.round(pct * 1000) / 1000, over, note,
     ...res, err: res.err ? fit(res.err, cols(COL.result - 24, 12) * (two ? 1 : 1)) : '',
     fresh: !!j.finished && now - j.finished >= 0 && now - j.finished < FRESH_MS,
-    fan: fanPath(a, top + a), live: j.state === 'running', hgt: subH(band, j.state),
+    fan: fanPath(a, top + a), live: j.state === 'running', hgt: subH(band, j.state, !!res.err),
   };
 }
 
@@ -421,7 +425,9 @@ export function panelAnswer(d: FlowDeps, [kind, id]: [string, string, number]): 
     if (p) facts.push({ k: 'trigger', v: fit(`${p.event === 'pull_request' ? `PR #${p.pr ?? c?.pr ?? ''}` : p.event} · ${j.branch} · ${short(j.sha)}${by ? ` · ${by}` : ''}`, 48), tone: 'off' });
     if (j.result.deploy) {
       const dd = j.result.deploy;
-      facts.push({ k: 'deploy', v: fit(`${dd.app} ← ${short(dd.sha)} · ${dd.state}${dd.health ? ` · ${dd.health}` : ''}`, 48), tone: dd.health === 'down' ? 'fail' : dd.state === 'pass' ? 'pass' : 'off' });
+      // in flight: where it goes; done: what the app got and (once it passed) its health now
+      if (live(st)) facts.push({ k: 'deploy', v: fit(`deploying ${short(dd.sha)} → ${dd.app}`, 48), tone: 'off' });
+      else facts.push({ k: 'deploy', v: fit(`${dd.app} ← ${short(dd.sha)} · ${stateWordOf(dd.state)}${dd.state === 'pass' && dd.health ? ` · ${dd.health}` : ''}`, 48), tone: dd.state === 'fail' ? 'fail' : dd.state === 'pass' ? (dd.health === 'down' ? 'fail' : 'pass') : 'off' });
     }
     const steps: StepRow[] = [];
     for (const wf of j.workflows) {
