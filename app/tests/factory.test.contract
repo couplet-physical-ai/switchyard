@@ -43,6 +43,9 @@ test "the recorded real fleet fills the floor"
   expect state conn.ok == true
   expect state ov.repos == 394
   expect state ov.facCity == 240
+  // the rails' cars are counted as the live canvas draws them: a slow host (the GHA runner) needs
+  // more real frames than the mini before the first one lands (v0.1.2 run 43010961144: 0 at 1.5 s)
+  clock +3000 real
   // fab-w1: one main-line rail per GROUP lane (10 on the fixtures), each its newest merges (≤ 18)
   expect state ov.facCars == 151
   expect state ov.facBays == 3
