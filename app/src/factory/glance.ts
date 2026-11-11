@@ -82,7 +82,7 @@ export class Glance {
   private shown = -1;
   private rowW = 0;
   private callouts: Callout[] = [];
-  private calloutKey = [-1, -1, -1];
+  private calloutKey = [-1, -1, -1, -1];
   private sevFrom = 0;
   private loggedX = -1;
   /** The header's totals as last drawn (tests read them: the status line's numbers). */
@@ -95,14 +95,15 @@ export class Glance {
   private prepare(g: Gfx): void {
     const c = this.c, f = c.f, d = c.dg, fr = d.fresh, k = this.key, T = c.now;
     const minute = Math.floor(f.tl.liveNow() / 60_000);
-    const replay = f.tl.mode === 'replay' ? 1 : 0;
+    // a replay, or a world held off the server (a replay paused, too much kept): the moment's totals
+    const replay = f.tl.mode === 'replay' || (f.tl.mode !== 'live' && f.tl.stale) ? 1 : 0;
     const tk = ((T.red * 31 + T.building) * 31 + T.queued) * 31 + T.down * 7 + T.up + T.factor * 131;
     if (k[0] === c.dgN && this.keyWin === c.win && k[1] === minute && k[2] === (c.noVisit ? 1 : 0) && k[3] === tk && k[4] === replay) return;
     k[0] = c.dgN; k[1] = minute; k[2] = c.noVisit ? 1 : 0; k[3] = tk; k[4] = replay; this.keyWin = c.win;
     const m = d.marks, u = m.usual, F = T.factor > 1 ? T.factor : 1;
     this.word = m.verdict;
     const rel = m.verdict === 'flowing' ? '' : u.rel;
-    this.suffix = replay ? ' · replay' : rel === 'worse' ? ' · worse than usual' : rel === 'usual' ? ' · as usual' : '';
+    this.suffix = replay ? (f.tl.mode === 'paused' ? ' · paused' : ' · replay') : rel === 'worse' ? ' · worse than usual' : rel === 'usual' ? ' · as usual' : '';
     this.suffixCol = replay ? C.ink2 : rel === 'worse' ? C.redText : C.ink3;
     const usualWhy: string[] = [];
     if (u.fails1h !== null && u.failsThr !== null) usualWhy.push(`${Math.round(u.fails1h)} fails in the last hour (p90 ${Math.round(u.failsThr)})`);
@@ -182,7 +183,7 @@ export class Glance {
     const c = this.c, f = c.f, d = c.dg;
     c.ensureNow(t);
     this.prepare(g);
-    const replay = f.tl.mode === 'replay';
+    const replay = f.tl.mode === 'replay' || (f.tl.mode !== 'live' && f.tl.stale);
     const it = c.introT(t);
     const y = 46;
     const v = d.marks.verdict, col = COL[v];
@@ -278,8 +279,10 @@ export class Glance {
 
   private calloutsDraw(g: Gfx, a: number): void {
     const c = this.c, f = c.f, cam = f.cam, k = this.calloutKey;
-    if (k[0] !== c.dgN || k[1] !== cam.ver || k[2] !== f.census.at) {
-      k[0] = c.dgN; k[1] = cam.ver; k[2] = f.census.at;
+    if (k[0] !== c.dgN || k[1] !== cam.ver || k[2] !== f.census.at || k[3] !== c.now.factor) {
+      k[0] = c.dgN; k[1] = cam.ver; k[2] = f.census.at; k[3] = c.now.factor;
+      // stress mode: the callouts' counts are the 10× fleet's, as the header's are
+      const F = c.now.factor;
       this.callouts = [];
       // what the callouts keep clear of: the words placed this frame (stage titles by 24 px, the
       // rest by the placer's 12) and the beacons' lamps (24 px)
@@ -294,8 +297,9 @@ export class Glance {
       c.dg.marks.hot.forEach((h, i) => {
         const ax = c.hotXY[i * 2], ay = c.hotXY[i * 2 + 1];
         if (!(ax >= 0)) return;
-        const parts: Tok[] = [[h.lead, h.red ? C.redText : h.kind === 'jam' ? C.amberText : C.ink, true], [h.rest, C.ink2]];
-        const w = g.width(h.lead, SMALL, true) + g.width(h.rest, SMALL);
+        const rest = F > 1 ? h.rest.replace(/\d+/, (n) => String(Number(n) * F)) : h.rest;
+        const parts: Tok[] = [[h.lead, h.red ? C.redText : h.kind === 'jam' ? C.amberText : C.ink, true], [rest, C.ink2]];
+        const w = g.width(h.lead, SMALL, true) + g.width(rest, SMALL);
         const pin = calloutPin(ax, ay, vis);
         const at = calloutAt(ax, ay, w, vis, keep, edge);
         if (!at) return;
