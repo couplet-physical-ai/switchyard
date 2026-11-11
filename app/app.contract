@@ -10,6 +10,7 @@ use UpdatePill from "./views/update.contract"
 use Conn, Tok, Ack, Overview, Hit, Media, Time, Found, Mainlines, Prs, PrDetail, Fleet, Journey, Link from "./views/shapes.contract"
 use WebReload from "./views/webreload.contract"
 use TokenCard from "./views/token.contract"
+use LiveFlowView from "./views/flow.contract"
 
 font "Commit Mono"
   400 = "assets/fonts/CommitMono-400.ttf"
@@ -17,6 +18,7 @@ font "Commit Mono"
 
 routes nav
   factory "/"
+  live "/live"
   yard "/yard"
   mainlines "/mainlines"
   prs "/prs"
@@ -134,6 +136,7 @@ component App
   members "./views/webreload.contract"
   members "./views/update.contract"
   members "./views/hooks.contract"
+  members "./views/flow.contract"
 
   task pulse mount
     every(250, tick)
@@ -334,6 +337,7 @@ component App
   // Settings and the switchyard:// link
   action openSettings
     draftServer = server
+    draftHandle = myHandle
     draftToken = ""
     showModal("settings")
   action editServer(v: string)
@@ -342,6 +346,7 @@ component App
     draftToken = v
   action saveSettings
     server = draftServer.trim()
+    myHandle = draftHandle.trim()
     send saved = saveToken(draftToken, draftToken != "")
   action useDemo
     server = "demo"
@@ -426,6 +431,24 @@ component App
                       text (conn.signIn != "" ? "Use a token…" : "Connect…")
                     button press=useDemo testId="yard-setup-demo" class=Quiet
                       text "Watch the demo"
+          // LIVE flow (views/flow.contract): event → handled by → result, NOW on top
+          if e.name == "live"
+            column flex=1 min-height=0 position="relative"
+              LiveFlowView(f=flowData, p=flowPanelData, log=flowLogData, mode=ov.mode, reduced=reduced, repo=flowRepo, team=flowTeam, branch=flowBranch, mine=flowMine, handle=myHandle, sel=(flowKind == "job" ? flowId : ""), pickRepo=flowPickRepo, pickTeam=flowPickTeam, pickBranch=flowPickBranch, toggleMine=flowToggleMine, clear=flowClear, open=flowOpen, close=flowClose, follow=flowFollow, key=flowKey)
+              if tokCard
+                TokenCard(status=tokState, detail=tok.detail, retry=tokRetry, enter=tokEnter)
+              if not conn.ok and conn.status != "connecting" and not tokCard
+                column position="absolute" inset=0 align-items="center" justify-content="center" background-color="sy.canvas" gap=14 testId="live-setup"
+                  text (conn.needsSetup ? "Connect Switchyard to a server" : "The server is not answering") font-weight=700 font-size=16
+                  text (conn.error != "" ? conn.error : "Its address and a token, or watch the built-in demo fleet.") color="sy.ink3" font-size=13 max-width=560 text-align="center"
+                  row gap=10
+                    if conn.signIn != ""
+                      link href=conn.signIn class=Primary testId="live-setup-signin"
+                        text "Sign in on the web…"
+                    button press=openSettings class=(conn.signIn != "" ? Quiet : Primary) testId="live-setup-connect"
+                      text (conn.signIn != "" ? "Use a token…" : "Connect…")
+                    button press=useDemo testId="live-setup-demo" class=Quiet
+                      text "Watch the demo"
           if e.name == "mainlines"
             MainlinesView(data=mlData, org=mlOrg, filter=mlFilter, q=mlQ, focus=mlFocus, wheel=mlWheel, px=mlPx, py=mlPy, kick=mlKick, active=(e.id == top(nav).id), mode=ov.mode, pickOrg=mlPickOrg, pickFilter=mlPickFilter, typed=mlTyped, press=mlPress, move=mlMove, hover=mlHover, wheeled=mlWheeled, key=mlKey)
           if e.name == "prs"
@@ -455,7 +478,7 @@ component App
             button appearance="none" press=openSettings aria-label="Connection" testId="open-settings" padding="2px 6px" border-radius=5
               text (conn.ok ? ov.host : conn.status) font-size=11 color="sy.ink3" testId="conn-status"
             // fx-glance: on the factory the coffee header says the numbers (one place); the other views keep this
-            text (e.name == "factory" ? "" : ov.sentence) color="sy.ink3" font-size=11 flex=1 min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis" testId="sentence"
+            text ((e.name == "factory" or e.name == "live") ? "" : ov.sentence) color="sy.ink3" font-size=11 flex=1 min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis" testId="sentence"
             if ov.mode != "live"
               button appearance="none" press=goLive testId="go-live" padding="2px 8px" border-radius=5 aria-keyshortcuts="L"
                 text "back to live" color="sy.green" font-size=11
@@ -497,6 +520,11 @@ component App
             input value=draftServer input=editServer aria-label="Server" placeholder="https://switchyard.apps.example.com" testId="server-field" class=Field
               padding="8px 10px" font-size=13 border-radius=8 background-color="sy.canvas" border="1px solid sy.edge" color="sy.ink"
             text "blank: the server this page came from · demo: the built-in fleet" font-size=11 color="sy.ink3"
+          // LIVE flow's "mine": the person's own GitHub handle, kept on this device (empty by default)
+          column gap=6
+            text "Your GitHub handle (the live view's “mine”)" font-size=12 color="sy.ink3"
+            input value=draftHandle input=editHandle aria-label="Your GitHub handle" placeholder="your-handle" testId="handle-field" class=Field
+              padding="8px 10px" font-size=13 border-radius=8 background-color="sy.canvas" border="1px solid sy.edge" color="sy.ink"
           column gap=6
             row align-items="center" gap=8
               text (tok.has ? "Token (one is saved; type to replace it)" : "Token") font-size=12 color="sy.ink3" flex=1
@@ -547,8 +575,8 @@ component TopBar
           path d="M5 12a7 7 0 0 1 14 0M8.5 12a3.5 3.5 0 0 1 7 0" fill="none" stroke="sy.brand" stroke-width=2 stroke-linecap="round"
         text "switchyard" role="heading" aria-level=1 font-weight=700 font-size=13 letter-spacing="0.02em"
       row role="tablist" appearance="none" aria-label="Views" gap=1
-        for v in ["factory", "yard", "mainlines", "prs", "fleet"] key=v
-          button role="tab" appearance="none" aria-selected=(here == v) press=goTo(v) testId=`tab-${v}` aria-keyshortcuts=`Meta+${v == "factory" ? "1" : v == "yard" ? "5" : v == "mainlines" ? "2" : v == "prs" ? "3" : "4"}`
+        for v in ["live", "factory", "yard", "mainlines", "prs", "fleet"] key=v
+          button role="tab" appearance="none" aria-selected=(here == v) press=goTo(v) testId=`tab-${v}` aria-keyshortcuts=`Meta+${v == "live" ? "0" : v == "factory" ? "1" : v == "yard" ? "5" : v == "mainlines" ? "2" : v == "prs" ? "3" : "4"}`
             padding="3px 9px" border-radius=5 background-color=(here == v ? "sy.control" : "transparent")
             text v color=(here == v ? "sy.ink" : "sy.ink3") font-size=12
       row flex=1

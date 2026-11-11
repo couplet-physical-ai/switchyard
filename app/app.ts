@@ -557,7 +557,12 @@ function tokenVer(t: string): string {
 
 let baseBound = false, basePending = '';
 
+// ---- LIVE flow (src/flow/view.ts; flow-view): the live view's three sources, from the one world ----
+import { flowSources } from './src/flow/view.ts';
+const flowSrc = flowSources({ world: () => tl.world, now: () => tl.playhead, offsetMin: () => yard.offsetMin, upstream: () => up, clock: () => clock });
+
 export const sources: Sources = {
+  ...flowSrc,
   webVersion: () => webVersion(),
   parseLink: ([u, server, token]) => parseLink(u, server, token),
   // SWITCHYARD_TOKEN_FILE (macOS, env only; src/hooks.ts): the token, once, through parseLink.

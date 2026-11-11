@@ -1,0 +1,74 @@
+// LIVE flow (views/flow.contract): the tab opens the flow, a pipeline opens its steps panel, a
+// machine its runs, and a filter that matches nothing says so. Every test runs the built-in demo.
+
+test "the live tab is first but not the default, and opens the flow"
+  clock data
+  tap "setup-demo"
+  clock data
+  clock +3000
+  expect state here == "factory"
+  tap "tab-live"
+  clock settle
+  clock +1500
+  expect state here == "live"
+  expect tree has "flow-strip"
+  expect tree has "flow-live"
+  expect tree has "flow-now-0"
+  expect tree has "flow-just"
+  expect state flowData.idle == false
+
+test "a pipeline's press opens its steps panel, and close shuts it"
+  clock data
+  tap "setup-demo"
+  clock data
+  clock +3000
+  tap "tab-live"
+  clock settle
+  clock +1500
+  tap "flow-pipe-now-0-0"
+  clock +600
+  expect state flowKind == "job"
+  expect tree has "flow-panel"
+  expect tree has "flow-panel-steps"
+  expect tree missing "flow-panel-log"
+  tap "flow-panel-close"
+  clock +300
+  expect tree missing "flow-panel"
+  expect state flowId == ""
+
+test "a machine opens what runs on it"
+  clock data
+  tap "setup-demo"
+  clock data
+  clock +3000
+  tap "tab-live"
+  clock settle
+  clock +1500
+  tap "flow-mach-VM 153"
+  clock +600
+  expect state flowKind == "machine"
+  expect tree has "flow-panel"
+  expect text "flow-panel-title" == "VM 153"
+
+test "mine with a handle that has no events shows the idle state"
+  clock data
+  tap "setup-demo"
+  clock data
+  clock +3000
+  tap "tab-live"
+  clock settle
+  tap "open-settings"
+  clock settle
+  type "handle-field" "nobody-at-all"
+  tap "settings-save"
+  clock data
+  clock +1500
+  expect state myHandle == "nobody-at-all"
+  tap "flow-mine"
+  clock +1500
+  expect state flowMine == true
+  expect tree has "flow-idle"
+  expect text "flow-idle-title" == "Nothing running for these filters"
+  tap "flow-idle-clear"
+  clock +1500
+  expect tree missing "flow-idle"
