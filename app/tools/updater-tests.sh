@@ -1,13 +1,14 @@
 #!/bin/sh
-# The updater's native unit tests (modules/apple/UpdaterTests.swift, README "Updates"):
-# compiles UpdaterCore.swift + UpdaterTests.swift with swiftc into a CLI and runs it. Exits
+# The updater's and the test hooks' native unit tests (modules/apple/UpdaterTests.swift and
+# HooksTests.swift, README "Updates" and "Test hooks"): compiles UpdaterCore.swift,
+# HooksCore.swift and the two test files with swiftc into a CLI and runs it. Exits
 # nonzero when a case fails or the build does.
 #   app/tools/updater-tests.sh                  on a Mac
-#   MINI=user@host app/tools/updater-tests.sh   from elsewhere: copies the two files to the Mac
+#   MINI=user@host app/tools/updater-tests.sh   from elsewhere: copies the files to the Mac
 #                                               over ssh and runs them there
 set -eu
 cd "$(dirname "$0")/.."
-SRC="modules/apple/UpdaterCore.swift modules/apple/UpdaterTests.swift"
+SRC="modules/apple/UpdaterCore.swift modules/apple/UpdaterTests.swift modules/apple/HooksCore.swift modules/apple/HooksTests.swift"
 
 if [ "$(uname -s)" != Darwin ]; then
   MINI=${MINI:?not a Mac: set MINI=user@host of one}

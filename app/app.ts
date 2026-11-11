@@ -17,6 +17,7 @@ import { fleet, journeyView, prDetailView, search } from './src/project.ts';
 import { MainlinesModel, stateWords } from './src/table/mainlines.ts';
 import { PrsModel } from './src/table/prs.ts';
 import { Timeline } from './src/timeline.ts';
+import { connectedWith, saveTokenFile, takeTokenFile, tokenFileReport } from './src/hooks.ts';
 import { updateDo, updateState } from './src/update.ts';
 import type { Frame as WireFrame } from './src/wire.ts';
 import { Yard } from './src/yard/draw.ts';
@@ -147,6 +148,8 @@ async function demoLive(): Promise<void> {
 
 // ---- sources -------------------------------------------------------------------------------
 type Conn = Result<'connect'>;
+/** Connects started: only the newest one's outcome counts for the token-file hook. */
+let connects = 0;
 
 async function connect(server: string, token: string, epoch0: number): Promise<Conn> {
   epochAtZero = epoch0;
@@ -318,6 +321,10 @@ async function webVersion(): Promise<{ stale: boolean; served: string }> {
 export const sources: Sources = {
   webVersion: () => webVersion(),
   parseLink: ([u, server, token]) => parseLink(u, server, token),
+  // SWITCHYARD_TOKEN_FILE (macOS, env only; src/hooks.ts): the token, once, through parseLink.
+  tokenFile: (_a, _store, _storage, native) => takeTokenFile(native, DEFAULT_SERVER, parseLink),
+  saveTokenFile: (_a, store: Store) => saveTokenFile(store, TOKEN),
+  tokenFileReport: (_a, _store, _storage, native) => tokenFileReport(native),
   updateState: (_a, _store, _storage, native) => updateState(native),
   updateDo: ([op], _store, _storage, native) => updateDo(op, native),
   loadToken: (_a, store: Store) => {
@@ -328,9 +335,14 @@ export const sources: Sources = {
     if (set) store.set(TOKEN, token);
     return { ok: true, status: set ? 'saved' : 'kept' };
   },
-  connect: ([server, token, _gen, epoch0, offset]) => {
+  connect: async ([server, token, _gen, epoch0, offset]) => {
     yard.offsetMin = offset;
-    return connect(server, token, epoch0);
+    const mine = ++connects;
+    const c = await connect(server, token, epoch0);
+    // A connect with SWITCHYARD_TOKEN_FILE's token, when no newer one started meanwhile (an
+    // older one's answer is let go): how it went, for tokenFileReport to log.
+    if (token && mine === connects) connectedWith(token, server === 'demo' ? '' : resolveBase(server), c.ok, c.error || c.status);
+    return c;
   },
   liveFeed: ([server, token, seq, _gen, ok]) => liveFeed(server, token, seq, ok),
   overview: ([t]) => { if (t > 0) advance(t); return safe('overview', EMPTY_OV, overview); },
