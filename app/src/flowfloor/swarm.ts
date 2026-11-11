@@ -210,6 +210,7 @@ function drawIntake(g: Gfx, S: Stages, o: SwarmOpts, hits: Hit[], now: number): 
 }
 
 function drawEngines(g: Gfx, S: Stages, o: SwarmOpts, hits: Hit[]): void {
+  const t = o.t;
   const ms = S.engines.machines.slice(0, 3);
   ENG.rows.forEach((ry, r) => {
     const m: Machine | undefined = ms[r];
@@ -224,9 +225,12 @@ function drawEngines(g: Gfx, S: Stages, o: SwarmOpts, hits: Hit[]): void {
     m.bays.slice(0, 6).forEach((b, i) => {
       const bx = x + ENG.plate + i * ENG.pitch, by = ry - 32;
       g.fillRect(bx, by, ENG.bay, ENG.bay, WELL);
-      if (!b.item) return;
+      g.fillRect(bx, by + ENG.bay - 4, ENG.bay, 4, '#151517'); // the bay's floor plate
       const it = b.item;
-      cube(g, bx + ENG.bay / 2, by + ENG.bay / 2, 22, AMBER, 1);
+      if (!it) { arm(g, bx, by, t, r * 6 + i, false); return; }
+      const cx = bx + 29, cy = by + 30;
+      cube(g, cx, cy, 18, AMBER, 1);
+      arm(g, bx, by, t, r * 6 + i, true);
       // its progress under the bay, its repo under that
       g.fillRect(bx, by + ENG.bay + 4, ENG.bay, 3, '#232325');
       if (it.pct > 0) g.fillRect(bx, by + ENG.bay + 4, ENG.bay * it.pct, 3, AMBER);
@@ -235,6 +239,32 @@ function drawEngines(g: Gfx, S: Stages, o: SwarmOpts, hits: Hit[]): void {
       hits.push({ kind: 'run', id: it.id, x: bx, y: by, w: ENG.bay, h: ENG.bay + 20, url: it.url, label: `${it.name} #${it.number}` });
     });
   });
+}
+
+/** A robot arm in a bay (blocky, angular: square joints, straight square-capped links; never a
+ *  crane): its base on the bay floor at the left, a shoulder, an elbow over the work, a tool
+ *  that dips onto the cube. Working, it moves (each arm its own phase) and its tool sparks;
+ *  idle, it is parked upright and dim. */
+function arm(g: Gfx, bx: number, by: number, t: number, k: number, working: boolean): void {
+  const c = g.ctx;
+  const ph = t / 1000 * (1.3 + (k % 3) * 0.17) + k * 1.7;
+  // an industrial arm: a short pedestal, the upper arm up and over, the elbow high, the
+  // forearm down onto the work (an elbow-up pose, never a jib); parked, it folds back on itself
+  const base: Pt = [bx + 9, by + 40];
+  const sh: Pt = [bx + 9, by + 31];
+  const el: Pt = working ? [bx + 18 + Math.sin(ph) * 1.2, by + 10 + Math.cos(ph * 1.3) * 1.2] : [bx + 15, by + 14];
+  const tip: Pt = working ? [bx + 28 + Math.sin(ph * 1.6) * 2.5, by + 19 + Math.max(0, Math.sin(ph * 2.1)) * 1.5] : [bx + 11, by + 22];
+  const col = working ? '#8E8E92' : '#3E3E41';
+  c.lineCap = 'square'; c.lineJoin = 'miter';
+  g.begin_(); g.move(base[0], base[1]); g.line(sh[0], sh[1]); g.stroke(col, 4);
+  g.begin_(); g.move(sh[0], sh[1]); g.line(el[0], el[1]); g.stroke(col, 4);
+  g.begin_(); g.move(el[0], el[1]); g.line(tip[0], tip[1]); g.stroke(col, 3);
+  g.fillRect(tip[0] - 2.5, tip[1] - 1, 5, 3, working ? '#B4B4B8' : '#48484B'); // the tool
+  c.lineCap = 'butt';
+  g.fillRect(base[0] - 5, base[1] - 2, 10, 5, working ? '#5A5A5E' : '#2E2E30'); // its foot
+  g.fillRect(sh[0] - 3, sh[1] - 3, 6, 6, working ? '#B4B4B8' : '#48484B'); // shoulder
+  g.fillRect(el[0] - 2.5, el[1] - 2.5, 5, 5, working ? '#B4B4B8' : '#48484B'); // elbow
+  if (working && Math.sin(ph * 2.1) > 0.35) { g.fillRect(tip[0] - 1.5, tip[1] + 1, 3, 3, '#FFF1D6'); }
 }
 
 function drawGate(g: Gfx, S: Stages, t: number): void {
