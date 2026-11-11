@@ -283,7 +283,7 @@ export class Labels implements Layer {
     if (fc && at && !f.selected) {
       const ax = cam.x(at[0], at[1]), ay = cam.y(at[0], at[1], 8);
       const name = fc.repo.split('/')[1] ?? fc.repo;
-      this.leader(g, ax, ay, 40, [[`${name} broke main`, C.redText, true]], SMALL);
+      this.leader(g, ax, ay, 40, f.coffee.focalParts(fc.repo, name), SMALL); // w2-glance2: "broke main · 12m" only < 1 h red, else "name · red 7h" (REVIEW-iter3 #6)
     }
     // an open lane names its cells, posts and age axis (a lens pins one at the fleet zoom too)
     if (detail || fl.focusId) this.lanes(g, level, q);

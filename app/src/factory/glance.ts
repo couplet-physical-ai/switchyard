@@ -2,12 +2,16 @@
 // floor's top row after the zoom readout, the replay's playhead on the time strip, and the settled
 // hotspot callouts.
 //
-//   dial      a 28-px needle gauge in four sectors (flowing · slowed · jammed · broken); the needle
-//             swings to the verdict in the intro's 0.3–1.5 s, its place inside the sector is the
-//             severity (anomaly.ts `sev`); the broken sector breathes on the one eased beat
-//   verdict   RELATIVE: "broken · worse than usual" / "broken · as usual" / "flowing" (anomaly.ts
-//             `usualOf`: the last hour's failures and the red main lines now against their 7-d
-//             same-hour p90)
+//   dial      (w2-glance2) a 28-px needle gauge of WHERE NOW SITS in the last 7 d (anomaly.ts
+//             `usual.pct`: the worst of red mains, failures/h and the fail share among the week's
+//             hours): three bands (≤ p50 green-gray, to p90 gray, over p90 red), the needle's band
+//             lit; it swings there in the intro's 0.3–1.5 s. A broken fleet rings the dial red,
+//             breathing on the one eased beat
+//   verdict   (w2-glance2, REVIEW-iter3 #1) NOW against USUAL: "broken" (an app down, the watcher,
+//             a main red < 1 h) · "worse than usual" · "steady" · "flowing", then the one fact
+//             that decided it: "worse than usual · pass 69% (usual 76%)", "steady · 40 red (usual
+//             36)", "broken · edge-scheduler down 12m". In a replay: the moment's "broken", else
+//             "replay" (the usual is today's, not the moment's)
 //   chips     at most four, WORDED, each a lens (it lights what it counts; hover names it):
 //               "32 red · 26 new"         the red main lines now, the window's new ones
 //               "119 recovered"           main lines fixed in the window
@@ -21,9 +25,14 @@
 //             last hour · last 24 h · last 7 d, then "now", then the chips that did not fit)
 //   strip     the replay's playhead sweeps the strip's since-visit bracket (strip.ts draws it), a
 //             ‹ when the window reaches past the strip's 24 h
-//   callouts  ≤ 3 once the replay settles, where it is broken: the worst cluster (unless it is the
-//             return belt's tallest heap, which names itself), the worst group, the jam, the app down. Each sits in the dark top band or the lower-left void with a leader to its
-//             anchor, 24 px clear of stage titles, beacons and its own anchor; each a lens
+//   callouts  ≤ 3 once the replay settles, where it is broken, each a name and ONE state fact
+//             (w2-glance2, #4 #6), in slot order: a main red < 1 h ("x broke main · 12m", unless
+//             it is the focal car's, which names itself), an app down ("· down 3h"), an open
+//             cluster ("security-scan · 7 mains red · 13h", unless it is the return belt's tallest
+//             heap), the worst group by red share ("couplet · 10 of 17 red ▲"), the jam, a flaky
+//             cluster in gray-red ("esign-sync · flaky · 68 / 24h", never first). Each sits in
+//             the dark top band or the lower-left void with a leader to its anchor, 24 px clear of
+//             stage titles, beacons and its own anchor; each a lens
 //
 // Strings are built when the digest, the window, the totals or the camera change, never per frame.
 
@@ -31,7 +40,7 @@ import type { Frame } from '../../app.contract.d.ts';
 import type { Gfx, Tok } from '../yard/gfx.ts';
 import { C, clamp } from '../yard/theme.ts';
 import { insights } from '../insights.ts';
-import { DAY, VERDICTS, WINS, ago, type Verdict, type Win } from './anomaly.ts';
+import { DAY, VERDICT_WORD, WINS, ago, type Verdict, type Win } from './anomaly.ts';
 import type { Coffee } from './coffee.ts';
 import { K_CARD, K_INK, K_RED, pulse, tint } from './fx.ts';
 import { FACTOR } from './stress.ts';
@@ -39,10 +48,16 @@ import { heapsOf, tallest } from './clusters.ts'; // the heap the belt names, th
 
 const SMALL = 12;
 const OK = '#7FC48F';
+/** w2-glance2: green-gray, "up / ok" (never a state colour's full green). */
+const FLOW = '#8FB89A';
+/** w2-glance2: gray-red, a flake (failing, not broken). */
+const FLAKY = '#A98582';
 const CHIP = '#161618';
 const CHIP_EDGE = '#2E2E30';
 const CARD = '#111112';
-const COL: Record<Verdict, string> = { flowing: OK, slowed: C.amberText, jammed: C.packet, broken: C.red };
+const COL: Record<Verdict, string> = { flowing: FLOW, steady: C.ink, worse: C.redText, broken: C.red };
+/** The dial's bands over the week's distribution (to p50, to p90, over), and their colours. */
+const BANDS: readonly [number, number, string][] = [[0, 0.5, FLOW], [0.5, 0.9, '#8A8A8E'], [0.9, 1, C.redText]];
 const A0 = 0.75 * Math.PI, SWEEP = 1.5 * Math.PI;
 const STEPS = 12;
 /** The dial's radius (a 28-px gauge). */
@@ -57,7 +72,7 @@ type Chip = { key: string; steps: string[]; ncol: string; numW: number; rest: To
 type Row = { kind: 'win' | 'info' | 'lens'; id: string; label: string; hint: string; col: string; lensKind: string };
 /** A hotspot callout: its words' box (x, baseline y, width), its anchor, its lens, and the edge it
  *  is pinned to when the anchor is off the floor ('' when the leader reaches the anchor). */
-type Callout = { x: number; y: number; ax: number; ay: number; w: number; parts: Tok[]; kind: string; id: string; label: string; pin: Pin; src: string };
+type Callout = { x: number; y: number; ax: number; ay: number; w: number; parts: Tok[]; kind: string; id: string; label: string; pin: Pin; src: string; tri: number; edge: string };
 type Pin = '' | 'l' | 'r' | 't' | 'b';
 /** The floor's visible area (screen px): under the top row, over the time strip, left of a drawer. */
 type Vis = { l: number; t: number; r: number; b: number };
@@ -75,6 +90,9 @@ export class Glance {
   private word = '';
   private suffix = '';
   private suffixCol: string = C.ink3;
+  private wordCol: string = C.ink;
+  /** The needle's place: now's percentile in the week (-1: none, the verdict's own place). */
+  private pct = -1;
   private why = '';
   private sinceW = '';
   private rows: Row[] = [];
@@ -104,14 +122,20 @@ export class Glance {
     if (k[0] === c.dgN && this.keyWin === c.win && k[1] === minute && k[2] === (c.noVisit ? 1 : 0) && k[3] === tk && k[4] === replay) return;
     k[0] = c.dgN; k[1] = minute; k[2] = c.noVisit ? 1 : 0; k[3] = tk; k[4] = replay; this.keyWin = c.win;
     const m = d.marks, u = m.usual, F = T.factor > 1 ? T.factor : 1;
-    this.word = m.verdict;
-    const rel = m.verdict === 'flowing' ? '' : u.rel;
-    this.suffix = replay ? (f.tl.mode === 'paused' ? ' · paused' : ' · replay') : rel === 'worse' ? ' · worse than usual' : rel === 'usual' ? ' · as usual' : '';
-    this.suffixCol = replay ? C.ink2 : rel === 'worse' ? C.redText : C.ink3;
+    // w2-glance2 (#1): the verdict word, then the one fact that decided it; a replayed moment has
+    // no usual of its own (the trend is today's): "broken" when it was, else "replay"
+    const held = replay && m.verdict !== 'broken';
+    this.word = held ? (f.tl.mode === 'paused' ? 'paused' : 'replay') : VERDICT_WORD[m.verdict];
+    this.wordCol = held ? C.ink2 : COL[m.verdict];
+    this.suffix = replay ? (held ? '' : ' · replay') : m.fact ? ` · ${m.fact}` : '';
+    this.suffixCol = C.ink2;
+    this.pct = held ? -1 : u.pct;
     const usualWhy: string[] = [];
     if (u.fails1h !== null && u.failsThr !== null) usualWhy.push(`${Math.round(u.fails1h)} fails in the last hour (p90 ${Math.round(u.failsThr)})`);
     if (u.redThr !== null) usualWhy.push(`${u.red} red (p90 ${Math.round(u.redThr)})`);
-    this.why = [m.why || m.verdict, ...usualWhy].join(' · ');
+    if (u.pass !== null && u.passTyp !== null) usualWhy.push(`pass ${Math.round(u.pass * 100)}% (7 d ${Math.round(u.passTyp * 100)}%)`);
+    if (u.pct >= 0) usualWhy.push(`now at the ${ordinal(Math.round(u.pct * 100))} percentile of the week`);
+    this.why = [VERDICT_WORD[m.verdict], ...(m.why ? [m.why] : []), ...usualWhy].join(' · ');
     const ww = c.windowWords();
     const nf = Math.max(fr.failed.length, fr.failCount) * F, nm = Math.max(fr.merged.length, fr.mergedCount) * F;
     const all: Chip[] = [];
@@ -189,12 +213,14 @@ export class Glance {
     const replay = f.tl.mode === 'replay' || (f.tl.mode !== 'live' && f.tl.stale);
     const it = c.introT(t);
     const y = 46;
-    const v = d.marks.verdict, col = COL[v];
-    // the needle: at rest until 0.3 s, swings to the verdict by 1.5 s (a small overshoot)
+    const v = d.marks.verdict, col = this.wordCol;
+    // the needle: at rest until 0.3 s, swings to now's place in the week by 1.5 s (a small
+    // overshoot); without a week to place it in, the verdict's own place
     const e = c.openAt < 0 ? 0 : clamp((it - T_DIAL) / (T_SWEEP - T_DIAL), 0, 1);
-    const sev = this.sevFrom + (d.marks.sev - this.sevFrom) * easeOutBack(e);
-    if (e >= 1) this.sevFrom = d.marks.sev;
-    this.dial(g, x0 + DIAL_R, y + 11, sev, c.openAt < 0 ? -1 : VERDICTS.indexOf(v), t, e);
+    const to = this.pct >= 0 ? this.pct : PLACE[v] + 0.06 * (d.marks.sev - 0.5);
+    const sev = this.sevFrom + (to - this.sevFrom) * easeOutBack(e);
+    if (e >= 1) this.sevFrom = to;
+    this.dial(g, x0 + DIAL_R, y + 11, sev, c.openAt < 0 ? '' : v, t, e);
     let x = x0 + DIAL_R * 2 + 8;
     if (c.openAt >= 0) {
       x += g.text(this.word, x, y + 16.5, e > 0.5 ? col : C.ink3, 15, true);
@@ -246,18 +272,19 @@ export class Glance {
     if (c.menu) this.menuDraw(g, Math.min(cx, right - this.rowW), y + 26);
   }
 
-  /** The dial: a 28-px gauge, four sectors, the live one lit, the needle at `sev` (0..1 over 270°). */
-  private dial(g: Gfx, x: number, y: number, sev: number, vi: number, t: number, e: number): void {
-    const r = DIAL_R - 3, seg = SWEEP / 4, gap = 0.07;
+  /** The dial (w2-glance2): a 28-px gauge of the week (0..1 over 270°), three bands (to p50, to
+   *  p90, over), the needle's lit; the needle at `p`; broken rings it red on the beat. */
+  private dial(g: Gfx, x: number, y: number, p: number, v: Verdict | '', t: number, e: number): void {
+    const r = DIAL_R - 3, gap = 0.07, on0 = v !== '' && e > 0.5;
     g.begin_(); g.circle(x, y, DIAL_R - 0.5); g.fill('#141415');
-    for (let i = 0; i < 4; i++) {
-      const on = i === vi && e > 0.5;
-      const a = on ? (i === 3 ? 0.7 + 0.3 * pulse(t) : 1) : 0.26;
-      g.begin_(); g.arc(x, y, r, A0 + i * seg + gap, A0 + (i + 1) * seg - gap);
-      g.stroke(withA(COL[VERDICTS[i]], a), on ? 3.2 : 2.4);
+    for (const [a0, a1, bc] of BANDS) {
+      const on = on0 && p >= a0 && (p < a1 || a1 === 1);
+      g.begin_(); g.arc(x, y, r, A0 + a0 * SWEEP + gap, A0 + a1 * SWEEP - gap);
+      g.stroke(withA(bc, on ? 1 : 0.26), on ? 3.2 : 2.4);
     }
-    const ang = A0 + clamp(sev, 0, 1.04) * SWEEP;
-    const nc = vi >= 0 && e > 0.5 ? COL[VERDICTS[vi]] : C.ink3;
+    if (on0 && v === 'broken') { g.begin_(); g.circle(x, y, DIAL_R - 0.5); g.stroke(withA(C.red, 0.55 + 0.45 * pulse(t)), 1.4); }
+    const ang = A0 + clamp(p, 0, 1.02) * SWEEP;
+    const nc = on0 ? COL[v as Verdict] : C.ink3;
     g.begin_(); g.move(x - Math.cos(ang) * 3, y - Math.sin(ang) * 3); g.line(x + Math.cos(ang) * (r + 1), y + Math.sin(ang) * (r + 1));
     g.stroke(C.ink, 1.8);
     g.begin_(); g.circle(x, y, 2.6); g.fill(nc);
@@ -304,22 +331,35 @@ export class Glance {
       // the slab's front edge (screen): below it, the lower-left void
       const P = f.plan, FV = P.RETURN_V + 34;
       const edge: [number, number, number, number] = [cam.x(-112, FV), cam.y(-112, FV, 0), cam.x(P.CITY_U1, FV), cam.y(P.CITY_U1, FV, 0)];
+      // w2-glance2: the focal car names its own main line (labels.ts), so its callout gives way too
+      const focal = f.selected ? '' : (f.census.focal?.repo ?? '');
       c.dg.marks.hot.forEach((h, i) => {
         const ax = c.hotXY[i * 2], ay = c.hotXY[i * 2 + 1];
-        if (!(ax >= 0) || this.callouts.length >= 3) return;
-        if (h.kind === 'cluster' && h.id === tall) return;
-        const rest = F > 1 ? h.rest.replace(/\d+/, (n) => String(Number(n) * F)) : h.rest;
-        const parts: Tok[] = [[h.lead, h.red ? C.redText : h.kind === 'jam' ? C.amberText : C.ink, true], [rest, C.ink2]];
-        const w = g.width(h.lead, SMALL, true) + g.width(rest, SMALL);
+        if (!(ax >= 0) || this.callouts.length >= 2) return; // ≤ 2: the fleet frame's text budget (40 items, sy-client)
+        if ((h.kind === 'cluster' || h.kind === 'flaky') && h.id === tall) return;
+        if (h.kind === 'red' && h.id === focal) return;
+        // a flaky cluster never takes the first slot (w2-glance2, #6)
+        if (h.kind === 'flaky' && !this.callouts.length) return;
+        // counts × the stress factor, never the ages ("13h", "24h")
+        const rest = F > 1 ? h.rest.replace(/\d+(?![\dmhd])/g, (n) => String(Number(n) * F)) : h.rest;
+        const tone = h.tone ?? (h.red ? 'red' : h.kind === 'jam' ? 'amber' : 'ink');
+        const lc = tone === 'red' ? C.redText : tone === 'flaky' ? FLAKY : tone === 'amber' ? C.amberText : C.ink;
+        const parts: Tok[] = [[h.lead, lc, true], [rest, tone === 'flaky' ? C.ink3 : C.ink2]];
+        const tw = g.width(h.lead, SMALL, true) + g.width(rest, SMALL);
+        const w = tw + (h.tri ? 13 : 0);
         const pin = calloutPin(ax, ay, vis);
-        const at = calloutAt(ax, ay, w, vis, keep, edge);
+        // a group's callout: beside its dock, a short leader from the dock's right edge (the anchor)
+        const near: [number, number][] = [];
+        if (h.kind === 'group') for (const dy of [5, -9, 19]) for (let dx = 30; dx <= 102; dx += 12) near.push([ax + dx, ay + dy]);
+        const at = calloutAt(ax, ay, w, vis, keep, edge, near);
         if (!at) return;
         // the callout's own box joins what the next ones keep clear of
         keep.push({ x: at[0] - 5, y: at[1] - 13, w: w + 10, h: 18, m: 8 });
         // each callout is a lens: the cluster's (a failing run of it the world holds, else the
         // tests), the group's dock or district, the intake
         let kind = 'scanner', id = 'tests', label = 'tests';
-        if (h.kind === 'cluster') {
+        if (h.kind === 'red') { kind = 'repo'; id = h.id; label = h.lead; }
+        else if (h.kind === 'cluster' || h.kind === 'flaky') {
           const ex = insights().cluster(h.id)?.examples.find((pid) => f.world.pipelines.has(pid));
           if (ex) { kind = 'failure'; id = ex; label = h.lead; }
         } else if (h.kind === 'jam') { kind = 'intake'; id = 'intake'; label = 'intake'; }
@@ -328,7 +368,7 @@ export class Glance {
           if (h.id.startsWith('org:')) { kind = 'dock'; id = h.id.slice(4); label = h.lead; }
           else { const di = f.fx.districtBox.findIndex((b) => b.team.toLowerCase().replace(/\s+/g, '-') === h.id.slice(5)); kind = 'district'; id = String(di); label = f.fx.districtBox[di]?.team ?? h.lead; }
         }
-        this.callouts.push({ x: at[0], y: at[1], ax, ay, w, parts, kind, id, label, pin, src: `${h.kind}:${h.id}` });
+        this.callouts.push({ x: at[0], y: at[1], ax, ay, w, parts, kind, id, label, pin, src: `${h.kind}:${h.id}`, tri: h.tri ? tw : -1, edge: tone === 'red' ? '#4A2A2E' : tone === 'flaky' ? '#3A3032' : CHIP_EDGE });
       });
     }
     if (!this.callouts.length) return;
@@ -360,8 +400,9 @@ export class Glance {
     if (pins) g.fill(C.ink2);
     for (const o of this.callouts) {
       g.fillRect(o.x - 5, o.y - 13, o.w + 10, 18, tint(K_CARD, 0.92));
-      g.begin_(); g.rect(o.x - 4.5, o.y - 12.5, o.w + 9, 17); g.stroke(o.parts[0][1] === C.redText ? '#4A2A2E' : CHIP_EDGE, 1);
+      g.begin_(); g.rect(o.x - 4.5, o.y - 12.5, o.w + 9, 17); g.stroke(o.edge, 1);
       g.runs(o.parts, o.x, o.y, SMALL);
+      if (o.tri >= 0) tri(g, o.x + o.tri + 7, o.y - 4, 1, C.red); // the group's red trend rising
       f.fx.hit(o.x - 5, o.y - 13, o.w + 10, 18, o.kind, o.id, o.label);
     }
     g.alpha(1);
@@ -433,9 +474,19 @@ const VOID_R = 0.4, VOID_T = 0.62;
  *  the glance) or the LOWER-LEFT VOID (rows up from the strip, left of 40 % of the width), the
  *  candidate nearest its anchor whose box keeps clear of every `keep` box by its margin and of
  *  the anchor itself by 24 px, and stays EDGE px inside the visible area; null when none is free. */
-export function calloutAt(ax: number, ay: number, w: number, v: Vis, keep: readonly Keep[] = [], edge: readonly [number, number, number, number] | null = null): [number, number] | null {
+export function calloutAt(ax: number, ay: number, w: number, v: Vis, keep: readonly Keep[] = [], edge: readonly [number, number, number, number] | null = null, near: readonly (readonly [number, number])[] = []): [number, number] | null {
   const x0 = v.l + EDGE + 5, x1 = v.r - EDGE - 5 - w, y0 = v.t + EDGE + 13, y1 = v.b - EDGE - 5;
   if (x1 < x0 || y1 < y0) return null;
+  // w2-glance2 (overseer): places beside the anchor first (a group's: right of its dock), in order,
+  // each kept clear as the rest are; the first free one wins
+  for (const [nx, ny] of near) {
+    const x = Math.round(nx), y = Math.round(ny);
+    if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+    const bl = x - 5, bt = y - 13, br = x + w + 5, bb = y + 5;
+    if (ax > bl - KEEP && ax < br + KEEP && ay > bt - KEEP && ay < bb + KEEP) continue;
+    if (keep.some((k) => bl < k.x + k.w + k.m && br > k.x - k.m && bt < k.y + k.h + k.m && bb > k.y - k.m)) continue;
+    return [x, y];
+  }
   let best: [number, number] | null = null, bd = Infinity;
   const consider = (x: number, y: number) => {
     x = Math.round(clamp(x, x0, x1)); y = Math.round(clamp(y, y0, y1));
@@ -473,6 +524,12 @@ function arrowAt(o: { x: number; y: number; w: number; ax: number; ay: number },
     default: return [cx, b + 2, 0, 1];
   }
 }
+
+/** The needle's place for a verdict with no week to place it in. */
+const PLACE: Record<Verdict, number> = { flowing: 0.25, steady: 0.7, worse: 0.94, broken: 0.97 };
+
+/** 1st, 2nd, 3rd, 4th … */
+function ordinal(n: number): string { const t = n % 100, u = n % 10; return `${n}${t >= 11 && t <= 13 ? 'th' : u === 1 ? 'st' : u === 2 ? 'nd' : u === 3 ? 'rd' : 'th'}`; }
 
 function easeOutBack(x: number): number { const c1 = 1.4, c3 = c1 + 1; return x <= 0 ? 0 : x >= 1 ? 1 : 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); }
 
