@@ -232,6 +232,22 @@ const redSince = (s: Snapshot, from: number) => list(s.repos).filter((r) => (r.m
   ok(paint < 0.5, `a frame's coffee painting: ${paint.toFixed(3)} ms`);
 }
 
+// fab-w6b: a hotspot callout stays inside the floor (12 px margin) and pins to the edge its anchor left by
+{
+  const { calloutAt, calloutPin } = await import('../src/factory/glance.ts');
+  const vis = { l: 0, t: 68, r: 1440, b: 842 };
+  const at = calloutAt(1430, 420, 150, vis, () => true)!;
+  ok(at[0] - 5 >= 12 && at[0] + 150 + 5 <= 1440 - 12, `callout: clamped inside the right edge (x ${at[0]})`);
+  const hi = calloutAt(700, 40, 150, vis, () => true)!;
+  ok(hi[1] - 13 >= 68 + 12, `callout: clamped under the top row (y ${hi[1]})`);
+  const lo = calloutAt(700, 900, 150, vis, () => true)!;
+  ok(lo[1] + 5 <= 842 - 12, `callout: clamped over the time strip (y ${lo[1]})`);
+  let n = 0;
+  const taken = calloutAt(1430, 420, 150, vis, () => ++n > 3)!;
+  ok(taken && taken[0] + 155 <= 1428, 'callout: the placer\'s other candidates stay clamped too');
+  eq(calloutAt(700, 400, 150, vis, () => false), null, 'callout: no free place → none');
+  eq([calloutPin(700, 400, vis), calloutPin(1500, 400, vis), calloutPin(-30, 400, vis), calloutPin(700, 30, vis), calloutPin(700, 900, vis)], ['', 'r', 'l', 't', 'b'], 'callout: pinned to the edge its anchor left by');
+}
 void windowStart;
 console.log(fails ? `${fails} FAILED` : 'coffee: all ok');
 process.exit(fails ? 1 : 0);

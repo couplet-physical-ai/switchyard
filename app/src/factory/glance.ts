@@ -39,7 +39,14 @@ export const T_DIAL = 300, T_SWEEP = 1500, T_SETTLE = 7000, T_DONE = 7600;
 
 type Glyph = 'up' | 'down' | 'x' | 'app' | 'appOk' | 'dot' | 'merge' | 'smoke';
 type Counter = { key: string; glyph: Glyph; n: number; steps: string[]; col: string; gcol: string; label: string; w: number };
-type Callout = { x: number; y: number; ax: number; ay: number; w: number; parts: Tok[]; kind: string; id: string; label: string };
+/** A hotspot callout: its words' box (x, baseline y, width), its anchor, its lens, and the edge it
+ *  is pinned to when the anchor is off the floor ('' when the leader reaches the anchor). */
+type Callout = { x: number; y: number; ax: number; ay: number; w: number; parts: Tok[]; kind: string; id: string; label: string; pin: Pin };
+type Pin = '' | 'l' | 'r' | 't' | 'b';
+/** The floor's visible area (screen px): under the top row, over the time strip, left of a drawer. */
+type Vis = { l: number; t: number; r: number; b: number };
+/** A callout box's margin to the floor's visible edges (px). */
+const EDGE = 12;
 
 export class Glance {
   private key = [-1, -1, -1, -1];
@@ -191,7 +198,8 @@ export class Glance {
         if (!(ax >= 0)) return;
         const parts: Tok[] = [[h.lead, h.red ? C.redText : h.kind === 'jam' ? C.amberText : C.ink, true], [h.rest, C.ink2]];
         const w = g.width(h.lead, SMALL, true) + g.width(h.rest, SMALL);
-        const at = f.fx.placeAt(Math.round(ax + 16), Math.round(ay - 30), w, 14, 5, true);
+        const vis = this.floorBox(), pin = calloutPin(ax, ay, vis);
+        const at = calloutAt(ax, ay, w, vis, (x, y) => !!f.fx.placeAt(x, y, w, 14, 0, false));
         if (!at) return;
         // each callout is a lens: the cluster's (a failing run of it the world holds, else the
         // tests), the group's dock or district, the intake
@@ -204,14 +212,31 @@ export class Glance {
           if (h.id.startsWith('org:')) { kind = 'dock'; id = h.id.slice(4); label = h.lead; }
           else { const di = f.fx.districtBox.findIndex((b) => b.team.toLowerCase().replace(/\s+/g, '-') === h.id.slice(5)); kind = 'district'; id = String(di); label = f.fx.districtBox[di]?.team ?? h.lead; }
         }
-        this.callouts.push({ x: at[0], y: at[1], ax, ay, w, parts, kind, id, label });
+        this.callouts.push({ x: at[0], y: at[1], ax, ay, w, parts, kind, id, label, pin });
       });
     }
     if (!this.callouts.length) return;
     g.alpha(a);
+    // the leaders: from the true anchor, bent (a 45° knee) to the nearest point of the box
     g.begin_();
-    for (const o of this.callouts) { g.move(o.ax, o.ay); g.line(o.x - 2, o.y - 4); }
+    for (const o of this.callouts) {
+      if (o.pin) continue;
+      const px = clamp(o.ax, o.x - 5, o.x + o.w + 5), py = clamp(o.ay, o.y - 13, o.y + 5);
+      const dx = px - o.ax, dy = py - o.ay, k = Math.min(Math.abs(dx), Math.abs(dy));
+      if (Math.abs(dx) + Math.abs(dy) < 2) continue;
+      g.move(o.ax, o.ay); g.line(o.ax + Math.sign(dx) * k, o.ay + Math.sign(dy) * k); g.line(px, py);
+    }
     g.stroke(tint(K_RED, 0.5), 1);
+    // an anchor off the floor: the callout is pinned to the nearest edge, a small arrow toward it
+    g.begin_();
+    let pins = 0;
+    for (const o of this.callouts) {
+      if (!o.pin) continue;
+      const [px, py, ux, uy] = arrowAt(o, o.pin);
+      g.move(px + ux * 5, py + uy * 5); g.line(px - uy * 4, py + ux * 4); g.line(px + uy * 4, py - ux * 4); g.ctx.closePath();
+      pins++;
+    }
+    if (pins) g.fill(C.ink2);
     for (const o of this.callouts) {
       g.fillRect(o.x - 5, o.y - 13, o.w + 10, 18, tint(K_CARD, 0.92));
       g.begin_(); g.rect(o.x - 4.5, o.y - 12.5, o.w + 9, 17); g.stroke(o.parts[0][1] === C.redText ? '#4A2A2E' : CHIP_EDGE, 1);
@@ -219,6 +244,13 @@ export class Glance {
       f.fx.hit(o.x - 5, o.y - 13, o.w + 10, 18, o.kind, o.id, o.label);
     }
     g.alpha(1);
+  }
+
+  /** The floor's visible area: between the top row (the glance, y 46–68) and the time strip (the
+   *  bottom 58 px), left of the drawer when one is open. */
+  private floorBox(): Vis {
+    const f = this.c.f, cam = f.cam;
+    return { l: 0, t: 68, r: f.selected ? cam.W - 372 : cam.W, b: cam.H - 58 };
   }
 
   /** The "since" menu under its chip: one row per window, the chosen one marked. */
@@ -234,6 +266,46 @@ export class Glance {
       if (r.hint) g.text(r.hint, x + W - 10, ry + 15, C.ink3, SMALL, false, 'right');
       f.fx.hit(x, ry, W, H, 'since', r.win, r.label);
     });
+  }
+}
+
+/** The edge an off-floor anchor is past (the farther overshoot), '' when it is on the floor. */
+export function calloutPin(ax: number, ay: number, v: Vis): Pin {
+  const ol = v.l - ax, or = ax - v.r, ot = v.t - ay, ob = ay - v.b;
+  const m = Math.max(ol, or, ot, ob);
+  if (m <= 0) return '';
+  return m === ol ? 'l' : m === or ? 'r' : m === ot ? 't' : 'b';
+}
+
+/** A callout's place ([x, baseline y] of its words, `w` px wide; its box is 5 px wider each side,
+ *  13 px over and 5 under the baseline): up and to the right of its anchor as before, nudged by the
+ *  placer's candidates (rows up, shifts sideways), each CLAMPED so the box stays EDGE px inside
+ *  the floor's visible area; the first free one (`free` reserves it), else null. */
+export function calloutAt(ax: number, ay: number, w: number, v: Vis, free: (x: number, y: number) => boolean): [number, number] | null {
+  const x0 = v.l + EDGE + 5, x1 = v.r - EDGE - 5 - w, y0 = v.t + EDGE + 13, y1 = v.b - EDGE - 5;
+  if (x1 < x0 || y1 < y0) return null;
+  const seen = new Set<number>();
+  for (const dy of [0, -15, -30, 15, -45, 30, -60, -75]) {
+    for (const dx of [0, 28, -28, 56, -56, 90, -90]) {
+      const x = Math.round(clamp(ax + 16 + dx, x0, x1)), y = Math.round(clamp(ay - 30 + dy, y0, y1));
+      const key = x * 4096 + y;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (free(x, y)) return [x, y];
+    }
+  }
+  return null;
+}
+
+/** Where a pinned callout's arrow sits on its box and which way it points: [x, y, ux, uy]. */
+function arrowAt(o: { x: number; y: number; w: number; ax: number; ay: number }, pin: Pin): [number, number, number, number] {
+  const l = o.x - 5, r = o.x + o.w + 5, t = o.y - 13, b = o.y + 5;
+  const cy = clamp(o.ay, t + 6, b - 6), cx = clamp(o.ax, l + 8, r - 8);
+  switch (pin) {
+    case 'l': return [l - 2, cy, -1, 0];
+    case 'r': return [r + 2, cy, 1, 0];
+    case 't': return [cx, t - 2, 0, -1];
+    default: return [cx, b + 2, 0, 1];
   }
 }
 
