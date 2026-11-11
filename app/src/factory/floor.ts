@@ -699,7 +699,7 @@ export class Floor implements Layer {
   /** Posts on a lane's back curb: one per active repo, red first. A red post is a red cube on a
    *  stem as tall as its time in state (log); running amber; ok a small green-gray lamp. */
   private posts(g: Gfx, L: LaneGeo, info: LaneInfo, lo: boolean): void {
-    const cam = this.f.cam, now = this.f.tl.playhead;
+    const cam = this.f.cam, now = this.f.floorNow || this.f.tl.playhead; // fab-w7c: the paint's one instant
     const span = RAIL_U1 - RAIL_U0 - 8;
     const max = Math.floor(span / 3.6);
     const list = info.posts.length > max ? info.posts.slice(0, max) : info.posts;
@@ -710,7 +710,9 @@ export class Floor implements Layer {
     list.forEach((p, j) => {
       const u = RAIL_U0 + 4 + j * pitch;
       if (p.st === 0) {
-        const h = Math.min(14, 4 + 2.4 * Math.log2(1 + Math.max(0, now - p.since) / HOUR));
+        // fab-w7c: in steps of 1/8 (a grown post changes the static floor every minute or more, not
+        // at every repaint by a hair)
+        const h = Math.round(8 * Math.min(14, 4 + 2.4 * Math.log2(1 + Math.max(0, now - p.since) / HOUR))) / 8;
         stems.add(u, v, h);
         red.add(u - 1.6, v - 1.6, 3.2, 3.2, 2.6, h);
       } else if (p.st === 1) { stems.add(u, v, 4); run.add(u - 1.3, v - 1.3, 2.6, 2.6, 2.2, 4); }

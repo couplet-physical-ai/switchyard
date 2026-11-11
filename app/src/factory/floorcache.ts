@@ -939,10 +939,11 @@ export class FloorCache {
     this.last.drawn += rp.drawn; this.last.segs += rp.segs;
     return rp.ops + 2;
   }
-  /** Debug (the bench's pixel check): the last recording, painted whole into `ctx` (cleared). */
-  paintRecording(ctx: Ctx2D): void {
+  /** Debug (the bench's pixel check): the last recording (or `L`), painted whole into `ctx`
+   *  (cleared). */
+  paintRecording(ctx: Ctx2D, L: FList = this.rec.L): void {
     const d = this.last.drawn, s = this.last.segs;
-    this.whole(ctx, this.rec.L, false);
+    this.whole(ctx, L, false);
     this.last.drawn = d; this.last.segs = s;
   }
   /** Debug (the bench): the last flush's dirty tiles. */

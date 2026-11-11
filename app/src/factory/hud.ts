@@ -13,8 +13,9 @@ export type FacHudInfo = {
   crates: number; stressCrates: number; sprites: number; trains: number; cars: number; bays: number;
   labels: number; hits: number; floorRate: number; floorMs: number; floorOps: number; slept: number;
   scale: number; W: number; H: number;
-  /** fab-w7c: the static floor repaints by dirty tiles (off: every repaint whole, painted directly) */
-  tiles: boolean;
+  /** fab-w7c: the static floor repaints by dirty tiles ('on'), sends every data repaint whole
+   *  ('whole'), or is painted directly as before the cache ('off') */
+  tiles: 'on' | 'whole' | 'off';
 };
 type Rect = { x: number; y: number; w: number; h: number };
 
@@ -46,11 +47,11 @@ export class FacHud {
     const quality = { x: stress.x + sw + 8, y: by, w: qw, h: 16 };
     g.begin_(); g.rrect(quality.x, by, qw, 16, 4); g.stroke(C.chipEdge, 1);
     g.text(qs, quality.x + 7, by + 12, C.ink2, px);
-    const ts = i.tiles ? 'tiles on' : 'tiles off', tw = g.width('tiles off', px) + 14;
+    const ts = `tiles ${i.tiles}`, tw = g.width('tiles whole', px) + 14, on = i.tiles === 'on';
     const tiles = { x: quality.x + qw + 8, y: by, w: tw, h: 16 };
-    g.begin_(); g.rrect(tiles.x, by, tw, 16, 4); g.stroke(i.tiles ? C.chipEdge : C.redEdge, 1);
-    g.text(ts, tiles.x + 7, by + 12, i.tiles ? C.ink2 : C.redText, px);
-    g.text('⌘⇧D', x + w - 10, by + 12, C.ink3, px, false, 'right');
+    g.begin_(); g.rrect(tiles.x, by, tw, 16, 4); g.stroke(on ? C.chipEdge : C.redEdge, 1);
+    g.text(ts, tiles.x + 7, by + 12, on ? C.ink2 : C.redText, px);
+    if (tiles.x + tw + 8 + g.width('⌘⇧D', px) <= x + w - 10) g.text('⌘⇧D', x + w - 10, by + 12, C.ink3, px, false, 'right');
     return { stress, quality, tiles };
   }
 }
