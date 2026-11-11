@@ -148,9 +148,10 @@ const fixture = await Bun.file(new URL('../../contract/fixtures/snapshot.json', 
   const run = (pid: string, lane: string, s: number, e: number, running = false) => ({ pid, lane, start: now - s * M, end: running ? now : now - e * M, running, red: false });
   const past = dealSlots([run('a', 'labs', 50, 40), run('b', 'soft', 45, 30), run('c', 'labs', 35, 20), run('d', 'ems', 10, 0, true), run('old', 'ems', 200, 190)], 3, now);
   eq(past.length, 3, 'dealSlots: one past per slot');
-  // a 50→40 in slot 0; b 45→30 overlaps a → slot 1; c 35→20: slot 0 free again (a ended at 40)
-  eq(past.map((s) => s.last?.pid ?? ''), ['c', 'b', ''], 'dealSlots: each slot keeps its last ENDED job (a running one is not an afterimage)');
-  eq(past[0]!.runs.map((r) => r.pid), ['a', 'c', 'd'], 'dealSlots: slot 0 ran a, c, then d (running, the first slot free at its start)');
+  // old → slot 0 (ends 190 min ago); a 50→40 → slot 1 (never used: free longest); b 45→30 → slot 2;
+  // c 35→20 → slot 0 (free since 190); d (running, from 10) → slot 1 (free since 40, the longest)
+  eq(past.map((s) => s.last?.pid ?? ''), ['c', 'a', 'b'], 'dealSlots: each slot keeps its last ENDED job (a running one is not an afterimage)');
+  eq(past.map((s) => s.runs.map((r) => r.pid).join('')), ['c', 'ad', 'b'], 'dealSlots: jobs go round the slots free the longest (an idle machine shows its last few side by side)');
   ok(!past.some((s) => s.runs.some((r) => r.pid === 'old')), 'dealSlots: a job older than an hour leaves no lip tick');
   eq(dealSlots([], 0, now).length, 1, 'dealSlots: at least one slot');
   eq([afterK(0), afterK(AFTER_MS / 2), afterK(AFTER_MS - 1), afterK(AFTER_MS), afterK(-5)], [1, 0.5, 1 / 6, 0, 0], 'afterK: 1 → 0 over 30 min, in sixths; nothing after 30 min or for a future end');
@@ -165,6 +166,7 @@ const fixture = await Bun.file(new URL('../../contract/fixtures/snapshot.json', 
   const { flakyCluster } = await import('../src/factory/clusters.ts');
   eq([flakyCluster({ count: 67, flaky: 27 }), flakyCluster({ count: 19, flaky: 0 }), flakyCluster({ count: 8, flaky: 4 }), flakyCluster({ count: 40, flaky: 3 }), flakyCluster({ count: 4, flaky: 1 })], [true, false, true, false, false], 'flakyCluster: ≥ a quarter of its 24 h failures (and ≥ 2) passed on the same sha');
   eq([flakyCluster(null, { n: 3, flaky: 2 }), flakyCluster(null, { n: 3, flaky: 1 }), flakyCluster(undefined, { n: 1, flaky: 0 })], [true, false, false], 'flakyCluster: no record → half its parked failures flaky');
+  eq([flakyCluster({ count: 1 }, { n: 1, flaky: 0 }, { flips: 27, failures: 67 }), flakyCluster({ count: 1 }, { n: 1, flaky: 0 }, { flips: 1, failures: 67 })], [true, false], 'flakyCluster: a cluster opened again today keeps its step\'s flakes (the cron: 27 of 67)');
 }
 
 // w2-engine2 (WOW #1): a failed run's light packet drops off the scanner into its heap

@@ -112,7 +112,7 @@ export function heatLevel(v: number, max: number): number {
   return v > 0 && max > 0 ? 1 + Math.min(6, Math.floor(6 * Math.sqrt(v / max))) : 0;
 }
 /** The yard's paint: a bay's floor in its lane hue (15 %), a level's alpha over it, the outline. */
-const YARD_BAY = 0.09, YARD_LVL = [0, 0.2, 0.28, 0.37, 0.47, 0.58, 0.7, 0.84], YARD_EDGE = '#3A3A3F';
+const YARD_BAY = 0.09, YARD_LVL = [0, 0.18, 0.25, 0.32, 0.4, 0.48, 0.57, 0.66], YARD_EDGE = '#3A3A3F';
 /** A slot's afterimage at full strength (the lane hue over the idle bay), its lip ticks' strip
  *  (v past the bay's front) and the inner wall's tide strip (v past the machine's back). */
 const AFTER_A = 0.18, TICK_V0 = 11, TICK_V1 = 19, TIDE_V0 = WALL_V + 1.5, TIDE_V1 = 14;

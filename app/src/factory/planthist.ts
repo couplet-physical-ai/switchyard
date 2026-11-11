@@ -209,8 +209,9 @@ export class PlantHist {
 // ── w2-engine2 (REVIEW-iter3 #3): a slot's own recent past ──
 //
 // The server reports a machine's busy/slots, never which slot ran what; the floor's bays are its
-// slots. So the last hour's runs on a machine are dealt to its slots as a host would: in start
-// order, each to the lowest slot free at its start (interval colouring), the busiest slot first.
+// slots. So the last hour's runs on a machine are dealt to its slots as a pool would: in start
+// order, each to the slot that has been free the longest (an idle machine's slots then show its
+// last few jobs side by side, newest to oldest, rather than all in its first).
 // A slot then knows its LAST job (the afterimage: its lane hue fading over AFTER_MS) and every job
 // it ran in the last TICKS_MS (a hue tick each on its lip, at its start time).
 
@@ -222,8 +223,8 @@ export const TICKS_MS = 60 * 60_000;
 export type SlotRun = { pid: string; lane: string; start: number; end: number; running: boolean; red: boolean };
 export type SlotPast = { last: SlotRun | null; runs: SlotRun[] };
 
-/** Deals `runs` (one machine's, any order) to `slots` slots: each run to the lowest slot free at its
- *  start, else the slot that frees first. Returns per slot its last ended run and the runs that
+/** Deals `runs` (one machine's, any order) to `slots` slots: each run to the slot free the longest
+ *  at its start, else the slot that frees first. Returns per slot its last ended run and the runs that
  *  started within TICKS_MS of `now`, oldest first. */
 export function dealSlots(runs: readonly SlotRun[], slots: number, now: number): SlotPast[] {
   const n = Math.max(1, slots | 0);
@@ -231,8 +232,9 @@ export function dealSlots(runs: readonly SlotRun[], slots: number, now: number):
   const free = new Float64Array(n).fill(-Infinity);
   const sorted = runs.slice().sort((a, b) => a.start - b.start || (a.pid < b.pid ? -1 : 1));
   for (const r of sorted) {
+    // the slot free the longest (a pool hands work round its idle slots), else the one that frees first
     let k = -1;
-    for (let i = 0; i < n; i++) if (free[i]! <= r.start) { k = i; break; }
+    for (let i = 0; i < n; i++) if (free[i]! <= r.start && (k < 0 || free[i]! < free[k]!)) k = i;
     if (k < 0) { k = 0; for (let i = 1; i < n; i++) if (free[i]! < free[k]!) k = i; }
     free[k] = r.running ? Infinity : r.end;
     const s = out[k]!;
