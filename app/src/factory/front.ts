@@ -19,9 +19,15 @@
 //                    same length (24 h), as wide as its day's volume (√). Its hours are bars across
 //                    the road in the lane's hue; an hour whose failures ran over the lane's p90
 //                    gets red tips (≤ 30 % of the bar): bright for the last hour, desaturated after.
+//                    fx-polish (overseer note 10): the fan runs on its own APRON, the dark band
+//                    left of the slab (the roads' hull, edged like the slab), and every road
+//                    starts 24 h back at an ORIGIN MARK inside it: a curb stub across the road
+//                    and a post, in the lane's hue. Nothing runs off into the void.
 //   lane curbs       §E: along the front strip, in front of the PR yard, the main lines and the
 //                    engine, one row per lane in its hue and in lane order: the lane's failures an
-//                    hour as a step profile, red only above its p90 (dashed).
+//                    hour as a step profile, red only above its p90 (dashed). fx-polish (note 11):
+//                    each row's left end is capped by its dock's hue chip, and every row is a
+//                    hover (the lane, its failures an hour over 24 h) and the group's lens.
 //
 // STATIC: all of it paints on the static floor from data that changes only when the lanes' count
 // does (floor.ts `data.ver`, at most every 2 s of fleet time), or the group counts, or the trends:
@@ -37,10 +43,10 @@ import { BOTS } from '../world.ts';
 import { baseline, type BaseMetric } from './agg/baseline.ts';
 import type { Factory } from './factory.ts';
 import { floorGroups } from './groups.ts';
-import { LV } from './iso.ts';
+import { LV, UY, VY } from './iso.ts';
 import { PLAN } from './layout.ts';
 import { breathe } from './motion.ts';
-import { F, poly } from './prims.ts';
+import { F, box, poly } from './prims.ts';
 import { failuresOf, threshold, trendOfLane } from './trendmarks.ts';
 import type { FloorPass, HitBox, Layer, LiveFrame } from './types.ts';
 
@@ -80,8 +86,14 @@ export function curbV(i: number, u: number): number { return CURB.V0 + i * (CURB
 /** The approach roads: the stub's end (u, back lane → front lane), the fan's angles (world, from
  *  −u toward +v), the roads' length, their half width (min, max). */
 const ROAD = { U1A: -10, U1B: -58, A0: (-8 * Math.PI) / 180, A1: (113 * Math.PI) / 180, LEN: 420, HW0: 2.5, HW1: 11 } as const;
-/** The nominal fit the roads are kept on screen at (iso.ts at 1440 × 840: s, ox, oy). */
-const FIT = { s: 0.848, ox: 305.5, oy: 160.1, x0: 14, y0: 44, y1: 768 } as const;
+/** The nominal fit the roads are kept on screen at (iso.ts at 1440 × 840: s, ox, oy); x0 leaves
+ *  the apron's rim and the origin posts inside the screen. */
+const FIT = { s: 0.848, ox: 305.5, oy: 160.1, x0: 30, y0: 52, y1: 768 } as const;
+/** fx-polish: the apron's rim beyond the roads (u), the origin mark (stub depth, post side and
+ *  height, u / z), the curbs' end cap (u long, z high). */
+const APRON = { RIM: 9 } as const;
+const ORIGIN = { DEPTH: 2.6, POST: 3.2, Z: 9 } as const;
+const CAP = { DU: 7, Z: 4.5 } as const;
 
 /** One lane's road and curb for this count. */
 type LaneEdge = {
@@ -115,7 +127,11 @@ export class Front implements Layer {
   private key = '';
   private lanes: LaneEdge[] = [];
   private boards: BoardData[] = [];
+  /** fx-polish: the roads' apron (the dark band they run on), floor polygons off the slab. */
+  private apron: Pt[][] = [];
   private hov = new Map<HitBox, string[]>();
+  /** fx-polish: the curbs' hit boxes → their lane (hover's chart; lens.ts `part`). */
+  private curbHits = new Map<HitBox, LaneEdge>();
   private seeded = -1;
 
   constructor(readonly f: Factory) {}
@@ -217,6 +233,7 @@ export class Front implements Layer {
       }
     }
     for (const e of out) { const [p1, p2] = [e.road[1]!, e.road[2]!]; e.road[2] = [p1[0] + ((p2[0] - p1[0]) * len) / ROAD.LEN, p1[1] + ((p2[1] - p1[1]) * len) / ROAD.LEN]; }
+    this.apron = apronOf(out);
     return out;
   }
 
@@ -429,6 +446,32 @@ export class Front implements Layer {
   private paintRoads(g: Gfx, lo: boolean): void {
     const cam = this.f.cam;
     const capNow: number[] = [], capOld: number[] = [];
+    // fx-polish: the apron first (the dark band the fan runs on), edged like the slab, its rim
+    // along the slab's left edge left open (the slab's own edge is there)
+    for (const A of this.apron) {
+      if (A.length < 3) continue;
+      // a seam with the slab (u 0 or v LV, both ends on it) is no edge
+      const seam = (a: Pt, b: Pt) => (Math.abs(a[0]) < 0.5 && Math.abs(b[0]) < 0.5) || (Math.abs(a[1] - LV) < 0.5 && Math.abs(b[1] - LV) < 0.5);
+      // its lip: the edges facing the camera drop 4 units, as the slab's front lip does
+      g.begin_();
+      for (let k = 0; k < A.length; k++) {
+        const a = A[k]!, b = A[(k + 1) % A.length]!;
+        if (seam(a, b) || (b[1] - a[1]) * UY - (b[0] - a[0]) * VY <= 0) continue;
+        poly(cam, g, [a[0], a[1], 0, b[0], b[1], 0, b[0], b[1], -4, a[0], a[1], -4]);
+      }
+      g.fill('#0A0A0B');
+      g.begin_(); A.forEach(([u, v], k) => (k ? g.line(cam.x(u, v), cam.y(u, v)) : g.move(cam.x(u, v), cam.y(u, v)))); g.ctx.closePath(); g.fill(F.floor);
+      g.begin_();
+      let pen = false;
+      for (let k = 0; k < A.length; k++) {
+        const a = A[k]!, b = A[(k + 1) % A.length]!;
+        if (seam(a, b)) { pen = false; continue; }
+        if (!pen) g.move(cam.x(a[0], a[1]), cam.y(a[0], a[1]));
+        g.line(cam.x(b[0], b[1]), cam.y(b[0], b[1])); pen = true;
+      }
+      g.stroke('#2A2A2E', g.hair * 1.5);
+      g.ops += A.length * 7;
+    }
     for (const L of this.lanes) {
       const pts = L.road;
       g.begin_(); ribbon(cam, g, pts, L.hw + 1); g.fill(withAlpha(L.hex, 0.09));
@@ -482,7 +525,27 @@ export class Front implements Layer {
         tips(capOld, RUST);
         tips(capNow, F.redTop);
       }
+      this.origin(g, L, tu, tv, nu, nv);
     }
+  }
+
+  /** fx-polish (note 10): where a road starts, 24 h back: a low curb stub across its far end and a
+   *  post at its middle, in the lane's hue (lit top, shaded faces), inside the apron. */
+  private origin(g: Gfx, L: LaneEdge, tu: number, tv: number, nu: number, nv: number): void {
+    const cam = this.f.cam, p2 = L.road[2]!, w = L.hw + 2.5, d = ORIGIN.DEPTH;
+    const [cu, cv] = [p2[0] + tu * d * 0.5, p2[1] + tv * d * 0.5];
+    const P = (s: number, n: number, z: number): Pt => [cam.x(cu + tu * s + nu * n, cv + tv * s + nv * n), cam.y(cu + tu * s + nu * n, cv + tv * s + nv * n, z)];
+    const face = (pts: Pt[], col: string) => { g.begin_(); pts.forEach(([x, y], k) => (k ? g.line(x, y) : g.move(x, y))); g.ctx.closePath(); g.fill(col); };
+    const dark = mixDark(L.hex), mid = withAlpha(L.hex, 0.55);
+    // the stub: its two faces toward the camera (+v), then its top
+    const zs = 2.2;
+    face([P(-d / 2, -w, 0), P(-d / 2, w, 0), P(-d / 2, w, zs), P(-d / 2, -w, zs)], dark);
+    face([P(d / 2, -w, 0), P(d / 2, w, 0), P(d / 2, w, zs), P(d / 2, -w, zs)], dark);
+    face([P(-d / 2, -w, zs), P(-d / 2, w, zs), P(d / 2, w, zs), P(d / 2, -w, zs)], withAlpha(L.hex, 0.9));
+    // the post (axis-aligned, so its faces read as the docks' do)
+    const q = ORIGIN.POST;
+    box(cam, g, cu - q / 2, cv - q / 2, q, q, ORIGIN.Z, L.hex, dark, mid, withAlpha(L.hex, 0.9), Math.max(1, g.hair));
+    g.ops += 24;
   }
 
   /** The lane curbs: per lane a row along the front strip, far rows first (a near row's profile
@@ -512,6 +575,8 @@ export class Front implements Layer {
       if (any) { g.begin_(); outline(); g.ctx.closePath(); g.fill(withAlpha(mixDark(L.hex), 0.92)); g.begin_(); outline(); g.ctx.closePath(); g.fill(withAlpha(L.hex, 0.26)); }
       g.begin_(); outline(); g.stroke(withAlpha(L.hex, any ? 0.95 : 0.55), Math.max(1, g.hair * (any ? 1.6 : 1.2)));
       g.ops += 150;
+      // fx-polish (note 11): the row's end cap, its dock's hue chip (a low block before its oldest hour)
+      box(cam, g, CURB.U0 - CAP.DU - 1, va - 0.6, CAP.DU, CURB.DV + 1.2, CAP.Z, L.hex, mixDark(L.hex), withAlpha(L.hex, 0.55), withAlpha(L.hex, 0.9), Math.max(1, g.hair));
       if (!any) continue;
       // over p90: the part above the threshold, red in the current hour, rust before it
       const zt = zOf(L.thr);
@@ -540,6 +605,7 @@ export class Front implements Layer {
   // ---- hits and hover --------------------------------------------------------------------------
   hits(fr: LiveFrame): void {
     this.hov.clear();
+    this.curbHits.clear();
     if (!this.on) return;
     void fr;
     const f = this.f, cam = f.cam, G = floorGroups(), c = f.census;
@@ -569,8 +635,10 @@ export class Front implements Layer {
       return team ? ['district', team.team, `${team.team} ${team.apps.length}`] : ['', '', ''];
     };
     for (const L of this.lanes) {
-      const [k, id, label] = lensOf(L.id);
-      if (!k) continue;
+      // fx-polish (note 11): a lane with no lens to open still names itself on hover (kind 'roadx' /
+      // 'curbx': no click), so every road and every curb answers
+      const [k0, id0, label0] = lensOf(L.id);
+      const [k, id, label] = k0 ? [k0, id0, label0] : ['roadx', L.id, L.name];
       const over = L.fail.filter((x) => x > L.thr).length;
       const vmax = Math.max(0, ...L.vol.map((x) => x ?? 0));
       const roadLines = [`${L.name} · ${L.volWhat} an hour, 24 h`, `${Math.round(sum(L.vol)).toLocaleString('en-US')} ${L.volWhat} · busiest hour ${Math.round(vmax)}`, over ? `${over} h of failures over ${L.thrWhy} (red tips)` : `failures stayed under ${L.thrWhy}`];
@@ -584,13 +652,26 @@ export class Front implements Layer {
         push(x0, y0, x1 - x0, y1 - y0, k, id, label, roadLines);
       }
       const curbLines = [`${L.name} · failures an hour, 24 h`, `${Math.round(sum(L.fail))} failed · this hour ${Math.round(L.fail[23]!)} · ${L.thrWhy}`, over ? `${over} h over it (red)` : 'no hour over it'];
-      for (let u = CURB.U0; u < CURB.U1 - 0.5; u += 40) {
-        const u2 = Math.min(CURB.U1, u + 40);
-        const va = curbV(L.i, u), vb = curbV(L.i, u2);
+      // (the end cap first: its chip is the row's handle)
+      for (let u = CURB.U0 - CAP.DU - 1; u < CURB.U1 - 0.5; u = u < CURB.U0 ? CURB.U0 : u + 40) {
+        const u2 = u < CURB.U0 ? CURB.U0 : Math.min(CURB.U1, u + 40);
+        const va = curbV(L.i, Math.max(CURB.U0, u)), vb = curbV(L.i, u2);
         const x0 = cam.x(u, va + CURB.DV), x1 = cam.x(u2, vb), y0 = cam.y(u, va, CURB.Z), y1 = cam.y(u2, vb + CURB.DV, 0);
-        push(x0, y0, x1 - x0, Math.max(6, y1 - y0), k, id, label, curbLines);
+        const before = f.fx.hits.length;
+        push(x0, y0, x1 - x0, Math.max(6, y1 - y0), k0 ? k : 'curbx', id, label, curbLines);
+        const hb = f.fx.hits[f.fx.hits.length - 1];
+        if (f.fx.hits.length > before && hb) this.curbHits.set(hb, L);
       }
     }
+  }
+
+  /** fx-polish: the lane curb a hit is (its lane's id, failures an hour and red threshold), null
+   *  when it is not one (lens.ts `part` tells a curb from the lane's other parts by this). */
+  curbOf(h: { x: number; y: number; w: number; h: number }): { id: string; name: string; fail: number[]; thr: number } | null {
+    const e = this.curbHits.get(h as HitBox);
+    if (e) return e;
+    for (const [b, L] of this.curbHits) if (b.x === h.x && b.y === h.y && b.w === h.w && b.h === h.h) return L;
+    return null;
   }
 
   /** A board's hover lines (≤ 3). */
@@ -611,6 +692,9 @@ export class Front implements Layer {
   }
 
   hoverFor(h: HitBox): string[] | null { return this.hov.get(h) ?? null; }
+
+  /** fx-polish (note 11): the key's curb row (legend.ts reaches it by the layer's name). */
+  legendRow(g: Gfx, x: number, y: number, W: number, H: number, yy: number): number { return this.on && this.lanes.length ? legendCurbRow(g, this.f, x, y, W, H, yy) : yy; }
 
   /** A board's day for the hover card's chart (by its title or stage), null when none. */
   spark(id: string): (number | null)[] | null {
@@ -679,6 +763,49 @@ function mixDark(hex: string): string {
   return `#${c(16)}${c(8)}${c(0)}`;
 }
 
+/** fx-polish: the roads' apron, the dark band the fan runs on: the convex hull of every road's
+ *  band (its half width plus a rim) and its origin mark, less the slab: the part left of it
+ *  (u ≤ 0) and, when the front road reaches past the slab's front edge, the part in front (v ≥ LV,
+ *  u ≥ 0). Their seams (u 0, v LV) are not edges. */
+function apronOf(lanes: readonly LaneEdge[]): Pt[][] {
+  const pts: Pt[] = [];
+  for (const L of lanes) {
+    const [p0, p1, p2] = [L.road[0]!, L.road[1]!, L.road[2]!];
+    const du = p2[0] - p1[0], dv = p2[1] - p1[1], len = Math.hypot(du, dv) || 1;
+    const tu = du / len, tv = dv / len, nu = -tv, nv = tu, r = L.hw + APRON.RIM, e = APRON.RIM + ORIGIN.DEPTH;
+    const end: Pt = [p2[0] + tu * e, p2[1] + tv * e];
+    for (const s of [-1, 1]) {
+      pts.push([p1[0] + nu * r * s, p1[1] + nv * r * s], [end[0] + nu * r * s, end[1] + nv * r * s]);
+      pts.push([0, p0[1] + r * s]);
+    }
+  }
+  // the hull less the slab: its part left of the slab (u ≤ 0) and its part in front of it (v ≥ LV)
+  const H = hull(pts), left = clipHalf(H, (p) => p[0]), front = clipHalf(clipHalf(H, (p) => LV - p[1]), (p) => -p[0]);
+  return front.length > 2 ? [left, front] : [left];
+}
+
+/** The convex hull of floor points (Andrew's monotone chain), counter-clockwise. */
+function hull(ps: Pt[]): Pt[] {
+  const p = ps.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  if (p.length < 3) return p;
+  const cross = (o: Pt, a: Pt, b: Pt) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lo: Pt[] = [], up: Pt[] = [];
+  for (const q of p) { while (lo.length >= 2 && cross(lo[lo.length - 2]!, lo[lo.length - 1]!, q) <= 0) lo.pop(); lo.push(q); }
+  for (let i = p.length - 1; i >= 0; i--) { const q = p[i]!; while (up.length >= 2 && cross(up[up.length - 2]!, up[up.length - 1]!, q) <= 0) up.pop(); up.push(q); }
+  return lo.slice(0, -1).concat(up.slice(0, -1));
+}
+
+/** A polygon clipped to the half-plane d(p) ≤ 0 (d linear: the crossing is interpolated). */
+function clipHalf(poly: Pt[], d: (p: Pt) => number): Pt[] {
+  const out: Pt[] = [];
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i]!, b = poly[(i + 1) % poly.length]!, da = d(a), db = d(b);
+    if (da <= 0) out.push(a);
+    if ((da <= 0) !== (db <= 0)) { const t = da / (da - db); out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]); }
+  }
+  return out;
+}
+
 /** A 24-value spark with every hour present, else null. */
 function full(sp: (number | null)[] | null | undefined): Series | null {
   if (!sp || sp.length !== 24) return null;
@@ -739,6 +866,26 @@ function ribbon(cam: Factory['cam'], g: Gfx, pts: Pt[], hw: number): void {
 /** The band's two edges (open paths). */
 function edges(cam: Factory['cam'], g: Gfx, pts: Pt[], hw: number): void {
   for (const s of [-1, 1]) pts.forEach((p, k) => { const [nu, nv] = normalAt(pts, k); const x = cam.x(p[0] + nu * hw * s, p[1] + nv * hw * s), y = cam.y(p[0] + nu * hw * s, p[1] + nv * hw * s); if (k) g.line(x, y); else g.move(x, y); });
+}
+
+/** fx-polish (note 11): the key's row for the lane curbs (legend.ts calls it after its grammar
+ *  rows; one row, 21 px): the card grows by the row (its bottom edge redrawn lower), a small
+ *  profile behind its hue chip, the word and what it says. Returns the next row's baseline. */
+function legendCurbRow(g: Gfx, f: Factory, x: number, y: number, W: number, H: number, yy: number): number {
+  const ROW = 21, CARD = '#111112', EDGE = '#2E2E30', hue = '#96C7D6';
+  g.fillRect(x + 1, y + H - 1.5, W - 2, ROW + 1.5, withAlpha(CARD, 0.96));
+  g.begin_(); g.move(x + 0.5, y + H - 1); g.line(x + 0.5, y + H + ROW - 0.5); g.line(x + W - 0.5, y + H + ROW - 0.5); g.line(x + W - 0.5, y + H - 1); g.stroke(EDGE, 1);
+  f.hit(x, y + H, W, ROW, 'legendpanel', '', '');
+  // the glyph: the hue chip, then a step profile in the hue, its last step red (over its p90)
+  const cx = x + 34, cy = yy - 4;
+  g.fillRect(cx - 16, cy - 1, 5, 6, hue);
+  const st = [2, 4, 3, 6, 4, 9];
+  g.begin_(); g.move(cx - 10, cy + 5);
+  st.forEach((h, k) => { g.line(cx - 10 + k * 4.4, cy + 5 - h); g.line(cx - 10 + (k + 1) * 4.4, cy + 5 - h); });
+  g.line(cx + 16.4, cy + 5); g.stroke(hue, 1.2);
+  g.fillRect(cx + 12, cy - 4, 4.4, 3, F.redTop);
+  g.runs([['curb', C.ink, true], ['  a lane\'s fails/h, 24 h', C.ink3]], x + 70, yy, 12, W - 80);
+  return yy + ROW;
 }
 
 /** The front layer of a factory (labels.ts reaches it for the titles and hover lines). */

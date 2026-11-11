@@ -41,6 +41,7 @@ import { Hover } from './hover.ts';
 import { BOTS_LANE, OTHER_LANE, floorGroups, groupLabel } from './groups.ts'; // sy-client: ◇ org names
 import { stackH } from './floor.ts';
 import { LANE_V0, LANE_V1 } from './layout.ts';
+import { UX, UY, VX, VY, ZK } from './iso.ts'; // fx-polish: framing
 import { normTeam } from '../../server/floor.ts';
 import { drawCompare } from './compare.ts';
 import { drawLegend } from './legend.ts'; // fab-w1
@@ -145,6 +146,104 @@ export class Lenses {
     if (this.stack.length >= 6) this.stack.shift();
     this.stack.push(l);
     this.enter(t);
+    this.frame(l, t);
+  }
+
+  // ---- framing (fx-polish, round 3 #3) -----------------------------------------------------------
+  /** The camera eases to frame a pushed lens's subject AND its tethers (an app's amber tether to
+   *  its main line, a track's lines to its apps, a cluster's threads to its repos, a group's way
+   *  from its docks to its districts) when they do not fit the view: zooming out as far as needed
+   *  (never past the fit, never in) and centring them between the top row and the strip. At the
+   *  fit, unpanned, the whole floor is in view: nothing moves. */
+  private frame(l: Lens, t: number): void {
+    const cam = this.f.cam;
+    if (l.kind === 'pipeline' || (cam.zoom <= 1.001 && Math.abs(cam.panX) < 1 && Math.abs(cam.panY) < 1)) return;
+    const p = this.framePoints(l);
+    const to = frameTo(cam, p, FRAME_BOX(cam.W, cam.H), CARD_BOX(cam.W, cam.H));
+    if (to) cam.flyTo(to[0], to[1], to[2], t);
+  }
+
+  /** A lens's subject and the far ends of its tethers, as floor points (u, v, z flat). */
+  framePoints(l: Lens): number[] {
+    const f = this.f, P = f.plan, c = f.census, w = f.world, fx = this.fx, rel = this.rel, st = this.story, fl = f.floor;
+    const out: number[] = [];
+    const at = (u: number, v: number, z = 0) => { if (Number.isFinite(u) && Number.isFinite(v)) out.push(u, v, z); };
+    const block = (id: string) => { const b = fx.blockAt.get(id); if (b) at(b.u + b.d / 2, b.v + b.d / 2, b.h); };
+    const spot = (s: [number, number] | null | undefined, z = 6) => { if (s) at(s[0], s[1], z); };
+    switch (l.kind) {
+      case 'app': {
+        block(l.id);
+        const a = w.apps.get(l.id);
+        if (!a?.repo) break;
+        // the tether's far end: the city's (its org's rail, at the repo's newest car, city.ts
+        // `tether`) and the lens's own (the live commit's car, else the repo's spot)
+        const org = w.orgOf(a.repo), ri = c.rails.findIndex((r) => r.org === org);
+        const rv = ri >= 0 ? (P.RAIL_V[ri] ?? f.railV(org)) : f.railV(org);
+        let ru = P.RAIL_U1 - 6;
+        const rail = ri >= 0 ? c.rails[ri] : undefined;
+        if (rail) rail.cars.forEach((car, k) => { const u = P.RAIL_U1 - 12 - (rail.cars.length - 1 - k) * 10; if (car.repo === a.repo && u >= P.RAIL_U0 + 4) ru = u; });
+        at(ru, rv, 5);
+        if (fl.on) spot((a.live_sha ? fl.carSpot(`${a.repo}@${a.live_sha}`) : null) ?? fl.repoSpot(a.repo));
+        break;
+      }
+      case 'track': {
+        at(P.TRACK_U1, P.TRACK_V[Number(l.id)] ?? P.TRACK_V[0], 2);
+        let n = 0;
+        for (const id of rel?.apps ?? []) { if (n++ > 80) break; block(id); }
+        break;
+      }
+      case 'scanner': {
+        at(P.SCAN_U, 300, 56);
+        if (fl.on) for (const repo of rel?.repos ?? []) spot(fl.culpritSpot(repo));
+        for (const x of this.parked) if (rel?.fails.has(x.id)) at(x.u, P.RETURN_V, 8);
+        break;
+      }
+      case 'failure': {
+        const pg = st?.k !== undefined && st.k >= 0 ? this.parkGroups[st.k] : undefined;
+        at(pg ? (pg.u0 + pg.u1) / 2 : P.SCAN_U - 30, P.RETURN_V, 40);
+        const repos = new Set([...(st?.cf?.repos ?? []), ...(st?.items ?? []).map((i) => i.state ?? '')]);
+        for (const repo of repos) {
+          if (!repo) continue;
+          const cs = fl.on ? fl.culpritSpot(repo) : null;
+          if (cs) spot(cs); else at(P.DOCK_U1, this.repoDockV(repo), 14);
+        }
+        break;
+      }
+      case 'group': case 'org': {
+        if (fl.on && rel) for (const id of this.litLanes(rel)) { const lp = fl.lanePath(id); const a0 = lp?.[0][0]; if (a0) at(a0[0], a0[1]); }
+        else if (l.kind === 'org') at(P.DOCK_U1, fx.dockV(l.id), 10);
+        for (const di of rel?.districts ?? []) { const d = fx.districtBox[di]; if (d) { at(d.u0, d.v0); at(d.u1, d.v1); } }
+        break;
+      }
+      case 'vm': {
+        const gi = st?.gi ?? Number(l.id), gr = c.groups[gi];
+        const v0 = P.ENG_V0 + gi * P.ENG_STEP;
+        at(P.ENG_U0, v0, P.ENG_H); at(P.ENG_U1 + 40, v0 + P.ENG_DV, 0);
+        if (gr) at(P.INTAKE_U1, P.LANE_V[gr.hosted ? 1 : 0], 1);
+        break;
+      }
+      case 'cell': {
+        const [lid, rs] = l.id.split('|'), r = Number(rs), L = fl.lanesNow[fl.laneIndex(lid)];
+        if (L) { at(P.ROW_U[r] - 25, L.s.cell0, 10); at(P.ROW_U[r] + 25, L.s.cell1, 0); at(P.GATE_U - 2, L.s.belt, 1); }
+        break;
+      }
+      case 'stack': { const [r, b] = l.id.split(',').map(Number); at(P.ROW_U[r], P.AGE_V[b] + P.STACK_DV / 2, 20); at(P.GATE_U - 2, P.AGE_V[b] + P.STACK_DV / 2, 1); break; }
+      case 'pallet': { const pb = fl.on ? fl.palletBox(l.id) : null; if (pb) { at(pb[0], pb[1], pb[4]); at(pb[0] + pb[2], pb[1] + pb[3]); at(P.GATE_U - 2, pb[1] + pb[3] / 2, 1); } break; }
+      case 'repo': spot((l.sub ? fl.carSpot(`${l.id}@${l.sub}`) : null) ?? fl.repoSpot(l.id)); break;
+      case 'bay': { const b = fx.bays.find((x) => `${x.group},${x.slot}` === l.id); if (b) { at(b.u, b.v, P.ENG_H); at(b.u + b.du, b.v + b.dv); } break; }
+      case 'queue': at(P.INTAKE_U0, P.LANE_V[0], 8); at(P.INTAKE_U1, P.LANE_V[1], 0); break;
+      case 'rail': { const L = fl.lanesNow[fl.laneIndex(l.id)]; if (L) { at(P.RAIL_U0, L.s.rail, 6); at(P.RAIL_U1, L.s.rail); } break; }
+      case 'gate': at(P.GATE_U, LANE_V0, 24); at(P.GATE_U + 8, LANE_V1); break;
+      case 'district': { const d = fx.districtBox.find((x) => x.team === l.id); if (d) { at(d.u0, d.v0, 10); at(d.u1, d.v1); } break; }
+      case 'fresh': {
+        const set = f.coffee.freshSet(l.id), { culpritAt, repoAt } = f.coffee.carSpots();
+        for (const r of set.repos) spot((l.id === 'red' ? culpritAt.get(r) : undefined) ?? repoAt.get(r));
+        for (const id of set.apps) block(id);
+        break;
+      }
+      default: break;
+    }
+    return out;
   }
 
   pop(t: number): void {
@@ -348,6 +447,7 @@ export class Lenses {
     }
     if (h.kind === 'district' && h.id.includes(',')) return 'city';
     if ((h.kind !== 'dock' && h.kind !== 'district') || !f.floor.on) return h.kind;
+    if ((f.order.find((x) => x.name === 'front') as { curbOf?: (h: Hit) => unknown } | undefined)?.curbOf?.(h)) return 'curb'; // fx-polish: a lane curb (front.ts) is the group's too
     const L = f.floor.lanesNow[this.laneIndexOf(h)];
     if (L?.s.stripe) return 'stripe';
     const [u] = cam.unproject(h.x + h.w / 2, h.y + h.h / 2);
@@ -2407,6 +2507,50 @@ export class Lenses {
 }
 
 // ---- data helpers ------------------------------------------------------------------------------------
+/** fx-polish: where a framed lens must land on screen (px): clear of the top row and breadcrumb
+ *  (the top 112) and of the time strip (the bottom 76), 44 px in from the sides (a ring round its subject). */
+export function FRAME_BOX(W: number, H: number): [number, number, number, number] { return [44, 112, W - 44, H - 76]; }
+/** fx-polish: the story card's corner (card(): x 16, 324 wide, its bottom 70 over the canvas's
+ *  bottom, up to ~240 tall), which a framed lens keeps its points out of. */
+export function CARD_BOX(W: number, H: number): [number, number, number, number] { void W; return [0, H - 70 - 240, 16 + 324 + 4, H]; }
+
+/** fx-polish: the flight that frames floor points `p` (u, v, z flat) inside `box` (l, t, r, b px),
+ *  [zoom, panX, panY], or null when they already fit (or there are none). The zoom never goes in
+ *  and never past the fit (1; or the person's own, if already further out); the points are
+ *  centred in the box. `avoid` (l, t, r, b px: the story card's corner) is kept clear too: a point
+ *  that would land under it narrows the box to its right. */
+export function frameTo(cam: Factory['cam'], p: readonly number[], box: readonly [number, number, number, number], avoid?: readonly [number, number, number, number]): [number, number, number] | null {
+  if (p.length < 3) return null;
+  const n = Math.floor(p.length / 3);
+  const inside = (sx: number, sy: number, b: readonly [number, number, number, number]) => sx >= b[0] && sx <= b[2] && sy >= b[1] && sy <= b[3];
+  let fits = true, x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const u = p[i * 3]!, v = p[i * 3 + 1]!, z = p[i * 3 + 2]!;
+    const sx = cam.x(u, v), sy = cam.y(u, v, z);
+    if (!inside(sx, sy, box) || (avoid && inside(sx, sy, avoid))) fits = false;
+    const X = u * UX + v * VX, Y = u * UY + v * VY - z * ZK;
+    x0 = Math.min(x0, X); x1 = Math.max(x1, X); y0 = Math.min(y0, Y); y1 = Math.max(y1, Y);
+  }
+  if (fits) return null;
+  const cx = cam.W / 2, cy = cam.H / 2;
+  const solve = (b: readonly [number, number, number, number]): [number, number, number] => {
+    const [L0, T0, R0, B0] = b;
+    const zFit = Math.min((R0 - L0) / (cam.fitS * Math.max(1e-6, x1 - x0)), (B0 - T0) / (cam.fitS * Math.max(1e-6, y1 - y0)));
+    const z = clamp(Math.min(cam.zoom, zFit), Math.min(1, cam.zoom), 6);
+    const s = cam.fitS * z;
+    return [z, (L0 + R0) / 2 - (cx + (cam.fitX - cx) * z + (s * (x0 + x1)) / 2), (T0 + B0) / 2 - (cy + (cam.fitY - cy) * z + (s * (y0 + y1)) / 2)];
+  };
+  const to = solve(box);
+  if (!avoid) return to;
+  // where the points land after that flight: one under the card → frame them right of it
+  const [z, px, py] = to, s = cam.fitS * z, ox = cx + (cam.fitX - cx) * z + px, oy = cy + (cam.fitY - cy) * z + py;
+  for (let i = 0; i < n; i++) {
+    const u = p[i * 3]!, v = p[i * 3 + 1]!, zz = p[i * 3 + 2]!;
+    if (inside(ox + s * (u * UX + v * VX), oy + s * (u * UY + v * VY - zz * ZK), avoid)) return solve([Math.max(box[0], avoid[2] + 12), box[1], box[2], box[3]]);
+  }
+  return to;
+}
+
 type Story = {
   kind: LensKind;
   dots?: { state: string; culprit: boolean; sha: string; at: number }[];

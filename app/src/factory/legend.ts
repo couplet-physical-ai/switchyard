@@ -57,6 +57,7 @@ export function drawLegend(g: Gfx, f: Factory, right: number, y: number, t: numb
     g.runs([[r.word, C.ink, true], [`  ${r.says}`, C.ink3]], x + 70, yy, SMALL, W - 80);
     yy += ROW;
   }
+  if (y + H + 21 < f.cam.H - 58) yy = (f.order.find((l) => l.name === 'front') as unknown as { legendRow?: (g: Gfx, x: number, y: number, W: number, H: number, yy: number) => number } | undefined)?.legendRow?.(g, x, y, W, H, yy) ?? yy; // fx-polish (note 11): the lane curbs' row, when the card has room
   g.hline(x + 12, x + W - 12, yy - 12, '#232325');
   g.runs([['click', C.ink2, true], [' a lens · ', C.ink3], ['shift', C.ink2, true], [' compare · ', C.ink3], ['esc', C.ink2, true], [' back', C.ink3]], x + 14, yy + 6, SMALL, W - 28);
 }
