@@ -10,7 +10,7 @@ import { floorGroups } from './groups.ts';
 import type { Factory } from './factory.ts';
 
 /** The rows, in the order a crate meets them. */
-const ROWS: Kind[] = ['dock', 'belt', 'stack', 'pallet', 'gate', 'post', 'car', 'intake', 'engine', 'bay', 'crate', 'gauge', 'scanner', 'return', 'track', 'app', 'district', 'strip'];
+const ROWS: Kind[] = ['dock', 'lane', 'belt', 'stack', 'pallet', 'gate', 'post', 'car', 'stop', 'intake', 'engine', 'bay', 'crate', 'gauge', 'scanner', 'return', 'track', 'app', 'district', 'strip'];
 const W = 344, ROW = 21, SMALL = 12;
 const CARD = '#111112', CARD_EDGE = '#2E2E30';
 const GRAY = ['#6E6A62', '#4A4844', '#3E3C38'] as const, AMBER = ['#E5B567', '#8E6E3E', '#B48C4E'] as const, RED = ['#E06464', '#8A3838', '#B04848'] as const;
@@ -20,7 +20,7 @@ const GRAY = ['#6E6A62', '#4A4844', '#3E3C38'] as const, AMBER = ['#E5B567', '#8
 export function drawLegend(g: Gfx, f: Factory, right: number, y: number, t: number): void {
   const x = right - W;
   const lanes = f.floor.on ? floorGroups().lanes() : [];
-  const H = 14 + 2 * ROW + 8 + ROWS.length * ROW + 30;
+  const H = 14 + 3 * ROW + 8 + ROWS.length * ROW + 30;
   g.fillRect(x, y, W, H, withAlpha(CARD, 0.96));
   g.begin_(); g.rect(x + 0.5, y + 0.5, W - 1, H - 1); g.stroke(CARD_EDGE, 1);
   f.hit(x, y, W, H, 'legendpanel', '', '');
@@ -44,6 +44,10 @@ export function drawLegend(g: Gfx, f: Factory, right: number, y: number, t: numb
     if (l.kind === 'bots') { g.begin_(); for (let k = -10; k < chip; k += 4) { g.move(xx + Math.max(0, k), yy - 9 + Math.max(0, -k)); g.line(xx + Math.min(chip, k + 10), yy + 1 - Math.max(0, k + 10 - chip)); } g.stroke(withAlpha('#0C0C0E', 0.7), 1); }
     xx += chip + 3;
   }
+  // fx-lanes (overseer note 8): a group's name is its team's, or its org's after a dim ◇ when its
+  // repos have no app team ('ems' the team, '◇ ems' the org)
+  yy += ROW;
+  g.runs([['ems', C.ink2], [' a team · ', C.ink3], ['◇', C.ink3], [' ems', C.ink2], [' an org: no app team', C.ink3]], x + 14, yy, SMALL, W - 28);
   yy += 8;
   g.hline(x + 12, x + W - 12, yy - 2, '#232325');
   yy += ROW - 4;
@@ -66,9 +70,11 @@ function cube(g: Gfx, cx: number, cy: number, s: number, c: readonly [string, st
 
 /** Each shape, small, in its colours, centred on (cx, cy). */
 function paint(g: Gfx, shape: Shape, k: Kind, cx: number, cy: number, t: number): void {
-  const hue = '#90B1D7';
+  const hue = '#96C7D6'; // fx-lanes: the re-picked palette's first team slot
   switch (shape) {
     case 'slab': g.fillRect(cx - 13, cy - 3, 22, 9, '#18181A'); g.fillRect(cx - 11, cy - 7, 22, 5, hue); g.fillRect(cx + 9, cy - 1, 2, 5, STATE.fail); return;
+    case 'carpet': g.fillRect(cx - 16, cy - 7, 32, 6, withAlpha(hue, 0.18)); g.fillRect(cx - 16, cy - 1, 32, 6, withAlpha('#B88AAD', 0.12)); g.hline(cx - 16, cx + 16, cy - 7, withAlpha(hue, 0.5), 1); return;
+    case 'tally': g.fillRect(cx - 3, cy - 10, 6, 16, '#7285B4'); for (let k = 0; k < 4; k++) g.fillRect(cx - 3, cy + 3 - k * 3.4, 6, 2, k === 3 ? STATE.fail : '#B04848'); g.hline(cx - 14, cx - 3, cy + 4, '#3A3A3E', 1.2); return;
     case 'band': {
       g.fillRect(cx - 16, cy - 2, 32, 6, '#121214'); g.hline(cx - 16, cx + 16, cy + 1, withAlpha(hue, 0.7), 1.2);
       const off = ((t / 1000) * 10) % 6;

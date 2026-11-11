@@ -51,7 +51,7 @@ export async function measure(server: string, size = { w: 1440, h: 900 }): Promi
   const paint = (surface: string, args: unknown[], t: number) => {
     label = `draw ${surface}`;
     resume();
-    draw(surface, args, ctx, { time: t, width: size.w, height: size.h, dpr: 2 } as never);
+    draw(surface, args, ctx, { time: t, width: size.w, height: size.h, dpr: 2, scale: 2, pixelWidth: size.w * 2, pixelHeight: size.h * 2, mounted: 0, cause: 'frame', causes: ['frame'] } as never); // a whole Exact frame (the factory reads causes)
     end('frame');
   };
   try {
@@ -109,9 +109,15 @@ if (import.meta.main) {
   // Module evaluation is one turn too, but on macOS Hermes runs precompiled bytecode while Bun
   // parses and compiles here, so it is held to twice the max (it was the noisiest turn on CI).
   const IMPORT = 'import → module evaluated';
-  const worst = Math.max(0, ...turns.filter((t) => t.at !== IMPORT).map((t) => t.ms));
+  // A canvas draw is a turn too (the host's frame callback runs in the data module), held to twice
+  // the max: its first paints pay Bun's JIT warm-up (Hermes runs bytecode), and the steady frames
+  // are the perf tools' (factory-bench, perf frames). Until 2026-11-11 every factory draw here threw
+  // at once (the stub frame had no `causes`), so draws measured ~0 ms.
+  const isDraw = (t: { at: string }) => t.at.startsWith('draw ');
+  const worst = Math.max(0, ...turns.filter((t) => t.at !== IMPORT && !isDraw(t)).map((t) => t.ms));
+  const worstDraw = Math.max(0, ...turns.filter(isDraw).map((t) => t.ms));
   const imp = turns.find((t) => t.at === IMPORT)?.ms ?? 0;
-  console.log(`${turns.length} turns · longest ${worst.toFixed(2)} ms (Bun) · module evaluation ${imp.toFixed(2)} ms`);
-  if (worst > max || imp > 2 * max) { console.log(`FAIL: a turn over ${max} ms (module evaluation over ${2 * max} ms) in Bun; on a slow Mac's Hermes that nears its 100 ms budget`); process.exit(1); }
+  console.log(`${turns.length} turns · longest ${worst.toFixed(2)} ms (Bun) · longest draw ${worstDraw.toFixed(2)} ms · module evaluation ${imp.toFixed(2)} ms`);
+  if (worst > max || worstDraw > 2 * max || imp > 2 * max) { console.log(`FAIL: a turn over ${max} ms (a draw or module evaluation over ${2 * max} ms) in Bun; on a slow Mac's Hermes that nears its 100 ms budget`); process.exit(1); }
   process.exit(0);
 }

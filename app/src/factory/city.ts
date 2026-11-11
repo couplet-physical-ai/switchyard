@@ -24,6 +24,14 @@
 //                (the v0.5 trend, 7 d); a deploy's crate rides via → ladder → spur → its building,
 //                and the building's ring flashes when it arrives (§G: deploy → track → building).
 //
+//   fleet zoom   (fx-city, review #11) below the group zoom the city is calm unless something is
+//                wrong: each district a skyline in its lane's hue (idle grey, down red, degraded
+//                amber on the beat), named once at its front edge (≤ 10, through the placer); ghost storeys only from 3 commits behind (1–2: a
+//                roof tick); no green "up" lights and no past-incident rings. Every app up (held a
+//                minute): the city packs compact, its districts start ~30 % of the plot further
+//                from the ladder, and the spurs take that ground: each district's band, its spur
+//                bed and its last 24 h of deploys as hourly ticks along the approach.
+//
 // LOD by a building's size on screen (DESIGN.md "LOD"): LOD0 faces, edges, rings, storeys or
 // windows by zoom; LOD1 faces, rings; LOD2 silhouettes, a light only where not up; LOD3 a
 // district's run of a row as one strip. Rows off screen are skipped. No height is ever invented:
@@ -39,7 +47,7 @@ import { normTeam, teamGroupId } from '../../server/floor.ts';
 import type { Factory } from './factory.ts';
 import { BOTS_LANE, OTHER_LANE, floorGroups, type Lane } from './groups.ts';
 import { UX, UY, VX, VY } from './iso.ts';
-import { PLAN } from './layout.ts';
+import { GROUP_Z_IN, PLAN } from './layout.ts';
 import { R_RING, breathe, flash } from './motion.ts';
 import { F, flushLights, poly, quad } from './prims.ts';
 import type { Block, DistrictBox, FloorPass, Layer, Lens, LiveFrame, Pt } from './types.ts';
@@ -72,6 +80,35 @@ const RING_DEG = '#E5B567', RING_DOWN = '#E06464';
 const RING_MIN = 0.06;
 /** Quiet colours first, so an incident's run lies on top. */
 const RING_ORDER = ['#38383C', '#6A6A6A', '#6FA27C', RING_DEG, RING_DOWN];
+/** fx-city (#11). At the fleet zoom (below the group zoom) a building stands as part of its
+ *  district's skyline in the lane's hue; ghost storeys only from this many commits behind (fewer:
+ *  a thin roof tick); no green "up" lights and no past-incident rings (red is for down now). */
+export const FLEET_GHOSTS = 3;
+/** The district names the fleet zoom shows (one each, at the front edge), at most; the first
+ *  DISTRICT_NAMES_SURE (trouble first, then the biggest) may step aside to find room, the tail
+ *  only takes its own corner, so the placer drops it first when space (or the text budget) is
+ *  tight. */
+export const DISTRICT_NAMES_MAX = 3;
+export const DISTRICT_NAMES_SURE = 4;
+/** A calm city (every app up, held CALM_MS): its districts start this much of the plot's width
+ *  further from the ladder, and the deploy spurs (the groups' deploy rates) take that ground. */
+export const CALM_SHIFT = 0.3;
+const CALM_MS = 60_000;
+/** A district name's spots: [second column gap (0: at the corner), dy], tried in order. */
+const NAME_SPOTS: [number, number][] = [[0, 0], [0, 5], [0, -5], [16, 0], [16, 6], [16, -6], [0, 12], [16, 14]];
+/** The painted city's sig changes at most this often (each floor repaint is ~44 ms on macOS). */
+const SIG_MS = 2000;
+
+/** `a` over `b` at `t` (hex in, hex out). */
+function mixHex(a: string, b: string, t: number): string {
+  const x = parseInt(a.slice(1, 7), 16), y = parseInt(b.slice(1, 7), 16);
+  const ch = (s: number) => Math.round(((x >> s) & 255) * t + ((y >> s) & 255) * (1 - t));
+  return `#${((ch(16) << 16) | (ch(8) << 8) | ch(0)).toString(16).padStart(6, '0').toUpperCase()}`;
+}
+/** A district's skyline faces (top, side, front, edge) and its name's ink, from its lane hue. */
+export function skyline(hex: string): { top: string; side: string; front: string; edge: string; ink: string } {
+  return { top: mixHex(hex, '#141416', 0.46), side: mixHex(hex, '#0F0F11', 0.3), front: mixHex(hex, '#0C0C0E', 0.2), edge: mixHex(hex, '#18181A', 0.62), ink: mixHex(hex, '#F2F2F0', 0.62) };
+}
 
 /** A building: the shared Block (h = its solid height: ground floor + storeys) and what it shows. */
 export type CityBlock = Block & {
@@ -90,7 +127,10 @@ export type CityBlock = Block & {
   lane: string; row: number;
 };
 /** A district: the shared DistrictBox (team = its lane's short name) and its lane, hue and spur. */
-export type CityDistrict = DistrictBox & { lane: string; hex: string; spurV: number; bed: number; rows: number; cols: number };
+export type CityDistrict = DistrictBox & { lane: string; hex: string; spurV: number; bed: number; rows: number; cols: number;
+  /** fx-city: its apps' successful deploys per hour over the last 24 h (oldest first): a calm
+   *  city draws them along the spur's approach, the hour's tick nearer the district the newer */
+  day: number[] };
 
 type Hist = { at: number; shas: Map<string, number>; newest: number; health: { from: string; to: string; at: number }[] | null; since: number };
 
@@ -110,7 +150,14 @@ export class City implements Layer {
    *  floor key carries it, so the floor repaints when a building changed. */
   sig = '';
   cityPitch = 19;
+  /** fx-city: every app up (held CALM_MS): the city packs compact, the spurs take the ground. */
+  calm = false;
+  /** Where the districts start (u): DIST_U0, further right when calm. */
+  cityU0 = DIST_U0;
+  private loudAt = -1e12;
+  private calmU0 = DIST_U0;
   private cityKey = '';
+  private skyOf = new Map<string, ReturnType<typeof skyline>>();
   private cityRows: CityBlock[][] = [];
   private adopted: unknown = null;
   private laneOfDistrict: string[] = [];
@@ -144,6 +191,7 @@ export class City implements Layer {
   census(w: World): void {
     if (this.landing.length) this.landDue(this.f.tl.clock - 6000);
     this.adoptDistricts(w);
+    this.calmStep(w);
     this.layoutCity();
     this.layoutHeights(w);
   }
@@ -287,8 +335,15 @@ export class City implements Layer {
   buildingAnchor(appId: string): { u: number; v: number; roof: number; top: number } | null {
     const b = this.blockAt.get(appId);
     if (!b) return null;
-    return { u: b.u + b.d / 2, v: b.v + b.d / 2, roof: b.h, top: b.h + b.ghosts * STOREY };
+    return { u: b.u + b.d / 2, v: b.v + b.d / 2, roof: b.h, top: b.h + this.shownGhosts(b, this.fleet) * STOREY };
   }
+
+  /** fx-city: the fleet zoom (below the group zoom): skylines, names, fewer ghosts. */
+  get fleet(): boolean { return this.f.cam.zoom < GROUP_Z_IN; }
+
+  /** The ghost storeys a building shows: at the fleet zoom only from FLEET_GHOSTS commits behind
+   *  (fewer: a roof tick, `ghosts` draws it); from the group zoom on, and in the app lens, all. */
+  shownGhosts(b: CityBlock, fleet: boolean): number { return fleet && b.behind < FLEET_GHOSTS ? 0 : b.ghosts; }
 
   // ---- districts = the group lanes ----
 
@@ -337,19 +392,54 @@ export class City implements Layer {
     this.laneOfDistrict = ids;
   }
 
+  /** fx-city (#11): calm = every app up (none degraded or down, stress copies included). A
+   *  trouble makes the city loud at once (full plot); calm returns once it held CALM_MS of the
+   *  module clock, so a flapping app never re-packs the city back and forth. The first look is
+   *  calm at once when everything is up. */
+  private calmStep(w: World): void {
+    const c = this.f.census, clk = this.f.tl.clock;
+    if (c.skeleton || !w.loaded) return;
+    const [, deg = '0', down = '0'] = c.healthSig.split('.');
+    const sh = this.f.stress.health;
+    let up = +deg === 0 && +down === 0;
+    if (up && c.factor > 1) for (let i = 0; i < sh.length; i++) if (sh[i] === 1 || sh[i] === 2) { up = false; break; }
+    if (!up) { this.loudAt = clk; this.calm = false; return; }
+    if (!this.calm && (this.loudAt < -1e11 || clk - this.loudAt >= CALM_MS || clk < this.loudAt)) this.calm = true;
+  }
+
   /** The districts' order as lane ids (tests). */
   get districtLanes(): string[] { return this.laneOfDistrict.slice(); }
 
   private layoutCity(): void {
     const c = this.f.census;
-    const key = `${c.districts.map((d) => `${d.team}:${d.apps.length}`).join(',')}`;
+    const key = `${this.calm ? 'calm' : 'loud'}|${c.districts.map((d) => `${d.team}:${d.apps.length}`).join(',')}`;
     if (key === this.cityKey) return;
     this.cityKey = key;
     this.hKey = '';
+    this.troubleAt = '';
     // the biggest pitch at which every district fits the plot (stress mode's 2,400 apps too)
     // (a small fleet grows its lots until the plot is full: no dead space at the fleet zoom)
-    let pitch = 44;
-    for (; pitch > 4; pitch -= pitch > 10 ? 0.5 : 0.25) if (this.pack(pitch, true)) break;
+    const fit = (): [number, number] => {
+      let p = 44, end = -1;
+      for (; p > 4; p -= p > 10 ? 0.5 : 0.25) if ((end = this.pack(p, true)) >= 0) break;
+      return [p, end];
+    };
+    // fx-city: a calm city starts further from the ladder (its spurs run across the ground it
+    // gave): about CALM_SHIFT of the plot's width, the shift whose packing fills the plot's depth
+    // best (a column fewer can leave a row's worth of floor bare in front)
+    let pitch = 0;
+    if (this.calm) {
+      let best = -1;
+      for (let k = -4; k <= 4; k++) {
+        const u0 = Math.round(DIST_U0 + (CALM_SHIFT + k * 0.02) * (CITY_U1 - DIST_U0));
+        this.cityU0 = u0;
+        const [p, end] = fit();
+        const score = end - Math.abs(k) * 2;
+        if (end >= 0 && score > best) { best = score; pitch = p; this.calmU0 = u0; }
+      }
+      this.cityU0 = this.calmU0;
+    } else this.cityU0 = DIST_U0;
+    if (!pitch) pitch = fit()[0];
     this.pack(pitch, false);
     this.cityPitch = pitch;
     // the rows (one lot v each), far to near: the floor's batches
@@ -361,11 +451,12 @@ export class City implements Layer {
   /** The city at `pitch`; `dry`: only whether it fits the plot. Districts are bands across the
    *  plot, back to front in lane order: their rows of lots, a main street with the spur after
    *  half of them, the rest in front. */
-  private pack(pitch: number, dry: boolean): boolean {
+  private pack(pitch: number, dry: boolean): number {
     const c = this.f.census, w = this.f.world;
     const d = Math.max(3, Math.round(pitch * LOT * 2) / 2);
     const street = pitch - d;
-    const cols = Math.max(1, Math.floor((CITY_U1 - DIST_U0 + street) / pitch));
+    const U0 = this.cityU0;
+    const cols = Math.max(1, Math.floor((CITY_U1 - U0 + street) / pitch));
     const extra = Math.max(0, SPUR_ST - street);
     let v = CITY_V0;
     if (!dry) { this.blocks = []; this.blockAt.clear(); this.districtBox = []; }
@@ -381,14 +472,14 @@ export class City implements Layer {
       const spurV = v0 + (back - 1) * pitch + d + Math.max(SPUR_ST, street) / 2;
       const lastFront = rows > back ? rowV(rows - 1) + d : spurV + Math.max(SPUR_ST, street) / 2;
       const v1 = Math.max(lastFront, spurV + SPUR_ST / 2);
-      if (v1 > CITY_V1 + 2) return false;
+      if (v1 > CITY_V1 + 2) return -1;
       v = v1 + GAP + street;
       if (dry) continue;
       const lane = this.laneOfDistrict[di] ?? '';
       const hex = lane ? G.hex(lane) : '#55555A';
       dist.apps.forEach((id, i) => {
         const r = Math.floor(i / cols), col = i % cols;
-        const lu = DIST_U0 + col * pitch, lv = rowV(r);
+        const lu = U0 + col * pitch, lv = rowV(r);
         const tilde = id.indexOf('~');
         const idleSk = id.startsWith('~idle');
         const real = tilde > 0 ? id.slice(0, tilde) : id;
@@ -402,21 +493,22 @@ export class City implements Layer {
         this.blockAt.set(id, b);
       });
       const cu = Math.min(n, cols);
-      this.districtBox.push({ team: dist.team, u0: DIST_U0, v0, u1: DIST_U0 + (cu - 1) * pitch + d, v1, n, lane, hex, spurV, bed: 3, rows, cols });
+      this.districtBox.push({ team: dist.team, u0: U0, v0, u1: U0 + (cu - 1) * pitch + d, v1, n, lane, hex, spurV, bed: 3, rows, cols, day: new Array<number>(24).fill(0) });
+      if (!this.skyOf.has(hex)) this.skyOf.set(hex, skyline(hex));
     }
     if (!dry) this.f.stress.ensureHealth(virt);
-    return true;
+    return v - GAP - street;
   }
 
-  /** Heights, ghosts, rings and health from the data, when it changed (at most every 1.5 s of
-   *  the module clock while app histories stream in). O(apps + deploys). */
+  /** Heights, ghosts, rings and health from the data, when it changed (at most every SIG_MS of
+   *  the module clock while app histories stream in: `sig` never churns). O(apps + deploys). */
   private layoutHeights(w: World): void {
     const c = this.f.census;
     const now = this.f.tl.playhead || w.at;
     const key = `${this.cityKey}|${c.sig}|${c.healthSig}|${w.kv.app}|${w.kv.deploy}|${w.kv.trend}|${this.histVer}|${Math.floor(now / 600_000)}|${c.skeleton ? 1 : 0}`;
     if (key === this.hKey) return;
     const clk = this.f.tl.clock;
-    if (this.hKey && this.hKey.startsWith(`${this.cityKey}|`) && clk - this.hAt < 1500 && clk >= this.hAt) return;
+    if (this.hKey && this.hKey.startsWith(`${this.cityKey}|`) && clk - this.hAt < SIG_MS && clk >= this.hAt) return;
     this.hKey = key; this.hAt = clk;
     const from7 = now - 7 * DAY, from30 = now - 30 * DAY;
     // the world's successful deploys (24 h) by app
@@ -428,7 +520,9 @@ export class City implements Layer {
       if (!m) live.set(d.app, (m = new Map()));
       m.set(d.sha, at);
     }
+    // the layout (calm or loud, the districts' sizes) is painted too
     let sig = 0;
+    for (let i = 0; i < this.cityKey.length; i++) sig = (Math.imul(sig, 31) + this.cityKey.charCodeAt(i)) | 0;
     for (const b of this.blocks) {
       if (b.hv === 4) { b.storeys = 0; b.ghosts = 0; b.behind = 0; b.h = BASE; b.ring = null; b.loud = false; continue; }
       if (b.hv <= -2) {
@@ -457,6 +551,16 @@ export class City implements Layer {
       if (b.ring) for (const x of b.ring) if (x[2] === RING_DOWN || x[2] === RING_DEG) q = (Math.imul(q, 31) + Math.round(x[0] * 336) * 3 + Math.round(x[1] * 336)) | 0;
       sig = (Math.imul(sig, 31) + b.storeys * 977 + b.ghosts * 131 + (b.behind > GHOST_CAP ? b.behind : 0) * 17 + (b.idle ? 5 : 0) + q) | 0;
     }
+    // fx-city: each district's day of deploys, by the hour (the approach's ticks)
+    for (const d of this.districtBox) d.day.fill(0);
+    for (const dp of w.deploys.values()) {
+      if (dp.state !== 'success' || this.pending.has(dp.sha)) continue;
+      const at = dp.finished ?? dp.started, b = this.blockAt.get(dp.app);
+      const d = b ? this.districtBox[b.district] : undefined;
+      if (!d || at > now || at <= now - DAY) continue;
+      d.day[Math.min(23, Math.floor((at - (now - DAY)) / 3_600_000))]!++;
+    }
+    for (const d of this.districtBox) for (let h = 0; h < 24; h++) sig = (Math.imul(sig, 31) + d.day[h]! * (h + 1)) | 0;
     // the districts' spurs: the bed as wide as the group's deploys (the v0.5 trend, per hour over
     // 7 d; the last 24 h until 7 d are known); "other teams" sums its members
     const ins = insights();
@@ -484,20 +588,25 @@ export class City implements Layer {
 
   floor(fp: FloorPass): void {
     const g = fp.g, lo = fp.lo, idle = fp.idle;
+    const fleet = this.fleet;
     this.ellipse();
-    this.drawPlates(g, idle);
+    this.drawPlates(g, idle, fleet);
     this.drawTracks(g, lo, idle);
-    fp.after(() => this.drawCity(g, lo, idle));
+    fp.after(() => this.drawCity(g, lo, idle, fleet));
   }
 
-  /** The districts' plates: each tinted with its group's hue, edged in it. */
-  private drawPlates(g: Gfx, idle: boolean): void {
+  /** The districts' plates: each tinted with its group's hue, edged in it (at the fleet zoom the
+   *  skyline carries the hue: the plate is its quiet ground). */
+  private drawPlates(g: Gfx, idle: boolean, fleet: boolean): void {
     const cam = this.f.cam;
     for (const d of this.districtBox) {
       g.begin_(); quad(cam, g, d.u0 - 3, d.v0 - 3, d.u1 + 3, d.v1 + 2, 0.2);
-      g.fill(withAlpha(d.hex, idle ? 0.05 : 0.19));
+      g.fill(withAlpha(d.hex, idle ? 0.05 : fleet ? 0.1 : 0.19));
       g.begin_(); quad(cam, g, d.u0 - 3, d.v0 - 3, d.u1 + 3, d.v1 + 2, 0.2);
       g.stroke(withAlpha(d.hex, idle ? 0.18 : 0.62), g.hair * 1.5);
+      // fx-city: a calm city's approach, ladder → district, is the group's band, faintly (its
+      // spur and its day of deploys run on it)
+      if (!idle && d.u0 - DIST_U0 > 20) { g.begin_(); quad(cam, g, DIST_U0 - 2, d.v0 - 3, d.u0 - 4, d.v1 + 2, 0.15); g.fill(withAlpha(d.hex, 0.05)); }
     }
   }
 
@@ -522,6 +631,18 @@ export class City implements Layer {
       M(LADDER_U, sv + side * 6 - hw); P(DIST_U0 - 2, sv - hw); P(DIST_U0 - 2, sv + hw); P(LADDER_U, sv + side * 6 + hw); g.ctx.closePath();
     }
     g.fill(idle ? '#101012' : '#09090A');
+    // fx-city: each spur's bed in its group's hue (its width is the group's deploy rate): a calm
+    // city's freed ground reads as the groups' deploy tracks
+    if (!idle) for (const d of ds) {
+      const hw = d.bed / 2, side = d.spurV < mid ? 1 : -1, sv = d.spurV;
+      g.begin_();
+      quad(cam, g, DIST_U0 - 2, sv - hw, d.u0 - 1, sv + hw, 0.32);
+      M(LADDER_U + 4, sv + side * 6 - hw); P(DIST_U0 - 2, sv - hw); P(DIST_U0 - 2, sv + hw); P(LADDER_U + 4, sv + side * 6 + hw); g.ctx.closePath();
+      g.fill(withAlpha(d.hex, 0.3));
+    }
+    // fx-city: a calm city's approach carries each district's last 24 h of deploys, one tick per
+    // hour that had any (taller: more), the newest next to the district
+    if (!idle) this.drawDays(g);
     // sleepers
     if (!lo && cam.s * 8 > 5) {
       g.begin_();
@@ -539,10 +660,29 @@ export class City implements Layer {
     g.stroke(idle ? F.rail : '#55555B', g.hair * 1.7);
   }
 
+  /** The approach's day of deploys (fx-city): only where a calm city left room (≥ 24 u). */
+  private drawDays(g: Gfx): void {
+    const cam = this.f.cam;
+    for (const d of this.districtBox) {
+      const ua = DIST_U0 + 1, ub = d.u0 - 5;
+      if (ub - ua < 24 || !d.day.some((x) => x > 0)) continue;
+      const step = (ub - ua) / 24;
+      g.begin_();
+      for (let h = 0; h < 24; h++) {
+        const n = d.day[h]!;
+        if (!n) continue;
+        const u = ua + (h + 0.5) * step, z = 1.5 + 2.6 * Math.sqrt(Math.min(n, 16));
+        g.move(cam.x(u, d.spurV), cam.y(u, d.spurV, 0.4)); g.line(cam.x(u, d.spurV), cam.y(u, d.spurV, z));
+      }
+      const sky = this.skyOf.get(d.hex) ?? skyline(d.hex);
+      g.stroke(withAlpha(sky.ink, 0.8), Math.max(1.2, Math.min(3, step * cam.s * 0.55)));
+    }
+  }
+
   /** The buildings, a row (one lot v) at a time, far to near, batched per colour class
    *  (DESIGN.md "LOD"); each row's storeys or windows, ghost storeys and roof rings over it
    *  before the next row. The ladder's low detail takes one step coarser. */
-  private drawCity(g: Gfx, lo: boolean, idle: boolean): void {
+  private drawCity(g: Gfx, lo: boolean, idle: boolean, fleet: boolean): void {
     const cam = this.f.cam;
     const lot = this.cityPitch * LOT;
     const px = lot * cam.s;
@@ -569,23 +709,27 @@ export class City implements Layer {
         n++;
         if (lod < 3) { (b.hv === 4 || idle ? dim : this.healthOf(b) === 2 ? red : b.idle ? dim : act).add(b.u, b.v, b.d, b.d, b.h); continue; }
         if (runU1 >= 0 && b.district === runD && b.u - runU1 <= this.cityPitch) { runU1 = b.u + b.d; runH += b.h; runK++; continue; }
-        if (runU1 >= 0) dim.add(runU0, v, runU1 - runU0, lot, runH / runK);
+        const strip = fleet && !idle ? act : dim;
+        if (runU1 >= 0) strip.add(runU0, v, runU1 - runU0, lot, runH / runK);
         runU0 = b.u; runU1 = b.u + b.d; runH = b.h; runK = 1; runD = b.district;
       }
-      if (lod === 3 && runU1 >= 0) dim.add(runU0, v, runU1 - runU0, lot, runH / runK);
+      if (lod === 3 && runU1 >= 0) (fleet && !idle ? act : dim).add(runU0, v, runU1 - runU0, lot, runH / runK);
       if (!n) continue;
       hist[Math.min(2, lod)] += n;
       const faces = lod === 0 ? 3 : lod === 1 ? 3 : 2;
       const ew = lod === 0 ? g.hair * 1.5 : 1;
       dim.flush(g, cam, '#1C1C1E', '#141416', '#111113', lod === 0 ? '#28282B' : '', ew, faces);
-      act.flush(g, cam, '#2B2B2F', '#1D1D20', '#171719', lod === 0 ? '#3C3C41' : '', ew, faces);
+      // fx-city: at the fleet zoom a row is its district's skyline, in the lane's hue
+      const sky = fleet && !idle ? this.skyOf.get(this.districtBox[row[0]!.district]?.hex ?? '') : undefined;
+      if (sky) act.flush(g, cam, sky.top, sky.side, sky.front, lod === 0 ? sky.edge : '', ew, faces);
+      else act.flush(g, cam, '#2B2B2F', '#1D1D20', '#171719', lod === 0 ? '#3C3C41' : '', ew, faces);
       red.flush(g, cam, '#C25252', '#7E3434', '#682C2C', lod === 0 ? '#E06464' : '', ew, faces);
       if (idle) continue;
       if (lines) this.storeyLines(g, row);
       if (windows) this.windows(g, row);
       if (lod <= 1) {
-        this.ghosts(g, row, lod);
-        this.rings(g, row);
+        this.ghosts(g, row, lod, false, fleet);
+        this.rings(g, row, fleet);
       } else {
         // LOD2: a light only where an app is not up
         const lights = [this.f.bB, this.f.bC, this.f.bD];
@@ -642,19 +786,34 @@ export class City implements Layer {
   /** Ghost storeys: one hollow, faint floor per commit main has that the app does not, stacked
    *  on the roof (≤ GHOST_CAP; a notch on the top one past that). Never dashed: dashes are the
    *  7-d baselines', and those are never drawn on a building. */
-  private ghosts(g: Gfx, row: CityBlock[], lod: number, lit = false): void {
+  private ghosts(g: Gfx, row: CityBlock[], lod: number, lit = false, fleet = false): void {
     const cam = this.f.cam;
     let any = false;
     const P = (u: number, v: number, z: number) => g.line(cam.x(u, v), cam.y(u, v, z));
     const M = (u: number, v: number, z: number) => g.move(cam.x(u, v), cam.y(u, v, z));
+    if (fleet) {
+      // fx-city: at the fleet zoom 1–2 commits behind is a thin tick on the roof, one per commit
+      g.begin_();
+      for (const b of row) {
+        if (!b.behind || b.behind >= FLEET_GHOSTS) continue;
+        any = true;
+        for (let k = 0; k < b.behind; k++) {
+          const u = b.u + b.d * (b.behind === 1 ? 0.5 : 0.36 + 0.28 * k), v = b.v + b.d * 0.5;
+          M(u, v, b.h); P(u, v, b.h + STOREY * 0.8);
+        }
+      }
+      if (any) g.stroke(withAlpha('#D6D6D0', 0.55), 1);
+      any = false;
+    }
     // a faint glass fill, then the outlines
     for (const pass of [0, 1]) {
       g.begin_();
       for (const b of row) {
-        if (!b.ghosts) continue;
+        const gn = this.shownGhosts(b, fleet);
+        if (!gn) continue;
         any = true;
         const ins = b.d * 0.07, u0 = b.u + ins, u1 = b.u + b.d - ins, v0 = b.v + ins, v1 = b.v + b.d - ins;
-        for (let k = 0; k < b.ghosts; k++) {
+        for (let k = 0; k < gn; k++) {
           const z0 = b.h + k * STOREY + 0.35, z1 = z0 + STOREY - 0.7;
           if (pass === 0) {
             poly(cam, g, [u0, v1, z0, u1, v1, z0, u1, v1, z1, u0, v1, z1]);
@@ -662,7 +821,7 @@ export class City implements Layer {
           } else {
             M(u0, v1, z0); P(u1, v1, z0); P(u1, v0, z0); P(u1, v0, z1); P(u1, v1, z1); P(u0, v1, z1); g.ctx.closePath();
             M(u1, v1, z0); P(u1, v1, z1);
-            if (k === b.ghosts - 1) { M(u0, v1, z1); P(u0, v0, z1); P(u1, v0, z1); }
+            if (k === gn - 1) { M(u0, v1, z1); P(u0, v0, z1); P(u1, v0, z1); }
           }
         }
         if (pass === 1 && b.behind > GHOST_CAP) {
@@ -681,7 +840,7 @@ export class City implements Layer {
    *  week ago → now), one path per colour for the row. A week with no incident is quiet: its
    *  ring shows only once a roof is big enough to read; an incident's run is drawn at least
    *  RING_MIN of the way round. No history yet: a light for the health now. */
-  private rings(g: Gfx, row: CityBlock[]): void {
+  private rings(g: Gfx, row: CityBlock[], fleet = false): void {
     const cam = this.f.cam;
     const R0 = (row[0]?.d ?? 0) * 0.34;
     const big = R0 * this.ell.b >= 3.2;
@@ -690,6 +849,8 @@ export class City implements Layer {
     for (const b of row) {
       const r = b.ring;
       if (!r || b.hv === 4 || (!b.loud && !big)) continue;
+      // fx-city: at the fleet zoom only an app in trouble now wears its week (red is for down)
+      if (fleet && this.healthOf(b) !== 1 && this.healthOf(b) !== 2) continue;
       const cu = b.u + b.d / 2, cv = b.v + b.d / 2, x = cam.x(cu, cv), y = cam.y(cu, cv, b.h + 0.2);
       for (const [k0, k1, col] of r) {
         let a0 = k0, a1 = k1;
@@ -713,7 +874,7 @@ export class City implements Layer {
     for (const b of row) {
       if (b.ring || b.hv === 4) continue;
       const hl = this.healthOf(b);
-      if (hl > 2) continue;
+      if (hl > 2 || (fleet && hl === 0)) continue;
       lights[hl]!.add(b.u + b.d / 2, b.v + b.d / 2, 0, 0, 0, b.h + 0.4);
     }
     const r = Math.max(1.1, Math.min(2.4, cam.s * 1.7));
@@ -754,13 +915,14 @@ export class City implements Layer {
     const offX = (x: number) => x < -24 || x > cam.W + 24;
     if (this.landing.length) this.landDue(t);
     // a hit per building big enough to point at (LOD0/1), its ghost storeys included
+    const fleet = this.fleet;
     if (this.cityPitch * LOT * cam.s >= 5) {
       // a column through the building's middle, ghost storeys included: a row's columns never
       // overlap, and a nearer building's (pushed later) wins where it stands in front
       for (const b of this.blocks) {
         const cu = b.u + b.d / 2, cv = b.v + b.d / 2, x = cam.x(cu, cv);
         if (offX(x)) continue;
-        const top = b.h + b.ghosts * STOREY, hw = b.d * 0.42 * cam.s, y0 = cam.y(cu, cv, top) - b.d * 0.3 * cam.s;
+        const top = b.h + this.shownGhosts(b, fleet) * STOREY, hw = b.d * 0.42 * cam.s, y0 = cam.y(cu, cv, top) - b.d * 0.3 * cam.s;
         this.f.hit(x - hw, y0, hw * 2, cam.y(cu, cv, 0) + b.d * 0.3 * cam.s - y0, 'app', b.id, b.id);
       }
     }
@@ -770,8 +932,11 @@ export class City implements Layer {
     // the tether: an app behind main, pointed at or under the app lens
     const top = this.f.lens.topLens;
     const hb = this.f.hoverId ? this.blockAt.get(this.f.hoverId) : undefined;
-    if (hb?.behind) this.tether(g, hb, 0.85);
+    if (hb?.behind) this.tether(g, hb, 0.85, !fleet || (top?.kind === 'app' && top.id === hb.id));
     if (top?.kind === 'app' && top.id !== hb?.id) { const b = this.blockAt.get(top.id); if (b?.behind) this.tether(g, b, 0.85); }
+    // fx-city: the fleet zoom names each district once, at its front edge (the group zoom's
+    // labels.ts names take over from there)
+    if (fleet && this.f.floor.level === 0 && q < 3 && !this.f.census.skeleton) this.drawNames(g);
     // zoomed in, the "+N" past the ghost storeys' cap
     if (cam.zoom >= 2 && q < 3) {
       for (const b of this.blocks) {
@@ -785,6 +950,48 @@ export class City implements Layer {
       }
     }
     return moving;
+  }
+
+  /** fx-city: the districts the fleet zoom names (≤ DISTRICT_NAMES_MAX), in placing order:
+   *  those with an app down or degraded first, then the biggest (the placer is greedy: the
+   *  first placed wins its spot). */
+  fleetNames(): CityDistrict[] {
+    const trouble = new Set<number>();
+    for (const b of this.troubleBlocks()) trouble.add(b.district);
+    const order = this.districtBox.map((d, i) => ({ d, i })).sort((a, b) => (trouble.has(b.i) ? 1 : 0) - (trouble.has(a.i) ? 1 : 0) || b.d.n - a.d.n || a.i - b.i);
+    // sy-client (text budget): at the fleet zoom the lane names (left, same hue) already name the
+    // teams, so a district is named here only when it is in trouble (an app down or degraded)
+    return order.filter((x) => trouble.has(x.i)).slice(0, DISTRICT_NAMES_MAX).map((x) => x.d);
+  }
+
+  /** Each named district's name, in its lane's light hue, just outside its front-left corner
+   *  (right-aligned to it), through the shared placer; when that spot is taken one of the first
+   *  DISTRICT_NAMES_SURE steps aside (a staggered second column, a hairline back to the corner),
+   *  the tail is dropped. Clicking a name flies to the district. */
+  private drawNames(g: Gfx): void {
+    const cam = this.f.cam, PX = 12, H = 13;
+    const names = this.fleetNames();
+    for (let k = 0; k < names.length; k++) {
+      const d = names[k]!;
+      const ax = cam.x(d.u0 - 2, d.v1), ay = cam.y(d.u0 - 2, d.v1);
+      if (ax < 60 || ax > cam.W - 4 || ay < 60 || ay > cam.H - 60) continue;
+      const wv = g.width(d.team, PX);
+      let at: [number, number] | null = null;
+      for (const [dx, dy] of k < DISTRICT_NAMES_SURE ? NAME_SPOTS : NAME_SPOTS.slice(0, 1)) {
+        // at the corner, nudged; else one column further out (a staggered second column)
+        at = this.f.placeAt(Math.round(ax - 6 - wv - (dx ? dx + wv : 0)), Math.round(ay + 5 + dy), wv, H, 0, false);
+        if (at) break;
+      }
+      if (!at) continue;
+      const [x, y] = at;
+      const sky = this.skyOf.get(d.hex) ?? skyline(d.hex);
+      if (Math.abs(x + wv + 6 - ax) > 3 || Math.abs(y - 5 - ay) > 3) {
+        g.begin_(); g.move(x + wv + 2, y - 4); g.line(ax, ay); g.stroke(withAlpha(sky.ink, 0.45), 1);
+      }
+      g.fillRect(x - 2, y - 10, wv + 4, H, withAlpha(C.canvas, 0.78));
+      g.text(d.team, x, y, sky.ink, PX);
+      this.f.hit(x - 2, y - 10, wv + 4, H, 'district', `${(d.u0 + d.u1) / 2},${(d.v0 + d.v1) / 2},3.2`, d.team);
+    }
   }
 
   /** For drivers (tools/factory-shots.mjs, as lens.ts logs its anchors): at the fit zoom, once
@@ -861,7 +1068,7 @@ export class City implements Layer {
   /** The amber tether from an app's main line (its repo's newest car on its org's rail, else the
    *  rail's end) to its ghost storeys: the commits it has not deployed. The live commit's car,
    *  still on the rail, is ringed green-gray (as the app lens does). */
-  tether(g: Gfx, b: CityBlock, alpha: number): void {
+  tether(g: Gfx, b: CityBlock, alpha: number, full = true): void {
     const cam = this.f.cam, w = this.f.world, c = this.f.census;
     const a = w.apps.get(b.id);
     if (!a?.repo) return;
@@ -884,7 +1091,7 @@ export class City implements Layer {
     if (live >= 0) { g.begin_(); this.arc(g, cam.x(live, rv), cam.y(live, rv, 4), 6, 0, 1); g.stroke(withAlpha(C.green, alpha), 1.4); }
     const x0 = cam.x(ru, rv), y0 = cam.y(ru, rv, 5);
     const cu = b.u + b.d / 2, cv = b.v + b.d / 2;
-    const x1 = cam.x(cu, cv), y1 = cam.y(cu, cv, b.h + b.ghosts * STOREY + 0.5);
+    const x1 = cam.x(cu, cv), y1 = cam.y(cu, cv, b.h + (full ? b.ghosts : this.shownGhosts(b, true)) * STOREY + 0.5);
     const lift = Math.max(60, Math.abs(x1 - x0) * 0.22);
     g.begin_(); g.move(x0, y0); g.ctx.quadraticCurveTo((x0 + x1) / 2, Math.min(y0, y1) - lift, x1, y1); g.ops++;
     g.stroke(withAlpha(C.packet, alpha), 1.5);

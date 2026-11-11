@@ -6,8 +6,10 @@
 //     Red and amber carry chroma ≥ 0.11 (OKLCH); no group colour comes near them.
 //   - GROUP hues (a team or org lane, its dock roof, stack stripes, rail underframes, crate bands,
 //     bay stripes, district plates) stay muted: chroma ≤ 0.075, hue angles clear of red (0–50°)
-//     and amber (60–100°), and ΔE ≥ 20 (CIEDE2000) from every state colour, so a group can never
-//     be read as a state. Adjacent hued lanes differ by ΔE_ok ≥ 0.07 (≥ 0.12 is the aim).
+//     and amber (60–100°), ΔE ≥ 20 (CIEDE2000) from every state colour and ΔE_ok ≥ 0.10 from
+//     red, amber, ok and the fixed flash, so a group can never be read as a state. Lane neighbours
+//     differ by ΔE_ok ≥ 0.10 and any two groups by ≥ 0.06 (fx-lanes, REVIEW-iter2 #1: "which team
+//     is broken" in one second).
 //   - Neutral lanes ("other teams", the bots siding) are near-gray and carry a shape instead
 //     (bots: hatched), so they are exempt from the hue rules but never take a state's colour.
 //
@@ -110,8 +112,12 @@ export const RESERVE = {
   deltaE: 20,
   /** hue angles a group may not take (red, amber) */
   forbidden: [[0, 50], [60, 100]] as [number, number][],
-  /** two adjacent hued lanes, ΔE_ok at least */
-  adjacentOk: 0.07,
+  /** two neighbouring lanes, ΔE_ok at least (fx-lanes: was 0.07 for hued pairs only) */
+  adjacentOk: 0.10,
+  /** any two groups the floor shows, ΔE_ok at least */
+  anyOk: 0.06,
+  /** every group from red, amber, ok and the fixed flash, ΔE_ok at least */
+  reserveOk: 0.10,
   /** below this chroma a group is neutral (a shape carries it, not a hue) */
   neutralChroma: 0.02,
 } as const;
@@ -137,13 +143,52 @@ export function hueViolations(lanes: HueSpec[]): string[] {
       if (d < RESERVE.deltaE) out.push(`${g.id} ${g.hex} ΔE ${d.toFixed(1)} from state ${k} ${hex}`);
     }
   }
+  // fx-lanes: neighbours (neutral lanes too: they sit between hued ones), any pair, the reserve
   for (let i = 1; i < lanes.length; i++) {
     const a = lanes[i - 1]!, b = lanes[i]!;
-    if (a.c < RESERVE.neutralChroma || b.c < RESERVE.neutralChroma) continue;
+    if (a.c < RESERVE.neutralChroma && b.c < RESERVE.neutralChroma) continue;
     const d = deltaOk(a.hex, b.hex);
     if (d < RESERVE.adjacentOk) out.push(`${a.id}↔${b.id} adjacent ΔE_ok ${d.toFixed(3)} < ${RESERVE.adjacentOk}`);
   }
+  for (let i = 0; i < lanes.length; i++) for (let j = i + 1; j < lanes.length; j++) {
+    const d = deltaOk(lanes[i]!.hex, lanes[j]!.hex);
+    if (d < RESERVE.anyOk) out.push(`${lanes[i]!.id}↔${lanes[j]!.id} ΔE_ok ${d.toFixed(3)} < ${RESERVE.anyOk}`);
+  }
+  for (const g of lanes) for (const [k, hex] of Object.entries(RESERVED)) {
+    const d = deltaOk(g.hex, hex);
+    if (d < RESERVE.reserveOk) out.push(`${g.id} ${g.hex} ΔE_ok ${d.toFixed(3)} from ${k} ${hex}`);
+  }
   return out;
+}
+
+/** The colours no group may come near (ΔE_ok ≥ RESERVE.reserveOk): the three states and the
+ *  fixed flash. */
+export const RESERVED: Record<string, string> = { red: STATE.fail, amber: STATE.flight, ok: STATE.ok, fixed: FIXED };
+
+/** A palette's closest calls (ΔE_ok): any two groups, two neighbours (lane order), a group and a
+ *  reserved colour. For the test's print and the HUD. */
+export function paletteReport(lanes: HueSpec[]): { any: [string, string, number]; nb: [string, string, number]; res: [string, string, number] } {
+  let any: [string, string, number] = ['', '', 9], nb: [string, string, number] = ['', '', 9], res: [string, string, number] = ['', '', 9];
+  for (let i = 0; i < lanes.length; i++) {
+    for (let j = i + 1; j < lanes.length; j++) { const d = deltaOk(lanes[i]!.hex, lanes[j]!.hex); if (d < any[2]) any = [lanes[i]!.id, lanes[j]!.id, d]; }
+    if (i > 0) { const d = deltaOk(lanes[i - 1]!.hex, lanes[i]!.hex); if (d < nb[2]) nb = [lanes[i - 1]!.id, lanes[i]!.id, d]; }
+    for (const [k, hex] of Object.entries(RESERVED)) { const d = deltaOk(lanes[i]!.hex, hex); if (d < res[2]) res = [lanes[i]!.id, k, d]; }
+  }
+  return { any, nb, res };
+}
+
+/** A lane's ink for words (its label on the floor): the lane's hue at OKLCH L 0.80, chroma ≤ 0.08
+ *  (readable on the near-black floor, still its colour). */
+export function laneInk(hex: string): string {
+  const [, c, h] = oklch(hex);
+  return oklchHex(0.8, Math.min(0.08, c), h);
+}
+
+/** A group hue at another lightness and a share of its chroma (the PR cells' muted faces, a
+ *  stale layer's dust: OKLCH L `l`, chroma × `ck`). */
+export function tone(hex: string, l: number, ck: number): string {
+  const [, c, h] = oklch(hex);
+  return oklchHex(l, c * ck, h);
 }
 
 /** A hue spec from OKLCH. */
@@ -155,11 +200,11 @@ export const NEUTRAL = { other: OTHER_HUE.hex, bots: BOTS_HUE.hex } as const;
 // ── the table (§B) ──────────────────────────────────────────────────────────────────────────────
 
 export type Kind =
-  | 'dock' | 'stack' | 'pallet' | 'gate' | 'post' | 'car' | 'belt' | 'intake' | 'engine' | 'bay'
+  | 'dock' | 'lane' | 'stack' | 'pallet' | 'gate' | 'post' | 'car' | 'stop' | 'belt' | 'intake' | 'engine' | 'bay'
   | 'crate' | 'gauge' | 'scanner' | 'return' | 'track' | 'app' | 'district' | 'strip';
 
 /** The shapes the legend can draw (legend.ts paints one per kind). */
-export type Shape = 'slab' | 'stack' | 'pallet' | 'gantry' | 'post' | 'flatcar' | 'band' | 'chute' | 'machine' | 'recess' | 'cube' | 'tower' | 'beam' | 'conveyor' | 'track' | 'block' | 'plate' | 'bars';
+export type Shape = 'slab' | 'carpet' | 'stack' | 'pallet' | 'gantry' | 'post' | 'flatcar' | 'tally' | 'band' | 'chute' | 'machine' | 'recess' | 'cube' | 'tower' | 'beam' | 'conveyor' | 'track' | 'block' | 'plate' | 'bars';
 
 export type Channels = {
   /** the legend's word for it */
@@ -185,11 +230,13 @@ export type Channels = {
 
 export const GRAMMAR: Record<Kind, Channels> = {
   dock: { word: 'dock', shape: 'slab', state: 'door lamp red: a fresh red main in the group', colour: 'group', group: 'roof fill', height: 'pushes/h (√)', footprint: '∝ √repos (lane depth)', motion: 'door flaps per push', pulse: 'door on the beat while fresh', glow: 'ember: returns > p90; red notches', label: 'group name', says: 'a group · height = pushes' },
-  stack: { word: 'PR stack', shape: 'stack', state: 'red top: CI failing · crack: conflict · amber rim: checks', colour: 'neutral', group: 'base stripe', height: 'open PRs (a layer = 5)', footprint: 'fixed cell (group × phase)', motion: 'a layer slides in on a PR', pulse: '', glow: 'dust: stale layers · ghost: 7-d count', label: 'count at group zoom', says: 'open PRs · group × phase' },
+  lane: { word: 'lane', shape: 'carpet', state: '', colour: 'group', group: 'its floor, dock → buffer stop (8–12 %, neighbours alternating)', height: '', footprint: 'depth ∝ √repos', motion: '', pulse: '', glow: 'ember: failures > p90', label: 'name on its road (◇ = an org)', says: 'a group, dock → rail' },
+  stack: { word: 'PR stack', shape: 'stack', state: 'red top: CI failing · crack: conflict · amber rim: checks', colour: 'group', group: 'layers in the lane\'s hue, muted; base stripe', height: 'open PRs (a layer = 5)', footprint: 'fixed cell (group × phase)', motion: 'a layer slides in on a PR', pulse: '', glow: 'dust: stale layers · ghost: 7-d count', label: 'count at group zoom', says: 'open PRs · red: CI failing' },
   pallet: { word: 'bot pallet', shape: 'pallet', state: 'red strap: > 50 % failing', colour: 'neutral', group: 'hatch (bots)', height: 'log count', footprint: '∝ repos touched', motion: '', pulse: '', glow: 'dust ∝ stale', label: 'hover', says: 'bot PRs, height = log n' },
   gate: { word: 'merge gate', shape: 'gantry', state: 'amber flash on a merge; red if it broke main', colour: 'group', group: 'lintel per lane', height: 'fixed', footprint: 'one lintel per lane', motion: 'ticks shift', pulse: 'flash per merge', glow: 'dim: no merge for 2 h', label: 'title', says: 'ticks = merges/h' },
   post: { word: 'signal post', shape: 'post', state: 'lamp: red failing · amber running · gray ok', colour: 'state', group: 'base ring', height: 'log time in state', footprint: 'one per active repo, red first', motion: '', pulse: 'on a main event', glow: 'beacon < 1 h · cracks > 24 h', label: 'repo at group zoom', says: 'a repo\'s main · red first' },
-  car: { word: 'rail car', shape: 'flatcar', state: 'gray settled · amber running · red culprit', colour: 'state', group: 'underframe', height: 'culprit ×1.5', footprint: 'flatcar', motion: 'slides in on a merge', pulse: '', glow: 'beacon < 1 h', label: 'culprit callout', says: 'a merged commit' },
+  car: { word: 'rail car', shape: 'flatcar', state: 'gray settled · amber running · red culprit', colour: 'state', group: '2-px underframe', height: 'culprit ×1.5', footprint: 'flatcar', motion: 'slides in on a merge', pulse: '', glow: 'beacon < 1 h', label: 'culprit callout', says: 'a merged commit' },
+  stop: { word: 'buffer stop', shape: 'tally', state: 'a red notch per red main (bright < 1 h)', colour: 'group', group: 'top and sides', height: '∝ red mains', footprint: 'the rail\'s end', motion: '', pulse: '', glow: '', label: 'hover', says: 'notch = a red main' },
   belt: { word: 'belt', shape: 'band', state: 'red crates only', colour: 'group', group: 'stacked group stripes', height: '', footprint: 'width = flow/h', motion: 'slat speed = rate (log)', pulse: '', glow: 'ember = starved', label: 'hover', says: 'width = flow, speed = rate' },
   intake: { word: 'intake', shape: 'conveyor', state: 'amber queued; red if oldest > 2× p50', colour: 'state', group: 'crate band', height: 'pile on overflow', footprint: '2 lanes', motion: 'stops when slots are full', pulse: '', glow: 'jam', label: 'count if > 0', says: 'what waits for a slot' },
   engine: { word: 'machine', shape: 'machine', state: 'edge red: offline', colour: 'neutral', group: '', height: 'fixed', footprint: '∝ slots', motion: 'wall scrolls', pulse: '', glow: 'shimmer cpu ≥ 90 % · smoke OOM', label: 'name at zoom', says: 'a host · its slots' },

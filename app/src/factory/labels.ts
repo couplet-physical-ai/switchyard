@@ -23,6 +23,7 @@ import { AGE_WORDS, PHASES } from './census.ts';
 import type { Factory } from './factory.ts';
 import { STAGES } from './grammar.ts';
 import { floorGroups } from './groups.ts';
+import { BOARDS, TITLE_Z, frontOf } from './front.ts'; // fx-front: the title row over the back wall's boards
 import { ago, stackH } from './floor.ts';
 import { insights } from '../insights.ts';
 import { LANE_U, LANE_V0, PLAN, VIA_WORDS, WALL_Z } from './layout.ts';
@@ -51,6 +52,21 @@ const WALL_AT: Record<string, [number, number, number]> = {
   '01': [DOCK_U0 + 4, 0, WALL_Z], '02': [YARD_U0 + 6, 0, WALL_Z], '04': [RAIL_U0 - 8, 0, WALL_Z], '06': [ENG_U0 - 100, 0, WALL_Z],
   '07': [ENG_U1 + 18, 0, WALL_Z], '08': [SCAN_U + 18, 0, WALL_Z], '09': [CITY_U0 + 6, 0, WALL_Z],
 };
+// fx-front: the boards stand taller now (front.ts BOARDS): a zoomed-in title sits on its board's top
+for (const b of BOARDS) { const at = WALL_AT[b.stage]; if (at) at[2] = b.z1; }
+if (WALL_AT['08']) WALL_AT['08'][2] = BOARDS.find((b) => b.stage === '07')?.z1 ?? WALL_Z;
+/** fx-front: the fleet zoom's ONE title row (review iter-2 #7): each title over its stage, on one
+ *  baseline, a leader down to its board (or, with none, to the stage). `parts`: [words, stage]. */
+const TITLE_ROW: { n: string; parts: [string, string][]; at?: [number, number, number] }[] = [
+  { n: '01', parts: [['sources', '01']] },
+  { n: '02', parts: [['pr yard', '02']] },
+  { n: '03', parts: [['merge gate', '03']], at: [GATE_U + 3, LANE_V0, 24] },
+  { n: '04', parts: [['main lines', '04']] },
+  { n: '05', parts: [['intake', '05']] },
+  { n: '06', parts: [['consumption engine', '06']], at: [ENG_U1 - 40, ENG_V0, ENG_H] },
+  { n: '07', parts: [['tests', '07'], ['· deploy', '08']] },
+  { n: '09', parts: [['apps', '09']] },
+];
 /** The fleet trend metric a stage's hover sparkline reads. */
 const STAGE_SPARK: Record<string, 'pushes' | 'prs_open' | 'red' | 'intake_ms' | 'pipelines' | 'failures' | 'deploys' | ''> = {
   '01': '', '02': 'prs_open', '03': '', '04': 'red', '05': 'intake_ms', '06': 'pipelines', '07': 'failures', '08': 'deploys', '09': '',
@@ -76,7 +92,7 @@ export class Labels implements Layer {
 
   /** The hover card's lines for a hit the floor's words or lanes made this frame (hover.ts and
    *  drawer.ts ask first); null: not theirs. */
-  hoverFor(h: HitBox): string[] | null { return this.hov.get(h) ?? this.f.floor.hoverFor(h); }
+  hoverFor(h: HitBox): string[] | null { return this.hov.get(h) ?? this.f.floor.hoverFor(h) ?? frontOf(this.f)?.hoverFor(h) ?? null; } // fx-front: + the boards', roads' and curbs' hits
 
   /** A stage's numbers, the ones its title's stat line used to print (≤ 3 lines): by the stage's
    *  number ('02'), its title ('pr yard') or its hit id. */
@@ -110,6 +126,7 @@ export class Labels implements Layer {
       case '07': {
         const pass = fl.finished ? Math.round(((fl.finished - fl.failed) / fl.finished) * 100) : Math.round((w.stats.success_rate_24h || 0) * 100);
         const sm = f.coffee.smokeWords();
+        if (this.f.floor.on && !sm) return ['tests · deploy', `${pass}% pass · ${fl.failed} failed/h of ${fl.finished}`, `${c.deploying.length} deploying · ${fl.deploys} deploys/h`]; // fx-front: one board, one title
         return ['tests', `${pass}% pass · ${fl.failed} failed/h`, sm ? `smoke: ${sm}` : `${fl.finished} finished/h`];
       }
       case '08': return ['deploy', `${c.deploying.length} deploying · ${fl.deploys}/h`, VIAS.map((v) => `${VIA_WORDS[v]} ${fl.byVia[v] ?? 0}`).join(' · ')];
@@ -127,7 +144,9 @@ export class Labels implements Layer {
 
   /** A stage's 24 h sparkline (the fleet trend's), for the hover card's chart; null: none. */
   stageSpark(id: string): (number | null)[] | null {
-    const n = STAGES.find((s) => s.n === id || s.title === id)?.n ?? '';
+    const own = this.f.floor.on ? frontOf(this.f)?.spark(id) : null; // fx-front: the board's day (its title or stage)
+    if (own) return own;
+    const n = STAGES.find((s) => s.n === id || s.title === id)?.n ?? (id === 'tests · deploy' ? '07' : '');
     // fab-w1: the back wall's own board (the day, an hour a value), else the fleet trend's
     const W = this.f.floor.on ? this.f.floor.data.last.wall : null;
     const ser = !W ? null : n === '01' ? W.pushes : n === '02' ? W.opened : n === '03' || n === '04' ? W.landed : n === '05' || n === '06' ? W.runs : n === '07' ? W.runsRed : n === '08' ? W.deploys : null;
@@ -202,9 +221,12 @@ export class Labels implements Layer {
     const detail = level >= 1;
     const q = f.budget.quality;
     const jobsPer = !detail ? 0 : q === 0 ? 3 : q === 1 ? 2 : 0;
+    // fx-lanes: the lanes' names first (one each, on its road, in its hue)
+    this.laneNames(g);
     // the stage titles: one run each at fleet zoom (their numbers on hover, `stageHover`), with
     // their stat lines once zoomed in; anchored at each stage's back edge, lifted into the band
-    for (const st of STAGES) {
+    if (!detail && fl.on) this.titleRow(g);
+    else for (const st of STAGES) {
       const A = STAGE_AT[st.n]!;
       const [u, v, z] = (fl.on ? WALL_AT[st.n] : null) ?? A.at;
       const ax = cam.x(u, v), ay = cam.y(u, v, z);
@@ -250,6 +272,69 @@ export class Labels implements Layer {
     if (!detail) return;
     this.machines(g, now, jobsPer);
     this.places(g, q);
+  }
+
+  /** fx-front: the fleet zoom's stage titles, ONE row (review iter-2 #7): each at its stage's x,
+   *  pushed apart on one baseline (the least total shift: pool-adjacent-violators over the order),
+   *  a leader from under it straight down to its board's top (or the stage), with a short level
+   *  jog when the title had to move off its board. Nothing collides: one row, ordered, gapped. */
+  private titleRow(g: Gfx): void {
+    const f = this.f, cam = f.cam;
+    const yT = Math.round(Math.max(80, cam.y(0, 0, TITLE_Z)));
+    const NOTCH = 12, GAP = 16;
+    type T = { n: string; parts: [string, string][]; w: number; ws: number[]; p: number; x: number; ax0: number; ax1: number; ay: (x: number) => number };
+    const ts: T[] = [];
+    for (const r of TITLE_ROW) {
+      const ws = r.parts.map(([s]) => g.width(s, TITLE, true) + NOTCH);
+      const w = ws.reduce((a, b) => a + b, 0) + (ws.length - 1) * 4;
+      const b = BOARDS.find((x) => x.stage === r.n);
+      if (b) {
+        const ua = b.u0 + 2, ub = b.u1 - 6;
+        const ax0 = cam.x(ua, 0), ax1 = cam.x(ub, 0);
+        ts.push({ n: r.n, parts: r.parts, w, ws, p: ax0 - 2, x: 0, ax0, ax1, ay: (x) => cam.y(ua + ((x - ax0) / Math.max(1e-6, ax1 - ax0)) * (ub - ua), 0, b.z1) });
+      } else if (r.at) {
+        const [u, v, z] = r.at, ax = cam.x(u, v), ay = cam.y(u, v, z);
+        ts.push({ n: r.n, parts: r.parts, w, ws, p: ax - Math.min(24, w / 4), x: 0, ax0: ax, ax1: ax, ay: () => ay });
+      }
+    }
+    // pool adjacent violators on p − offset: the least-squares placement that keeps the order
+    const off: number[] = [];
+    let acc = 0;
+    for (const t of ts) { off.push(acc); acc += t.w + GAP; }
+    const blocks: { s: number; n: number; i0: number }[] = [];
+    ts.forEach((t, i) => {
+      blocks.push({ s: t.p - off[i]!, n: 1, i0: i });
+      while (blocks.length > 1 && blocks[blocks.length - 2]!.s / blocks[blocks.length - 2]!.n > blocks[blocks.length - 1]!.s / blocks[blocks.length - 1]!.n) {
+        const b = blocks.pop()!, a = blocks[blocks.length - 1]!;
+        a.s += b.s; a.n += b.n;
+      }
+    });
+    blocks.forEach((b) => { for (let i = b.i0; i < b.i0 + b.n; i++) ts[i]!.x = b.s / b.n + off[i]!; });
+    // inside the canvas
+    const lo = 6 - Math.min(0, ...ts.map((t) => t.x - 6)), hi = Math.max(0, ...ts.map((t) => t.x + t.w - (cam.W - 40)));
+    for (const t of ts) t.x += lo > 6 ? lo - 6 : -hi;
+    for (const t of ts) {
+      const x = Math.round(t.x), yl = yT + 5;
+      // the leader: straight down from under the title where it stands over its anchor, else
+      // from the anchor's nearest end, with a level jog to the title
+      const lx = Math.min(Math.max(x + 6, t.ax0), t.ax1), ay = t.ay(lx);
+      if (ay > yl + 2) {
+        g.vline(g.crisp(lx), yl, ay - 1, '#3E3E43');
+        if (lx < x || lx > x + t.w) { const xa = Math.min(lx, x + 6), xb = Math.max(lx, x + t.w - 6); g.begin_(); g.move(xa, yl + 0.5); g.line(xb, yl + 0.5); g.stroke('#3E3E43', g.hair); }
+        g.begin_(); g.circle(lx, ay, 1.6); g.fill('#6A6A6E');
+      }
+      g.fillRect(x - 4, yT - TITLE, t.w + 8, TITLE + 6, withAlpha(C.canvas, 0.8));
+      let cx = x;
+      t.parts.forEach(([s, n], j) => {
+        g.text(s, cx, yT, C.ink, TITLE, true);
+        const sw = t.ws[j]! - NOTCH;
+        f.w2.notch(g, n, cx + sw + 4, yT); // fab-w2: the stage's trend notch
+        cx += t.ws[j]! + 4;
+      });
+      const A = STAGE_AT[t.n]!;
+      this.list.push({ x: x - 2, y: yT, w: t.w + 4, h: TITLE + 3 });
+      this.stageHit(g, x - 3, yT - 14, t.w + 6, 20, t.n, A.fly, t.parts.map(([s]) => s).join(' '));
+    }
   }
 
   private stageHit(g: Gfx, x: number, y: number, w: number, h: number, n: string, fly: string, title: string): void {
@@ -302,25 +387,64 @@ export class Labels implements Layer {
     }
   }
 
+  /** The lanes' names (fx-lanes; REVIEW-iter2 #2, overseer notes 7–8): one per lane, centred in its
+   *  lane at its approach road's midpoint (floor.ts `roadMid`), in the lane's hue at L 0.80, an org
+   *  lane's name after a dim ◇ (a stroked glyph: no extra text run). A lane under 16 px deep at the
+   *  fleet zoom goes unnamed (its road's hover names it); nothing hangs off the screen's left edge;
+   *  the bots' hatch names the siding at the fleet zoom. */
+  private laneNames(g: Gfx): void {
+    const f = this.f, fl = f.floor, cam = f.cam;
+    if (!fl.on) return;
+    const G = floorGroups();
+    const fleet = fl.level === 0 && !fl.focusId;
+    for (const L of fl.lanesNow) {
+      const lane = G.lane(L.id);
+      if (!lane || (lane.kind === 'bots' && fleet)) continue;
+      const [u, v] = fl.roadMid(L);
+      const px = Math.abs(cam.y(u, L.b1) - cam.y(u, L.b0));
+      if (px < (fleet ? 16 : 13)) continue;
+      const org = lane.kind === 'org';
+      const name = org ? lane.bare : lane.short;
+      const gw = org ? 11 : 0, wv = g.width(name, SMALL), w = gw + wv;
+      const ax = cam.x(u, v), ay = cam.y(u, v);
+      if (ax < -w || ay < 40 || ay > cam.H - 30) continue;
+      const x = Math.max(6, Math.round(ax - w / 2)), y = Math.round(ay + 4);
+      if (x + w > cam.W - 6) continue;
+      const at = this.placeAt(x, y, w, 13, 0, false);
+      if (!at) continue;
+      g.fillRect(x - 3, y - 11, w + 6, 15, withAlpha(C.canvas, 0.74));
+      if (org) {
+        // ◇: the group is an org (its repos have no app team), dim
+        const cx = x + 4, cy = y - 4;
+        g.begin_(); g.move(cx, cy - 4); g.line(cx + 4, cy); g.line(cx, cy + 4); g.line(cx - 4, cy); g.ctx.closePath(); g.stroke(withAlpha(L.tint.ink, 0.5), 1.1);
+      }
+      g.text(name, x + gw, y, L.tint.ink, SMALL);
+    }
+  }
+
   /** The lanes' words at group zoom: the phases over the yard, the open lane's cell counts, its
-   *  age axis and its red posts' names; at the repo level its sub-rows' repos and "+N". */
+   *  age axis and its red posts' names; with the lane open (fx-lanes: the group level, §F), its
+   *  sub-rows' repos and "+N", the phases' counts and the age bays' ends. */
   private lanes(g: Gfx, level: number, q: number): void {
     const f = this.f, cam = f.cam, fl = f.floor;
     const lanes = fl.lanesNow, cnt = fl.data.last;
     if (!lanes.length) return;
-    // the phases, along the yard's back edge
-    if (q < 3) PHASES.forEach((ph, r) => {
-      const x = cam.x(ROW_U[r] - LANE_U.CELL_DU / 2 + 4, LANE_V0), y = cam.y(ROW_U[r] - LANE_U.CELL_DU / 2 + 4, LANE_V0) - 4;
-      const yy = this.place(x, y, g.width(ph, SMALL), 13, 1);
-      if (yy >= 0) g.text(ph, x, yy, C.ink3, SMALL);
-    });
+    void level;
     const L = lanes[fl.lanes.index(fl.focusId)];
-    if (!L || L.s.stripe) return;
-    const info = cnt.lanes.get(L.id);
-    if (!info) return;
-    if (level >= 2 && L.v1 - L.v0 > 120) {
-      // the sub-rows: each repo's name at the row's start, the rest as "+N"
-      for (const r of fl.rowsOf(L, info)) {
+    const info = L ? cnt.lanes.get(L.id) : undefined;
+    const rows = !!L && !!info && fl.subRowsOn(L);
+    // the phases, along the yard's back edge (an open lane: its counts with them)
+    if (q < 3) PHASES.forEach((ph, r) => {
+      const s = rows && info ? `${ph} ${info.cells[r].n}` : ph;
+      const x = cam.x(ROW_U[r] - LANE_U.CELL_DU / 2 + 4, LANE_V0), y = cam.y(ROW_U[r] - LANE_U.CELL_DU / 2 + 4, LANE_V0) - 4;
+      const yy = this.place(x, y, g.width(s, SMALL), 13, 1);
+      if (yy >= 0) g.text(s, x, yy, C.ink3, SMALL);
+    });
+    if (!L || L.s.stripe || !info) return;
+    if (rows) {
+      // the sub-rows: each repo's name at the row's start (red: its main is red), the rest as "+N"
+      const rs = fl.rowsOf(L, info);
+      for (const r of rs) {
         const v = (r.v0 + r.v1) / 2;
         const x = cam.x(YARD_U0 - 2, v), y = cam.y(YARD_U0 - 2, v) + 4;
         const s = r.repo ? r.repo.name : `+${r.more} more`;
@@ -330,32 +454,34 @@ export class Labels implements Layer {
         g.fillRect(x - wv - 2, yy - 10, wv + 4, 13, withAlpha(C.canvas, 0.75));
         g.text(s, x - wv, yy, r.repo ? (r.repo.post.st === 0 ? C.redText : C.ink2) : C.ink3, SMALL);
       }
-      return;
+      // the age bays' ends over the first row's first cell: new → old, left → right
+      const r0 = rs[0];
+      if (r0 && q < 2) {
+        const u0 = ROW_U[0] - LANE_U.CELL_DU / 2 + 4, u1 = ROW_U[0] + LANE_U.CELL_DU / 2 - 4;
+        for (const [s, u, right] of [[AGE_WORDS[0]!, u0, false], [AGE_WORDS[AGE_WORDS.length - 1]!, u1, true]] as [string, number, boolean][]) {
+          const wv = g.width(s, SMALL), x = cam.x(u, r0.v0) - (right ? wv : 0), y = cam.y(u, r0.v0) - 3;
+          const yy = this.place(x, y, wv, 13, 0);
+          if (yy >= 0) g.text(s, x, yy, C.ink3, SMALL);
+        }
+      }
     }
+    const inRows = rows ? new Set(fl.rowsOf(L, info).map((r) => r.repo?.repo ?? '')) : null;
     // the cells' counts over their stacks
-    if (q < 2) info.cells.forEach((C_, r) => {
+    if (q < 2 && !rows) info.cells.forEach((C_, r) => {
       if (!C_.n) return;
       const u = ROW_U[r], v = (L.s.cell0 + L.s.cell1) / 2;
-      const x = cam.x(u, v), y = cam.y(u, v, L.v1 - L.v0 > 90 ? 28 : stackH(C_.n)) - 4;
+      const x = cam.x(u, v), y = cam.y(u, v, stackH(C_.n)) - 4;
       const s = String(C_.n), wv = g.width(s, SMALL, true);
       const yy = this.place(x - wv / 2, y, wv, 13, 1);
       if (yy >= 0) g.text(s, x, yy, C_.red >= C_.n / 2 ? C.redText : C.ink, SMALL, true, 'center');
     });
-    // the age axis beside the first cell: new at the back, old in front
-    if (L.v1 - L.v0 > 90) {
-      const u = ROW_U[0] - LANE_U.CELL_DU / 2;
-      for (const [b, v] of [[0, L.s.cell0 + 4], [AGE_WORDS.length - 1, L.s.cell1 - 4]] as [number, number][]) {
-        const x = cam.x(u, v) - 4, y = cam.y(u, v) + 4, s = AGE_WORDS[b]!, wv = g.width(s, SMALL);
-        const yy = this.place(x - wv, y, wv, 13, 0);
-        if (yy >= 0) g.text(s, x - wv, yy, C.ink3, SMALL);
-      }
-    }
-    // the red posts' repos (the newest red first), over their lamps
+    // the red posts' repos (the newest red first), over their lamps (an open lane: those its rows
+    // do not already name)
     const span = RAIL_U1 - RAIL_U0 - 8, max = Math.floor(span / 3.6);
     const list = info.posts.slice(0, max), pitch = Math.min(7, span / Math.max(1, list.length));
     let named = 0;
     list.forEach((p, j) => {
-      if (p.st !== 0 || named >= 8) return;
+      if (p.st !== 0 || named >= (rows ? 4 : 8) || inRows?.has(p.repo)) return;
       const u = RAIL_U0 + 4 + j * pitch, v = L.s.curb;
       const x = cam.x(u, v), y = cam.y(u, v, 16) - 2;
       const wv = g.width(p.name, SMALL);

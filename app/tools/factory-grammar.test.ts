@@ -10,7 +10,7 @@ import { bindInsights, insights } from '../src/insights.ts';
 import { Timeline } from '../src/timeline.ts';
 import { createSim } from '../server/sim.ts';
 import { Groups } from '../src/factory/groups.ts';
-import { GRAMMAR, RESERVE, STATE, STAGES, TEXT_BUDGET, deltaE, deltaOk, hueSpec, hueViolations, oklch, type Kind } from '../src/factory/grammar.ts';
+import { GRAMMAR, RESERVE, STATE, STAGES, TEXT_BUDGET, deltaE, deltaOk, hueSpec, hueViolations, laneInk, oklch, paletteReport, type HueSpec, type Kind } from '../src/factory/grammar.ts';
 import { LaneMap, LANE_V0, LANE_V1, FOCUS_DV, STRIPE_DV } from '../src/factory/layout.ts';
 import { LV } from '../src/factory/iso.ts';
 
@@ -18,7 +18,7 @@ let fails = 0;
 const ok = (c: unknown, m: string) => { if (c) console.log('ok', m); else { fails++; console.log('FAIL', m); } };
 
 // ── the table ──
-const KINDS: Kind[] = ['dock', 'stack', 'pallet', 'gate', 'post', 'car', 'belt', 'intake', 'engine', 'bay', 'crate', 'gauge', 'scanner', 'return', 'track', 'app', 'district', 'strip'];
+const KINDS: Kind[] = ['dock', 'lane', 'stack', 'pallet', 'gate', 'post', 'car', 'stop', 'belt', 'intake', 'engine', 'bay', 'crate', 'gauge', 'scanner', 'return', 'track', 'app', 'district', 'strip']; // fx-lanes: + lane (carpet), stop (red tally)
 ok(KINDS.every((k) => GRAMMAR[k]) && Object.keys(GRAMMAR).length === KINDS.length, `grammar: ${KINDS.length} kinds, one row each (§B)`);
 const missing = KINDS.filter((k) => { const g = GRAMMAR[k]; return !g.word || !g.shape || !g.colour || !g.says || g.says.split(/\s+/).length > 6; });
 ok(!missing.length, `grammar: every row has a word, a shape, a colour role and a short legend line${missing.length ? ` (missing: ${missing.join(', ')})` : ''}`);
@@ -41,29 +41,45 @@ const bad = hueViolations([hueSpec('reddish', 0.62, 0.07, 30), hueSpec('loud', 0
 ok(bad.some((v) => v.includes('reddish') && v.includes('hue')) && bad.some((v) => v.includes('loud') && v.includes('chroma')) && bad.some((v) => v.includes('greenish') && v.includes('ΔE')) && bad.some((v) => v.includes('adjacent')), `reserve: violations are caught (${bad.length})`);
 
 // ── the palettes the floor shows ──
-function palette(tl: Timeline): { ids: string[]; v: string[] } {
+function palette(tl: Timeline): { ids: string[]; v: string[]; specs: HueSpec[]; map: string } {
   bindInsights(tl, () => null);
   const G = new Groups();
   const lanes = G.lanes();
-  const specs = lanes.map((l) => ({ ...hueSpec(l.id, l.hue.l, l.hue.c, l.hue.h), hex: G.hex(l.id) }));
-  return { ids: lanes.map((l) => l.short), v: hueViolations(specs) };
+  const specs = lanes.map((l) => ({ ...hueSpec(l.short, l.hue.l, l.hue.c, l.hue.h), hex: G.hex(l.id) }));
+  return { ids: lanes.map((l) => l.short), v: hueViolations(specs), specs, map: lanes.map((l) => `${l.id}=${G.hex(l.id)}`).join(' ') };
+}
+/** fx-lanes: the palette's closest calls, printed (REVIEW-iter2 #1) and held to the rules. */
+function closest(name: string, specs: HueSpec[]): void {
+  const r = paletteReport(specs);
+  console.log(`  ${name}: closest pair ${r.any[0]}↔${r.any[1]} ΔE_ok ${r.any[2].toFixed(3)} · closest neighbours ${r.nb[0]}↔${r.nb[1]} ${r.nb[2].toFixed(3)} · nearest reserved ${r.res[0]}↔${r.res[1]} ${r.res[2].toFixed(3)}`);
+  ok(r.any[2] >= RESERVE.anyOk && r.nb[2] >= RESERVE.adjacentOk && r.res[2] >= RESERVE.reserveOk, `${name}: any pair ≥ ${RESERVE.anyOk} (${r.any[2].toFixed(3)}), neighbours ≥ ${RESERVE.adjacentOk} (${r.nb[2].toFixed(3)}), reserved ≥ ${RESERVE.reserveOk} (${r.res[2].toFixed(3)})`);
+  const ink = specs.map((s) => oklch(laneInk(s.hex))[0]);
+  ok(ink.every((L) => Math.abs(L - 0.8) < 0.02), `${name}: every lane's label ink at OKLCH L ≈ 0.80 (${ink.map((L) => L.toFixed(2)).join(' ')})`);
 }
 const fixture = await Bun.file(new URL('../../contract/fixtures/snapshot.json', import.meta.url)).json();
 {
   const tl = new Timeline(); tl.load(JSON.parse(JSON.stringify(fixture)), 0); tl.tick(16);
   const p = palette(tl);
   ok(p.ids.length === 11 && !p.v.length, `fixtures: 11 lanes (${p.ids.join(', ')}) keep the reserve${p.v.length ? `: ${p.v.join('; ')}` : ''}`);
+  closest('fixtures', p.specs);
+  // the hue → group mapping is the same on every run (a fresh session on the same fleet)
+  const tl2 = new Timeline(); tl2.load(JSON.parse(JSON.stringify(fixture)), 0); tl2.tick(16);
+  const p2 = palette(tl2);
+  ok(p2.map === p.map, `fixtures: the hue → group mapping is stable across runs`);
+  bindInsights(tl, () => null);
   // every hue slot a fleet can reach: invent teams and orgs until the slots run out
   const ins = insights();
   const all = ins.groups().map((g) => ins.groupHue(g.id)).filter((h) => !h.folded);
   const v = hueViolations(all.map((h, i) => ({ ...hueSpec(`slot${h.slot}`, h.l, h.c, h.h), id: `slot${h.slot}#${i}` })).sort((a, b) => a.id.localeCompare(b.id)));
   ok(all.length === 9 && !v.filter((x) => !x.includes('adjacent')).length, `slots: the 9 hued slots keep the reserve${v.length ? `: ${v.join('; ')}` : ''}`);
+  closest('slots (any order)', all.map((h) => ({ ...hueSpec(`slot${h.slot}`, h.l, h.c, h.h), hex: h.hex })).sort((a, b) => a.id.localeCompare(b.id)).filter((s, i, a) => i === 0 || s.id !== a[i - 1]!.id));
 }
 {
   const sim = createSim({ seed: 7, epoch: Date.UTC(2026, 10, 10, 20, 0), warmupMs: 10 * 60_000 });
   const tl = new Timeline(); tl.load(sim.snapshot() as never, 0); tl.tick(16);
   const p = palette(tl);
   ok(!p.v.length, `demo: ${p.ids.length} lanes keep the reserve${p.v.length ? `: ${p.v.join('; ')}` : ''}`);
+  closest('demo', p.specs);
 }
 
 // ── the lane map (layout.ts): base lanes and the accordion ──

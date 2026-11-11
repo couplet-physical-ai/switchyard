@@ -6,7 +6,8 @@
 //   bun tools/factory-texts.ts [demo|fixtures|<server url>] [--max N] [--zoom <wheel>] [--size 1440x900] [--list]
 //
 // It connects as the app does (sources.connect), lets the floor settle for a few seconds of
-// frames, then records one live frame's fillText calls. `--max` exits 1 over N; `--list` prints
+// frames, then records one live frame's fillText calls and joins a label's pieces into ITEMS (what a
+// reader reads; below). `--max` exits 1 over N items; `--list` prints
 // every run with its position.
 
 const args = process.argv.slice(2);
@@ -66,7 +67,17 @@ for (let i = 0; i < 720; i++) {
   draw('factoryLive', ['full', '', ZOOM, Math.floor(t / 125)], ctxProxy(live), frame(t, 'frame'));
 }
 const runs = live.texts;
-console.log(`factory texts: ${runs.length} runs in one live frame (zoom wheel ${ZOOM}, ${W}x${H}, ${server.startsWith('http') && mock ? 'fixtures' : server})`);
-if (args.includes('--list')) for (const r of [...runs].sort((a, b) => a.y - b.y || a.x - b.x)) console.log(`  ${String(r.x).padStart(5)},${String(r.y).padStart(4)}  ${r.s}`);
-if (MAX && runs.length > MAX) { console.log(`FAIL: over ${MAX}`); process.exit(1); }
+// ITEMS (what a reader reads): the runs of one label drawn in pieces (a chip's bold number and its
+// words, "labs" + " · 10 red", "tests" + " · deploy") join into one item: same baseline (±2 px), the
+// next piece starting within 18 px of where the last one ended (≈7.2 px a character at 12 px; a
+// 15-px title or a chip's ▲ is wider).
+const items: { s: string; x: number; y: number; end: number }[] = [];
+for (const r of [...runs].sort((a, b) => a.x - b.x || a.y - b.y)) {
+  const end = r.x + 7.2 * r.s.length;
+  const prev = items.find((it) => Math.abs(it.y - r.y) <= 2 && r.x >= it.x && r.x <= it.end + 18);
+  if (prev) { prev.s += r.s; prev.end = Math.max(prev.end, end); } else items.push({ s: r.s, x: r.x, y: r.y, end });
+}
+console.log(`factory texts: ${items.length} items (${runs.length} runs) in one live frame (zoom wheel ${ZOOM}, ${W}x${H}, ${server.startsWith('http') && mock ? 'fixtures' : server})`);
+if (args.includes('--list')) for (const r of items.sort((a, b) => a.y - b.y || a.x - b.x)) console.log(`  ${String(r.x).padStart(5)},${String(r.y).padStart(4)}  ${r.s}`);
+if (MAX && items.length > MAX) { console.log(`FAIL: over ${MAX}`); process.exit(1); }
 process.exit(0);

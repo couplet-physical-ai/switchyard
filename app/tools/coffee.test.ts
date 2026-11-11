@@ -200,7 +200,7 @@ const redSince = (s: Snapshot, from: number) => list(s.repos).filter((r) => (r.m
   const fleet = list(snap.trends ?? []).find((x) => x.id === 'fleet');
   const stageBad = (['pass_rate', 'intake_ms', 'run_ms', 'pr_age_ms', 'red'] as const).filter((k) => metricBad(k, fleet?.[k], false)).length;
   eq(m.embers.filter((e) => e.kind === 'stage').length, stageBad, `fixture embers: one per stage whose 24 h trend is worse than its 7 d (${m.embers.map((e) => `${e.id}:${e.metrics.join('+')}`).join(', ')})`);
-  ok(m.hot.length >= 1 && m.hot.length <= 3, `fixture hotspots: ${m.hot.map((h) => `${h.lead}${h.rest}`).join(' | ')}`);
+  ok(m.hot.length >= 1 && m.hot.length <= 4, `fixture hotspots (candidates; the floor draws ≤ 3): ${m.hot.map((h) => `${h.lead}${h.rest}`).join(' | ')}`);
   ok(m.beacons.length <= 64 && m.verdict !== 'flowing', `fixture verdict: ${m.verdict} (${m.why})`);
 }
 
@@ -232,21 +232,103 @@ const redSince = (s: Snapshot, from: number) => list(s.repos).filter((r) => (r.m
   ok(paint < 0.5, `a frame's coffee painting: ${paint.toFixed(3)} ms`);
 }
 
-// fab-w6b: a hotspot callout stays inside the floor (12 px margin) and pins to the edge its anchor left by
+// fab-w6b + fx-glance: a hotspot callout sits in the floor's dark places (the top band under the
+// glance, or the lower-left void), inside the floor (12 px margin), 24 px clear of stage titles,
+// beacons and its own anchor; it pins to the edge its anchor left by
 {
   const { calloutAt, calloutPin } = await import('../src/factory/glance.ts');
   const vis = { l: 0, t: 68, r: 1440, b: 842 };
-  const at = calloutAt(1430, 420, 150, vis, () => true)!;
+  const inTop = (y: number) => y - 13 >= 68 + 12 && y <= 68 + 12 + 13 + 20;
+  const inVoid = (x: number, y: number, w: number) => x + w <= 1440 * 0.4 && y >= 68 + (842 - 68) * 0.62;
+  const at = calloutAt(1430, 420, 150, vis)!;
   ok(at[0] - 5 >= 12 && at[0] + 150 + 5 <= 1440 - 12, `callout: clamped inside the right edge (x ${at[0]})`);
-  const hi = calloutAt(700, 40, 150, vis, () => true)!;
-  ok(hi[1] - 13 >= 68 + 12, `callout: clamped under the top row (y ${hi[1]})`);
-  const lo = calloutAt(700, 900, 150, vis, () => true)!;
-  ok(lo[1] + 5 <= 842 - 12, `callout: clamped over the time strip (y ${lo[1]})`);
-  let n = 0;
-  const taken = calloutAt(1430, 420, 150, vis, () => ++n > 3)!;
-  ok(taken && taken[0] + 155 <= 1428, 'callout: the placer\'s other candidates stay clamped too');
-  eq(calloutAt(700, 400, 150, vis, () => false), null, 'callout: no free place → none');
+  ok(inTop(at[1]) || inVoid(at[0], at[1], 150), `callout: in the top band or the lower-left void (${at})`);
+  const lo = calloutAt(300, 760, 150, vis)!;
+  ok(lo[1] + 5 <= 842 - 12 && inVoid(lo[0], lo[1], 150), `callout: an anchor low on the left takes the void (${lo})`);
+  const own = calloutAt(700, 100, 150, vis)!;
+  const clear = (x: number, y: number, w: number, px: number, py: number, m: number) => px < x - 5 - m || px > x + w + 5 + m || py < y - 13 - m || py > y + 5 + m;
+  ok(clear(own[0], own[1], 150, 700, 100, 24), `callout: 24 px clear of its own anchor (${own})`);
+  // a stage title over the anchor's top-band spot, a beacon beside it: the callout keeps 24 px off both
+  const title = { x: 600, y: 80, w: 220, h: 18, m: 24 }, beacon = { x: 860, y: 82, w: 20, h: 20, m: 24 };
+  const kt = calloutAt(700, 300, 150, vis, [title, beacon])!;
+  const off = (k: typeof title) => kt[0] + 150 + 5 + 24 <= k.x || kt[0] - 5 - 24 >= k.x + k.w || kt[1] + 5 + 24 <= k.y || kt[1] - 13 - 24 >= k.y + k.h;
+  ok(kt && off(title) && off(beacon), `callout: 24 px clear of a stage title and a beacon (${kt})`);
+  eq(calloutAt(700, 400, 150, vis, [{ x: 0, y: 0, w: 1440, h: 900, m: 0 }]), null, 'callout: no free place → none');
   eq([calloutPin(700, 400, vis), calloutPin(1500, 400, vis), calloutPin(-30, 400, vis), calloutPin(700, 30, vis), calloutPin(700, 900, vis)], ['', 'r', 'l', 't', 'b'], 'callout: pinned to the edge its anchor left by');
+}
+
+// fx-glance: the coffee header's totals ARE the status line's (red main lines, building, queued,
+// apps down), counted the way app.ts's status line counted them (select.ts), in live, in a
+// replay and in stress mode (the 10× fleet's own); and the header PAINTS them
+{
+  const { buildingIds, queueTruth, isRed } = await import('../src/yard/select.ts');
+  const { FACTOR } = await import('../src/factory/stress.ts');
+  const texts: string[] = [];
+  const rec = new Proxy({}, {
+    get: (_t, k) => (k === 'fillText' ? (s: string) => { texts.push(String(s)); } : k === 'measureText' ? (s: string) => ({ width: 6.6 * String(s).length }) : k === 'canvas' ? { width: 1440, height: 900 } : k === 'createLinearGradient' || k === 'createRadialGradient' ? () => ({ addColorStop: noop }) : noop),
+    set: () => true,
+  }) as never;
+  const statusLine = (w: Timeline['world'], F: number) => {
+    let red = 0, down = 0;
+    for (const r of w.repos.values()) if (isRed(r)) red++;
+    for (const a of w.apps.values()) if (a.health === 'down') down++;
+    return { red: red * F, building: buildingIds(w).size * F, queued: queueTruth(w).waiting * F, down };
+  };
+  const painted = (n: number, word: string) => texts.some((s, i) => s === String(n) && (texts[i + 1] ?? '').startsWith(word));
+  const check = (name: string, f: Factory, tl: Timeline, t: number, F: number) => {
+    const T = f.coffee.status(tl.world, F > 1, t);
+    texts.length = 0;
+    for (let i = 0; i < 3; i++) { tl.tick(t + i * 16); f.drawLive(rec, frame(t + i * 16), t + i * 16, 0); }
+    const want = statusLine(tl.world, F);
+    eq([T.red, T.building, T.queued], [want.red, want.building, want.queued], `totals (${name}): red, building, queued = the status line's count${F > 1 ? ' × 10' : ''} (${want.red} · ${want.building} · ${want.queued})`);
+    ok(F > 1 ? T.down >= want.down : T.down === want.down, `totals (${name}): apps down ${T.down} (the world's ${want.down}${F > 1 ? ' + the city\'s hashed copies' : ''})`);
+    eq(f.coffee.glance0.drawn, `${T.red} red · ${T.building} building · ${T.queued} queued · ${T.down} down`, `header (${name}): the totals it drew are the status line's, word for word`);
+    ok(T.red ? painted(T.red, ' red') : texts.includes('every main line green'), `header (${name}): paints "${T.red} red"`);
+    ok(T.down ? painted(T.down, T.down === 1 ? ' app down' : ' apps down') : texts.some((s) => s === 'all apps up' || s.endsWith(' back')), `header (${name}): paints the apps down (${T.down})`);
+    return texts.slice();
+  };
+  const snap = clone(fixture), now = snap.at;
+  const { tl, f, run } = floor(snap, now);
+  f.coffee.open('', '', true, 0);
+  let t = run(16, 40);
+  t = run(t, 90); // past the intro (T_DONE): the settled header
+  const live = check('live', f, tl, t, 1);
+  ok(live.some((s) => s.includes('worse than usual') || s.includes('as usual')), `header (live): the verdict is relative (${live.find((s) => s.includes('usual')) ?? 'none'})`);
+  ok(!live.some((s) => / building$/.test(s)), 'header (live): building and queued are in the menu, not the row (≤ 4 worded chips)');
+  // one name per thing: the return belt's tallest heap names its own signature (fx-engine), so the
+  // worst cluster's callout gives way when that heap is its subject; the other hotspots keep theirs
+  {
+    const { tallestCluster } = await import('../src/factory/glance.ts');
+    eq(tallestCluster([{ cl: 'a', n: 3, open: true }, { cl: 'b', n: 9, open: false }, { cl: 'c', n: 5, open: true }, { cl: 'd', n: 5, open: true }]), 'c', 'tallest heap: the open group holding the most (ties: nearest the scanner)');
+    const gl = f.coffee.glance0, hot = f.coffee.dg.marks.hot, tall = tallestCluster(f.lens.parkGroups);
+    const srcs = gl.callouts.map((o) => o.src);
+    ok(tall !== '' && gl.callouts.length >= 1 && gl.callouts.length <= 3, `callouts: ≤ 3 drawn (${srcs.join(' | ')}; the tallest heap ${tall})`);
+    ok(!srcs.includes(`cluster:${tall}`), `callouts: none names the tallest heap's cluster (${tall}), the heap names itself`);
+    const clh = hot.find((h) => h.kind === 'cluster');
+    if (clh && clh.id === tall) ok(hot.filter((h) => h.kind !== 'cluster').every((h) => srcs.includes(`${h.kind}:${h.id}`) || gl.callouts.length === 3), `callouts: the other hotspots keep theirs (${srcs.join(' | ')})`);
+    else ok(!clh || srcs.includes(`cluster:${clh.id}`), `callouts: a cluster that is not the tallest heap keeps its callout (${clh?.id ?? 'none'})`);
+    // the worst cluster made the tallest heap: its callout gives way, the group's stays
+    if (clh) {
+      const pgs = f.lens.parkGroups;
+      f.lens.parkGroups = [{ ...(pgs[0] ?? { u0: 0, u1: 0, step: '', cls: '', flaky: 0, repos: 1, newest: '' }), cl: clh.id, n: 999, open: true }, ...pgs.slice(1)];
+      for (let i = 0; i < 2; i++) { const tt = t + 16 * (i + 1); tl.tick(tt); f.drawLive(rec, frame(tt), tt, 0); }
+      const s2 = gl.callouts.map((o) => o.src);
+      ok(!s2.includes(`cluster:${clh.id}`) && hot.filter((h) => h.kind !== 'cluster').every((h) => s2.includes(`${h.kind}:${h.id}`)), `callouts: the worst cluster as the tallest heap → no cluster callout, the rest kept (${s2.join(' | ')})`);
+      f.lens.parkGroups = pgs;
+    }
+  }
+  // stress mode: the 10× fleet (the census multiplies the same way the header does)
+  f.setStress(true);
+  t = run(t, 12);
+  check('stress', f, tl, t, FACTOR);
+  eq([f.census.redLines, f.census.building, f.census.waiting], [f.coffee.now.red, f.coffee.now.building, f.coffee.now.queued], 'stress: the floor\'s census (its titles) counts what the header says');
+  f.setStress(false);
+  t = run(t, 12);
+  // a replay: the replayed fleet's own totals, as chips (building and queued too)
+  tl.startReplay({ from: now - HOUR, to: now, base: clone(fixture), frames: [] } as never, now);
+  t = run(t, 12);
+  const rp = check('replay', f, tl, t, 1);
+  ok(painted(f.coffee.now.building, ' building') && painted(f.coffee.now.queued, ' queued'), 'header (replay): the replayed moment\'s building and queued');
 }
 void windowStart;
 console.log(fails ? `${fails} FAILED` : 'coffee: all ok');
