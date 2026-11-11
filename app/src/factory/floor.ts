@@ -75,11 +75,12 @@ export class Floor implements Layer {
 
   /** A belt (a flow band) along an axis-aligned polyline; `lanes` ∝ throughput. */
   private beltPath(g: Gfx, pts: Pt[], hw: number): void {
+    const cam = this.f.cam;
     for (let i = 1; i < pts.length; i++) {
       const [a, b] = [pts[i - 1], pts[i]];
       const u0 = Math.min(a[0], b[0]) - (a[1] === b[1] ? 0 : hw), u1 = Math.max(a[0], b[0]) + (a[1] === b[1] ? 0 : hw);
       const v0 = Math.min(a[1], b[1]) - (a[0] === b[0] ? 0 : hw), v1 = Math.max(a[1], b[1]) + (a[0] === b[0] ? 0 : hw);
-      quad(this.f.cam, g, u0, v0, u1, v1, 0.5);
+      quad(cam, g, u0, v0, u1, v1, 0.5);
     }
   }
 
@@ -117,7 +118,7 @@ export class Floor implements Layer {
   floor(fp: FloorPass): void {
     const g = fp.g, cam = this.f.cam, lo = fp.lo, idle = fp.idle, add = fp.add;
     // the floor slab
-    g.begin_(); poly(this.f.cam, g, [0, 0, 0, LU, 0, 0, LU, LV, 0, 0, LV, 0]); g.fill(F.floor);
+    g.begin_(); poly(cam, g, [0, 0, 0, LU, 0, 0, LU, LV, 0, 0, LV, 0]); g.fill(F.floor);
     // a faint isometric grid: every 20 units, a stronger line every 100 (low detail: only those)
     const step = cam.s * 20 > 9 ? 20 : 40;
     if (!lo) {
@@ -131,14 +132,14 @@ export class Floor implements Layer {
     for (let v = 100; v < LV; v += 100) { g.move(cam.x(0, v), cam.y(0, v)); g.line(cam.x(LU, v), cam.y(LU, v)); }
     g.stroke(F.gridMajor, g.hair);
     // the slab's front lip
-    g.begin_(); poly(this.f.cam, g, [0, LV, 0, LU, LV, 0, LU, LV, -6, 0, LV, -6]); g.fill('#0A0A0B');
-    g.begin_(); poly(this.f.cam, g, [LU, 0, 0, LU, LV, 0, LU, LV, -6, LU, 0, -6]); g.fill('#080809');
-    g.begin_(); poly(this.f.cam, g, [0, 0, 0, LU, 0, 0, LU, LV, 0, 0, LV, 0]); g.stroke(F.floorEdge, g.hair * 1.5);
+    g.begin_(); poly(cam, g, [0, LV, 0, LU, LV, 0, LU, LV, -6, 0, LV, -6]); g.fill('#0A0A0B');
+    g.begin_(); poly(cam, g, [LU, 0, 0, LU, LV, 0, LU, LV, -6, LU, 0, -6]); g.fill('#080809');
+    g.begin_(); poly(cam, g, [0, 0, 0, LU, 0, 0, LU, LV, 0, 0, LV, 0]); g.stroke(F.floorEdge, g.hair * 1.5);
     // painted zones (dashed), one per stage
     g.dash(true, 3, 4);
     const zones: [number, number, number, number][] = [[4, 24, 72, 588], [YARD_U0 - 6, 92, YARD_U1 + 4, 600], [RAIL_U0 - 4, 98, RAIL_U1 + 6, 482], [INTAKE_U0 - 8, 252, INTAKE_U1 + 6, 330], [ENG_U0 - 8, 22, ENG_U1 + 40, 600], [CITY_U0 - 8, CITY_V0 - 8, CITY_U1 + 4, CITY_V1 + 6]];
     g.begin_();
-    for (const z of zones) quad(this.f.cam, g, z[0], z[1], z[2], z[3], 0);
+    for (const z of zones) quad(cam, g, z[0], z[1], z[2], z[3], 0);
     g.stroke(F.zone, g.hair * 1.5);
     g.dash(false);
     // belts: one path for every belt's bed, one for their edges
@@ -173,15 +174,15 @@ export class Floor implements Layer {
     this.f.census.docks.forEach((d, i) => {
       const v = 66 + i * 96;
       add(DOCK_U0, v, () => {
-        box(this.f.cam, g, DOCK_U0, v - 30, DOCK_U1 - DOCK_U0, 60, 14);
+        box(cam, g, DOCK_U0, v - 30, DOCK_U1 - DOCK_U0, 60, 14);
         // the dock's door: a dark slot on its right face
-        g.begin_(); poly(this.f.cam, g, [DOCK_U1, v - 12, 1, DOCK_U1, v + 12, 1, DOCK_U1, v + 12, 10, DOCK_U1, v - 12, 10]); g.fill(F.bay);
-        if (d.org === BOTS) { g.begin_(); quad(this.f.cam, g, DOCK_U0 + 6, v - 24, DOCK_U1 - 6, v + 24, 14); g.stroke(F.edgeHi, g.hair); }
+        g.begin_(); poly(cam, g, [DOCK_U1, v - 12, 1, DOCK_U1, v + 12, 1, DOCK_U1, v + 12, 10, DOCK_U1, v - 12, 10]); g.fill(F.bay);
+        if (d.org === BOTS) { g.begin_(); quad(cam, g, DOCK_U0 + 6, v - 24, DOCK_U1 - 6, v + 24, 14); g.stroke(F.edgeHi, g.hair); }
       }, DOCK_U1, v + 30, 14);
     });
     // the PR yard: a low slab with racks; stacks by phase (columns) × age (depth)
     add(YARD_U0, 92, () => {
-      box(this.f.cam, g, YARD_U0, 92, YARD_U1 - YARD_U0, 452, 2, '#141416', '#101011', '#0F0F10', F.floorEdge);
+      box(cam, g, YARD_U0, 92, YARD_U1 - YARD_U0, 452, 2, '#141416', '#101011', '#0F0F10', F.floorEdge);
     }, YARD_U1, 544, 2);
     PHASES.forEach((_ph, r) => {
       AGE_V.forEach((v, b) => {
@@ -196,11 +197,11 @@ export class Floor implements Layer {
     });
     // merge gate: two posts and a beam over the aisle
     add(GATE_U, AISLE_V - 30, () => {
-      box(this.f.cam, g, GATE_U, AISLE_V - 36, 8, 8, 40);
-      box(this.f.cam, g, GATE_U, AISLE_V + 28, 8, 8, 40);
-      box(this.f.cam, g, GATE_U, AISLE_V - 36, 8, 72, 6 + 0, F.topHi);
-      g.begin_(); quad(this.f.cam, g, GATE_U, AISLE_V - 36, GATE_U + 8, AISLE_V + 36, 40); g.fill(F.topHi);
-      g.begin_(); quad(this.f.cam, g, GATE_U, AISLE_V - 36, GATE_U + 8, AISLE_V + 36, 40); g.stroke(F.edgeHi, g.hair * 1.5);
+      box(cam, g, GATE_U, AISLE_V - 36, 8, 8, 40);
+      box(cam, g, GATE_U, AISLE_V + 28, 8, 8, 40);
+      box(cam, g, GATE_U, AISLE_V - 36, 8, 72, 6 + 0, F.topHi);
+      g.begin_(); quad(cam, g, GATE_U, AISLE_V - 36, GATE_U + 8, AISLE_V + 36, 40); g.fill(F.topHi);
+      g.begin_(); quad(cam, g, GATE_U, AISLE_V - 36, GATE_U + 8, AISLE_V + 36, 40); g.stroke(F.edgeHi, g.hair * 1.5);
     }, GATE_U + 8, AISLE_V + 36, 40);
     // the main lines' cars: they change at a merge or a run's end, which redraws this layer
     // (`floorKey`), not every frame
@@ -235,8 +236,9 @@ export class Floor implements Layer {
   }
 
   private stack(g: Gfx, u0: number, v0: number, n: number, stuck: number, red: number, bucket: number, lo = false): void {
+    const cam = this.f.cam;
     // a pallet on the floor, crates stacked by count (1 crate layer per 2 PRs, a cap with a break)
-    box(this.f.cam, g, u0, v0, ROW_DU, STACK_DV, 2, '#19191B', '#121214', '#101012', '#2A2A2E');
+    box(cam, g, u0, v0, ROW_DU, STACK_DV, 2, '#19191B', '#121214', '#101012', '#2A2A2E');
     if (!n) return;
     const layers = Math.min(16, Math.ceil(n / 3));
     const lh = 2.6;
@@ -249,8 +251,7 @@ export class Floor implements Layer {
     const front = '#19191B';
     const edge = hot === 'red' ? '#A04A50' : hot === 'stale' ? '#77777C' : '#3C3C40';
     const inset = 7;
-    box(this.f.cam, g, u0 + inset, v0 + inset, ROW_DU - inset * 2, STACK_DV - inset * 2, 2 + layers * lh, top, side, front, edge);
-    const cam = this.f.cam;
+    box(cam, g, u0 + inset, v0 + inset, ROW_DU - inset * 2, STACK_DV - inset * 2, 2 + layers * lh, top, side, front, edge);
     const ua = u0 + inset, ub = u0 + ROW_DU - inset, va = v0 + inset, vb = v0 + STACK_DV - inset;
     // layer seams on the front and right faces (not on the low-detail floor)
     if (!lo) {
@@ -263,18 +264,18 @@ export class Floor implements Layer {
     }
     if (n > 48) {
       // the cap: more than the stack shows
-      g.begin_(); quad(this.f.cam, g, ua + 4, va + 4, ub - 4, vb - 4, 2 + layers * lh); g.stroke(edge, g.hair * 1.5);
+      g.begin_(); quad(cam, g, ua + 4, va + 4, ub - 4, vb - 4, 2 + layers * lh); g.stroke(edge, g.hair * 1.5);
     }
   }
 
   private pallet(g: Gfx, u0: number, v0: number, n: number): void {
-    box(this.f.cam, g, u0, v0, 64, 34, 3, '#1C1A16', '#141310', '#12110E', '#3A352B');
+    const cam = this.f.cam;
+    box(cam, g, u0, v0, 64, 34, 3, '#1C1A16', '#141310', '#12110E', '#3A352B');
     // crates on it: a grid whose fill grows with the count (up to 4×2 × 6 high)
     const cols = 4, rows = 2;
     const per = Math.max(1, Math.ceil(n / (cols * rows)));
     const h = Math.min(30, 3 + Math.sqrt(per) * 4);
-    box(this.f.cam, g, u0 + 5, v0 + 5, 54, 24, 3 + h, '#2E2A22', '#221F19', '#1C1A15', '#4A4334');
-    const cam = this.f.cam;
+    box(cam, g, u0 + 5, v0 + 5, 54, 24, 3 + h, '#2E2A22', '#221F19', '#1C1A15', '#4A4334');
     g.begin_();
     for (let k = 1; k < cols; k++) { const u = u0 + 5 + k * 13.5; g.move(cam.x(u, v0 + 29), cam.y(u, v0 + 29, 3)); g.line(cam.x(u, v0 + 29), cam.y(u, v0 + 29, 3 + h)); g.line(cam.x(u, v0 + 5), cam.y(u, v0 + 5, 3 + h)); }
     g.move(cam.x(u0 + 5, v0 + 17), cam.y(u0 + 5, v0 + 17, 3 + h)); g.line(cam.x(u0 + 59, v0 + 17), cam.y(u0 + 59, v0 + 17, 3 + h));
@@ -345,7 +346,7 @@ export class Floor implements Layer {
       });
     });
     // a running car's lamp blinks on the beat; the newest culprit's beacon flashes on it
-    if (blink(t)) flushLights(this.f.cam, g, lamps, C.packet, 1.8, q < 2); else lamps.n = 0;
+    if (blink(t)) flushLights(cam, g, lamps, C.packet, 1.8, q < 2); else lamps.n = 0;
     if (c.focal && !this.f.selected) {
       const ri = c.rails.findIndex((r) => r.org === w.orgOf(c.focal!.repo));
       const rail = c.rails[ri];
@@ -357,7 +358,7 @@ export class Floor implements Layer {
         g.begin_(); g.circle(x, y, 1.8 * Math.max(1, cam.s)); g.fill(C.red);
       }
     }
-    if (selCar) ring(this.f.cam, g, selCar[0], selCar[1], 8);
+    if (selCar) ring(cam, g, selCar[0], selCar[1], 8);
   }
 
   /** One car (a lens draws a lit one over the floor's batched cars). */

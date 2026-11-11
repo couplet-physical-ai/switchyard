@@ -102,7 +102,7 @@ export class Drawer {
     const run = p?.state === 'running';
     if (run) {
       const bay = this.f.bays.find((b) => b.pid === p?.id);
-      if (bay) crate(this.f.cam, g, bay.u + bay.du / 2, bay.v + bay.dv / 2, 11, false, false, ENG_H - 3);
+      if (bay) crate(cam, g, bay.u + bay.du / 2, bay.v + bay.dv / 2, 11, false, false, ENG_H - 3);
     }
     void total; void t;
     // stops: the stations it passed, named (the dimmed words below no longer claim space)

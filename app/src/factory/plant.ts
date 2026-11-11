@@ -107,12 +107,12 @@ export class Plant implements Layer {
 
   // ---- the static floor: the intake's frame, the machines, their gauges, the scanner ----
   floor(fp: FloorPass): void {
-    const g = fp.g, lo = fp.lo, add = fp.add;
+    const g = fp.g, cam = this.f.cam, lo = fp.lo, add = fp.add;
     // intake: the holding belt's frame (two rails along it)
     add(INTAKE_U0, 256, () => {
-      box(this.f.cam, g, INTAKE_U0, 258, INTAKE_U1 - INTAKE_U0, 4, 6);
-      box(this.f.cam, g, INTAKE_U0, 320, INTAKE_U1 - INTAKE_U0, 4, 6);
-      g.begin_(); quad(this.f.cam, g, INTAKE_U0, 291 - 1, INTAKE_U1, 291 + 1, 0.6); g.fill(F.beltEdge);
+      box(cam, g, INTAKE_U0, 258, INTAKE_U1 - INTAKE_U0, 4, 6);
+      box(cam, g, INTAKE_U0, 320, INTAKE_U1 - INTAKE_U0, 4, 6);
+      g.begin_(); quad(cam, g, INTAKE_U0, 291 - 1, INTAKE_U1, 291 + 1, 0.6); g.fill(F.beltEdge);
     }, INTAKE_U1, 324, 6);
     // the consumption engine: one big machine per host
     this.f.census.groups.forEach((gr, gi) => {
@@ -120,25 +120,25 @@ export class Plant implements Layer {
       add(ENG_U0, v0, () => this.engineBlock(g, gr.online, gr.hosted, v0, gi, lo), ENG_U1 + 4, v0 + ENG_DV + 4, ENG_H);
       // cpu / mem gauges: two towers at the machine's right end
       add(ENG_U1 + 10, v0 + 40, () => {
-        box(this.f.cam, g, ENG_U1 + 12, v0 + 34, 9, 9, 64, '#1B1B1D');
-        box(this.f.cam, g, ENG_U1 + 25, v0 + 34, 9, 9, 64, '#1B1B1D');
+        box(cam, g, ENG_U1 + 12, v0 + 34, 9, 9, 64, '#1B1B1D');
+        box(cam, g, ENG_U1 + 25, v0 + 34, 9, 9, 64, '#1B1B1D');
       }, ENG_U1 + 34, v0 + 43, 64);
     });
     // the test scanner: a tall frame across the floor
     add(SCAN_U - 4, 30, () => {
-      box(this.f.cam, g, SCAN_U - 4, 30, 8, 8, 56);
-      box(this.f.cam, g, SCAN_U - 4, 590, 8, 8, 56);
-      g.begin_(); quad(this.f.cam, g, SCAN_U - 4, 30, SCAN_U + 4, 598, 56); g.fill(F.topHi);
-      g.begin_(); quad(this.f.cam, g, SCAN_U - 4, 30, SCAN_U + 4, 598, 56); g.stroke(F.edgeHi, g.hair * 1.5);
+      box(cam, g, SCAN_U - 4, 30, 8, 8, 56);
+      box(cam, g, SCAN_U - 4, 590, 8, 8, 56);
+      g.begin_(); quad(cam, g, SCAN_U - 4, 30, SCAN_U + 4, 598, 56); g.fill(F.topHi);
+      g.begin_(); quad(cam, g, SCAN_U - 4, 30, SCAN_U + 4, 598, 56); g.stroke(F.edgeHi, g.hair * 1.5);
     }, SCAN_U + 4, 598, 56);
   }
 
   private engineBlock(g: Gfx, online: boolean, hosted: boolean, v0: number, gi: number, lo = false): void {
+    const cam = this.f.cam;
     const edge = online ? F.edgeHi : F.edge;
     // the plinth, then the machine: a long block with recessed bays on its top
-    box(this.f.cam, g, ENG_U0 - 4, v0 - 4, ENG_U1 - ENG_U0 + 8, ENG_DV + 8, 3, '#141416', '#101012', '#0E0E10', F.floorEdge);
-    box(this.f.cam, g, ENG_U0, v0, ENG_U1 - ENG_U0, ENG_DV, ENG_H, hosted ? '#1F1F22' : '#252528', '#19191B', '#151517', edge, g.hair * 2);
-    const cam = this.f.cam;
+    box(cam, g, ENG_U0 - 4, v0 - 4, ENG_U1 - ENG_U0 + 8, ENG_DV + 8, 3, '#141416', '#101012', '#0E0E10', F.floorEdge);
+    box(cam, g, ENG_U0, v0, ENG_U1 - ENG_U0, ENG_DV, ENG_H, hosted ? '#1F1F22' : '#252528', '#19191B', '#151517', edge, g.hair * 2);
     // bays: dark recesses, every bay of the machine in one path per part. A bay narrower than
     // 6 px on screen (stress mode's ten times the slots) is a recess and its rail only.
     const fine = !lo && (this.bays.find((b) => b.group === gi)?.du ?? 0) * cam.s >= 6;
@@ -152,7 +152,7 @@ export class Plant implements Layer {
     if (fine) {
       // the recess's inner walls (the far wall shows) and its rim
       g.begin_();
-      for (const b of this.bays) if (b.group === gi) poly(this.f.cam, g, [b.u, b.v, ENG_H, b.u + b.du, b.v, ENG_H, b.u + b.du, b.v, ENG_H - 5, b.u, b.v, ENG_H - 5]);
+      for (const b of this.bays) if (b.group === gi) poly(cam, g, [b.u, b.v, ENG_H, b.u + b.du, b.v, ENG_H, b.u + b.du, b.v, ENG_H - 5, b.u, b.v, ENG_H - 5]);
       g.fill('#0B0B0C');
       for (const b of this.bays) if (b.group === gi) wall.add(b.u, b.v, b.du, b.dv, 0, ENG_H);
       wall.flushQuads(g, cam, '#38383C', true, g.hair);
@@ -168,7 +168,7 @@ export class Plant implements Layer {
     if (hosted) {
       // hosted: dashed outline, a machine we do not own
       g.dash(true, 3, 3);
-      g.begin_(); quad(this.f.cam, g, ENG_U0 - 4, v0 - 4, ENG_U1 + 4, v0 + ENG_DV + 4, 3); g.stroke(F.edge, g.hair * 1.5);
+      g.begin_(); quad(cam, g, ENG_U0 - 4, v0 - 4, ENG_U1 + 4, v0 + ENG_DV + 4, 3); g.stroke(F.edge, g.hair * 1.5);
       g.dash(false);
     }
   }
@@ -228,7 +228,7 @@ export class Plant implements Layer {
     for (let i = 0; i < progRed.length; i += 3) prog.add(progRed[i], progRed[i + 1], progRed[i + 2], 5, 0, ENG_H);
     prog.flushQuads(g, cam, C.red);
     if (bayFine) crates.flush(g, cam, F.crateTop, F.crateSide, F.crateFront, '', 1, q >= 2 ? 1 : 3); else crates.n = 0;
-    if (selBay) ring(this.f.cam, g, selBay.u + selBay.du / 2, selBay.v + selBay.dv / 2, 14, ENG_H);
+    if (selBay) ring(cam, g, selBay.u + selBay.du / 2, selBay.v + selBay.dv / 2, 14, ENG_H);
     // gauges: the engines' cpu and mem towers (a sample every few seconds; a few boxes)
     this.drawGauges(g);
   }

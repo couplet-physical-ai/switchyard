@@ -186,7 +186,7 @@ export class City implements Layer {
         if (lx < -10 || lx > cam.W + 10) continue;
         lights[hl].add(b.u + b.d / 2, b.v + b.d / 2, 0, 0, 0, b.h + 1.5);
       }
-      for (let k = 0; k < 3; k++) flushLights(this.f.cam, g, lights[k], LIGHT[k], lod === 0 ? r : lod === 1 ? sq : sq * 1.4, lod === 0);
+      for (let k = 0; k < 3; k++) flushLights(cam, g, lights[k], LIGHT[k], lod === 0 ? r : lod === 1 ? sq : sq * 1.4, lod === 0);
     }
     // the glow under trouble breathes on the live layer (motion.ts's beat)
   }
