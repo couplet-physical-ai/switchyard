@@ -29,6 +29,7 @@ import { FACTOR, FactoryStress } from './stress.ts';
 import { Lenses } from './lens.ts'; // fab-lens
 import { Coffee } from './coffee.ts'; // fab-lens
 import type { FactoryFx } from './lens.ts'; // fab-lens
+import { GroupFloor } from './groupfloor.ts'; // fab-w2: group docks, stripes, trend marks
 
 // ---- palette (canvas-only shades of the app's ramp) ------------------------------------------
 const F = {
@@ -214,7 +215,7 @@ export class Factory {
       case 'push': {
         const org = e.bot || e.author?.endsWith('[bot]') ? BOTS : orgOf(e.repo);
         const main = e.branch === (w.repos.get(e.repo)?.default_branch ?? 'main');
-        const dv = this.dockV(org);
+        const dv = this.dockV(org === BOTS ? BOTS : e.repo); // fab-w2: the repo's group dock
         const route: Pt[] = [[DOCK_U1 - 6, dv], [COLLECT_U, dv], [COLLECT_U, AISLE_V]];
         if (main) route.push([YARD_U1, AISLE_V], [GATE_U + 10, AISLE_V], [RAIL_U0 + 10, this.railV(orgOf(e.repo))]);
         else route.push([ROW_U[1], AISLE_V], [ROW_U[1], AGE_V[0]]);
@@ -262,12 +263,12 @@ export class Factory {
         const route: Pt[] = [[u0, v0], [ENG_U1 + 6, v0], [SCAN_U, v0]];
         let dur = 1600;
         if (red) {
-          route.push([SCAN_U, RETURN_V], [24, RETURN_V], [24, this.dockV(org)], [DOCK_U0 + 8, this.dockV(org)]);
+          route.push([SCAN_U, RETURN_V], [24, RETURN_V], [24, this.dockV(p.repo)], [DOCK_U0 + 8, this.dockV(p.repo)]); // fab-w2: home to its group dock
           dur = 9000;
         } else route.push([SCAN_U + 14, v0]);
         const cr = this.spawn(e.pipeline, 'pipeline', route, t, dur, red, red ? `${p.repo.split('/')[1]} · ${failingStep(p)}` : '', org);
         R.add(R_BEAM, SCAN_U, v0, 56, this.arrives(cr, 2), red, 700);
-        if (red) { R.add(R_DOOR, DOCK_U1, this.dockV(org), 6, this.arrives(cr, 6), true, 1400); R.add(R_RING, DOCK_U0 + 8, this.dockV(org), 8, this.arrives(cr, 6), true, 1400); }
+        if (red) { R.add(R_DOOR, DOCK_U1, this.dockV(p.repo), 6, this.arrives(cr, 6), true, 1400); R.add(R_RING, DOCK_U0 + 8, this.dockV(p.repo), 8, this.arrives(cr, 6), true, 1400); } // fab-w2
         break;
       }
       case 'deploy': {
@@ -301,6 +302,7 @@ export class Factory {
   /** fab-lens: every object is a lens (lens.ts); what changed since you last looked (coffee.ts). */
   readonly lens = new Lenses(this);
   readonly coffee = new Coffee(this);
+  readonly w2 = new GroupFloor(this); // fab-w2: groups and trends on the floor (groupfloor.ts)
 
   private spawn(id: string, kind: Crate['kind'], route: Pt[], t: number, dur: number, red: boolean, label: string, org: string): Crate {
     const cum = [0];
@@ -315,6 +317,7 @@ export class Factory {
   }
 
   private dockV(org: string): number {
+    const gv = this.w2.dockV(org); if (gv >= 0) return gv; // fab-w2: a repo, org or BOTS → its group dock
     const i = this.census.docks.findIndex((d) => d.org === org);
     return 66 + (i < 0 ? this.census.docks.length - 1 : i) * 96;
   }
@@ -565,7 +568,7 @@ export class Factory {
   private belts(): { id: string; pts: Pt[]; n: number; label: string; at: Pt }[] {
     const c = this.census, f = c.flow;
     const out: { id: string; pts: Pt[]; n: number; label: string; at: Pt }[] = [];
-    c.docks.forEach((d, i) => {
+    if (!this.w2.belts(out)) c.docks.forEach((d, i) => { // fab-w2: the group docks' belts
       const v = 66 + i * 96;
       out.push({ id: `dock${i}`, pts: [[DOCK_U1, v], [COLLECT_U, v]], n: d.perHour, label: '', at: [84, v] });
     });
@@ -606,7 +609,7 @@ export class Factory {
 
   /** The static floor's key: the camera, the fleet's shape, the apps' health (the lights are
    *  painted here, not every frame), and whether the ladder wants the low-detail floor. */
-  get floorKey(): string { return `${this.cam.key}|${this.census.sig}|${this.census.healthSig}|${this.census.carSig}|${this.budget.quality >= 3 ? 'lo' : 'hi'}`; }
+  get floorKey(): string { return `${this.cam.key}|${this.census.sig}|${this.census.healthSig}|${this.census.carSig}|${this.budget.quality >= 3 ? 'lo' : 'hi'}|${this.w2.sig}`; } // fab-w2: |w2.sig
 
   /** Is the floor box (u0..u1, v0..v1, 0..h) on screen? (its projected corners' bounds, padded) */
   private onScreen(u0: number, v0: number, u1: number, v1: number, h = 0, pad = 24): boolean {
@@ -690,7 +693,7 @@ export class Factory {
     const items: { k: number; f: () => void }[] = [];
     const add = (u: number, v: number, fn: () => void, u1: number, v1: number, h: number) => { if (this.onScreen(u, v, u1, v1, h)) items.push({ k: u * 0.19 + v * 0.66, f: fn }); };
     // sources: docks
-    this.census.docks.forEach((d, i) => {
+    if (!this.w2.floor(g, add)) this.census.docks.forEach((d, i) => { // fab-w2: group docks, embers, stack stripes
       const v = 66 + i * 96;
       add(DOCK_U0, v, () => {
         this.box(g, DOCK_U0, v - 30, DOCK_U1 - DOCK_U0, 60, 14);
@@ -1202,6 +1205,7 @@ export class Factory {
     // 7. crates in motion: one path per face and colour; on the ladder's train rungs, crates on
     //    the same stretch of the same route ride as one with a ×N badge
     const moving = this.drawCrates(g, t, q);
+    this.w2.over(g, t); // fab-w2: bay stripes, group dock names and hits
     // 8. the journey of the selection: its path lights across the floor, the rest dims to 25 %
     const selP = this.selPipeline();
     // 9. labels: stage titles in the band above the floor's back edge, with leader lines
@@ -1578,6 +1582,7 @@ export class Factory {
       g.begin_(); g.circle(ax, ay, 1.8); g.fill('#7A7A7E');
       g.fillRect(x - 4, y - TITLE, wv + 8, 38, withAlpha(C.canvas, 0.86));
       g.runs([[`${n} `, C.ink3], [title, C.ink, true]], x, y, TITLE);
+      this.w2.notch(g, n, x + l1 + 6, y); // fab-w2: the stage's trend notch
       g.runs([[stat, statCol], [why ? ` · ${why}` : '', C.ink3]], x, y + 17, SMALL);
       this.hit(x - 3, y - 14, wv + 6, 36, 'stage', id, title);
     };
@@ -1679,7 +1684,7 @@ export class Factory {
       if (yy >= 0) g.text(`${p.bot} ${p.n}`, x, yy, C.ink3, SMALL);
     });
     // sources: each dock's org and push rate
-    c.docks.forEach((d, i) => {
+    if (!this.w2.on) c.docks.forEach((d, i) => { // fab-w2: group docks name themselves
       const v = 66 + i * 96;
       const x = cam.x(DOCK_U0, v + 30) - 4, y = cam.y(DOCK_U0, v + 30) + 14;
       const s = `${d.short} ${d.perHour}/h`;
