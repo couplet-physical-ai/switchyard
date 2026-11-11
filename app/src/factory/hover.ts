@@ -26,6 +26,7 @@ import { floorGroups } from './groups.ts';
 import type { Lenses } from './lens.ts';
 import { BLOCKERS, ageBucket, blocker, botName, healthCol, isBot } from './lens.ts';
 import { groupOf as insGroupOf } from '../insights.ts';
+import { frontOf } from './front.ts';
 
 type Hit = { x: number; y: number; w: number; h: number; kind: string; id: string; label: string };
 
@@ -89,9 +90,16 @@ export class Hover {
   /** The chart for a hit (null: the floor's words alone). */
   private build(h: Hit, part: string): Chart | null {
     const L = this.lens, f = L.f, w = f.world, c = f.census, now = f.tl.playhead;
+    // fx-polish (note 11): a lane curb: its failures an hour over 24 h in the lane's hue, red over
+    // its threshold (the curb's own red part)
+    if (part === 'curb' || part === 'curbx') {
+      const cb = frontOf(f)?.curbOf(h);
+      if (!cb) return null;
+      return { k: 'bars', s: cb.fail.slice(), col: floorGroups().hex(cb.id), red: cb.fail.map((x) => (x > cb.thr ? x : 0)) };
+    }
     // fx-lens: the lanes' parts (floor.ts registers them as the group's dock / district)
-    if (part === 'road' || part === 'stripe' || (part === 'dock' && f.floor.on)) {
-      const lid = L.laneOf(h), info = f.floor.data.last.lanes.get(lid);
+    if (part === 'road' || part === 'roadx' || part === 'stripe' || (part === 'dock' && f.floor.on)) {
+      const lid = part === 'roadx' ? h.id : L.laneOf(h), info = f.floor.data.last.lanes.get(lid);
       if (!info) return null;
       const s = Array.from(info.push24), red = Array.from(info.fail24);
       return { k: 'bars', s: half(s), col: floorGroups().hex(lid), red: half(red) };
@@ -231,6 +239,7 @@ export class Hover {
 /** fx-lens: what a press on each part opens (the card's last line). */
 const HINT: Record<string, string> = {
   road: 'click: the group across the floor', dock: 'click: the group across the floor', stripe: 'click: the group across the floor',
+  curb: 'click: the group across the floor', // fx-polish
   cell: 'click: these PRs, by age and blocker', rail: 'click: its main lines, red first', post: 'click: this repo across the floor',
   row: 'click: this repo across the floor', car: 'click: this commit\'s journey', city: 'click: the district\'s scorecard',
   gate: 'click: what landed today, by lane',
