@@ -741,6 +741,7 @@ export class Front implements Layer {
   boardOf(stage: string): Board | null { return BOARDS.find((b) => b.stage === stage) ?? null; }
   /** A lane's road (dock → stub end → far end), null when it has none. */
   roadOf(laneId: string): Pt[] | null { return this.lanes.find((l) => l.id === laneId)?.road ?? null; }
+  roadHw(laneId: string): number { return this.lanes.find((l) => l.id === laneId)?.hw ?? 0; } // w2-red: a lane's road half width (floor.ts draws a rising-red group's red road edge)
   /** The midpoint of a lane's road (half its length along it), for the lane's label. */
   roadMid(laneId: string): Pt | null {
     const r = this.roadOf(laneId);

@@ -23,10 +23,10 @@ import { EMBER } from './trendmarks.ts'; // fx-glance: the floor's one ember col
 /** The master beat as a pulse, 1 on the beat (motion.ts `beat` is its phase). */
 export function pulse(t: number): number { return 0.5 + 0.5 * Math.cos(TAU * beat(t)); }
 
-export const K_RED = 0, K_WISP = 1, K_WISP_RED = 2, K_EMBER = 3, K_CRACK = 4, K_OK = 5, K_AMBER = 6, K_INK = 7, K_CARD = 8, K_BLACK = 9;
+export const K_RED = 0, K_WISP = 1, K_WISP_RED = 2, K_EMBER = 3, K_CRACK = 4, K_OK = 5, K_AMBER = 6, K_INK = 7, K_CARD = 8, K_BLACK = 9, K_HOT = 10;
 // fx-glance: smoke is dark and red-tinged (gray is the ok family), ok is green-gray; the ember
 // is the floor's ONE ember (trendmarks.ts EMBER, fx-engine: a low-L red-brown)
-const BASE = ['#E06464', '#3E1D1B', '#8E4038', EMBER, '#D9D3CF', '#9DB8A4', '#E5B567', '#F2F2F0', '#111112', '#050506'];
+const BASE = ['#E06464', '#3E1D1B', '#8E4038', EMBER, '#D9D3CF', '#9DB8A4', '#E5B567', '#F2F2F0', '#111112', '#050506', '#FFF4EE']; // w2-red: + the hot reds' white
 const STEPS = 32;
 const LUT: string[][] = BASE.map((hex) => {
   const n = parseInt(hex.slice(1), 16);
@@ -206,6 +206,32 @@ export function rings(g: Gfx, r: Nums): void {
     g.begin_(); g.circle(a[i], a[i + 1], a[i + 2] + o * 18);
     g.stroke(tint(a[i + 4], 0.85 * (1 - e) * (1 - e * 0.5)), 1.4);
   }
+}
+
+// ── beat membership (w2-red, REVIEW-iter3 #5) ───────────────────────────────────────────────────
+// What moves on the 1 Hz beat is what is NEW. A red main line's age tier (grammar.ts `redTier`)
+// decides: hot (< 1 h) is in the beat, its white-hot core and white rim swelling with `pulse`;
+// red (1 h – 7 d) holds still; rust (≥ 7 d) never moves (and never takes a beacon: anomaly.ts
+// gives beacons to reds under an hour only). The culprit's own flash follows the same rule.
+
+/** Whether a red main of tier `tier` (0 hot, 1 red, 2 rust) moves on the beat. */
+export function inBeat(tier: number): boolean { return tier === 0; }
+
+/** The hot reds (w2-red): [x, y, r] triples on screen, each a white-hot core (r px) and a white
+ *  rim around it that swells and fades on the beat; `still` (reduced motion) holds them at rest.
+ *  One fill for the cores, one stroke for the rims, one for their halo. */
+export function hotRims(g: Gfx, h: Nums, t: number, still = false, fade = 1): void {
+  if (!h.n || fade <= 0) return;
+  const p = still ? 0.5 : pulse(t), a = h.a;
+  g.begin_();
+  for (let i = 0; i < h.n; i += 3) { const r = a[i + 2] * (1.9 + 1.4 * p); g.ctx.moveTo(a[i] + r, a[i + 1]); g.ctx.arc(a[i], a[i + 1], r, 0, TAU); g.ops += 2; g.arcs++; }
+  g.fill(tint(K_RED, (0.1 + 0.18 * p) * fade));
+  g.begin_();
+  for (let i = 0; i < h.n; i += 3) { const r = a[i + 2] * (1.5 + 1.1 * p); g.ctx.moveTo(a[i] + r, a[i + 1]); g.ctx.arc(a[i], a[i + 1], r, 0, TAU); g.ops += 2; g.arcs++; }
+  g.stroke(tint(K_HOT, (0.45 + 0.5 * p) * fade), 1.2);
+  g.begin_();
+  for (let i = 0; i < h.n; i += 3) { const r = a[i + 2] * (0.55 + 0.2 * p); g.ctx.moveTo(a[i] + r, a[i + 1]); g.ctx.arc(a[i], a[i + 1], r, 0, TAU); g.ops += 2; g.arcs++; }
+  g.fill(tint(K_HOT, (0.75 + 0.25 * p) * fade));
 }
 
 /** The jam's chevrons pushing at the intake's mouth: [x, y] pairs, moving with the beat. */

@@ -19,7 +19,10 @@ import type { Gfx } from '../yard/gfx.ts';
 import type { Pipeline, Trend } from '../wire.ts';
 import type { Factory } from './factory.ts';
 import type { FactoryFx } from './lens.ts';
-import { C, withAlpha } from '../yard/theme.ts';
+import { withAlpha } from '../yard/theme.ts';
+import { C } from './grammar.ts'; // w2-red: the app's palette + the red roles
+import { hatchQuad } from './floor.ts'; // w2-red: rust's hatch
+import { quad as quadF } from './prims.ts';
 import { BOTS } from '../world.ts';
 import { insights } from '../insights.ts';
 import { normTeam } from '../../server/floor.ts';
@@ -133,7 +136,7 @@ export class GroupFloor {
       if (!s) { parts.push('-'); continue; }
       const t = s.trend;
       const fm = metricOf(t, 'failures');
-      parts.push(`${Math.round(this.dockH(s.pushes1h))}.${s.freshRed ? 1 : 0}.${q(fm?.spark)}.${q(t?.pipelines.spark)}.${Math.round(severity(fm, g.lane.id, 'failures', cnt.at) * 10)}.${q(s.pushSpark)}`);
+      parts.push(`${Math.round(this.dockH(s.pushes1h))}.${s.freshRed ? 1 : 0}.${q(fm?.spark)}.${q(t?.pipelines.spark)}.${Math.round(severity(fm, g.lane.id, 'failures', cnt.at) * 10)}.${q(s.pushSpark)}.${this.f.floor.redRising(g.lane.id) ? 1 : 0}`); // w2-red: .rising (the red road edge)
     }
     for (const row of cnt.stacks) for (const m of row) { let tot = 0; for (const n of m.values()) tot += n; const k: string[] = []; for (const [l, n] of m) k.push(`${l}${Math.round((n / Math.max(1, tot)) * 12)}`); parts.push(k.join('')); }
     const ft = ins.trend('fleet');
@@ -198,6 +201,8 @@ export class GroupFloor {
       ctx.restore();
       g.ops += 2;
     }
+    // w2-red (REVIEW-iter3 #4): the roof is a red gauge: the group's red mains / its repos
+    this.gauge(g, gg, u0, v0, u1, v1, h, lo);
     // the door on the right face, toward the belt; its lamp red while a main line of the group
     // has been red for less than an hour
     const dw = Math.min(10, (v1 - v0) / 2 - 3), dz = Math.max(2, Math.min(h - 1.5, 9));
@@ -211,7 +216,7 @@ export class GroupFloor {
     const t = s?.trend ?? null;
     const fm = metricOf(t, 'failures');
     const ink = '#0C0C0E';
-    const common = { depth: Math.max(4, v1 - v0 - 7), plane: 'floor' as const, z: h, dir: [0, -1] as [number, number], at, rule: '', ink: withAlpha(ink, 0.6), now: withAlpha(ink, 0.78), dim: withAlpha(ink, 0.2), typicalInk: withAlpha(ink, 0.65) };
+    const common = { depth: Math.max(4, v1 - v0 - 7), plane: 'floor' as const, z: h, dir: [0, -1] as [number, number], at, rule: '', ink: withAlpha(ink, 0.6), now: withAlpha(ink, 0.78), dim: withAlpha(ink, 0.2), typicalInk: withAlpha(ink, 0.65), red: C.redPR }; // w2-red: over-threshold hours brick (the roof's red is the gauge's)
     if (fm) curb(g, cam, fm, [u0 + 3, v1 - 2.5], [u1 - 3, v1 - 2.5], { ...common, key: gg.lane.id, metric: 'failures', context: t?.pipelines ?? null, typical: false });
     else curb(g, cam, this.pushMetric(s), [u0 + 3, v1 - 2.5], [u1 - 3, v1 - 2.5], { ...common, key: gg.lane.id, metric: 'pushes', typical: false });
     // the ghost: the dock at its typical pushes/h (the ring's 7-d mean), dashed
@@ -221,6 +226,29 @@ export class GroupFloor {
       const th = this.dockH(ty);
       if (Math.abs(th - h) >= 1.2) ghost(g, cam, u0, v0, u1 - u0, v1 - v0, th);
     }
+  }
+
+  /** w2-red (REVIEW-iter3 #4): a dock roof as a red FILL GAUGE. From the roof's front edge (+v,
+   *  nearest the camera) back, as deep as the group's share of red main lines (red / repos:
+   *  couplet's 10 of 17 fills 59 % of its roof, labs' 18 of 131 a seventh), so the column of docks
+   *  compares the groups at a glance, without a word. The fill is its reds by age from the front:
+   *  rust (≥ 7 d, brick, hatched), then red, then the hot ones (< 1 h) at the fill's leading edge;
+   *  a 1-px line marks the level. The curb prints over it. */
+  private gauge(g: Gfx, gg: Geo, u0: number, v0: number, u1: number, v1: number, h: number, lo: boolean): void {
+    const R = this.f.floor.redOf(gg.lane.id);
+    if (!R || !R.n || !R.repos || gg.lane.kind === 'bots') return;
+    const cam = this.f.cam, depth = v1 - v0, k = Math.min(1, R.n / R.repos);
+    const d = Math.max(1.6, depth * k), z = h + 0.03;
+    const at = (n: number) => v1 - (d * n) / R.n;
+    const seg = (a: number, b: number, col: string) => { if (b <= a) return; g.begin_(); quadF(cam, g, u0, at(b), u1, at(a), z); g.fill(col); };
+    seg(0, R.rust, C.rust);
+    if (R.rust && !lo) hatchQuad(cam, g, u0, at(R.rust), u1, v1, z, C.rustHatch);
+    seg(R.rust, R.rust + R.red, C.red);
+    seg(R.rust + R.red, R.n, C.red);
+    if (R.hot) { const vh = at(R.n); g.begin_(); quadF(cam, g, u0, vh, u1, vh + Math.min(1.2, d * 0.2), z + 0.01); g.fill(C.hot); }
+    // the level: a hairline across the roof where the fill stops
+    const vl = at(R.n);
+    g.begin_(); g.move(cam.x(u0, vl), cam.y(u0, vl, z)); g.line(cam.x(u1, vl), cam.y(u1, vl, z)); g.stroke(R.rust === R.n ? '#A0605A' : '#F2A0A0', Math.max(1, g.hair * 1.4));
   }
 
   // ── the live layer ──
