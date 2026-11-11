@@ -26,6 +26,11 @@ set -euo pipefail
 A=/Applications/Switchyard.app
 v() { /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "\$A/Contents/Info.plist"; }
 pkill -f 'Switchyard.app/Contents/MacOS/Switchyard' || true
+# Dev builds registered with LaunchServices (sy-client's targets, old release dirs) would take
+# switchyard:// links or be what `open` finds: unregister every Switchyard.app but /Applications'.
+LSR=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+\$LSR -dump 2>/dev/null | sed -nE 's/^path: +(.*Switchyard[^/]*\\.app)( \\(0x.*)?\$/\\1/p' | sort -u | grep -v '^/Applications/' \\
+  | while IFS= read -r p; do \$LSR -u "\$p" 2>/dev/null || true; echo "unregistered \$p"; done
 if [[ "${SY_FROM_TAP:-}" != 1 ]]; then
 $BREW uninstall --cask switchyard >/dev/null 2>&1 || true)
 rm -rf "\$A" "\$A.old"
@@ -36,6 +41,7 @@ xattr -dr com.apple.quarantine "\$A" 2>/dev/null || true
 fi
 echo "installed: \$(v)"; [[ "\$(v)" == "$FROM" ]]
 mkdir -p ~/Library/Logs/Switchyard; : > ~/Library/Logs/Switchyard/update.log
+\$LSR -f "\$A"
 launchctl asuser \$(id -u) open "\$A" --args $ARG
 for i in \$(seq 1 120); do
   sleep 2
