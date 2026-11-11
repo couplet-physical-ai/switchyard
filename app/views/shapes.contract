@@ -8,7 +8,7 @@ shape Time
   utcOffset: number
 
 shape Tok
-  token: string
+  ver: string
   has: bool
 
 shape Link

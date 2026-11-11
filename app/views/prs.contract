@@ -13,7 +13,7 @@ members App
   state prPy = -1
   state prKick = 0
   resource prData = prs(here == "prs" ? clockMs : 0, prOrg, prFilter, prQ, here == "prs" ? searchParam(top(nav), "repo") : "") as shape Prs else empty(open=0, ready=0, blocked=0, bots=0, total=0, tick=0, top="", atEnd=false, summary="", repo="")
-  resource prDet = prDetail(server, tok.token, here == "pr" ? `${top(nav).params.owner}/${top(nav).params.name}` : "", here == "pr" ? top(nav).params.number : "", here == "pr" ? clockMs : 0) as shape PrDetail else empty(ok=false, row=none, commits=[], pipelines=[], timeline=[], meta="", blocked="", checkList=[], passed=0, landsName="", landsState="", landsWords="", landsNote="", lands=[], deploys=[], note="", links=[])
+  resource prDet = prDetail(server, tok.ver, here == "pr" ? `${top(nav).params.owner}/${top(nav).params.name}` : "", here == "pr" ? top(nav).params.number : "", here == "pr" ? clockMs : 0) as shape PrDetail else empty(ok=false, row=none, commits=[], pipelines=[], timeline=[], meta="", blocked="", checkList=[], passed=0, landsName="", landsState="", landsWords="", landsNote="", lands=[], deploys=[], note="", links=[])
   mutation prHit as shape Hit then prAfterHit
   mutation prNav as shape Hit then prAfterNav
   derive prHitNow = match prHit { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }

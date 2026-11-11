@@ -1,243 +1,326 @@
-// THE COFFEE CHECK (fab-lens; FACTORY-SPEC §E): the five minutes a day Felipe sits down with the
-// factory. On open: what changed SINCE YOU LAST LOOKED, one glance in the floor's top row (a
-// verdict, flowing · slowed · jammed · broken, with its glyph, and a few numbers with arrows vs the
-// last visit, each a lens on what it counts), and on the floor itself, where they are: fresh
-// things pulse on the shared beat, fading over ~2 min once seen; anomalies pop: smoke over the
-// scanner when one failure signature hits ≥ 3 repos within the hour (wisps over each dock
-// involved), a red beacon over a district with an app down and over a main line red < 1 h
-// (≤ 3 pulse at once, the rest hold steady), crates bunching at the intake when it jams.
+// THE COFFEE CHECK (fab-w4; FACTORY-SPEC §E): the five minutes a day Felipe sits down with the
+// factory. This module runs it; anomaly.ts decides (the window, the fingerprint, the fresh set,
+// the marks, the verdict), fx.ts paints the marks, glance.ts draws the header and the replay.
 //
-// The last visit is kept per server in the app's own storage (Contract's persisted `visits`,
-// beside the persisted `server`): when it was, and which main lines were red and which apps
-// were down then (short hashes), so "new red", "fixed", "down" and "recovered" are exact. It is
-// marked after 2 minutes of looking, every minute after, and when you leave the floor.
-// The digest is recomputed at most every 2 s while the world changes: O(entities).
+//   The first 10 seconds after the floor opens:
+//     0–0.3 s   the cached floor paints;
+//     0.3–1.5 s the verdict dial's needle swings to flowing · slowed · jammed · broken and the
+//               glyph counters count up (what changed in the window);
+//     1.5–7 s   the window replays, compressed (≤ 5.5 s): a playhead sweeps the strip's bracket,
+//               and as it passes each thing's time it lands where it happened: failures ride
+//               home on the return belt, red main lines ignite their beacons, fixes flash, apps
+//               ring; the marks of that moment fade in;
+//     7–10 s    it settles: ≤ 3 hotspot callouts where it is broken (the worst cluster, the
+//               worst group, the jam).
+//   Any input skips the replay; `S` replays it; reduced motion shows the settled floor.
+//
+//   The window: the "since" chip picks it (since your last visit · 1 h · 24 h · 7 d; `W` cycles
+//   it). The glance's numbers, the fresh set (rims) and the marks all follow it, and the time
+//   strip brackets it. The server answers /changes up to 7 d back (a persisted ledger) through
+//   the v0.5 seam (insights.changesSince); fetched from the `coffee` source, never from a draw.
+//
+//   The last visit: per server in the persisted `visits` (Contract), a fingerprint (anomaly.ts)
+//   marked after 20 s of looking, every minute after, and on leaving the floor. The baseline is
+//   latched for the session (the previous visit stays the one `S` replays from).
+//
+// Cost: the digest runs one slice a turn (≈ 0.3 ms each) and starts at most every 2 s while the
+// world changes; screen spots are laid out only when the census, the camera or the digest moved;
+// a frame paints from numbers (no Map, no string, no array growth per frame).
 
 import type { Frame } from '../../app.contract.d.ts';
-import type { Gfx } from '../yard/gfx.ts';
-import { C, TAU, clamp, withAlpha } from '../yard/theme.ts';
-import { isRed } from '../yard/select.ts';
-import type { Factory } from './factory.ts';
-import { ago } from './lens.ts';
+import type { Changes, Cluster } from '../wire.ts';
 import type { World } from '../world.ts';
-import { beat, beatPhase, changesSince, clusterStep, clusters, type Changes as SrvChanges, type Cluster } from './seams.ts';
+import type { Gfx } from '../yard/gfx.ts';
+import { C, clamp } from '../yard/theme.ts';
+import { short } from './census.ts';
+import type { Factory } from './factory.ts';
+import { insights } from '../insights.ts';
+import {
+  DAY, HOUR, WINS, ago, emptyFresh, fingerprint, freshSince, h36, marks, noMarks, packVisit, shortWindow, unpackVisit, windowStart,
+  type Fingerprint, type Fresh, type Marks, type QueueState, type VisitRec, type Win,
+} from './anomaly.ts';
+import { K_AMBER, K_INK, K_OK, K_RED, Nums, beacons, chevrons, crackAt, cracks, embers, rings, smoke, tint } from './fx.ts';
+import { Glance, T_DONE, T_SETTLE, T_SWEEP } from './glance.ts';
+import { beatPhase, changesSince } from './seams.ts';
 
-type Changes = {
-  newRed: string[]; fixed: string[]; acute: string[]; failed: string[]; deployApps: string[]; deploys: number; deployFails: number;
-  merged: string[]; down: string[]; recovered: string[];
-};
+export { ago, h36 } from './anomaly.ts';
+export type { Verdict } from './anomaly.ts';
 
-export type Verdict = 'flowing' | 'slowed' | 'jammed' | 'broken';
-type Visit = { at: number; r: string; d: string };
-type Digest = Changes & {
-  verdict: Verdict; why: string;
-  /** the biggest failure cluster of the last hour when it spans ≥ 3 repos (smoke), else null */
-  smoke: Cluster | null; smokeQueue: number; smokeDeploy: number;
-  beacons: { di: number; down: boolean }[]; jam: number;
-  /** counts from the seam when they reach further than the world's own lists (-1: the lists') */
-  failCount: number; mergedCount: number;
-};
+/** One digest: the window it covers, what changed in it, the marks, the words. */
+export type Digest = { win: Win; since: number; now: number; fresh: Fresh; marks: Marks; complete: boolean };
 
 const GLOW_MAX = 48;
 const FRESH_MS = 120_000;
 const OK = '#7FC48F';
-const SMALL = 12;
-const HOUR = 3_600_000;
-
-function emptyDigest(): Digest {
-  return {
-    newRed: [], fixed: [], acute: [], failed: [], deployApps: [], deploys: 0, deployFails: 0, merged: [], down: [], recovered: [],
-    verdict: 'flowing', why: '', smoke: null, smokeQueue: 0, smokeDeploy: 0, beacons: [], jam: 0, failCount: -1, mergedCount: -1,
-  };
-}
 
 export class Coffee {
   /** The server whose last visit is latched: the baseline holds for the whole session. */
   private server: string | null = null;
-  /** Server ms of the last visit (or 24 h ago, a first look). */
+  /** The latched last visit (null: a first look). */
+  private fp: Fingerprint | null = null;
+  /** The chosen window. */
+  win: Win = 'visit';
+  /** The window's start in server ms (lens.ts brackets the strip from it). */
   since = 0;
-  first = true;
-  private baseRed: Set<string> | null = null;
-  private baseDown: Set<string> | null = null;
-  dg: Digest = emptyDigest();
-  private dgVer = -1;
+  /** The "since" menu is open. */
+  menu = false;
+  dg: Digest = { win: 'visit', since: 0, now: 0, fresh: emptyFresh(), marks: noMarks(), complete: true };
+  /** Bumps with every finished digest (the layout and the glance re-read on it). */
+  dgN = 0;
   private dgAt = -1e12;
-  private dgN = 0;
-  /** Fresh thing → the module clock when it was first drawn (its pulse fades from then). */
-  private seen = new Map<string, number>();
+  private dgVer = -1;
+  private dgWin: Win | '' = '';
+  private job: Generator<void, Digest | null, void> | null = null;
+  private stepT = -1;
+  /** The server's answers: for the window, and 7 d back (how long apps have been down). */
+  private srv: Changes | null = null;
+  private srvWin: Win | '' = '';
+  private srvSince = 0;
+  private srvAt = -1e12;
+  private srvBusy = false;
+  private ages: Changes | null = null;
+  private agesAt = -1e12;
+  private agesBusy = false;
   /** The queue's length every 15 s of the world, the last 5 minutes (a growing queue jams). */
   private qlen: number[] = [];
   private qAt = 0;
-  /** The seam's answer for `since` (the server's /changes on v0.5 and the demo, approximated on
-   *  0.4): re-asked every 30 s of looking. */
-  private srv: SrvChanges | null = null;
-  private srvFor = 0;
-  private srvAt = -1e12;
-  private srvBusy = false;
+  /** The intro: when the floor opened (module clock; -1 not yet), when it was skipped. */
+  openAt = -1;
+  skipAt = -1;
+  private camAt = -1;
+  /** Fresh thing → the module clock when it was first drawn (its pulse fades from then). */
+  private seen = new Map<string, number>();
+  readonly glance0: Glance;
 
-  constructor(readonly f: Factory) {}
+  constructor(readonly f: Factory) { this.glance0 = new Glance(this); }
 
-  // ---- the last visit ----------------------------------------------------------------------------
-  /** Latches this session's baseline for `server` from the persisted visits; the glance in words. */
-  open(server: string, visits: string, ok: boolean): string {
+  /** lens.ts draws the strip's bracket when this is false: the window is always bracketed. */
+  get first(): boolean { return false; }
+  /** No last visit kept for this server: the "visit" window is the last 24 h. */
+  get noVisit(): boolean { return !this.fp; }
+  get visitAt(): number { return this.fp?.at ?? 0; }
+
+  // ---- the last visit (the `coffee` / `coffeeMark` sources) ------------------------------------
+  /** Latches this session's baseline for `server` from the persisted visits, asks the server what
+   *  changed in the window when due (a source may fetch; a draw never does); the glance in words. */
+  open(server: string, visits: string, ok: boolean, t = 0): string {
     if (!ok || !this.f.world.loaded) return '';
     if (this.server !== server) {
       this.server = server;
-      const v = parseVisits(visits)[serverKey(server)];
       const now = this.f.tl.liveNow();
-      if (v && v.at > 0 && v.at < now) {
-        this.since = v.at; this.first = false;
-        this.baseRed = new Set(v.r ? v.r.split(',') : []); this.baseDown = new Set(v.d ? v.d.split(',') : []);
-      } else {
-        this.since = now - 24 * HOUR; this.first = true; this.baseRed = null; this.baseDown = null;
-      }
+      const fp = unpackVisit(parseVisits(visits)[serverKey(server)]);
+      this.fp = fp && fp.at < now ? fp : null;
       this.seen.clear();
-      this.srv = null; this.srvAt = -1e12;
-      this.dgVer = -1; this.dgAt = -1e12; this.job = null;
+      this.srv = null; this.srvAt = -1e12; this.ages = null; this.agesAt = -1e12;
+      this.restart();
     }
+    this.pump(t);
     return this.words();
   }
 
-  /** The visits with this server's marked now (live only): '' leaves them as they are. */
+  /** The visits with this server's fingerprint now (live only): '' leaves them as they are. */
   mark(server: string, visits: string): string {
     const tl = this.f.tl, w = tl.world;
     if (tl.mode !== 'live' || !w.loaded) return '';
     const all = parseVisits(visits);
-    const red: string[] = [], down: string[] = [];
-    for (const r of w.repos.values()) if (isRed(r)) red.push(h36(r.id));
-    for (const a of w.apps.values()) if (a.health === 'down' || a.health === 'degraded') down.push(h36(a.id ?? ''));
     const me = serverKey(server);
-    all[me] = { at: Math.round(tl.liveNow()), r: red.join(','), d: down.join(',') };
+    all[me] = packVisit(fingerprint(w, insights().clusters(), tl.liveNow()));
     // the four most recent servers (a persisted state keeps ≤ 16 KB)
     const keys = Object.keys(all).sort((a, b) => all[b].at - all[a].at).slice(0, 4);
-    const out: Record<string, Visit> = {};
+    const out: Record<string, VisitRec> = {};
     for (const k of keys) out[k] = all[k];
     let s = JSON.stringify(out);
     if (s.length > 14_000) s = JSON.stringify({ [me]: all[me] });
     return s.length > 14_000 ? JSON.stringify({ [me]: { at: all[me].at, r: '', d: '' } }) : s;
   }
 
+  /** Fetches what changed in the window when due: at once when the window moved, else every 30 s
+   *  while looking; and once every 5 min, 7 d back (for how long apps have been down). */
+  private pump(t: number): void {
+    const tl = this.f.tl;
+    if (tl.mode !== 'live') return;
+    const now = tl.liveNow(), since = windowStart(this.win, now, this.visitAt);
+    const moved = this.srvWin !== this.win || (this.win === 'visit' && this.srvSince !== since);
+    if (!this.srvBusy && (moved || t - this.srvAt >= 30_000)) {
+      this.srvBusy = true;
+      this.srvAt = t;
+      const win = this.win;
+      changesSince(Math.round(since)).then((c) => {
+        if (win !== this.win) return;
+        this.srv = c; this.srvWin = win; this.srvSince = since;
+        this.dgAt = -1e12; this.job = null;
+      }).catch(() => {}).finally(() => { this.srvBusy = false; });
+    }
+    if (!this.agesBusy && t - this.agesAt >= 300_000 && this.srv) {
+      this.agesBusy = true;
+      this.agesAt = t;
+      if (this.win === '7d') { this.ages = this.srv; this.agesBusy = false; return; }
+      changesSince(Math.round(now - 7 * DAY)).then((c) => { this.ages = c; }).catch(() => {}).finally(() => { this.agesBusy = false; });
+    }
+  }
+
   /** The glance in words (the floor's accessible mirror, and tests). */
   words(): string {
-    const d = this.dg;
-    const parts: string[] = [d.why ? `${d.verdict}: ${d.why}` : d.verdict];
-    if (d.newRed.length) parts.push(`${d.newRed.length} newly red`);
-    if (d.fixed.length) parts.push(`${d.fixed.length} fixed`);
-    if (d.failed.length || d.failCount > 0) parts.push(`${Math.max(d.failed.length, d.failCount)} failed`);
-    if (d.down.length) parts.push(`${d.down.length} down`);
-    if (d.deploys) parts.push(`${d.deploys} deploys`);
-    if (d.merged.length || d.mergedCount > 0) parts.push(`${Math.max(d.merged.length, d.mergedCount)} merged`);
-    parts.push(this.sinceWords());
+    const d = this.dg, m = d.marks, fr = d.fresh;
+    const parts: string[] = [m.why ? `${m.verdict}: ${m.why}` : m.verdict];
+    if (fr.newRed.length && !m.why.includes('newly red')) parts.push(`${fr.newRed.length} newly red`);
+    if (fr.fixed.length) parts.push(`${fr.fixed.length} fixed`);
+    const nf = Math.max(fr.failed.length, fr.failCount);
+    if (nf > 0) parts.push(`${nf} failed`);
+    if (fr.down.length && !m.why.includes('down')) parts.push(`${fr.down.length} down`);
+    if (fr.deploys) parts.push(`${fr.deploys} deploys`);
+    const nm = Math.max(fr.merged.length, fr.mergedCount);
+    if (nm > 0) parts.push(`${nm} merged`);
+    parts.push(this.windowWords());
     return parts.join(' · ');
   }
 
-  private sinceWords(): string {
-    if (this.first) return 'first look, last 24 h';
-    if (this.srv && !this.srv.complete) return 'since over 24 h ago';
-    return `since ${ago(this.f.tl.liveNow() - this.since)} ago`;
+  /** The window in words: "since 3h ago", "last hour", "last 24 h", "last 7 d". */
+  windowWords(): string {
+    if (this.win === '1h') return 'last hour';
+    if (this.win === '24h') return 'last 24 h';
+    if (this.win === '7d') return 'last 7 d';
+    if (this.noVisit) return 'first look · 24 h';
+    return `since ${ago(this.f.tl.liveNow() - this.visitAt)} ago`;
   }
 
-  /** Asks the seam what changed since the visit (async; the digest blends it in when it lands). */
-  private ask(t: number): void {
-    if (this.srvBusy || !this.since || (this.srvFor === this.since && t - this.srvAt < 30_000)) return;
-    this.srvBusy = true;
-    this.srvAt = t;
-    const since = this.since;
-    changesSince(since).then((c) => { if (since === this.since) { this.srv = c; this.srvFor = since; this.dgAt = -1e12; this.job = null; } })
-      .catch(() => {}).finally(() => { this.srvBusy = false; });
+  // ---- input -------------------------------------------------------------------------------------
+  /** Any input on the floor skips the replay (a press, a key; the wheel and drags move the camera,
+   *  which the intro watches). */
+  input(kind: string, t: number): void {
+    if (kind === 'down' || kind.startsWith('key:')) this.skip(t);
+  }
+
+  skip(t: number): void { if (this.openAt >= 0 && this.skipAt < 0 && t - this.openAt < T_DONE) this.skipAt = t; }
+
+  /** A press on the glance: the "since" chip opens its menu; a menu row picks the window. Any
+   *  other press closes the menu. True when the press was the coffee check's. */
+  click(h: { kind: string; id: string } | null, t: number): boolean {
+    if (h?.kind === 'since') {
+      if (h.id === 'menu') this.menu = !this.menu;
+      else { this.pick(h.id as Win, t); this.menu = false; }
+      return true;
+    }
+    this.menu = false;
+    // the verdict is a lens too: on what made it (the new reds or the apps down, the intake, the
+    // tests)
+    if (h?.kind === 'verdict') {
+      const m = this.dg.marks, fr = this.dg.fresh, ww = this.windowWords();
+      if (m.verdict === 'broken') {
+        const key = fr.newRed.length ? 'red' : 'down';
+        const n = key === 'red' ? fr.newRed.length : fr.down.length;
+        this.f.lens.push({ kind: 'fresh', id: key, name: key === 'red' ? `${n} main lines turned red · ${ww}` : `${n} apps went down · ${ww}`, sub: '' }, t);
+      } else if (m.verdict === 'jammed') this.f.lens.push({ kind: 'queue', id: 'intake', name: 'intake', sub: '' }, t);
+      else if (m.verdict === 'slowed') this.f.lens.push({ kind: 'scanner', id: 'tests', name: 'tests', sub: '' }, t);
+      return true;
+    }
+    return false;
+  }
+
+  /** Keys: `s` replays the window, `w` cycles it. */
+  key(k: string, t: number): { kind: string; id: string; label: string } | null {
+    if (k === 's' || k === 'S') { this.replay(t); return { kind: 'coffee', id: 'replay', label: this.windowWords() }; }
+    if (k === 'w' || k === 'W') { this.pick(WINS[(WINS.indexOf(this.win) + 1) % WINS.length], t); return { kind: 'since', id: this.win, label: this.windowWords() }; }
+    return null;
+  }
+
+  /** Picks the window: a new digest (and a new answer from the server) right away. */
+  pick(win: Win, t: number): void {
+    if (!WINS.includes(win) || win === this.win) return;
+    this.win = win;
+    this.restart();
+    this.pump(t);
+  }
+
+  /** Replays the window from the top (the intro without the dial's swing). */
+  replay(t: number): void { this.openAt = t - T_SWEEP; this.skipAt = -1; this.camAt = this.f.cam.ver; }
+
+  private restart(): void {
+    this.dgAt = -1e12; this.dgVer = -1; this.job = null; this.dgWin = '';
+  }
+
+  /** Whether the intro is playing (the live layer keeps drawing every frame while it does). */
+  busy(t: number): boolean { return this.openAt < 0 ? this.f.world.loaded : this.skipAt < 0 && t - this.openAt < T_DONE; }
+
+  /** Milliseconds into the intro (T_DONE+ once it is over or skipped). */
+  introT(t: number): number {
+    if (this.openAt < 0) return 0;
+    if (this.skipAt >= 0 || this.f.reduced || this.f.tl.mode === 'replay') return T_DONE + 1;
+    return t - this.openAt;
   }
 
   // ---- the digest --------------------------------------------------------------------------------
-  /** Advances the digest one slice a turn (≈ 0.3 ms each: the world's entities in three passes,
-   *  then the clusters and the verdict); a new digest starts at most every 2 s while the world
-   *  changes, every 10 s while it stands still. */
+  /** Advances the digest one slice a turn; a new one starts at most every 2 s while the world
+   *  changes, every 10 s while it stands still, at once when the window or the server's answer
+   *  changed. The first finished digest opens the floor's intro. */
   private update(t: number): void {
     const f = this.f, w = f.world;
     if (!w.loaded || t === this.stepT) return;
     this.stepT = t;
+    this.opening(t);
     if (!this.job) {
-      if (t - this.dgAt < 2000 || (w.ver === this.dgVer && t - this.dgAt < 10_000)) return;
-      this.dgVer = w.ver; this.dgAt = t;
-      if (f.tl.mode === 'live') this.ask(t);
+      const fresh = this.dgWin !== this.win;
+      if (!fresh && (t - this.dgAt < 2000 || (w.ver === this.dgVer && t - this.dgAt < 10_000))) return;
+      this.dgVer = w.ver; this.dgAt = t; this.dgWin = this.win;
       this.job = this.digest(w, f.tl.playhead);
     }
     const r = this.job.next();
-    if (r.done) { this.job = null; if (r.value) { this.dg = r.value; this.dgN++; } }
+    if (!r.done) return;
+    this.job = null;
+    if (!r.value) return;
+    this.dg = r.value;
+    this.since = r.value.since;
+    this.dgN++;
   }
 
-  private job: Generator<void, Digest | null, void> | null = null;
-  private stepT = -1;
+  /** The floor opens (the intro starts) on the first digest that has the server's answer, or
+   *  1.5 s after the first digest started without one. */
+  private opening(t: number): void {
+    if (this.openAt >= 0 || !this.dgN) return;
+    if (!(this.srv && this.dg.win === this.srvWin) && this.f.tl.mode === 'live' && t - this.firstT < 1500) return;
+    this.openAt = t; this.skipAt = -1; this.camAt = this.f.cam.ver;
+    console.log(`coffee: open at ${Math.round(t)} · ${this.words()}`);
+  }
+  private firstT = -1;
 
   private *digest(w: World, now: number): Generator<void, Digest | null, void> {
-    const f = this.f, c = f.census;
-    if (!this.since) this.since = now - 24 * HOUR;
-    const lc = yield* localChanges(w, this.since, now, this.baseRed, this.baseDown);
+    const f = this.f, c = f.census, ins = insights();
+    if (this.firstT < 0) this.firstT = this.stepT;
+    const win = this.win;
+    const since = windowStart(win, now, this.visitAt);
+    const srv = this.srv && this.srvWin === win && f.tl.mode === 'live' ? this.srv : null;
+    const clusters: readonly Cluster[] = ins.clusters();
+    const fresh = yield* freshSince(w, since, now, win === 'visit' ? this.fp : null, srv, clusters);
     if (w !== f.world) return null;
-    const d: Digest = { ...emptyDigest(), ...lc };
-    // the seam's answer: red/recovered/apps from it unless the visit's own baseline says (exact on
-    // any server); counts from it (it reaches past the pipelines the world holds)
-    const sv = this.srv && this.srvFor === this.since && f.tl.mode === 'live' ? this.srv : null;
-    if (sv) {
-      if (!this.baseRed) {
-        d.newRed = [...new Set(sv.red.map((r) => r.repo))].filter((r) => isRed(w.repos.get(r)));
-        d.fixed = [...new Set(sv.recovered.map((r) => r.repo))].filter((r) => !isRed(w.repos.get(r)));
-      }
-      if (!this.baseDown) {
-        const last = new Map<string, string>();
-        for (const a of sv.apps) last.set(a.app, a.to);
-        d.down = [...last].filter(([, to]) => to === 'down' || to === 'degraded').map(([a]) => a);
-        d.recovered = [...last].filter(([, to]) => to === 'up').map(([a]) => a);
-      }
-      d.failCount = Math.max(d.failed.length, sv.counts.failed);
-      d.deploys = Math.max(d.deploys, sv.counts.deploys);
-      d.deployFails = Math.max(d.deployFails, sv.counts.deploys_failed);
-      d.mergedCount = Math.max(d.merged.length, sv.counts.prs_merged);
-    }
-    let downNow = 0;
-    const downApps = new Set<string>();
-    for (const a of w.apps.values()) {
-      const id = a.id ?? '';
-      if (a.health === 'down') { downNow++; downApps.add(id); }
-    }
-    // the jam (§E): something waits, every slot is busy, and the oldest waits over 2× the p50
-    // queue time; or the queue grew by ≥ 3 in five minutes and ≥ 3 wait
+    yield;
+    // the queue: a sample every 15 s of the world, growing = up by ≥ 2 over the samples
     let slots = 0, busy = 0;
     for (const g of c.groups) if (!g.hosted) { slots += g.slots; busy += g.running.length; }
     if (w.at - this.qAt >= 15_000) { this.qAt = w.at; this.qlen.push(c.waiting); if (this.qlen.length > 20) this.qlen.shift(); }
-    const grew = this.qlen.length >= 4 ? c.waiting - Math.min(...this.qlen.slice(0, -1)) : 0;
-    const p50q = w.stats.p50_queue_ms || 60_000;
-    const full = slots > 0 && busy >= slots;
-    const jammed = (c.waiting > 0 && full && c.oldestWait > 2 * p50q) || (grew >= 3 && c.waiting >= 3);
-    d.jam = jammed ? clamp(0.5 + c.waiting / 12 + grew / 10, 0.5, 1) : 0;
-    // failures: the hour's clusters (smoke: one signature across ≥ 3 repos)
-    yield;
-    if (w !== f.world) return null;
-    const cl = clusters(w, now - HOUR, now);
-    d.smoke = cl.length && cl[0].repos.size >= 3 ? cl[0] : null;
-    const fl = c.flow;
-    const failRate = fl.finished >= 4 ? fl.failed / fl.finished : 0;
-    const typical = Math.max(0.2, (1 - (w.stats.success_rate_24h || 0.85)) * 1.5);
-    let depFail1h = 0;
-    for (const dp of w.deploys.values()) if (dp.state === 'failure' && dp.started >= now - HOUR && dp.started <= now) depFail1h++;
-    d.smokeDeploy = depFail1h >= 2 ? clamp(depFail1h / 5, 0.4, 1) : 0;
-    d.smokeQueue = !jammed && c.oldestWait > 4 * p50q && c.waiting >= 2 ? 0.5 : 0;
-    // the verdict (§E): broken = a main line red < 1 h, an app down, a jam or the outage watcher;
-    // slowed = a wait over 2× its p50 or a failure rate over the typical; else flowing
-    if (downNow) { d.verdict = 'broken'; d.why = `${downNow} ${downNow === 1 ? 'app' : 'apps'} down`; }
-    else if (w.watcher?.tripped) { d.verdict = 'broken'; d.why = 'outage watcher tripped'; }
-    else if (d.acute.length) { d.verdict = 'broken'; d.why = `${d.acute.length} main ${d.acute.length === 1 ? 'line' : 'lines'} red < 1 h`; }
-    else if (jammed) { d.verdict = 'jammed'; d.why = `${c.waiting} waiting, every bay busy`; }
-    else if (failRate > typical && fl.failed >= 3) { d.verdict = 'slowed'; d.why = `${Math.round(failRate * 100)}% of runs fail`; }
-    else if (c.waiting > 0 && c.oldestWait > 2 * p50q) { d.verdict = 'slowed'; d.why = `oldest waits ${ago(c.oldestWait)}`; }
-    // beacons: districts with an app down
-    c.districts.forEach((dist, i) => { for (const id of dist.apps) if (downApps.has(id)) { d.beacons.push({ di: i, down: true }); break; } });
-    return d;
+    let low = Infinity;
+    for (let i = 0; i < this.qlen.length - 1; i++) low = Math.min(low, this.qlen[i]);
+    const queue: QueueState = { waiting: c.waiting, oldestWait: c.oldestWait, slots, busy, growing: this.qlen.length >= 3 && c.waiting - low >= 2, p50: w.stats.p50_queue_ms || 60_000 };
+    // how long apps have been down: the stream's health events, then the server's 7 d ledger
+    const downAt = new Map<string, number>();
+    const note = (app: string, to: string, at: number) => {
+      if (to === 'down' || to === 'degraded') { if (at > (downAt.get(app) ?? 0)) downAt.set(app, at); }
+      else if (to === 'up' && (downAt.get(app) ?? 0) < at) downAt.delete(app);
+    };
+    for (const src of [this.ages, srv]) if (src) for (const x of [...src.apps].sort((a, b) => a.at - b.at)) note(x.app, x.to, x.at);
+    for (const h of w.health) note(h.app, h.to, h.at);
+    const agesKnown = !!this.ages || win === '7d';
+    const groups = ins.groups();
+    const mk = marks({
+      w, now, since, short: shortWindow(win, now, this.visitAt), clusters, trend: (id) => ins.trend(id), srv, fresh, queue,
+      downSince: (app) => downAt.get(app) ?? (agesKnown ? now - 8 * DAY : 0),
+      groups, groupWord: (id) => groupWord(id, ins.group(id)?.name),
+    });
+    return { win, since, now, fresh, marks: mk, complete: srv ? srv.complete : true };
   }
-
 
   /** What a glance chip lights (the "since you looked" lens). */
   freshSet(k: string): { repos: string[]; apps: string[]; fails: string[] } {
-    const d = this.dg, w = this.f.world;
+    const d = this.dg.fresh, w = this.f.world;
     switch (k) {
       case 'red': return { repos: d.newRed, apps: [], fails: [] };
       case 'fixed': return { repos: d.fixed, apps: [], fails: [] };
@@ -245,16 +328,17 @@ export class Coffee {
       case 'down': return { repos: [], apps: [...d.down, ...d.recovered], fails: [] };
       case 'deploys': return { repos: [], apps: d.deployApps, fails: [] };
       case 'merged': return { repos: [...new Set(d.merged.map((k2) => k2.slice(0, k2.indexOf('@'))))], apps: [], fails: [] };
+      case 'clusters': {
+        const ins = insights(), repos = new Set<string>();
+        for (const id of d.newClusters) for (const r of ins.cluster(id)?.repos ?? []) repos.add(r);
+        return { repos: [...repos], apps: [], fails: [] };
+      }
       default: return { repos: [], apps: [], fails: [] };
     }
   }
 
-  // ---- on the floor ------------------------------------------------------------------------------
-  under(g: Gfx, t: number): void {
-    this.update(t);
-    if (this.f.tl.mode !== 'replay' && !this.f.lens.topLens) this.freshGlows(g, t);
-    this.anomalies(g, t);
-  }
+  /** The smoke cluster's words for the lens (scanner hover). */
+  smokeWords(): string { const s = this.dg.marks.smoke[0]; return s ? `${s.step} · ${s.repoN} repos` : ''; }
 
   /** Where each repo's newest car (and newest culprit) sits on its rail, and each car by key. */
   carSpots(): { carAt: Map<string, [number, number]>; repoAt: Map<string, [number, number]>; culpritAt: Map<string, [number, number]> } {
@@ -278,273 +362,351 @@ export class Coffee {
   }
   private spotsAt = -1;
   private spots: { carAt: Map<string, [number, number]>; repoAt: Map<string, [number, number]>; culpritAt: Map<string, [number, number]> } | null = null;
-  /** perf: the fresh items' screen spots, rebuilt only when the census, the digest or the camera moved. */
-  private glowKey = '';
+
+  // ---- on the floor ------------------------------------------------------------------------------
+  // Masters, laid out when the census, the camera or the digest moved (the last field of each
+  // entry is when it happened, server ms: the replay gates on it); per-frame scratch beside them.
+  private layKey = [-1, -1, -1, -1];
+  private layParked: unknown = null;
+  private mSmoke = new Nums();   // x, y, k, size, puffs, rise, base | at
+  private mBeacon = new Nums();  // x, yFloor, yLamp, mode, 0 | at
+  private mEmber = new Nums();   // x, y, rx, k | at
+  private mCrack = new Nums();   // painter runs (chronic: shown from the start)
+  private mChev = new Nums();    // x, y
+  private jamUV: number[] = [];  // the jam's crates (floor u, v)
+  private ev = new Nums();       // replay events: x, y, r, fire (intro ms), colour, u (a failure's spot on the return belt, else -1), v
+  /** Each hotspot's anchor on screen (glance.ts draws the callouts from them). */
+  hotXY: number[] = [];
+  private sSmoke = new Nums(); private sBeacon = new Nums(); private sEmber = new Nums(); private sRings = new Nums();
+  // the fresh glows (rims), as phase 1 had them, gated by time in the replay
   private glowItems: [string, number, number, number, string][] = [];
-  private glowSeenFor = '';
+  private glowAt: number[] = [];
+  private glowSeenFor = -1;
   private glowSeen: number[] = [];
   private glowCols: string[] = [];
   private glowColOf: number[] = [];
   private glowBuckets: number[][] = [];
+  private glowN = 0;
 
-  /** Fresh things pulse where they are, on the shared beat, fading over ~2 min once seen. */
-  private freshGlows(g: Gfx, t: number): void {
-    const f = this.f, P = f.plan, cam = f.cam, fx = f.fx, d = this.dg;
-    const gk = `${f.census.at}|${cam.ver}|${this.dgN}|${f.lens.parked.length}|${f.lens.parkedKey}`;
-    if (gk !== this.glowKey) {
-    this.glowKey = gk;
-    const { carAt, repoAt, culpritAt } = this.carSpots();
-    const items: [string, number, number, number, string][] = (this.glowItems = []); // key, x, y, r, colour
-    const add = (key: string, u: number, v: number, z: number, r: number, col: string) => items.push([key, cam.x(u, v), cam.y(u, v, z), r, col]);
-    for (const id of d.newRed) { const at = culpritAt.get(id) ?? repoAt.get(id); if (at) add(`red:${id}`, at[0], at[1], 5, 6, C.red); }
+  under(g: Gfx, t: number): void {
+    this.update(t);
+    const f = this.f;
+    if (!f.world.loaded || f.census.skeleton) return;
+    if (this.openAt >= 0 && this.skipAt < 0 && f.cam.ver !== this.camAt && t - this.openAt < T_DONE) this.skip(t); // the wheel / a drag moved the camera
+    this.layout();
+    const it = this.introT(t), d = this.dg;
+    // the data moment the replay has reached (server ms); +∞ once settled
+    const span = Math.max(1, d.now - d.since);
+    const T = it >= T_SETTLE - 300 ? Infinity : d.since + clamp((it - T_SWEEP) / (T_SETTLE - 300 - T_SWEEP), 0, 1) * span;
+    const sz = clamp(f.cam.s * 1.3, 0.7, 3);
+    // reduced motion: the marks hold still (no rising smoke, no breathing), rims only
+    const tm = f.reduced ? 0 : t;
+    gate(this.mEmber, 5, T, this.sEmber); embers(g, this.sEmber, tm);
+    cracks(g, this.mCrack);
+    gate(this.mSmoke, 8, T, this.sSmoke); smoke(g, this.sSmoke, tm);
+    if (this.jamUV.length && T === Infinity) {
+      const P = f.plan;
+      for (let i = 0; i < this.jamUV.length; i += 3) f.fx.crate(g, this.jamUV[i], this.jamUV[i + 1], 7, false, true, this.jamUV[i + 2]);
+      chevrons(g, this.mChev, d.marks.jam?.k ?? 0, f.reduced ? 0 : beatPhase(t), sz);
+      void P;
+    }
+    gate(this.mBeacon, 6, T, this.sBeacon); beacons(g, this.sBeacon, tm, sz);
+    if (f.tl.mode !== 'replay' && !f.lens.topLens) this.freshGlows(g, t, T);
+    if (it < T_SETTLE) this.replayEvents(g, it);
+  }
+
+  /** Lays the marks and the replay's events out on screen, when the census, the camera, the
+   *  digest or the parked failures moved. */
+  private layout(): void {
+    const f = this.f, c = f.census, cam = f.cam, k = this.layKey;
+    if (k[0] === c.at && k[1] === cam.ver && k[2] === this.dgN && k[3] === c.waiting && this.layParked === f.lens.parked) return;
+    k[0] = c.at; k[1] = cam.ver; k[2] = this.dgN; k[3] = c.waiting; this.layParked = f.lens.parked;
+    const P = f.plan, fx = f.fx, w = f.world, d = this.dg, m = d.marks;
+    const sz = clamp(cam.s * 1.3, 0.7, 3);
+    const { culpritAt, repoAt } = this.carSpots();
+    const railOf = (repo: string) => { const i = c.rails.findIndex((r) => r.org === w.orgOf(repo)); return i < 0 ? -1 : Math.min(P.RAIL_V.length - 1, i); };
+    const spread = new Map<number, number>();
+    const repoSpot = (repo: string): [number, number] | null => {
+      const at = culpritAt.get(repo) ?? repoAt.get(repo);
+      if (at) return at;
+      const i = railOf(repo);
+      if (i < 0) return null;
+      const n = spread.get(i) ?? 0; spread.set(i, n + 1);
+      return [P.RAIL_U1 + 6 - (n % 8) * 9, P.RAIL_V[i] - 10];
+    };
+    // smoke: ≤ 3 plumes over the scanner, wisps over the docks of the repos each cluster hits
+    const sm = this.mSmoke; sm.reset();
+    const wisp = new Map<string, number>();
+    m.smoke.forEach((s, i) => {
+      const v = 300 + i * 70;
+      const top = cam.y(P.SCAN_U, v, 56);
+      pushN(sm, cam.x(P.SCAN_U, v), top, s.k, sz, i ? 8 : 12, 56, s.fresh ? cam.y(P.SCAN_U, v, 0) - top : 0, s.at);
+      for (const r of s.repos) { const o = w.orgOf(r); wisp.set(o, Math.max(wisp.get(o) ?? 0, s.k * 0.7)); }
+    });
+    for (const [o, kk] of wisp) { const v = fx.dockV(o); pushN(sm, cam.x(P.DOCK_U0 + 20, v), cam.y(P.DOCK_U0 + 20, v, 14), kk, sz, 4, 30, 0, m.smoke[0]?.at ?? d.now); }
+    // beacons: ≤ 3 pulse (on the beat while < 10 min old, breathing while < 1 h), the rest steady
+    const bc = this.mBeacon; bc.reset();
+    m.beacons.forEach((b, i) => {
+      const mode = i < 3 ? (d.now - b.at < 600_000 ? 1 : 2) : 0;
+      if (b.kind === 'red') {
+        const at = repoSpot(b.id);
+        if (at) pushN(bc, cam.x(at[0], at[1]), cam.y(at[0], at[1], 0), cam.y(at[0], at[1], 40), mode, 0, b.at);
+      } else if (b.kind === 'down') {
+        const bl = fx.blockAt.get(b.id);
+        if (bl) { const u = bl.u + bl.d / 2, v = bl.v + bl.d / 2; pushN(bc, cam.x(u, v), cam.y(u, v, bl.h), cam.y(u, v, bl.h + 30), mode, 0, b.at); }
+      } else {
+        const u = (P.SCAN_U + P.TRACK_U1) / 2, v = P.TRACK_V[1];
+        pushN(bc, cam.x(u, v), cam.y(u, v, 0), cam.y(u, v, 40), mode, 0, b.at);
+      }
+    });
+    // cracks: chronic reds fracture their org's rail (more lines, more of them), chronic downs
+    // their building's roof, a job past 3× its expected time its bay
+    const cr = this.mCrack; cr.reset();
+    const perRail = new Map<number, number>();
+    for (const x of m.cracks) {
+      if (x.kind === 'red') { const i = railOf(x.id); if (i >= 0) perRail.set(i, (perRail.get(i) ?? 0) + 1); continue; }
+      const bl = fx.blockAt.get(x.id);
+      if (bl) { const u = bl.u + bl.d / 2, v = bl.v + bl.d / 2; crackAt(cr, cam.x(u, v), cam.y(u, v, bl.h + 0.5), sz * 0.8, hashN(x.id), 1); }
+    }
+    for (const [i, n] of perRail) {
+      const lines = Math.min(4, 1 + Math.floor(n / 4));
+      for (let j = 0; j < Math.min(3, 1 + Math.floor(n / 6)); j++) {
+        const u = P.RAIL_U0 + 16 + j * 34, v = P.RAIL_V[i] + 9;
+        crackAt(cr, cam.x(u, v), cam.y(u, v, 0.4), sz, i * 977 + j * 131, lines);
+      }
+    }
+    const now = f.tl.playhead;
+    for (const bay of fx.bays) {
+      const p = bay.pid ? w.pipelines.get(bay.pid) : undefined, exp = p?.expected_ms ?? 0;
+      if (!p?.started || exp <= 0 || now - p.started < 3 * exp) continue;
+      const u = bay.u + bay.du * 0.4, v = bay.v + bay.dv * 0.5;
+      crackAt(cr, cam.x(u, v), cam.y(u, v, P.ENG_H + 0.5), sz * 0.7, hashN(bay.pid), 2);
+    }
+    // embers: under the stages and the groups whose trend is bad
+    const em = this.mEmber; em.reset();
+    for (const e of m.embers) {
+      const at = e.kind === 'stage' ? STAGE_SPOT[e.id] : this.groupSpot(e.id);
+      if (!at) continue;
+      pushN(em, cam.x(at[0], at[1]), cam.y(at[0], at[1], 0), at[2] * cam.s * 0.95, e.k, d.now - 1);
+    }
+    // the jam: crates bunch at the intake's mouth, chevrons push behind them
+    this.jamUV = [];
+    this.mChev.reset();
+    if (m.jam) {
+      const n = 3 + Math.round(m.jam.k * 4);
+      for (let q = n - 1; q >= 0; q--) this.jamUV.push(P.DIST_U - 6 - q * 4.6, 291 + ((q % 2) * 2 - 1) * 1.2, 2 + (q % 3 === 1 ? 3 : 0));
+      for (let q = 0; q < 3; q++) { const u = P.INTAKE_U0 + 6 + q * 9, v = P.LANE_V[0] - 22; this.mChev.push2(cam.x(u, v), cam.y(u, v, 1)); }
+    }
+    // the hotspots' anchors
+    this.hotXY = [];
+    for (const h of m.hot) {
+      let at: [number, number, number] | null = null;
+      if (h.kind === 'cluster') at = [P.SCAN_U, 300, 70];
+      else if (h.kind === 'jam') at = [(P.INTAKE_U0 + P.INTAKE_U1) / 2, 291, 10];
+      else { const s = this.groupSpot(h.id); if (s) at = [s[0], s[1], s[3]]; }
+      this.hotXY.push(at ? cam.x(at[0], at[1]) : -1, at ? cam.y(at[0], at[1], at[2]) : -1);
+    }
+    this.layoutEvents(repoSpot);
+    this.layoutGlows(repoSpot);
+  }
+
+  /** A group's place on the floor: an org's dock, a team's district ([u, v, r, z]). */
+  groupSpot(id: string): [number, number, number, number] | null {
+    const f = this.f, P = f.plan, fx = f.fx;
+    if (id.startsWith('org:')) {
+      const org = id.slice(4);
+      if (!f.census.docks.some((d) => d.org === org)) return null;
+      return [P.DOCK_U0 + 27, fx.dockV(org), 44, 18];
+    }
+    const slug = id.slice(id.indexOf(':') + 1);
+    let di = fx.districtBox.findIndex((b) => b.team.toLowerCase().replace(/\s+/g, '-') === slug);
+    if (di < 0) for (const a of f.world.apps.values()) {
+      if (String(a.team ?? '').toLowerCase().replace(/[\s_]+/g, '-').replace(/-team$/, '') !== slug) continue;
+      const bl = fx.blockAt.get(a.id ?? '');
+      if (bl) { di = bl.district; break; }
+    }
+    const b = fx.districtBox[di];
+    if (!b) return null;
+    return [(b.u0 + b.u1) / 2, (b.v0 + b.v1) / 2, Math.max(24, Math.min(90, Math.max(b.u1 - b.u0, b.v1 - b.v0) * 0.55)), 6];
+  }
+
+  /** The replay's events: each thing that changed in the window, where it is, when it lands in
+   *  the compressed sweep. ≤ 80, in time order. */
+  private layoutEvents(repoSpot: (repo: string) => [number, number] | null): void {
+    const f = this.f, cam = f.cam, P = f.plan, fx = f.fx, d = this.dg, fr = d.fresh;
+    const ev = this.ev; ev.reset();
+    const span = Math.max(1, d.now - d.since);
     const parked = new Map(f.lens.parked.map((x) => [x.id, x.u]));
-    for (const id of d.failed) { const u = parked.get(id); if (u !== undefined) add(`fail:${id}`, u, P.RETURN_V, 8, 6, C.red); }
-    for (const id of d.fixed) { const at = repoAt.get(id); if (at) add(`fix:${id}`, at[0], at[1], 5, 6, OK); }
-    const down = new Set(d.down), rec = new Set(d.recovered);
-    for (const id of new Set([...d.deployApps, ...d.down, ...d.recovered])) {
+    const items = [...fr.at].sort((a, b) => a[1] - b[1]);
+    if (items.length > 80) items.splice(0, items.length - 80);
+    const down = new Set(fr.down);
+    for (const [key, at] of items) {
+      const i = key.indexOf(':'), kind = key.slice(0, i), id = key.slice(i + 1);
+      const fire = T_SWEEP + clamp((at - d.since) / span, 0, 1) * (T_SETTLE - 300 - T_SWEEP);
+      let x = -1, y = -1, col = K_INK, u = -1, r = 6;
+      if (kind === 'red' || kind === 'fix') {
+        const s = repoSpot(id);
+        if (!s) continue;
+        x = cam.x(s[0], s[1]); y = cam.y(s[0], s[1], 5); col = kind === 'red' ? K_RED : K_OK;
+      } else if (kind === 'fail') {
+        const pu = parked.get(id);
+        if (pu === undefined) continue;
+        x = cam.x(pu, P.RETURN_V); y = cam.y(pu, P.RETURN_V, 6); col = K_RED; u = pu; r = 5;
+      } else if (kind === 'dep' || kind === 'app') {
+        const bl = fx.blockAt.get(id);
+        if (!bl) continue;
+        const bu = bl.u + bl.d / 2, bv = bl.v + bl.d / 2;
+        x = cam.x(bu, bv); y = cam.y(bu, bv, bl.h + 1.5); r = 4;
+        col = kind === 'dep' ? K_OK : down.has(id) ? K_RED : K_OK;
+      } else continue;
+      ev.push3(x, y, r); ev.push3(fire, col, u); ev.a[ev.n++] = P.RETURN_V;
+    }
+  }
+
+  /** The events landing now in the replay: a ring where each lands; a failure's crate rides the
+   *  return belt from the scanner to its spot first. */
+  private replayEvents(g: Gfx, it: number): void {
+    const f = this.f, ev = this.ev, rs = this.sRings, P = f.plan;
+    rs.reset();
+    for (let i = 0; i < ev.n; i += 7) {
+      const fire = ev.a[i + 3], u = ev.a[i + 5];
+      const ride = u >= 0 ? 600 : 0;
+      const e = (it - fire - ride) / 700;
+      if (u >= 0 && it >= fire && it < fire + ride) {
+        const k = (it - fire) / ride;
+        f.fx.crate(g, P.SCAN_U - 10 - (P.SCAN_U - 10 - u) * k * (2 - k), ev.a[i + 6], 7, true, false, 2);
+      }
+      if (e < 0 || e > 1) continue;
+      rs.push3(ev.a[i], ev.a[i + 1], ev.a[i + 2]); rs.push2(e, ev.a[i + 4]);
+    }
+    rings(g, rs);
+  }
+
+  private layoutGlows(repoSpot: (repo: string) => [number, number] | null): void {
+    const f = this.f, P = f.plan, cam = f.cam, fx = f.fx, fr = this.dg.fresh;
+    const items: [string, number, number, number, string][] = (this.glowItems = []); // key, x, y, r, colour
+    const at: number[] = (this.glowAt = []);
+    const add = (key: string, u: number, v: number, z: number, r: number, col: string, when: string) => { items.push([key, cam.x(u, v), cam.y(u, v, z), r, col]); at.push(fr.at.get(when) ?? this.dg.since); };
+    const { carAt } = this.carSpots();
+    for (const id of fr.newRed) { const s = repoSpot(id); if (s) add(`red:${id}`, s[0], s[1], 5, 6, C.red, `red:${id}`); }
+    const parked = new Map(f.lens.parked.map((x) => [x.id, x.u]));
+    for (const id of fr.failed) { const u = parked.get(id); if (u !== undefined) add(`fail:${id}`, u, P.RETURN_V, 8, 6, C.red, `fail:${id}`); }
+    for (const id of fr.fixed) { const s = repoSpot(id); if (s) add(`fix:${id}`, s[0], s[1], 5, 6, OK, `fix:${id}`); }
+    const down = new Set(fr.down), rec = new Set(fr.recovered);
+    for (const id of new Set([...fr.down, ...fr.recovered, ...fr.deployApps])) {
       const b = fx.blockAt.get(id);
       if (!b) continue;
-      add(`app:${id}`, b.u + b.d / 2, b.v + b.d / 2, b.h + 1.5, 4, down.has(id) ? C.red : rec.has(id) ? OK : '#9FB8A6');
+      add(`app:${id}`, b.u + b.d / 2, b.v + b.d / 2, b.h + 1.5, 4, down.has(id) ? C.red : rec.has(id) ? OK : '#9FB8A6', down.has(id) || rec.has(id) ? `app:${id}` : `dep:${id}`);
     }
-    for (const k of d.merged) { const at = carAt.get(k); if (at) add(`mrg:${k}`, at[0], at[1], 5, 5, C.ink2); }
+    for (const k of fr.merged) { const s = carAt.get(k); if (s) add(`mrg:${k}`, s[0], s[1], 5, 5, C.ink2, `mrg:${k}`); }
     // perf + calm: at most GLOW_MAX pulse, most important first (new reds, failures, fixes, apps, merges)
-    if (items.length > GLOW_MAX) items.length = GLOW_MAX;
-    }
+    if (items.length > GLOW_MAX) { items.length = GLOW_MAX; at.length = GLOW_MAX; }
+    this.glowN++;
+  }
+
+  /** Fresh things pulse where they are, on the shared beat, fading over ~2 min once seen; in the
+   *  replay only those whose moment has passed. */
+  private freshGlows(g: Gfx, t: number, T: number): void {
     const items = this.glowItems;
     if (!items.length) return;
-    // perf: each item's first-seen time resolved once per rebuild; per frame only numbers, no
-    // strings or Maps. Expired items drop out of the list for good.
-    if (this.glowSeenFor !== this.glowKey) {
-      this.glowSeenFor = this.glowKey;
-      this.glowSeen = items.map(([key]) => { let s0 = this.seen.get(key); if (s0 === undefined) { s0 = t; this.seen.set(key, s0); } return s0; });
+    // perf: each item's first-seen time resolved once per layout; per frame only numbers
+    if (this.glowSeenFor !== this.glowN) {
+      this.glowSeenFor = this.glowN;
+      this.glowSeen = items.map(([key]) => this.seen.get(key) ?? -1);
       this.glowCols = [...new Set(items.map((it) => it[4]))];
       this.glowColOf = items.map((it) => this.glowCols.indexOf(it[4]));
       if (this.seen.size > 4000) this.seen.clear();
     }
-    const b = beat(t), ph = beatPhase(t);
+    const ph = this.f.reduced ? 0.5 : beatPhase(t), b = 0.5 + 0.5 * Math.cos(ph * 2 * Math.PI);
     const nc = this.glowCols.length;
-    const buckets: number[][] = this.glowBuckets;
+    const buckets = this.glowBuckets;
     for (let i = 0; i < nc * 4; i++) { if (buckets[i]) buckets[i].length = 0; else buckets[i] = []; }
     let live = 0;
     for (let i = 0; i < items.length; i++) {
+      if (this.glowAt[i] > T) continue;
+      // first drawn now: its two minutes start (the replay's late arrivals get theirs too)
+      if (this.glowSeen[i] < 0) { this.glowSeen[i] = t; this.seen.set(items[i][0], t); }
       const a = 1 - (t - this.glowSeen[i]) / FRESH_MS;
       if (a <= 0) continue;
       live++;
       const it = items[i];
       buckets[this.glowColOf[i] * 4 + Math.min(3, Math.ceil(a * 4) - 1)].push(it[1], it[2], it[3]);
     }
-    if (!live) { this.glowItems = []; return; }
+    if (!live) return;
     for (let ci = 0; ci < nc; ci++) for (let qi = 0; qi < 4; qi++) {
       const xy = buckets[ci * 4 + qi];
       if (!xy.length) continue;
       const col = this.glowCols[ci], q = (qi + 1) / 4;
       g.begin_();
-      for (let i = 0; i < xy.length; i += 3) g.circle(xy[i], xy[i + 1], xy[i + 2] * (1.3 + 0.5 * b));
-      g.fill(withAlpha(col, 0.18 * q));
+      for (let i = 0; i < xy.length; i += 3) { const r = xy[i + 2] * (1.3 + 0.5 * b); g.ctx.moveTo(xy[i] + r, xy[i + 1]); g.ctx.arc(xy[i], xy[i + 1], r, 0, 2 * Math.PI); }
+      g.fill(alphaOf(col, 0.18 * q));
       g.begin_();
-      for (let i = 0; i < xy.length; i += 3) g.circle(xy[i], xy[i + 1], xy[i + 2] + 2 + ph * 10);
-      g.stroke(withAlpha(col, 0.7 * q * (1 - ph)), 1.2);
+      for (let i = 0; i < xy.length; i += 3) { const r = xy[i + 2] + 2 + ph * 10; g.ctx.moveTo(xy[i] + r, xy[i + 1]); g.ctx.arc(xy[i], xy[i + 1], r, 0, 2 * Math.PI); }
+      g.stroke(alphaOf(col, 0.7 * q * (1 - ph)), 1.2);
     }
   }
 
-  /** Smoke, beacons, the jam. Quiet when the factory is healthy. */
-  private anomalies(g: Gfx, t: number): void {
-    const f = this.f, P = f.plan, cam = f.cam, d = this.dg, fx = f.fx, w = f.world;
-    const sz = clamp(cam.s * 1.3, 0.7, 3);
-    const smoke = (x: number, y: number, k: number, ember: boolean, puffs = 9, rise = 74) => {
-      if (k <= 0) return;
-      if (ember) { g.begin_(); g.ctx.ellipse(x, y + 2, 16 * sz, 7 * sz, 0, 0, TAU); g.fill(withAlpha(C.red, 0.1 + 0.12 * k)); }
-      for (let i = 0; i < puffs; i++) {
-        const p = ((t / 5600) + i / puffs) % 1;
-        const fade = p < 0.12 ? p / 0.12 : 1 - (p - 0.12) / 0.88;
-        const px = x + (Math.sin(p * 4 + i * 1.7) * 6 + p * 22) * sz, py = y - (6 + p * rise) * sz;
-        g.begin_(); g.circle(px, py, (4 + p * 15 * (rise / 74)) * sz);
-        g.fill(withAlpha(i % 3 ? '#8E8E94' : '#A6A6AC', 0.22 * fade * k));
-      }
-    };
-    // smoke: one signature failing ≥ 3 repos this hour, over the scanner, wisps over each dock;
-    // its hotspot callout (≤ 1 here) when no lens tells another story
-    if (d.smoke) {
-      const k = clamp(0.45 + d.smoke.repos.size / 10, 0.45, 1);
-      const sx = cam.x(P.SCAN_U, 320), sy = cam.y(P.SCAN_U, 320, 56);
-      smoke(sx, sy, k, true);
-      if (!f.lens.topLens) {
-        const s1 = clusterStep(d.smoke.key), s2 = ` · ${d.smoke.repos.size} repos`;
-        const wv = g.width(s1, SMALL, true) + g.width(s2, SMALL);
-        const at = fx.placeAt(Math.round(sx + 26 * sz), Math.round(sy - 70 * sz), wv, 14, 4, true);
-        if (at) { g.fillRect(at[0] - 4, at[1] - 12, wv + 8, 16, withAlpha('#111112', 0.9)); g.runs([[s1, C.redText, true], [s2, C.ink2]], at[0], at[1], SMALL); }
-      }
-      const orgs = new Set([...d.smoke.repos].map((r) => w.orgOf(r)));
-      for (const o of orgs) { const v = fx.dockV(o); smoke(cam.x(P.DOCK_U0 + 20, v), cam.y(P.DOCK_U0 + 20, v, 14), k * 0.7, false, 4, 34); }
-    }
-    smoke(cam.x((P.SCAN_U + P.TRACK_U1) / 2, P.TRACK_V[1]), cam.y((P.SCAN_U + P.TRACK_U1) / 2, P.TRACK_V[1], 4), d.smokeDeploy, true);
-    smoke(cam.x((P.INTAKE_U0 + P.INTAKE_U1) / 2, 291), cam.y((P.INTAKE_U0 + P.INTAKE_U1) / 2, 291, 8), d.smokeQueue, false, 5, 40);
-    // beacons: districts with an app down, then main lines red < 1 h; ≤ 3 pulse, the rest steady
-    const spots: [number, number][] = [];
-    for (const bc of d.beacons) { const b = fx.districtBox[bc.di]; if (b) spots.push([b.u0 + 4, b.v0 + 4]); }
-    if (d.acute.length) {
-      const { culpritAt, repoAt } = this.carSpots();
-      for (const id of d.acute) { const at = culpritAt.get(id) ?? repoAt.get(id); if (at && spots.length < 12) spots.push(at); }
-    }
-    const b = beat(t);
-    spots.forEach(([u, v], i) => {
-      const live = i < 3 ? b : 0.6;
-      const x = cam.x(u, v), y0 = cam.y(u, v, 0), y1 = cam.y(u, v, 40);
-      g.vline(x, y1, y0, withAlpha(C.red, 0.55), 1.5);
-      g.begin_(); g.circle(x, y1, (8 + live * 7) * Math.min(1.6, sz)); g.fill(withAlpha(C.red, 0.1 + 0.14 * live));
-      g.begin_(); g.circle(x, y1, 3.4 + live); g.fill(C.red);
-    });
-    // cracks: a bay running over 3× its expected time (§E)
-    const now = f.tl.playhead;
-    g.begin_();
-    let cracked = 0;
-    for (const bay of fx.bays) {
-      const p = bay.pid ? w.pipelines.get(bay.pid) : undefined;
-      const exp = p?.expected_ms ?? 0;
-      if (!p?.started || exp <= 0 || now - p.started < 3 * exp) continue;
-      cracked++;
-      const z = P.ENG_H + 0.5, u0 = bay.u + bay.du * 0.15, v0 = bay.v + bay.dv * 0.2;
-      const pts = [[0, 0], [0.22, 0.18], [0.3, 0.42], [0.52, 0.5], [0.6, 0.78], [0.78, 0.86]];
-      pts.forEach(([a, b2], i) => { const x = cam.x(u0 + a * bay.du * 0.8, v0 + b2 * bay.dv * 0.7), y = cam.y(u0 + a * bay.du * 0.8, v0 + b2 * bay.dv * 0.7, z); if (i) g.line(x, y); else g.move(x, y); });
-      const bx = cam.x(u0 + 0.3 * bay.du * 0.8, v0 + 0.42 * bay.dv * 0.7), by = cam.y(u0 + 0.3 * bay.du * 0.8, v0 + 0.42 * bay.dv * 0.7, z);
-      g.move(bx, by); g.line(bx + 6 * sz, by - 3 * sz);
-    }
-    if (cracked) g.stroke(withAlpha('#E8E8EA', 0.85), 1.1);
-    // a jam: crates bunch at the intake's mouth, pressed together; chevrons push behind them
-    if (d.jam > 0) {
-      const n = 3 + Math.round(d.jam * 4);
-      for (let k = n - 1; k >= 0; k--) fx.crate(g, P.DIST_U - 6 - k * 4.6, 291 + ((k % 2) * 2 - 1) * 1.2, 7, false, true, 2 + (k % 3 === 1 ? 3 : 0));
-      const ph = beatPhase(t);
-      g.begin_();
-      for (let i = 0; i < 3; i++) {
-        const u = P.INTAKE_U0 + 6 + i * 9 + ph * 9, v = P.LANE_V[0] - 22;
-        const x = cam.x(u, v), y = cam.y(u, v, 1);
-        g.move(x - 3, y - 4); g.line(x + 1, y); g.line(x - 3, y + 4);
-      }
-      g.stroke(withAlpha(C.packet, 0.6 * d.jam), 1.4);
-    }
-  }
-
-  // ---- the glance --------------------------------------------------------------------------------
-  /** The floor's top row, after the zoom readout (the verdict replaces the hint, §E): the verdict
-   *  word with its glyph, up to five numbers vs the last visit (each a lens on what it counts),
-   *  and how long ago that was. Chips drop from the end rather than run into the key. */
+  // ---- the glance (glance.ts) --------------------------------------------------------------------
+  /** The floor's top row after the zoom readout (lens.ts calls it), the strip's replay playhead,
+   *  the hotspot callouts and the "since" menu. */
   glance(g: Gfx, fr: Frame, t: number, x0: number, right: number): void {
-    void fr;
     this.update(t);
-    const f = this.f, d = this.dg, replay = f.tl.mode === 'replay';
-    const col = d.verdict === 'broken' ? C.red : d.verdict === 'jammed' ? C.packet : d.verdict === 'slowed' ? C.amberText : OK;
-    const word = replay ? `${d.verdict} · replay` : d.verdict;
-    type Chip = { key: string; arrow: 0 | 1 | -1; n: string; w: string; col: string; arrowCol: string };
-    const chips: Chip[] = [];
-    if (!replay) {
-      if (d.newRed.length) chips.push({ key: 'red', arrow: 1, n: `${d.newRed.length}`, w: 'red', col: C.redText, arrowCol: C.red });
-      if (d.fixed.length) chips.push({ key: 'fixed', arrow: -1, n: `${d.fixed.length}`, w: 'fixed', col: C.greenInk, arrowCol: OK });
-      if (d.down.length) chips.push({ key: 'down', arrow: 1, n: `${d.down.length}`, w: 'down', col: C.redText, arrowCol: C.red });
-      else if (d.recovered.length) chips.push({ key: 'down', arrow: -1, n: `${d.recovered.length}`, w: 'recovered', col: C.greenInk, arrowCol: OK });
-      const nf = d.failCount >= 0 ? d.failCount : d.failed.length, nm = d.mergedCount >= 0 ? d.mergedCount : d.merged.length;
-      if (nf) chips.push({ key: 'failed', arrow: 0, n: `${nf}`, w: 'failed', col: C.redText, arrowCol: C.red });
-      if (d.deploys) chips.push({ key: 'deploys', arrow: 0, n: `${d.deploys}`, w: 'deploys', col: C.ink2, arrowCol: C.ink2 });
-      if (nm) chips.push({ key: 'merged', arrow: 0, n: `${nm}`, w: 'merged', col: C.ink2, arrowCol: C.ink2 });
-    }
-    const since = replay ? '' : this.first ? 'last 24 h' : this.sinceWords();
-    const ww = 24 + g.width(word, 15, true) + 12;
-    const cwOf = (ch: Chip) => (ch.arrow ? 12 : 0) + g.width(ch.n, SMALL, true) + 5 + g.width(ch.w, SMALL) + 14;
-    const sw = since ? g.width(since, SMALL) + 12 : 0;
-    let shown = chips.slice(0, 5);
-    while (shown.length && x0 + ww + shown.reduce((a, ch) => a + cwOf(ch) + 5, 0) + sw > right) shown = shown.slice(0, -1);
-    let x = x0;
-    const y = 46;
-    this.verdictGlyph(g, d.verdict, x + 9, y + 11, col, t);
-    g.text(word, x + 24, y + 16.5, col, 15, true);
-    f.fx.hit(x - 4, y, ww + 4, 22, 'verdict', d.verdict, d.why || d.verdict);
-    x += ww;
-    for (const ch of shown) {
-      const w = cwOf(ch);
-      g.fillRect(x, y + 1, w, 20, '#161618');
-      g.begin_(); g.rect(x + 0.5, y + 1.5, w - 1, 19); g.stroke('#2E2E30', 1);
-      let cx = x + 7;
-      if (ch.arrow) {
-        g.begin_();
-        if (ch.arrow > 0) { g.move(cx, y + 15); g.line(cx + 4, y + 8); g.line(cx + 8, y + 15); }
-        else { g.move(cx, y + 8); g.line(cx + 4, y + 15); g.line(cx + 8, y + 8); }
-        g.ctx.closePath(); g.fill(ch.arrowCol);
-        cx += 12;
-      }
-      cx += g.text(ch.n, cx, y + 15, ch.col, SMALL, true) + 5;
-      g.text(ch.w, cx, y + 15, C.ink3, SMALL);
-      f.fx.hit(x, y + 1, w, 20, 'fresh', ch.key, `${ch.n} ${ch.w} since you looked`);
-      x += w + 5;
-    }
-    if (since && x + sw <= right) g.text(since, x + 5, y + 15, C.ink3, SMALL);
+    this.glance0.draw(g, fr, t, x0, right);
   }
+}
 
-  /** The verdict's glyph: chevrons that flow, slow, bunch or break. */
-  private verdictGlyph(g: Gfx, v: Verdict, x: number, y: number, col: string, t: number): void {
-    const chev = (cx: number, a = 1) => { g.begin_(); g.move(cx - 2, y - 4); g.line(cx + 2, y); g.line(cx - 2, y + 4); g.stroke(withAlpha(col, a), 1.6); };
-    if (v === 'flowing') { const o = beatPhase(t) * 5; for (let i = 0; i < 3; i++) chev(x - 6 + i * 5 + o, i === 0 ? 1 - o / 5 : i === 2 ? 0.4 + o / 8 : 1); }
-    else if (v === 'slowed') { chev(x - 6); chev(x + 1); chev(x + 8, 0.35); }
-    else if (v === 'jammed') { chev(x - 3); chev(x); chev(x + 3); g.vline(x + 8, y - 6, y + 6, col, 1.6); }
-    else {
-      g.begin_(); g.move(x - 8, y); g.line(x - 2, y); g.move(x + 3, y); g.line(x + 8, y); g.stroke(col, 1.6);
-      g.begin_(); g.move(x - 1, y - 5); g.line(x + 2, y + 5); g.stroke(withAlpha(col, 0.6 + 0.4 * beat(t)), 1.6);
-    }
+/** The stages' floor spots for embers: [u, v, r]. */
+const STAGE_SPOT: Record<string, [number, number, number]> = {
+  prs: [270, 300, 150], mains: [548, 290, 110], intake: [705, 291, 70], engines: [915, 300, 190], tests: [1104, 320, 70], deploy: [1165, 330, 80],
+};
+
+/** Copies the entries (`stride` numbers, the last one a time) whose time is ≤ T into `dst`
+ *  without it. */
+function gate(src: Nums, stride: number, T: number, dst: Nums): void {
+  dst.reset();
+  const a = src.a, o = dst.a;
+  for (let i = 0; i < src.n; i += stride) {
+    if (a[i + stride - 1] > T) continue;
+    for (let j = 0; j < stride - 1; j++) o[dst.n++] = a[i + j];
   }
+}
 
-  /** The smoke cluster's words for the lens (scanner hover). */
-  smokeWords(): string { const s = this.dg.smoke; return s ? `${clusterStep(s.key)} · ${s.repos.size} repos` : ''; }
+function pushN(n: Nums, ...xs: number[]): void { for (const x of xs) n.a[n.n++] = x; }
+
+function hashN(s: string): number { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h >>> 0; }
+
+const ALPHA_KIND: Record<string, number> = { [C.red]: K_RED, [OK]: K_OK, [C.packet]: K_AMBER };
+/** A glow colour at an opacity, from fx.ts's table when it has the colour. */
+function alphaOf(col: string, a: number): string {
+  const k = ALPHA_KIND[col];
+  return k !== undefined ? tint(k, a) : withA(col, a);
+}
+const withACache = new Map<string, string[]>();
+function withA(col: string, a: number): string {
+  let row = withACache.get(col);
+  if (!row) {
+    const n = parseInt(col.slice(1), 16);
+    row = Array.from({ length: 33 }, (_, q) => `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${(q / 32).toFixed(3)})`);
+    withACache.set(col, row);
+  }
+  return row[Math.round(clamp(a, 0, 1) * 32)];
+}
+
+/** A group's word on the floor: an org's short name (`labs`), a team's name. */
+export function groupWord(id: string, name?: string): string {
+  if (id.startsWith('org:')) return short(id.slice(4));
+  const n = name ?? id.slice(id.indexOf(':') + 1);
+  return n.length <= 4 && n === n.toUpperCase() ? n : n.toLowerCase();
 }
 
 function serverKey(server: string): string { return server.trim() || 'origin'; }
 
-function parseVisits(s: string): Record<string, Visit> {
+function parseVisits(s: string): Record<string, VisitRec> {
   if (!s) return {};
   try {
-    const v = JSON.parse(s) as Record<string, Visit>;
+    const v = JSON.parse(s) as Record<string, VisitRec>;
     return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
   } catch { return {}; }
 }
 
-/** A short stable hash (base 36) of an id: the visit keeps these, not names. */
-export function h36(s: string): string {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
-  return (h >>> 0).toString(36);
-}
-
-/** What changed in (since, now] from the world: red/green main lines against the visit's baseline
- *  (or, a first look, `main.since` and the recent dots), the failures, deploys and merges the
- *  world holds, app health. The ids say WHERE (the glows); the seam's counts reach further. */
-function* localChanges(w: World, since: number, now: number, baseRed: Set<string> | null, baseDown: Set<string> | null): Generator<void, Changes, void> {
-  const d: Changes = { newRed: [], fixed: [], acute: [], failed: [], deployApps: [], deploys: 0, deployFails: 0, merged: [], down: [], recovered: [] };
-  for (const r of w.repos.values()) {
-    const red = isRed(r);
-    if (red && (r.main?.since ?? 0) >= now - HOUR) d.acute.push(r.id);
-    if (baseRed) {
-      const was = baseRed.has(h36(r.id));
-      if (red && !was) d.newRed.push(r.id); else if (!red && was) d.fixed.push(r.id);
-    } else if (red) { if ((r.main?.since ?? 0) >= since) d.newRed.push(r.id); }
-    else for (const dot of r.main?.recent ?? []) if (dot.at >= since && (dot.state === 'failure' || dot.state === 'error')) { d.fixed.push(r.id); break; }
-  }
-  for (const p of w.pipelines.values()) if ((p.state === 'failure' || p.state === 'error') && p.finished && p.finished > since && p.finished <= now) d.failed.push(p.id ?? '');
-  yield;
-  const apps = new Set<string>();
-  for (const dp of w.deploys.values()) {
-    if (dp.started <= since || dp.started > now) continue;
-    d.deploys++;
-    if (dp.state === 'failure') d.deployFails++;
-    apps.add(dp.app);
-  }
-  d.deployApps = [...apps];
-  for (const p of w.prs.values()) if (p.merged_at && p.merged_at > since && p.merged_at <= now) d.merged.push(`${p.repo}@${p.merge_sha ?? ''}`);
-  yield;
-  for (const a of w.apps.values()) {
-    const id = a.id ?? '';
-    const bad = a.health === 'down' || a.health === 'degraded';
-    if (baseDown) {
-      const was = baseDown.has(h36(id));
-      if (bad && !was) d.down.push(id); else if (!bad && was && a.health === 'up') d.recovered.push(id);
-    } else if (bad) d.down.push(id);
-  }
-  return d;
-}
+void HOUR; void K_AMBER; void tint;

@@ -19,7 +19,6 @@ HOST=${SY_MINI:-mini-user@192.0.2.1}
 ARG=${SY_UPDATE_ARG:---update-now}
 REPO=couplet-physical-ai/switchyard
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST")
-BREW='(cd /tmp && sudo -n -Hu felipearce env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 /opt/homebrew/bin/brew'
 
 FEED=${SY_UPDATE_FEED:-https://github.com/$REPO/releases/latest/download/latest.json}
 OPEN_ENV=(); [[ -n "${SY_UPDATE_FEED:-}" ]] && OPEN_ENV=(--env "SWITCHYARD_UPDATE_FEED=$SY_UPDATE_FEED")
@@ -34,15 +33,18 @@ feed=$(curl -fsSL --retry 3 "$FEED" | python3 -c 'import json,sys; print(json.lo
 out=$(timeout 1800 "${SSH[@]}" 'f=$(mktemp); cat > "$f"; bash "$f" </dev/null 2>&1; rc=$?; rm -f "$f"; exit $rc' <<EOF
 set -euo pipefail
 A=/Applications/Switchyard.app
+# brew runs as the mini's brew owner, from /tmp (a function: an unbalanced '(' inside this
+# heredoc-in-\$( ) breaks macOS bash 3.2's parser, which release-lint runs).
+brew_() ( cd /tmp && sudo -n -Hu felipearce env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 /opt/homebrew/bin/brew "\$@" )
 v() { /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "\$A/Contents/Info.plist"; }
-pkill -f 'Switchyard.app/Contents/MacOS/Switchyard' || true
+pkill -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true
 # Dev builds registered with LaunchServices (sy-client's targets, old release dirs) would take
 # switchyard:// links or be what open(1) finds: unregister every Switchyard.app but /Applications'.
 LSR=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 \$LSR -dump 2>/dev/null | sed -nE 's/^path: +(.*Switchyard[^/]*\\.app)( \\(0x.*)?\$/\\1/p' | sort -u | { grep -v '^/Applications/' || true; } \\
   | while IFS= read -r p; do \$LSR -u "\$p" 2>/dev/null || true; echo "unregistered \$p"; done
 if [[ "${SY_FROM_TAP:-}" != 1 ]]; then
-$BREW uninstall --cask switchyard >/dev/null 2>&1 || true)
+brew_ uninstall --cask switchyard >/dev/null 2>&1 || true
 rm -rf "\$A" "\$A.old"
 # Install <from> exactly: the cask at that version, from the release's own zip.
 tmp=\$(mktemp -d); curl -fsSL --retry 3 -o "\$tmp/s.zip" "https://github.com/$REPO/releases/download/v$FROM/Switchyard-$FROM-arm64.zip"
@@ -55,15 +57,16 @@ mkdir -p ~/Library/Logs/Switchyard; : > ~/Library/Logs/Switchyard/update.log
 sudo -n launchctl asuser \$(id -u) sudo -n -u \$(id -un) open ${OPEN_ENV[*]:-} "\$A" ${ARG:+--args $ARG}
 for i in \$(seq 1 120); do
   sleep 2
-  [[ "\$(v)" == "$TO" ]] && pgrep -f 'Switchyard.app/Contents/MacOS/Switchyard' >/dev/null && break
+  [[ "\$(v)" == "$TO" ]] && pgrep -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' >/dev/null && break
 done
-echo "after update: \$(v) (running: \$(pgrep -f 'Switchyard.app/Contents/MacOS/Switchyard' || echo none))"
+echo "other Switchyard processes: \$(pgrep -fl 'Switchyard.app/Contents/MacOS/Switchyard' | grep -v '^[0-9]* /Applications/' || echo none)"
+echo "after update: \$(v) (running: \$(pgrep -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || echo none))"
 echo "--- update.log"; tail -20 ~/Library/Logs/Switchyard/update.log || true
 [[ "\$(v)" == "$TO" ]] || { echo "FAIL: bundle is \$(v), expected $TO" >&2; exit 1; }
 codesign --verify --deep --strict "\$A" && echo "signature: ok"
 sleep 10; [[ ! -e "\$A.old" ]] && echo ".old: swept" || { ls -ld "\$A.old"; echo "FAIL: .old not swept" >&2; exit 1; }
-echo "--- brew info"; $BREW info --cask switchyard 2>&1 | head -3) || true
-if [[ "$KEEP" != --keep ]]; then pkill -f 'Switchyard.app/Contents/MacOS/Switchyard' || true; rm -rf "\$A"; fi
+echo "--- brew info"; brew_ info --cask switchyard 2>&1 | head -3 || true
+if [[ "$KEEP" != --keep ]]; then pkill -f '^/Applications/Switchyard.app/Contents/MacOS/Switchyard' || true; rm -rf "\$A"; fi
 echo E2E-PASS
 EOF
 ) || { echo "$out"; echo "update e2e: FAILED" >&2; exit 1; }

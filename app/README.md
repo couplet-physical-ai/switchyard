@@ -205,8 +205,8 @@ app/tools/updater-e2e.sh <Switchyard.app>  # end to end on a Mac, outside the ag
 app/tools/updater-e2e-feed.sh <Switchyard.app> 0.0.2 <latest.json URL>   # a real feed, --update-now
 ```
 
-- `updater-tests.sh` compiles `UpdaterCore.swift` + `UpdaterTests.swift` with `swiftc`. It
-  covers:
+- `updater-tests.sh` compiles `UpdaterCore.swift` + `UpdaterTests.swift` (and the test hooks'
+  `HooksCore.swift` + `HooksTests.swift`, below) with `swiftc`. It covers:
   - version and build compare;
   - latest.json/SHA256SUMS/API parsing;
   - the host allowlist and off-host redirects;
@@ -224,6 +224,52 @@ app/tools/updater-e2e-feed.sh <Switchyard.app> 0.0.2 <latest.json URL>   # a rea
 - `updater-e2e-feed.sh` installs a stamped old build and updates it from a real `latest.json`
   with `--update-now`.
 
+
+**Tokens never sit in kept answers.** Exact keeps a resource's answer and its identifying
+arguments on disk for the next launch (`kv/exact.kept`). Builds before 5ecedeb passed the token
+through Contract, so it landed there in plain text; now Contract only sees `{has, ver}` and the
+sources read the token from the Keychain. At every launch the module also deletes any kept entry
+or persisted state that holds a token (`syd_`/`sys_`-shaped, or the stored token's value), and
+logs `scrub: removed N kept entries holding a token` to switchyard.log. Native tests in
+`tools/updater-tests.sh`; a real launch in `tools/kept-scrub-e2e.sh` (Mac).
+
+## Test hooks (macOS)
+
+Two env-only hooks for proving a build with no agent channel (a release, a fresh install). They
+are in every build, release included, and do nothing unless their variable is set; the web
+ignores them. The code is `modules/apple/HooksCore.swift` (pure, tested by
+`tools/updater-tests.sh`) and `Hooks.swift` (the module side), `src/hooks.ts` and
+`views/hooks.contract`. Their lines go to stderr and to `~/Library/Logs/Switchyard/switchyard.log`
+(the folder is made if missing), never with the token in them.
+
+- **`SWITCHYARD_TOKEN_FILE=<path>`** connects with a device token from a file, with no confirm
+  sheet. At launch the module reads the file once and refuses it, logging
+  `token-file: failed <reason>`, unless the path is absolute and the file is a regular file this
+  user owns, mode exactly `0600`, at most 4 KiB of UTF-8, and not empty once trimmed (spaces and
+  newlines off both ends). The server is `SWITCHYARD_SERVER` when it is set, else the build's
+  `SWITCHYARD_DEFAULT_SERVER`, else the stored one. The data module takes `{server, token}` once
+  (`native.call({op: "tokenFile"})`, sent as a mutation, so no answer kept for the next launch
+  holds it), checks them with the `switchyard://` link's `parseLink`, and connects as the link's
+  Connect does (`connectTokenFile`): the server is stored, the token goes to the Keychain
+  (`secret.keep switchyard.token`; the data module stores it, so it never enters a Contract
+  value). The connect that follows logs `token-file: connected <server>` or
+  `token-file: failed <server>: <why>`. The token never crosses argv, a URL or a log.
+- **`SWITCHYARD_SNAPSHOT=<png>[:<seconds>]`** draws the main window to `<png>` (an absolute path)
+  `<seconds>` after launch (default 8, at most 3600; the seconds follow the last colon), logs
+  `snapshot: <path> <w>x<h>` (pixels) or `snapshot: failed <reason>`, and the app keeps running.
+  It draws the session's root view the way the agent's `screenshot` does (`cacheDisplay` into an
+  sRGB bitmap, Exact's `Capture.picture`), with each GPU-replayed 2D canvas's IOSurface copied in
+  for the capture. Nothing here asks the window server (`CGWindowListCreateImage`,
+  `screencapture`), so it needs no Screen Recording grant and works over ssh.
+
+```sh
+umask 077; printf '%s\n' "$TOKEN" > ~/.sy-token     # 0600; or chmod 600 an existing file
+open -n --env SWITCHYARD_SERVER=https://switchyard.example.com \
+  --env SWITCHYARD_TOKEN_FILE=$HOME/.sy-token --env SWITCHYARD_SNAPSHOT=/tmp/sy.png:10 \
+  /Applications/Switchyard.app
+grep -E 'token-file|snapshot' ~/Library/Logs/Switchyard/switchyard.log
+```
+
 ## Layout
 
 | Path | What |
@@ -238,4 +284,5 @@ app/tools/updater-e2e-feed.sh <Switchyard.app> 0.0.2 <latest.json URL>   # a rea
 | `server/` | the deterministic simulation and mock server |
 | `tests/` | `*.test.contract` suites (web and macOS) |
 | `modules/apple/Updater*.swift`, `views/update.contract`, `src/update.ts` | the macOS updater ("Updates" above) |
+| `modules/apple/Hooks*.swift`, `views/hooks.contract`, `src/hooks.ts` | the macOS test hooks ("Test hooks" above) |
 | `tools/` | `webperf.mjs` (frame pacing in Chromium), `mini-sync.sh` (copy to the Mac mini), `updater-tests.sh`, `updater-e2e.sh` |

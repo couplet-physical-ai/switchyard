@@ -144,5 +144,31 @@ const kv = i5.ver('trends');
 tl5.world.apply({ t: 'delta', seq: tl5.world.seq + 1, at: tl5.world.at + 1, ops: [{ op: 'upsert', kind: 'trend', id: 'fleet', v: tl5.world.trends.get('fleet') }] } as any);
 ok(i5.ver('trends') !== kv, 'v0.5 ver: bumps on the table\'s ops');
 
+// ── H6/H7 from the server (73ef168), else the client seams in the server's shape ──
+{
+  let appCalls = 0, engCalls = 0;
+  const srvApp = { id: appId, app: null, deploys: [{ sha: 'abc', via: 'roadrunner', state: 'success', started: 1, at: 2, finished: 2, duration_ms: 1 }], health: [], health_ms: { up: 5 }, since: 0, complete: true };
+  const fake = {
+    kind: 'http',
+    appHistory: async (id: string) => { appCalls++; return id === appId ? srvApp : null; },
+    engineHistory: async (id: string) => { engCalls++; return id === 'boom' ? Promise.reject(new Error('500')) : null; },
+  } as unknown as Upstream;
+  const ih = new Insights(tl4, () => fake, engines);
+  const a1 = await ih.appHistoryAsync(appId), a2 = await ih.appHistoryAsync(appId);
+  ok(a1?.source === 'server' && a1.deploys.length === 1 && a2 === a1 && appCalls === 1, `appHistoryAsync: the server's answer, cached per id (${appCalls} fetch)`);
+  const other = [...tl4.world.apps.keys()].find((k) => k !== appId)!;
+  const a3 = await ih.appHistoryAsync(other);
+  ok(a3?.source === 'client' && a3.complete === false && a3.id === other && Array.isArray(a3.deploys) && typeof a3.health_ms === 'object', 'appHistoryAsync: 404 → the client seam in the server\'s shape');
+  eq(await ih.appHistoryAsync('zz-no-such-app'), null, 'appHistoryAsync: unknown app → null');
+  const e1 = await ih.engineHistoryAsync('wp-agent-1');
+  ok(e1?.source === 'client' && e1.n === e1.busy.length && e1.busy.length === 24 && e1.step_ms === 300_000 && e1.repos.length > 0, `engineHistoryAsync: 404 → the client seam as columns (${e1?.n} × ${e1?.step_ms} ms, ${e1?.repos.length} repos)`);
+  eq(await ih.engineHistoryAsync('boom'), null, 'engineHistoryAsync: a failing fetch falls back (unknown engine → null)');
+  const n0 = engCalls;
+  await ih.engineHistoryAsync('wp-agent-1');
+  tl4.tick(tl4.clock + 61_000);
+  await ih.engineHistoryAsync('wp-agent-1');
+  eq(engCalls - n0, 1, 'engineHistoryAsync: cached 60 s, then asked again');
+}
+
 console.log(fails ? `insights.test: ${fails} FAILED` : 'insights.test: all ok');
 process.exit(fails ? 1 : 0);

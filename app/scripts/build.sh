@@ -14,7 +14,9 @@ case "${1:-}" in
     # The commit this build is, so a page the server has since replaced can offer a reload
     # (it compares /api/v1/meta's web.sha).
     SWITCHYARD_WEB_SHA=${SWITCHYARD_WEB_SHA:-$(git -C "$here" rev-parse HEAD 2>/dev/null || true)}
-    export SWITCHYARD_WEB_SHA
+    # …and the app/ tree it was built from: a server-only deploy (same tree) offers no reload
+    SWITCHYARD_WEB_TREE=${SWITCHYARD_WEB_TREE:-$(git -C "$here" rev-parse HEAD:app 2>/dev/null || true)}
+    export SWITCHYARD_WEB_SHA SWITCHYARD_WEB_TREE
     timeout 1800 bun exact.mjs web-build --out "${2:-$here/dist}" ;;
   mac)
     export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}

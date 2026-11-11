@@ -1,32 +1,6 @@
-// The factory's click grammar and coffee check (src/factory/lens.ts, coffee.ts; fab-lens). A test
-// cannot press a canvas at a point, so these drive the floor's keys and read what it answers:
-// the key ("?"), the lens stack's walk back (Esc), and the last visit kept per server.
-
-test "the coffee check reads the floor and keeps the last visit"
-  clock data
-  tap "setup-demo"
-  clock data
-  clock +500
-  expect state coffee.ok == true
-  expect state visitN == 0
-  clock +20000
-  clock +101000
-  clock data
-  expect state visitN == 1
-  expect state looking == true
-
-test "leaving the floor marks the visit"
-  clock data
-  tap "setup-demo"
-  clock data
-  clock +21000
-  expect state looking == true
-  tap "tab-fleet"
-  clock settle
-  clock +500
-  clock data
-  expect state looking == false
-  expect state visitN == 1
+// The factory's click grammar (src/factory/lens.ts; fab-lens). A test cannot press a canvas at a
+// point, so these drive the floor's keys and read what it answers: the key ("?") and the lens
+// stack's walk back (Esc). The coffee check's own: tests/factory-coffee.test.contract.
 
 test "? shows the key and Esc puts it away"
   clock data

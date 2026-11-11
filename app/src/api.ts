@@ -2,7 +2,7 @@
 // the built-in demo (a seeded simulation of a fleet, no network). Both answer the same calls.
 
 import { parseLarge } from './json.ts';
-import type { Changes, History, Insights, Journey, Meta, PrDetail, SearchResults, Snapshot } from './wire.ts';
+import type { AppDetail, Changes, EngineHistoryDoc, History, Insights, Journey, Meta, PrDetail, SearchResults, Snapshot } from './wire.ts';
 
 export interface Upstream {
   readonly kind: 'http' | 'demo';
@@ -19,6 +19,10 @@ export interface Upstream {
   insights?(): Promise<Insights | null>;
   /** v0.5 `GET /api/v1/changes?since=&until=`; null where the server has none. */
   changes?(since: number, until?: number): Promise<Changes | null>;
+  /** `GET /api/v1/app/{id}` (server 73ef168): deploys + 7 d health; null where the server has none (404). */
+  appHistory?(id: string): Promise<AppDetail | null>;
+  /** `GET /api/v1/engine/{id}/history`: 24 h per minute, columnar; null where the server has none (404). */
+  engineHistory?(id: string): Promise<EngineHistoryDoc | null>;
 }
 
 /** The recorded real fleet (contract/fixtures), served by `bun exact.mjs server` (server/mock.ts
@@ -130,5 +134,13 @@ export class HttpUpstream implements Upstream {
   changes(since: number, until?: number): Promise<Changes | null> {
     const q = `since=${Math.floor(since)}${until === undefined ? '' : `&until=${Math.floor(until)}`}`;
     return this.get<Changes | null>(`/api/v1/changes?${q}`, 15000, 2 << 20);
+  }
+  /** An app's deploys and 7 d of health (≈ 2 KB); null on 404 (an older server, an unknown app). */
+  appHistory(id: string): Promise<AppDetail | null> {
+    return this.get<AppDetail | null>(`/api/v1/app/${encodeURIComponent(id)}`, 15000, 1 << 20);
+  }
+  /** An engine's last 24 h per minute (≈ 35 KB); null on 404. */
+  engineHistory(id: string): Promise<EngineHistoryDoc | null> {
+    return this.get<EngineHistoryDoc | null>(`/api/v1/engine/${encodeURIComponent(id)}/history`, 15000, 2 << 20);
   }
 }

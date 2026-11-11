@@ -18,12 +18,17 @@ final class Updater: ExactModule {
     required init(context: ExactModuleContext) {
         super.init(context: context)
         SYUpdateEngine.shared.attach(self.context)
+        // The test hooks (Hooks.swift) ride on the app's one module.
+        SYHooks.shared.start(self.context)
     }
 
     override func call(_ request: [String: Any]) throws -> [String: Any] {
         switch request["op"] as? String {
         case "state": return SYUpdateEngine.shared.snapshot()
-        default: throw ExactNativeRefusal("updater answers state")
+        case "tokenFile": return SYHooks.shared.takeToken()
+        case "tokenFileResult": return SYHooks.shared.report(request)
+        case "scrub": return SYHooks.shared.scrub(request)
+        default: throw ExactNativeRefusal("the module answers state, tokenFile, tokenFileResult and scrub")
         }
     }
 

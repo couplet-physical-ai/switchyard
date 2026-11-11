@@ -119,6 +119,25 @@ export type Changes = {
   groups: { id: string; failed: number; red: number }[];
 };
 
+/** GET /api/v1/app/{id} (server 73ef168): an app's last ≤ 10 deploys (newest first) and its 7 d
+ *  of health changes (newest first); `health_ms` = time spent in each state over `since` → now;
+ *  `complete` false while the server's ledger holds less than 7 d. */
+export type AppDeployRow = {
+  sha: string; via: DeployVia; state: DeployState; started: number; at: number; finished?: number; duration_ms?: number; pipeline?: string;
+};
+export type AppDetail = {
+  id: string; app: App | null; deploys: AppDeployRow[]; health: { from: Health; to: Health; at: number }[];
+  health_ms: Partial<Record<Health, number>>; since: number; complete: boolean;
+};
+/** GET /api/v1/engine/{id}/history (id URL-encoded): columnar, one sample a `step_ms` (60 s) over
+ *  24 h (`n` = 1440), oldest first from `from`; null = offline / no sample. `busy` and `slots` are
+ *  slot counts, cpu/mem percent, load load1; `repos` = runs served in the window, most first. */
+export type EngineHistoryDoc = {
+  id: string; kind: Engine['kind']; host?: string; from: number; step_ms: number; n: number;
+  busy: (number | null)[]; slots: (number | null)[]; cpu: (number | null)[]; mem: (number | null)[]; load: (number | null)[];
+  repos: { repo: string; runs: number }[];
+};
+
 export type Kind = 'org' | 'repo' | 'commit' | 'pipeline' | 'pr' | 'deploy' | 'app' | 'engine' | 'queue' | 'lane' | 'watcher' | 'stats'
   | 'group' | 'cluster' | 'flake' | 'trend';
 /** v0.2 sends arrays sorted by id; the demo sends id-keyed maps. */

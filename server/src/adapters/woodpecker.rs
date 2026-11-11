@@ -573,6 +573,10 @@ pub fn rfc3339(ms: Ms) -> String {
 
 // ---------------------------------------------------------------- task
 
+/// Lines read from the end of a failed step's log: pytest's `FAILED` lines can sit
+/// thousands of lines before the end (classifying 5,000 lines takes ~3 ms).
+const LOG_LINES: usize = 5_000;
+
 /// One failed step whose log should be read for its failure signature.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LogJob {
@@ -659,7 +663,7 @@ pub async fn read_logs(
         }
         .await;
         let lines = match body {
-            Ok(b) => crate::signature::decode_wp_log(&b, 2000),
+            Ok(b) => crate::signature::decode_wp_log(&b, LOG_LINES),
             Err(e) => {
                 debug!(error = %e, pipeline = %job.pipeline, "step log unavailable");
                 Vec::new()

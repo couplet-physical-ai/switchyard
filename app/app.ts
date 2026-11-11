@@ -9,6 +9,7 @@ import { HttpUpstream, resolveBase, setDefaultServer, wsUrl, type Upstream } fro
 // dev and test builds leave it empty and ask on first launch.
 const DEFAULT_SERVER = import.meta.env.SWITCHYARD_DEFAULT_SERVER ?? '';
 const WEB_SHA = import.meta.env.SWITCHYARD_WEB_SHA ?? '';
+const WEB_TREE = import.meta.env.SWITCHYARD_WEB_TREE ?? '';
 setDefaultServer(DEFAULT_SERVER);
 import { DEMO_REPLAY, DemoUpstream } from './src/demo.ts';
 import { EngineHistory } from './src/enginehist.ts';
@@ -18,6 +19,8 @@ import { fleet, journeyView, prDetailView, search } from './src/project.ts';
 import { MainlinesModel, stateWords } from './src/table/mainlines.ts';
 import { PrsModel } from './src/table/prs.ts';
 import { Timeline } from './src/timeline.ts';
+import { bindBaselineStore } from './src/factory/agg/baseline.ts';
+import { connectedWith, saveTokenFile, scrubKept, takeTokenFile, tokenFileReport } from './src/hooks.ts';
 import { updateDo, updateState } from './src/update.ts';
 import type { Frame as WireFrame } from './src/wire.ts';
 import { Yard } from './src/yard/draw.ts';
@@ -157,6 +160,8 @@ async function demoLive(): Promise<void> {
 
 // ---- sources -------------------------------------------------------------------------------
 type Conn = Result<'connect'>;
+/** Connects started: only the newest one's outcome counts for the token-file hook. */
+let connects = 0;
 
 async function connect(server: string, token: string, epoch0: number): Promise<Conn> {
   epochAtZero = epoch0;
@@ -318,32 +323,60 @@ async function webVersion(): Promise<{ stale: boolean; served: string }> {
   try {
     const r = await fetch(`${origin}/api/v1/meta`, { headers: { accept: 'application/json' } });
     if (!r.ok) return { stale: false, served: '' };
-    const m = (await r.json()) as { web?: { sha?: string } | null };
+    const m = (await r.json()) as { web?: { sha?: string; tree?: string } | null };
     const served = m.web?.sha ?? '';
+    // a server that reports the app/ tree it serves: stale only when the web itself changed (a
+    // server-only deploy moves the sha, not the tree); otherwise compare commits
+    if (WEB_TREE && m.web?.tree) return { stale: m.web.tree !== WEB_TREE, served };
     return { stale: !!served && served !== WEB_SHA, served };
   } catch {
     return { stale: false, served: '' };
   }
 }
 
+/** A token's version for Contract: 8 base-36 characters of FNV-1a, enough to notice a change,
+ *  too few to recover anything. */
+function tokenVer(t: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(36).padStart(7, '0');
+}
+
+let baseBound = false, basePending = '';
+
 export const sources: Sources = {
   webVersion: () => webVersion(),
   parseLink: ([u, server, token]) => parseLink(u, server, token),
+  // SWITCHYARD_TOKEN_FILE (macOS, env only; src/hooks.ts): the token, once, through parseLink.
+  tokenFile: (_a, _store, _storage, native) => takeTokenFile(native, DEFAULT_SERVER, parseLink),
+  saveTokenFile: (_a, store: Store) => saveTokenFile(store, TOKEN),
+  tokenFileReport: (_a, _store, _storage, native) => tokenFileReport(native),
   updateState: (_a, _store, _storage, native) => updateState(native),
   updateDo: ([op], _store, _storage, native) => updateDo(op, native),
-  loadToken: (_a, store: Store) => {
+  // The token never leaves the data module: Contract sees whether one is saved and a version (a
+  // short hash that changes when the token does, so conn/feed re-ask). A resource's answer and
+  // its identifying arguments are kept on disk for the next launch (exact.kept), so a token there
+  // would sit in plain text beside the Keychain; the sources read it from the store themselves.
+  loadToken: (_a, store: Store, _storage, native) => {
     const t = store.get(TOKEN) ?? '';
-    return { token: t, has: t !== '' };
+    scrubKept(native, t); // older builds' kept answers holding this token: deleted (macOS)
+    return { ver: t ? tokenVer(t) : '', has: t !== '' };
   },
   saveToken: ([token, set], store: Store) => {
     if (set) store.set(TOKEN, token);
     return { ok: true, status: set ? 'saved' : 'kept' };
   },
-  connect: ([server, token, _gen, epoch0, offset]) => {
+  connect: async ([server, _ver, _gen, epoch0, offset], store: Store) => {
+    const token = store.get(TOKEN) ?? '';
     yard.offsetMin = offset;
-    return connect(server, token, epoch0);
+    const mine = ++connects;
+    const c = await connect(server, token, epoch0);
+    // A connect with SWITCHYARD_TOKEN_FILE's token, when no newer one started meanwhile (an
+    // older one's answer is let go): how it went, for tokenFileReport to log.
+    if (token && mine === connects) connectedWith(token, server === 'demo' ? '' : resolveBase(server), c.ok, c.error || c.status);
+    return c;
   },
-  liveFeed: ([server, token, seq, _gen, ok]) => liveFeed(server, token, seq, ok),
+  liveFeed: ([server, _ver, seq, _gen, ok], store: Store) => liveFeed(server, store.get(TOKEN) ?? '', seq, ok),
   overview: ([t]) => { if (t > 0) advance(t); return safe('overview', EMPTY_OV, overview); },
   timeControl: async ([what, speed]) => {
     if (what === 'pause') tl.pause();
@@ -394,7 +427,12 @@ export const sources: Sources = {
     return h ? { kind: h.kind, id: h.id, label: h.label, route: '' } : { kind: '', id: '', label: '', route: '' };
   },
   facPointer: ([kind, x, y, buttons]) => {
+    // fab-w4: any input skips the coffee check's replay; S replays it, W cycles its window
+    factory.coffee.input(String(kind), clock);
+    const ck = String(kind).startsWith('key:') ? factory.coffee.key(String(kind).slice(4), clock) : null;
+    if (ck) return { kind: ck.kind, id: ck.id, label: ck.label, route: `${factory.cam.key}|${factory.selected}|${factory.coffee.win}` };
     const h = factory.pointer(String(kind), Number(x), Number(y), Number(buttons) || 0, clock);
+    if (kind === 'up') factory.coffee.click(h, clock); // fab-w4: the "since" chip and its menu
     // the HUD's buttons are floor hits too
     if (kind === 'up' && h?.kind === 'stress') setStress(!stressOn);
     else if (kind === 'up' && h?.kind === 'quality') factory.budget.pinned = factory.budget.pinned >= 4 ? -1 : factory.budget.pinned + 1;
@@ -406,10 +444,17 @@ export const sources: Sources = {
       if (cm) void cached(`j:${cm.repo}@${cm.sha}`, () => up!.journey(cm.repo, cm.sha)).then((j) => { if (factory.journeyFor === sel) factory.journey = j; }, () => {});
     }
     factory.offsetMin = yard.offsetMin;
-    return { kind: h?.kind ?? '', id: h?.id ?? '', label: h?.label ?? '', route: `${factory.cam.key}|${factory.selected}` };
+    return { kind: h?.kind ?? '', id: h?.id ?? '', label: h?.label ?? '', route: `${factory.cam.key}|${factory.selected}|${factory.coffee.win}${factory.coffee.menu ? '+' : ''}` };
   },
   // fab-lens: the coffee check's last visit per server (src/factory/coffee.ts), kept by Contract
-  coffeeOpen: ([server, visits, _seq, ok]) => ({ ok: !!ok, status: safe('coffeeOpen', '', () => factory.coffee.open(String(server ?? ''), String(visits ?? ''), !!ok)) }),
+  coffeeOpen: ([server, visits, _seq, ok]) => ({ ok: !!ok, status: safe('coffeeOpen', '', () => factory.coffee.open(String(server ?? ''), String(visits ?? ''), !!ok, clock)) }),
+  // the hourly baseline ring (agg/baseline.ts): bound once to Contract's persisted facBase; its
+  // saves wait in `basePending` until the next visit mark hands them to Contract
+  baselineBind: ([s]) => {
+    if (!baseBound) { baseBound = true; safe('baselineBind', 0, () => { bindBaselineStore({ load: () => String(s ?? ''), save: (v) => { basePending = v; } }); return 0; }); }
+    return { ok: true, status: '' };
+  },
+  baselineSave: () => { const v = basePending; basePending = ''; return { ok: v !== '', status: v }; },
   coffeeMark: ([server, visits]) => {
     const v = safe('coffeeMark', '', () => factory.coffee.mark(String(server ?? ''), String(visits ?? '')));
     return { ok: v !== '', status: v };
@@ -452,7 +497,7 @@ export const sources: Sources = {
   viewOnTop: ([here]) => { topView = String(here ?? ''); return { ok: true, status: topView }; },
   tableKey: ([table, key]) => safe('tableKey', NO_HIT, () => tableKey(table, key)),
   fleet: () => safe('fleet', EMPTY_FLEET, () => ({ ...fleet(tl.world, tl.playhead), loadTick: engineHist.ver })),
-  journey: async ([_s, _tok, repo, sha, t]) => {
+  journey: async ([_s, _ver, repo, sha, t]) => {
     if (t > 0) advance(t);
     if (!repo || !sha) return journeyView(null, tl.playhead, ' ');
     try {
@@ -462,7 +507,7 @@ export const sources: Sources = {
       return journeyView(null, tl.playhead, String((e as Error)?.message ?? e));
     }
   },
-  prDetail: async ([_s, _tok, repo, number, t]) => {
+  prDetail: async ([_s, _ver, repo, number, t]) => {
     if (t > 0) advance(t);
     if (!repo) return prDetailView(null, tl.playhead, tl.world);
     try {

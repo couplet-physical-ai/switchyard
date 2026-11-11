@@ -49,6 +49,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Release shell lint (bash -n + empty arrays under set -u)
+        run: python3 scripts/ci/check_release_shell.py
       - name: Version
         id: v
         run: |
@@ -155,7 +157,7 @@ jobs:
             # .github/workflows differ from the default branch's (GITHUB_TOKEN may not create refs
             # that change workflows): then push the tag yourself and publish from the artifact.
             gh release create "v$V" dist/*.zip dist/*.dmg dist/SHA256SUMS dist/latest.json --target "$GITHUB_SHA" \
-              --title "Switchyard $V" --notes-file "$RUNNER_TEMP/notes.md" "${pre[@]}" || {
+              --title "Switchyard $V" --notes-file "$RUNNER_TEMP/notes.md" ${pre[@]+"${pre[@]}"} || {
               echo "::error::release create refused. Publish from this run's artifact: gh run download $GITHUB_RUN_ID -n switchyard-$V-$MODE && gh release create v$V <files> --target $GITHUB_SHA (scripts/release.sh pushes the tag first and never hits this)"
               exit 1; }
           fi

@@ -28,7 +28,7 @@ except the two singleton snapshot fields, which are `null` before their first va
 | `GET /api/v1/changes?since=<ms>[&until=<ms>]` | "since your last visit": `Changes` — what turned red, recovered, deployed, new failure clusters, PRs, counts; up to 7 days back. |
 | `GET /api/v1/app/{id}` | `AppHistory`: the app now, its last 10 deploys, its health transitions over 7 days. 404 if unknown. |
 | `GET /api/v1/engine/{id}/history` | `EngineHistory`: one engine (agent, Dagger host, runner pool) over 24 h at one-minute resolution, columnar; the repos it served in the last hour. 404 if unknown. |
-| `GET /api/v1/meta` | `{protocol, version, git_sha, mode: "live"\|"demo", epoch, seq, snapshot:{seq,at,bytes,gzip_bytes}, clients, adapters: AdapterStatus[], orgs, counts, process: {rss_bytes, peak_rss_bytes, threads}, now}` |
+| `GET /api/v1/meta` | `{protocol, version, git_sha, mode: "live"\|"demo", epoch, seq, snapshot:{seq,at,bytes,gzip_bytes}, clients, adapters: AdapterStatus[], orgs, counts, process: {rss_bytes, peak_rss_bytes, threads}, web, now}`. `web` (null without a web client): `{sha, tree?, files, shell_bytes, app_js_bytes}`, `sha` = the commit the served web build came from, `tree` = that commit's `app/` tree hash (`git rev-parse <sha>:app`, 40 hex): a deploy that changes only the server moves `sha`, never `tree`. |
 | `GET /api/healthz` | liveness `{ok:true}` (public). |
 | `GET /api/readyz` | `{ready, mode, seq, adapters: AdapterStatus[]}`; 200 when every enabled adapter has synced once, else 503. |
 | `GET /connect` | (browser, SSO) page that mints a device token for the macOS app. |

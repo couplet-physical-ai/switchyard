@@ -1,0 +1,16 @@
+// The test hooks (README "Test hooks", views/hooks.contract). They are env only, and a suite
+// cannot set the app's environment, so this holds the default: with no SWITCHYARD_TOKEN_FILE the
+// hook hands nothing over, connects nothing and stores nothing (the web has no module at all).
+// The hook with a file is proved outside the suite (README "Test hooks").
+
+test "with no SWITCHYARD_TOKEN_FILE the token-file hook does nothing"
+  clock data
+  clock settle
+  expect state tfNow.ok == false
+  expect state tfNow.server == ""
+  expect state tfUsed == false
+  expect state tfReported == false
+  expect state tfr.ok == false
+  expect state server == ""
+  expect state tok.has == false
+  expect tree has "setup-demo"
