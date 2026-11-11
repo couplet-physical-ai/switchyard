@@ -20,8 +20,8 @@ import type { Upstream } from './api.ts';
 import { EngineHistory, STEP } from './enginehist.ts';
 import { Timeline } from './timeline.ts';
 import type {
-  App, ChangeCounts, Changes, CiState, Cluster, Deploy, DeployRef, DeployState, DeployVia, Engine, Flake, Group, Health, Insights as InsightsDoc,
-  Metric, Pipeline, Pr, Repo, Trend,
+  App, AppDetail, ChangeCounts, Changes, CiState, Cluster, Deploy, DeployRef, DeployState, DeployVia, Engine, EngineHistoryDoc, Flake, Group, Health,
+  Insights as InsightsDoc, Metric, Pipeline, Pr, Repo, Trend,
 } from './wire.ts';
 import type { HealthChange, World } from './world.ts';
 
@@ -484,6 +484,41 @@ export class Insights {
     };
   }
 
+  // ── H6 / H7 from the server (73ef168), else the client seams above ──
+
+  private appHist = new Map<string, { at: number; epoch: number; v: Promise<AppHistoryResult | null> }>();
+  private engHist = new Map<string, { at: number; epoch: number; v: Promise<EngineHistoryResult | null> }>();
+
+  /** H7 from the server: `GET /api/v1/app/{id}` (its last ≤ 10 deploys, 7 d of health, time per
+   *  state), `source: 'server'`. Where the server has none (404, the demo, an error) the client
+   *  seam `appHistory(id)` in the same shape, `source: 'client'`, `complete: false`. Cached per id
+   *  for 60 s of the module clock (one fetch in flight per id); null for an app nobody knows. */
+  appHistoryAsync(id: string): Promise<AppHistoryResult | null> {
+    return cached(this.appHist, id, this.tl, async () => {
+      const up = this.upstream();
+      if (up?.appHistory) {
+        try { const r = await up.appHistory(id); if (r && typeof r === 'object' && Array.isArray(r.deploys)) return { ...r, source: 'server' as const }; } catch { /* the client seam answers */ }
+      }
+      const v = this.appHistory(id);
+      return v ? appDetailOf(v, this.world) : null;
+    });
+  }
+
+  /** H6 from the server: `GET /api/v1/engine/{id}/history` (24 h, one sample a minute, columnar,
+   *  `source: 'server'`). Where the server has none: the client seam `engineHistory(id)` as the
+   *  same columns at its 5 min occupancy resolution (≈ 2 h; cpu/mem/load only in the newest
+   *  bucket, from the samples since the app opened), `source: 'client'`. Cached 60 s per id. */
+  engineHistoryAsync(id: string): Promise<EngineHistoryResult | null> {
+    return cached(this.engHist, id, this.tl, async () => {
+      const up = this.upstream();
+      if (up?.engineHistory) {
+        try { const r = await up.engineHistory(id); if (r && typeof r === 'object' && Array.isArray(r.busy)) return { ...r, source: 'server' as const }; } catch { /* the client seam answers */ }
+      }
+      const v = this.engineHistory(id);
+      return v ? engineDocOf(v, this.world) : null;
+    });
+  }
+
   // ── the v0.4 approximations, in slices ──
 
   /** Advances the approximations by one slice (v0.4 only): restarts a job when what it reads
@@ -890,6 +925,56 @@ function redStart(r: Repo | undefined, at: number): number {
   return start;
 }
 
+/** The server's H7 answer, or the client seam's in its shape. */
+export type AppHistoryResult = AppDetail & { source: 'server' | 'client' };
+/** The server's H6 answer, or the client seam's in its shape. */
+export type EngineHistoryResult = EngineHistoryDoc & { source: 'server' | 'client' };
+
+/** Fetch TTL per id (module-clock ms). */
+const HIST_TTL = 60_000;
+
+/** One promise per id, kept `HIST_TTL` of the module clock (and only for this timeline epoch);
+ *  a failed fetch is forgotten at once. At most 64 ids are kept. */
+function cached<T>(m: Map<string, { at: number; epoch: number; v: Promise<T> }>, id: string, tl: Timeline, f: () => Promise<T>): Promise<T> {
+  const hit = m.get(id);
+  if (hit && hit.epoch === tl.epoch && tl.clock - hit.at < HIST_TTL && tl.clock >= hit.at) return hit.v;
+  const v = f();
+  m.set(id, { at: tl.clock, epoch: tl.epoch, v });
+  v.catch(() => { if (m.get(id)?.v === v) m.delete(id); });
+  if (m.size > 64) { const first = m.keys().next().value; if (first !== undefined && first !== id) m.delete(first); }
+  return v;
+}
+
+/** The client seam's H7 view in the server's shape. */
+function appDetailOf(v: AppHistoryView, w: World): AppHistoryResult {
+  const health = v.transitions.map((t) => ({ from: t.from, to: t.to, at: t.at })).reverse();
+  const ms: Partial<Record<Health, number>> = {};
+  let t = w.at, state: Health = v.health;
+  for (const h of health) { ms[state] = (ms[state] ?? 0) + Math.max(0, t - Math.max(h.at, v.since)); t = h.at; state = h.from; if (t <= v.since) break; }
+  if (t > v.since) ms[state] = (ms[state] ?? 0) + (t - v.since);
+  return {
+    id: v.id, app: w.apps.get(v.id) ?? null, source: 'client', complete: false, since: v.since, health, health_ms: ms,
+    deploys: v.deploys.slice(0, 10).map((d) => ({
+      sha: d.sha, via: d.via, state: d.state, started: d.at, at: d.finished ?? d.at,
+      ...(d.finished ? { finished: d.finished, duration_ms: Math.max(0, d.finished - d.at) } : {}),
+    })),
+  };
+}
+
+/** The client seam's H6 view in the server's columns (5 min buckets over ≈ 2 h). */
+function engineDocOf(v: EngineHistoryView, w: World): EngineHistoryResult {
+  const e = w.engines.get(v.id);
+  const n = v.occupancy.length;
+  const mean = (xs: number[]) => { const ys = xs.filter((x) => Number.isFinite(x)); return ys.length ? Math.round((ys.reduce((a, b) => a + b, 0) / ys.length) * 10) / 10 : null; };
+  const col = (last: number | null) => Array.from({ length: n }, (_, i) => (i === n - 1 ? last : null));
+  return {
+    id: v.id, kind: e?.kind ?? 'wp_agent', ...(e?.host ? { host: e.host } : {}), from: v.from, step_ms: v.res, n, source: 'client',
+    busy: v.occupancy.slice(), slots: new Array<number | null>(n).fill(v.slots),
+    cpu: col(mean(v.cpu)), mem: col(mean(v.mem)), load: col(mean(v.load)),
+    repos: v.served.map((s) => ({ repo: s.repo, runs: s.jobs })),
+  };
+}
+
 async function yieldTurn(): Promise<void> {
   const s = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
   if (s?.yield) await s.yield();
@@ -921,3 +1006,7 @@ export const changesSince = (ms: number, until?: number): Promise<Changes> => in
 export const engineHistory = (id: string): EngineHistoryView | null => insights().engineHistory(id);
 export const appHistory = (id: string): AppHistoryView | null => insights().appHistory(id);
 export const insightsVer = (table: Table): number => insights().ver(table);
+/** H7 from the server's `/api/v1/app/{id}` (60 s cache), else the client seam in its shape. */
+export const appHistoryAsync = (id: string): Promise<AppHistoryResult | null> => insights().appHistoryAsync(id);
+/** H6 from the server's `/api/v1/engine/{id}/history` (60 s cache), else the client seam in its shape. */
+export const engineHistoryAsync = (id: string): Promise<EngineHistoryResult | null> => insights().engineHistoryAsync(id);
