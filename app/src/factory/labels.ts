@@ -31,7 +31,7 @@ import { MONO, SMALL, TITLE, dur, runningStep } from './prims.ts';
 import type { Bay, Block, HitBox, Label, Layer, LiveFrame } from './types.ts';
 
 const {
-  DOCK_U0, ROW_U, GATE_U, RAIL_U0, RAIL_U1, INTAKE_U0, INTAKE_U1, YARD_U0,
+  DOCK_U0, ROW_U, GATE_U, RAIL_U0, RAIL_U1, INTAKE_U0, YARD_U0,
   ENG_U0, ENG_U1, ENG_V0, ENG_STEP, ENG_DV, ENG_H, SCAN_U, TRACK_V, CITY_U0, CITY_V0, VIAS,
 } = PLAN;
 
@@ -62,8 +62,8 @@ const TITLE_ROW: { n: string; parts: [string, string][]; at?: [number, number, n
   { n: '02', parts: [['pr yard', '02']] },
   { n: '03', parts: [['merge gate', '03']], at: [GATE_U + 3, LANE_V0, 24] },
   { n: '04', parts: [['main lines', '04']] },
-  { n: '05', parts: [['intake', '05']], at: [INTAKE_U1, 252, 8] },
-  { n: '06', parts: [['consumption engine', '06']], at: [ENG_U0 + 10, ENG_V0, ENG_H] },
+  { n: '05', parts: [['intake', '05']] },
+  { n: '06', parts: [['consumption engine', '06']], at: [ENG_U1 - 40, ENG_V0, ENG_H] },
   { n: '07', parts: [['tests', '07'], ['· deploy', '08']] },
   { n: '09', parts: [['apps', '09']] },
 ];

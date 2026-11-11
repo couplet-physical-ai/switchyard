@@ -4,10 +4,11 @@
 //
 //   the back wall    one board per stage along v = 0 (bars on a base rule, no plate): sources
 //                    (pushes), pr yard (PRs opened, the CI-failing part red), main lines (commits
-//                    landed, the failed part red), tests · deploy (one butterfly: runs up, their
+//                    landed, the failed part red), intake (the wait for a slot, p50, an hour; it
+//                    stands behind the engine, whose own board is cut: its machine walls carry its
+//                    tide), tests · deploy (one butterfly: runs up, their
 //                    failures red; deploys down), apps (deploys by the team they landed on, in its
-//                    hue). The right two stand tall, into the top-right band. The engine has no
-//                    board (its machine walls carry its tide). Every board carries YESTERDAY's same
+//                    hue). The right three stand tall, into the top band. Every board carries YESTERDAY's same
 //                    hours dashed (the persisted hourly ring, agg/baseline.ts); while the ring has
 //                    no yesterday, the 7-d typical hour, flat; and hours nobody recorded are a
 //                    dotted base, never a box.
@@ -43,7 +44,7 @@ import { F, poly } from './prims.ts';
 import { failuresOf, threshold, trendOfLane } from './trendmarks.ts';
 import type { FloorPass, HitBox, Layer, LiveFrame } from './types.ts';
 
-const { DOCK_U0, YARD_U0, YARD_U1, GATE_U, RAIL_U1, ENG_U1, TRACK_U1, CITY_U0, CITY_U1 } = PLAN;
+const { DOCK_U0, YARD_U0, YARD_U1, GATE_U, RAIL_U1, INTAKE_U0, ENG_U1, TRACK_U1, CITY_U0, CITY_U1 } = PLAN;
 const HOUR = 3_600_000;
 /** A failure before the current hour: a muted, darker red (red itself means failing now). */
 const RUST = '#8E5A5C';
@@ -51,7 +52,7 @@ type Series = (number | null)[];
 type Pt = [number, number];
 
 /** A back-wall board: its stage, title, span along the wall (u) and height (z0 → z1). */
-export type Board = { id: 'pushes' | 'opened' | 'landed' | 'tests' | 'apps'; stage: string; title: string; u0: number; u1: number; z0: number; z1: number };
+export type Board = { id: 'pushes' | 'opened' | 'landed' | 'intake' | 'tests' | 'apps'; stage: string; title: string; u0: number; u1: number; z0: number; z1: number };
 
 /** The boards, left → right. Each is as tall as the band over it allows (the titles' row stays
  *  clear: labels.ts `titleRow`); the apps board stands over the city's back row. */
@@ -59,6 +60,7 @@ export const BOARDS: readonly Board[] = [
   { id: 'pushes', stage: '01', title: 'sources', u0: DOCK_U0, u1: YARD_U0 - 8, z0: 4, z1: 60 },
   { id: 'opened', stage: '02', title: 'pr yard', u0: YARD_U0, u1: YARD_U1, z0: 4, z1: 82 },
   { id: 'landed', stage: '04', title: 'main lines', u0: GATE_U + 12, u1: RAIL_U1 - 12, z0: 4, z1: 122 },
+  { id: 'intake', stage: '05', title: 'intake', u0: INTAKE_U0 - 14, u1: ENG_U1 - 72, z0: 10, z1: 176 },
   { id: 'tests', stage: '07', title: 'tests · deploy', u0: ENG_U1 + 14, u1: TRACK_U1, z0: 6, z1: 244 },
   { id: 'apps', stage: '09', title: 'apps', u0: CITY_U0 + 4, u1: CITY_U1 - 4, z0: 30, z1: 272 },
 ];
@@ -102,6 +104,10 @@ type BoardData = {
   /** yesterday's same hours (null: none), else a flat typical; for the deploys too */
   ghost: Series | null; flat: number | null; dGhost?: Series | null; dFlat?: number | null;
   mx: number; dmx: number;
+  /** intake: the wait above which an hour is worse than usual (s), null when unknown */
+  over?: number | null;
+  /** how a series was approximated (hover), '' when it was not */
+  note?: string;
 };
 
 export class Front implements Layer {
@@ -159,27 +165,30 @@ export class Front implements Layer {
       b.seed('fleet', 'opened', Array.from(W.opened), cnt.at);
       b.seed('fleet', 'landed', Array.from(W.landed), cnt.at);
       b.seed('fleet', 'deploys', dep, cnt.at);
+      if (ft) b.seed('fleet', 'intake_s', ft.intake_ms.spark.map((x) => (x === null ? null : x / 1000)), cnt.at);
     }
     b.record('fleet', 'opened', cnt.at, W.opened[23]);
     b.record('fleet', 'landed', cnt.at, W.landed[23]);
     b.record('fleet', 'deploys', cnt.at, ft ? ft.deploys.h1 : W.deploys[23]);
+    if (ft?.intake_ms.h1 !== null && ft?.intake_ms.h1 !== undefined) b.record('fleet', 'intake_s', cnt.at, ft.intake_ms.h1 / 1000);
   }
 
   /** Each hued lane's road (a fan from the docks) and curb (a row along the front strip). */
   private laneEdges(cov: number): LaneEdge[] {
     const fl = this.f.floor, G = floorGroups(), cnt = fl.data.last;
     const geo = fl.lanesNow.filter((L) => L.kind !== 'bots');
-    const n = geo.length;
+    const n = geo.length, v05 = this.f.world.v05;
     const out = geo.map((L, i): LaneEdge => {
       const info = cnt.lanes.get(L.id);
       const t = trendOfLane(G.lane(L.id) ?? { id: L.id, kind: 'bots', members: [] } as never);
       // the road's volume: its pushes when the world holds the day, else its runs (the trend's)
-      const runs = full(t?.pipelines.spark);
+      // (a trend's day only from a v0.5 server: v0.4's approximations hold the last ~2 h)
+      const runs = v05 ? full(t?.pipelines.spark) : null;
       const push: Series = info ? Array.from(info.push24, (x, k) => (k < cov ? null : x)) : new Array<number | null>(24).fill(null);
       const [vol, volWhat] = cov > 4 && runs ? [runs, 'runs'] : [push, 'pushes'];
       // failures an hour: the lane's trend (runs × fail rate), else its main lines' failed commits
       const fm: Metric | null = t ? failuresOf(t) : null;
-      const fs = full(fm?.spark);
+      const fs = v05 ? full(fm?.spark) : null;
       const fail = Array.from({ length: 24 }, (_, k) => Math.max(0, (fs ? fs[k] : info?.fail24[k]) ?? 0));
       const [thr, thrWhy] = laneThreshold(fm, L.id, fail, cnt.at);
       // the road: the stub along the lane, then the fan (kept off the slab and the curbs, and on
@@ -215,7 +224,7 @@ export class Front implements Layer {
   private board(b: Board, cov: number): BoardData {
     const cnt = this.f.floor.data.last, W = cnt.wall, ins = insights(), G = floorGroups();
     const A = (x: Int16Array, from = 0): Series => Array.from(x, (v, k) => (k < from ? null : v));
-    const ft = ins.trend('fleet');
+    const ft = ins.trend('fleet'), v05 = this.f.world.v05;
     const typ = (m: Metric | undefined) => (ft && m && m.d7 !== null && ft.hours_7d >= 24 ? m.d7 : null);
     const out: BoardData = { b, up: [], upBad: null, upWhat: '', ghost: null, flat: null, mx: 1, dmx: 1 };
     const ghost = (metric: BaseMetric, t: number | null): [Series | null, number | null] => {
@@ -226,10 +235,29 @@ export class Front implements Layer {
       case 'pushes': out.up = A(W.pushes, cov); out.upWhat = 'pushes'; [out.ghost, out.flat] = ghost('pushes', null); break;
       case 'opened': out.up = A(W.opened); out.upBad = A(W.openedRed); out.upWhat = 'PRs opened'; [out.ghost, out.flat] = ghost('opened', null); break;
       case 'landed': out.up = A(W.landed); out.upBad = A(W.landedRed); out.upWhat = 'commits landed'; [out.ghost, out.flat] = ghost('landed', null); break;
+      case 'intake': {
+        // the wait for a slot (p50, seconds) an hour: the trend's (v0.5: the server's day)
+        // (v0.4: the approximation covers the held runs only, ~2 h: before them, no record)
+        const sp = ft?.intake_ms.spark ?? [], from = v05 ? 0 : this.runsFrom(cnt.at)[0];
+        out.up = Array.from({ length: 24 }, (_, k) => { const v = sp.length === 24 && k >= from ? sp[k] : null; return v === null || v === undefined ? null : Math.round(v / 100) / 10; });
+        out.upWhat = 'wait (s, p50)';
+        // worse than usual: over the ring's same-hour p90, else over the day's own p90 (and
+        // 1.25 × the typical hour): a diurnal peak is not an anomaly
+        const ring = baseline().p90('fleet', 'intake_s', cnt.at);
+        const day = (out.up.filter((x) => x !== null) as number[]).sort((a, b) => a - b);
+        const typ = ft ? threshold(ft.intake_ms, 'fleet', 'intake_ms', cnt.at) : null;
+        out.over = ring ?? (day.length >= 6 ? Math.max(day[Math.round(0.9 * (day.length - 1))]!, typ === null ? 0 : typ / 1000) : null);
+        [out.ghost, out.flat] = ghost('intake_s', ft && ft.intake_ms.d7 !== null && ft.hours_7d >= 24 ? Math.round(ft.intake_ms.d7 / 100) / 10 : null);
+        break;
+      }
       case 'tests': {
-        // the server's day (the trend's sparks) when it has one: the world holds ~2 h of runs
-        const runs = full(ft?.pipelines.spark), fails = ft ? full(failuresOf(ft).spark) : null, deps = full(ft?.deploys.spark);
-        out.up = runs ?? A(W.runs); out.upBad = runs ? fails : A(W.runsRed); out.upWhat = 'runs';
+        // the server's day (the trend's sparks) when it has one; else the held runs (a v0.4 world
+        // keeps ~2 h of them) and, before the oldest, one run per commit by its CI (as insights'
+        // "since" approximation counts them)
+        const runs = v05 ? full(ft?.pipelines.spark) : null, fails = ft ? full(failuresOf(ft).spark) : null, deps = v05 ? full(ft?.deploys.spark) : null;
+        if (runs) { out.up = runs; out.upBad = fails; }
+        else { [out.up, out.upBad] = this.runsOfWorld(cnt.at); if (this.runsFrom(cnt.at)[0] > 0) out.note = 'older hours: a run per commit, by its CI'; }
+        out.upWhat = 'runs';
         out.down = deps ?? A(W.deploys); out.downBad = A(W.deploysRed);
         [out.ghost, out.flat] = ghost('pipelines', typ(ft?.pipelines));
         [out.dGhost, out.dFlat] = ghost('deploys', typ(ft?.deploys));
@@ -261,6 +289,33 @@ export class Front implements Layer {
     out.mx = mxOf(out.up, out.ghost, out.flat ?? 0);
     if (out.down) out.dmx = mxOf(out.down, out.dGhost, out.dFlat ?? 0);
     return out;
+  }
+
+  /** Runs and failed runs an hour from the world: the held runs (finished), and before the
+   *  oldest of them one per commit's pipeline by its combined CI (null where neither covers). */
+  /** Where the world's held runs start: the hour slot and time of their 5th percentile (a few
+   *  old ones linger past the rest). */
+  private runsFrom(at: number): [number, number] {
+    const cr: number[] = [];
+    for (const p of this.f.world.pipelines.values()) cr.push(p.created);
+    cr.sort((a, b) => a - b);
+    const oldest = cr.length ? cr[Math.floor(cr.length * 0.05)]! : at;
+    return [oldest <= at - 23 * HOUR ? 0 : clamp(23 - Math.floor((at - oldest) / HOUR), 0, 23), oldest];
+  }
+
+  private runsOfWorld(at: number): [Series, Series] {
+    const w = this.f.world, W = this.f.floor.data.last.wall;
+    const [from, oldest] = this.runsFrom(at);
+    const up: Series = Array.from(W.runs, (v, k) => (k < from ? null : v)), bad: Series = Array.from(W.runsRed, (v, k) => (k < from ? null : v));
+    if (!from) return [up, bad];
+    for (const c of w.commits.values()) {
+      if (c.at >= oldest || c.at <= at - 24 * HOUR || c.ci === 'pending' || c.ci === 'running' || c.ci === 'none' || c.ci === 'skipped') continue;
+      const k = 23 - Math.min(23, Math.floor((at - c.at) / HOUR));
+      if (k >= from) continue;
+      up[k] = (up[k] ?? 0) + Math.max(1, c.pipelines?.length ?? 1);
+      if (c.ci === 'failure' || c.ci === 'error') bad[k] = (bad[k] ?? 0) + 1;
+    }
+    return [up, bad];
   }
 
   // ---- the static floor ----------------------------------------------------------------------
@@ -299,7 +354,7 @@ export class Front implements Layer {
       if (dash) g.dash(false);
     };
     rule(solid, '#46464B', false);
-    rule(dotted, withAlpha('#9A9AA0', 0.55), true);
+    rule(dotted, withAlpha('#A4A4AA', 0.8), true);
     const bars = (path: number[], u: number, za: number, zb: number) => { if (Math.abs(zb - za) > 0.2) path.push(u, za, zb); };
     const flush = (path: number[], col: string) => {
       if (!path.length) return;
@@ -319,6 +374,12 @@ export class Front implements Layer {
       const u = uAt(k), n = d.up[k] ?? 0;
       if (n > 0) {
         const h = sc(n, d.mx, H), r = d.upBad ? Math.min(h, h * ((d.upBad[k] ?? 0) / n)) : 0;
+        if (d.over !== undefined) {
+          // intake: the wait, gray; an hour worse than usual rust (red in the current hour)
+          const bad = d.over !== null && n > d.over;
+          bars(bad ? (k === 23 ? red : rust) : gray, u, zBase, zBase + h);
+          continue;
+        }
         if (d.stack) {
           let z = zBase;
           d.stack.forEach((s, j) => { const m = s.n[k] ?? 0; if (m <= 0) return; const dz = ((h - r) * m) / n; bars(hue[j]!, u, z, z + dz); z += dz; });
@@ -542,7 +603,8 @@ export class Front implements Layer {
       case 'pushes': return ['sources · pushes an hour', `${num(sum(d.up))} in 24 h${d.up.some((x) => x === null) ? ' (recorded hours)' : ''} · this hour ${now(d.up)}`, why];
       case 'opened': return ['pr yard · PRs opened an hour', `${num(sum(d.up))} opened · ${num(sum(d.upBad))} failing CI (red)`, why];
       case 'landed': return ['main lines · commits landed an hour', `${num(sum(d.up))} landed · ${num(sum(d.upBad))} failed (red)`, why];
-      case 'tests': return ['tests ↑ runs · deploy ↓ deploys, an hour', `${num(sum(d.up))} runs, ${num(sum(d.upBad))} failed · ${num(sum(d.down))} deploys`, why];
+      case 'intake': return ['intake · the wait for a slot (p50), an hour', `now ${d.up[23] ?? '—'} s · worst ${Math.max(0, ...d.up.map((x) => x ?? 0))} s${d.over !== null && d.over !== undefined ? ` · usual ≤ ${Math.round(d.over)} s` : ''}`, d.up.some((x) => x === null) ? `${d.up.filter((x) => x === null).length} h not on record (dotted) · ${why}` : why];
+      case 'tests': return ['tests ↑ runs · deploy ↓ deploys, an hour', `${num(sum(d.up))} runs, ${num(sum(d.upBad))} failed · ${num(sum(d.down))} deploys`, d.note && !d.ghost && d.flat === null ? d.note : why];
       case 'apps': return ['apps · deploys an hour, by team', `${num(sum(d.up))} deploys · ${d.stack?.length ?? 0} teams${sum(d.upBad) ? ` · ${num(sum(d.upBad))} failed (red)` : ''}`, why];
     }
   }
