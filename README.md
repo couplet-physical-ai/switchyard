@@ -14,19 +14,15 @@ macOS app and a web app, fed by one Rust server that keeps the fleet in memory a
 brew tap couplet-physical-ai/tap && brew trust couplet-physical-ai/tap && brew install --cask switchyard && open -a Switchyard
 ```
 
-<!--
-  Screenshot slots (files under packaging/screenshots/, 2880x1800 PNG, dark):
-  yard-macos.png (hero), yard-web.png, mainlines.png, prs.png, journey.png.
-  Uncomment the block below once the files are committed.
-
 <p align="center">
-  <img src="packaging/screenshots/yard-macos.png" alt="The Yard on macOS: commits as packets travelling from push through CI lanes and gates to deploys and app health" width="100%">
+  <img src="packaging/screenshots/yard-macos.png" alt="The Yard on macOS: commits as packets travelling from sources through intake, Roadrunner engines and gates to main lines, deploys and app health" width="100%">
 </p>
 
-| Mainlines | PRs | Commit journey | Web |
-|---|---|---|---|
-| <img src="packaging/screenshots/mainlines.png" alt="Every repo's main branch as a line of commit dots" width="220"> | <img src="packaging/screenshots/prs.png" alt="Every open PR and the step it is stuck on" width="220"> | <img src="packaging/screenshots/journey.png" alt="One commit from push to deploy to health" width="220"> | <img src="packaging/screenshots/yard-web.png" alt="The Yard in a browser" width="220"> |
--->
+| Main lines | PRs |
+|---|---|
+| <img src="packaging/screenshots/mainlines.png" alt="Every repo's main branch as a line of commit dots, red first, culprits labelled" width="420"> | <img src="packaging/screenshots/prs.png" alt="Every open PR and the step it is waiting on" width="420"> |
+
+<sub>The macOS app on the built-in demo fleet. Screenshots: <code>packaging/screenshots/</code>.</sub>
 
 ## What's here
 
@@ -37,8 +33,8 @@ brew tap couplet-physical-ai/tap && brew trust couplet-physical-ai/tap && brew i
 
 ## Install
 
-- **macOS** (Apple Silicon, macOS 14+): the one-liner above. Update with
-  `brew update && brew upgrade --cask switchyard`.
+- **macOS** (Apple Silicon, macOS 14+): the one-liner above. It updates itself: **Update** in the
+  app (or `brew upgrade --cask --greedy switchyard`).
 - **Web**: <https://switchyard.apps.example.com> (Exowatt SSO).
 
 Details, the dmg route and troubleshooting: [packaging/INSTALL.md](packaging/INSTALL.md).

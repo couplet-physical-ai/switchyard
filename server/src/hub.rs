@@ -96,6 +96,33 @@ pub fn heartbeat(seq: u64, at: Ms) -> Bytes {
     Bytes::from(format!("{{\"t\":\"hb\",\"seq\":{seq},\"at\":{at}}}"))
 }
 
+/// Largest message the server sends on a stream (clients default to a 1 MiB ceiling).
+/// Bigger flushes become several frames; catch-up merges stop at this size.
+pub const MAX_MESSAGE: usize = 512 * 1024;
+
+/// Encode ops as the insides of JSON arrays, each at most [`MAX_MESSAGE`] bytes (one op
+/// larger than that goes alone). Ops keep their order across chunks.
+pub fn encode_ops_chunked(ops: &[OpOut]) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut cur: Vec<u8> = Vec::with_capacity(ops.len().min(512) * 256);
+    let mut one = Vec::new();
+    for op in ops {
+        one.clear();
+        op.write_json(&mut one);
+        if !cur.is_empty() && cur.len() + 1 + one.len() > MAX_MESSAGE - 128 {
+            out.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push(b',');
+        }
+        cur.extend_from_slice(&one);
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 /// Encode ops as the inside of a JSON array.
 pub fn encode_ops(ops: &[OpOut]) -> Vec<u8> {
     let mut v = Vec::with_capacity(ops.len() * 256);
@@ -148,6 +175,8 @@ pub struct Hub {
     pub clients: AtomicU64,
     pub frames_sent: AtomicU64,
     pub resets_sent: AtomicU64,
+    /// Booting: frames go to clients but not into history (see [`Hub::begin_settle`]).
+    settling: std::sync::atomic::AtomicBool,
 }
 
 impl Hub {
@@ -164,7 +193,35 @@ impl Hub {
             clients: AtomicU64::new(0),
             frames_sent: AtomicU64::new(0),
             resets_sent: AtomicU64::new(0),
+            settling: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// Start a boot: until [`Hub::end_settle`], frames and snapshots reach clients but
+    /// not history, so the fleet filling up from empty (megabytes of backfill) never
+    /// lands in `/history`.
+    pub fn begin_settle(&self) {
+        self.settling.store(true, Ordering::Release);
+    }
+
+    pub fn is_settling(&self) -> bool {
+        self.settling.load(Ordering::Acquire)
+    }
+
+    /// End the boot with the settled fleet: history records one restart (a reset marker
+    /// plus this snapshot, at the current seq), which `/history` sends as a delta holding
+    /// only what changed across the restart. Live clients see nothing.
+    pub fn end_settle(&self, s: Snapshot) {
+        let s = Arc::new(s);
+        self.history.append(&Arc::new(Frame::reset(s.seq, s.at)));
+        self.history.checkpoint(&s);
+        {
+            let mut cur = self.snapshot.write();
+            if s.seq >= cur.seq {
+                *cur = s.clone();
+            }
+        }
+        self.settling.store(false, Ordering::Release);
     }
 
     pub fn seq(&self) -> u64 {
@@ -190,14 +247,18 @@ impl Hub {
             }
             *cur = s.clone();
         }
-        self.history.checkpoint(&s);
+        if !self.is_settling() {
+            self.history.checkpoint(&s);
+        }
     }
 
     /// Replace the snapshot unconditionally (demo loops restart the timeline).
     pub fn force_snapshot(&self, s: Snapshot) {
         let s = Arc::new(s);
         *self.snapshot.write() = s.clone();
-        self.history.checkpoint(&s);
+        if !self.is_settling() {
+            self.history.checkpoint(&s);
+        }
     }
 
     /// Publish one delta frame of already-encoded ops. Returns its seq.
@@ -217,7 +278,9 @@ impl Hub {
     }
 
     fn push(&self, f: Arc<Frame>) {
-        self.history.append(&f);
+        if !self.is_settling() {
+            self.history.append(&f);
+        }
         {
             let mut r = self.ring.lock();
             if r.len() == self.ring_cap {

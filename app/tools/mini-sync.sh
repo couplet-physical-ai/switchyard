@@ -7,3 +7,6 @@ MINI_DIR=${MINI_DIR:-/Volumes/Farm/farm-exowatt/switchyard-client}
 cd "$(dirname "$0")/.."
 tar czf - --exclude=./target --exclude=./dist --exclude=./.exact --exclude=./node_modules --exclude=./screenshots . \
   | timeout 120 ssh -o BatchMode=yes -o ConnectTimeout=10 "$MINI" "mkdir -p '$MINI_DIR/app' && tar xzf - -C '$MINI_DIR/app'"
+# The recorded fixtures (contract/, read-only here) for tests/live-fixtures.test.contract.
+tar czf - -C .. contract/fixtures contract/CONTRACT.md \
+  | timeout 120 ssh -o BatchMode=yes -o ConnectTimeout=10 "$MINI" "tar xzf - -C '$MINI_DIR'"

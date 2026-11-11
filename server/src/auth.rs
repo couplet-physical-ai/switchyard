@@ -222,16 +222,7 @@ impl Auth {
         if let Some(t) = bearer.as_deref()
             && t.starts_with(SERVICE_PREFIX)
         {
-            let h = sha256_hex(t);
-            let hit = self
-                .service_tokens
-                .iter()
-                .find(|(_, want)| bool::from(h.as_bytes().ct_eq(want.as_bytes())));
-            return hit.map(|(name, _)| Principal {
-                email: format!("service:{name}"),
-                via: "service",
-                token_id: None,
-            });
+            return self.check_service(t);
         }
         // 4. A Google ID token sent directly (gcloud identity token on the VPN).
         if let (Some(t), Some(g)) = (bearer, &self.google)
@@ -244,6 +235,20 @@ impl Auth {
             });
         }
         None
+    }
+
+    /// A configured read-only service token (`sys_…`), compared by hash in constant time.
+    pub fn check_service(&self, t: &str) -> Option<Principal> {
+        let h = sha256_hex(t);
+        let hit = self
+            .service_tokens
+            .iter()
+            .find(|(_, want)| bool::from(h.as_bytes().ct_eq(want.as_bytes())));
+        hit.map(|(name, _)| Principal {
+            email: format!("service:{name}"),
+            via: "service",
+            token_id: None,
+        })
     }
 
     pub fn mint(&self, email: &str, name: &str, now: Ms) -> (String, TokenRec) {
@@ -326,7 +331,64 @@ struct TokenQ {
 pub async fn require(State(st): State<Arc<AppState>>, req: Request, next: Next) -> Response {
     let q: Option<TokenQ> = req.uri().query().and_then(serde_urlencoded_token);
     let now = (st.clock)();
-    match st.auth.authenticate(req.headers(), q.as_ref().and_then(|t| t.token.as_deref()), now).await {
+    match st
+        .auth
+        .authenticate(
+            req.headers(),
+            q.as_ref().and_then(|t| t.token.as_deref()),
+            now,
+        )
+        .await
+    {
+        Some(p) => {
+            let mut req = req;
+            req.extensions_mut().insert(p);
+            next.run(req).await
+        }
+        None => {
+            let kind = Auth::bearer(req.headers())
+                .or(q.and_then(|t| t.token))
+                .as_deref()
+                .map(token_kind)
+                .unwrap_or("none");
+            tracing::warn!(path = %req.uri().path(), token = kind, from = %client_ip(req.headers()), "auth refused");
+            (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "unauthorized", "message": "sign in through the browser, or send Authorization: Bearer <device token> (mint one at /connect)"})),
+        )
+            .into_response()
+        }
+    }
+}
+
+/// The stream for native clients that cannot set headers on a WebSocket
+/// (`/api/v1/tstream?token=syd_…`). The platform edge lets this path through without
+/// a session (`allow_paths_unauthenticated`), so it accepts ONLY our own tokens from
+/// the query (a device token or a read-only service token): no edge headers, no Google
+/// tokens.
+pub async fn require_query_token(
+    State(st): State<Arc<AppState>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    if st.auth.mode == AuthMode::Open {
+        return next.run(req).await;
+    }
+    let q: Option<TokenQ> = req.uri().query().and_then(serde_urlencoded_token);
+    let now = (st.clock)();
+    // Our own bearer tokens only (device `syd_…` or read-only service `sys_…`): never
+    // edge headers or Google tokens on this edge-exempt path.
+    let token = q.and_then(|t| t.token);
+    let kind = token.as_deref().map(token_kind).unwrap_or("none");
+    let who = match token.as_deref() {
+        Some(t) if t.starts_with(TOKEN_PREFIX) => st.auth.check_token(t, now),
+        Some(t) if t.starts_with(SERVICE_PREFIX) => st.auth.check_service(t),
+        _ => None,
+    };
+    if who.is_none() {
+        tracing::warn!(path = %req.uri().path(), token = kind, from = %client_ip(req.headers()), "stream auth refused");
+    }
+    match who {
         Some(p) => {
             let mut req = req;
             req.extensions_mut().insert(p);
@@ -334,10 +396,35 @@ pub async fn require(State(st): State<Arc<AppState>>, req: Request, next: Next) 
         }
         None => (
             StatusCode::UNAUTHORIZED,
-            Json(json!({"error": "unauthorized", "message": "sign in through the browser, or send Authorization: Bearer <device token> (mint one at /connect)"})),
+            Json(json!({"error": "unauthorized", "message": "this path needs ?token=<device or service token> (mint a device token at /connect)"})),
         )
             .into_response(),
     }
+}
+
+/// What kind of credential a token looks like (for logs; never the token itself).
+fn token_kind(t: &str) -> &'static str {
+    if t.starts_with(TOKEN_PREFIX) {
+        "device"
+    } else if t.starts_with(SERVICE_PREFIX) {
+        "service"
+    } else if t.starts_with("eyJ") {
+        "jwt"
+    } else if t.is_empty() {
+        "empty"
+    } else {
+        "unknown"
+    }
+}
+
+/// The caller's address as the edge forwards it (for logs).
+pub fn client_ip(h: &HeaderMap) -> String {
+    h.get("x-forwarded-for")
+        .or_else(|| h.get("x-real-ip"))
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(|v| v.trim().to_string())
+        .unwrap_or_else(|| "-".into())
 }
 
 /// `?token=` for clients that cannot set headers on a WebSocket (browsers).

@@ -23,7 +23,6 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc};
 use tower_http::compression::CompressionLayer;
-use tower_http::services::{ServeDir, ServeFile};
 
 use crate::auth::{self, Auth};
 use crate::hub::{Frame, FrameKind, Hub, heartbeat};
@@ -68,17 +67,25 @@ pub fn router(st: Arc<AppState>) -> Router {
         .route("/tokens", get(auth::list_tokens))
         .route("/tokens/{id}", axum::routing::delete(auth::revoke_token))
         .layer(middleware::from_fn_with_state(st.clone(), auth::require));
+    let tstream = Router::new()
+        .route("/tstream", get(stream_ws))
+        .route("/tstream/sse", get(stream_sse))
+        .layer(middleware::from_fn_with_state(
+            st.clone(),
+            auth::require_query_token,
+        ));
     let r = Router::new()
         .route("/api/healthz", get(healthz))
         .route("/api/readyz", get(readyz))
         .route("/connect", get(auth::connect_page))
         .route("/api/connect/mint", axum::routing::post(auth::mint))
-        .nest("/api/v1", v1);
+        .nest("/api/v1", v1.merge(tstream))
+        .route("/api", get(api_not_found))
+        .route("/api/{*rest}", get(api_not_found));
     let r = match &st.static_dir {
-        Some(dir) => {
-            let index = dir.join("index.html");
-            r.fallback_service(ServeDir::new(dir).fallback(ServeFile::new(index)))
-        }
+        Some(dir) => r
+            .fallback(web_file)
+            .layer(axum::Extension(WebDir(dir.clone()))),
         None => r.fallback(get(root)),
     };
     let open = st.auth.mode == crate::auth::AuthMode::Open;
@@ -90,6 +97,103 @@ pub fn router(st: Arc<AppState>) -> Router {
         r
     };
     r.with_state(st)
+}
+
+#[cfg(test)]
+mod web_tests {
+    use super::hashed_asset;
+
+    #[test]
+    fn hashed_assets() {
+        for h in [
+            "canvas2d-Lmh-ovnK.js",
+            "fragment-4yz_we-b.js",
+            "storage-environment-Cl6q2ZQ_.js",
+            "symbol-roles-B-ExGlrT.js",
+        ] {
+            assert!(hashed_asset(h), "{h}");
+        }
+        for n in [
+            "app.js",
+            "app.plan",
+            "shell.html",
+            "index.html",
+            "style.css",
+            "routes.json",
+            "manifest.json",
+            "ts-stream.js",
+        ] {
+            assert!(!hashed_asset(n), "{n}");
+        }
+    }
+}
+
+async fn api_not_found() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        axum::Json(json!({"error": "not_found"})),
+    )
+        .into_response()
+}
+
+#[derive(Clone)]
+struct WebDir(PathBuf);
+
+/// True for content-hashed build outputs (`canvas2d-Lmh-ovnK.js`: a `-` then an 8-char
+/// base64url hash before the extension): safe to cache forever.
+fn hashed_asset(name: &str) -> bool {
+    let stem = name
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(name)
+        .as_bytes();
+    stem.len() > 9
+        && stem[stem.len() - 9] == b'-'
+        && stem[stem.len() - 8..]
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-')
+        && stem[stem.len() - 8..]
+            .iter()
+            .any(|b| b.is_ascii_digit() || b.is_ascii_uppercase())
+}
+
+/// The web client: the file when it exists, else the SPA shell (`shell.html`, or
+/// `index.html`) with 200. Hashed assets are immutable; everything else revalidates.
+async fn web_file(
+    axum::Extension(WebDir(dir)): axum::Extension<WebDir>,
+    uri: axum::http::Uri,
+) -> Response {
+    let rel = uri.path().trim_start_matches('/');
+    let safe = !rel
+        .split('/')
+        .any(|seg| seg == ".." || seg.starts_with('.') && !seg.is_empty());
+    let mut path = dir.join(if rel.is_empty() { "index.html" } else { rel });
+    if !safe || !path.is_file() {
+        path = ["shell.html", "index.html"]
+            .iter()
+            .map(|f| dir.join(f))
+            .find(|p| p.is_file())
+            .unwrap_or(dir.join("index.html"));
+    }
+    let Ok(bytes) = tokio::fs::read(&path).await else {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    };
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let mime = mime_guess::from_path(&path).first_or_octet_stream();
+    let mut r = Response::new(Body::from(bytes));
+    let h = r.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(mime.as_ref()) {
+        h.insert(header::CONTENT_TYPE, v);
+    }
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(if hashed_asset(name) {
+            "public, max-age=31536000, immutable"
+        } else {
+            "no-cache"
+        }),
+    );
+    r
 }
 
 async fn root(State(st): State<Arc<AppState>>) -> Response {
@@ -119,6 +223,26 @@ async fn readyz(State(st): State<Arc<AppState>>) -> Response {
     (code, axum::Json(body)).into_response()
 }
 
+/// What `/` serves (so a token holder can check the web client without a browser
+/// session): the build's upstream sha (`.upstream-sha`), file count and the shell's size.
+fn web_info(dir: Option<&std::path::Path>) -> Value {
+    let Some(dir) = dir else { return Value::Null };
+    let files = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.filter_map(Result::ok)
+                .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+                .count()
+        })
+        .unwrap_or(0);
+    let size = |f: &str| std::fs::metadata(dir.join(f)).map(|m| m.len()).ok();
+    json!({
+        "sha": std::fs::read_to_string(dir.join(".upstream-sha")).ok().map(|s| s.trim().to_string()),
+        "files": files,
+        "shell_bytes": size("shell.html").or_else(|| size("index.html")),
+        "app_js_bytes": size("app.js"),
+    })
+}
+
 async fn meta(State(st): State<Arc<AppState>>) -> Response {
     let counts = st
         .store
@@ -140,6 +264,7 @@ async fn meta(State(st): State<Arc<AppState>>) -> Response {
         "orgs": st.orgs,
         "counts": counts,
         "process": process_stats(),
+        "web": web_info(st.static_dir.as_deref()),
         "now": (st.clock)(),
     });
     (StatusCode::OK, axum::Json(body)).into_response()
@@ -160,6 +285,42 @@ fn process_stats() -> Value {
     json!({"rss_bytes": kb("VmRSS:"), "peak_rss_bytes": kb("VmHWM:"), "threads": kb("Threads:").map(|n| n / 1024)})
 }
 
+/// `GET /api/v1/snapshot?at=<ms>`: the fleet as it was at `at` (within the replay ring).
+async fn snapshot_at(st: Arc<AppState>, at: Ms) -> Response {
+    let now = (st.clock)();
+    if at > now || at < now - crate::history::KEEP_MS {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": "bad_time", "message": "need a time within the last 24 h"})),
+        )
+            .into_response();
+    }
+    let hub = st.hub.clone();
+    let out = tokio::task::spawn_blocking(move || {
+        hub.history
+            .query(at, at)
+            .map(|h| h.fold_to(at, true, PROTOCOL, &hub.epoch).1)
+    })
+    .await
+    .ok()
+    .flatten();
+    match out {
+        Some(h) => {
+            let mut r = Response::new(Body::from(h.base));
+            r.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            );
+            r
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            axum::Json(json!({"error": "no_history"})),
+        )
+            .into_response(),
+    }
+}
+
 fn accepts_gzip(h: &HeaderMap) -> bool {
     h.get_all(header::ACCEPT_ENCODING)
         .iter()
@@ -168,7 +329,19 @@ fn accepts_gzip(h: &HeaderMap) -> bool {
 }
 
 /// Snapshot straight from the pre-encoded cache (no serialization per request).
-async fn snapshot(State(st): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+#[derive(Deserialize)]
+struct SnapshotQ {
+    at: Option<Ms>,
+}
+
+async fn snapshot(
+    State(st): State<Arc<AppState>>,
+    Query(q): Query<SnapshotQ>,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(at) = q.at {
+        return snapshot_at(st, at).await;
+    }
     let s = st.hub.snapshot();
     let etag = format!("\"{}-{}\"", st.hub.epoch, s.seq);
     if headers
@@ -248,6 +421,17 @@ impl Sink {
     }
 }
 
+/// Logs the stream's close (how long it lived) when the pump ends, however it ends.
+fn scopeguard_close(opened: std::time::Instant) -> impl Drop {
+    struct Close(std::time::Instant);
+    impl Drop for Close {
+        fn drop(&mut self) {
+            tracing::info!(secs = self.0.elapsed().as_secs(), "stream closed");
+        }
+    }
+    Close(opened)
+}
+
 async fn ws_client(socket: WebSocket, st: Arc<AppState>, since: Option<u64>) {
     let (sink, mut stream) = socket.split();
     let (close_tx, close_rx) = tokio::sync::oneshot::channel::<()>();
@@ -290,7 +474,10 @@ async fn pump(
     mut closed: tokio::sync::oneshot::Receiver<()>,
 ) {
     let hub = st.hub.clone();
-    hub.clients.fetch_add(1, Ordering::Relaxed);
+    let opened = std::time::Instant::now();
+    let n = hub.clients.fetch_add(1, Ordering::Relaxed) + 1;
+    tracing::info!(since = ?since, seq = hub.seq(), clients = n, "stream open");
+    let _log = scopeguard_close(opened);
     let mut rx = hub.tx.subscribe();
     let mut last = hub.seq();
     let mut ok = true;
@@ -356,7 +543,8 @@ async fn pump(
     hub.clients.fetch_sub(1, Ordering::Relaxed);
 }
 
-/// Send frames newer than `last`: consecutive deltas merge into one message,
+/// Send frames newer than `last`: consecutive deltas merge into one message of at most
+/// [`MAX_MESSAGE`](crate::hub::MAX_MESSAGE) bytes (a long catch-up is several messages),
 /// resets go through as-is.
 async fn send_batch(sink: &mut Sink, hub: &Hub, frames: &[Arc<Frame>], last: &mut u64) -> bool {
     let fresh: Vec<Arc<Frame>> = frames.iter().filter(|f| f.seq > *last).cloned().collect();
@@ -372,7 +560,13 @@ async fn send_batch(sink: &mut Sink, hub: &Hub, frames: &[Arc<Frame>], last: &mu
             continue;
         }
         let mut j = i;
+        let mut size = 64;
         while j < fresh.len() && fresh[j].kind == FrameKind::Delta {
+            let n = fresh[j].ops.len() + 1;
+            if j > i && size + n > crate::hub::MAX_MESSAGE {
+                break;
+            }
+            size += n;
             j += 1;
         }
         let bytes = Frame::merge(&fresh[i..j]);
@@ -390,6 +584,9 @@ async fn send_batch(sink: &mut Sink, hub: &Hub, frames: &[Arc<Frame>], last: &mu
 struct HistoryQ {
     from: Option<Ms>,
     to: Option<Ms>,
+    /// `base=0`: no base snapshot (`base: null`), only the entries after `from` (a client
+    /// that already holds the state at `from`, e.g. its live state, saves the big base).
+    base: Option<u8>,
 }
 
 async fn history(State(st): State<Arc<AppState>>, Query(q): Query<HistoryQ>) -> Response {
@@ -406,12 +603,25 @@ async fn history(State(st): State<Arc<AppState>>, Query(q): Query<HistoryQ>) -> 
             .into_response();
     }
     let hub = st.hub.clone();
-    let out = tokio::task::spawn_blocking(move || hub.history.query(from, to))
-        .await
-        .ok()
-        .flatten();
+    let out = tokio::task::spawn_blocking(move || {
+        let h = hub.history.query(from, to)?;
+        if q.base == Some(0) && !h.has_restarts() {
+            return Some((from, h.after(from)));
+        }
+        // A restart inside the window goes out as a delta against the replayed state,
+        // never as a whole snapshot; that needs the state at `from` even for base=0.
+        let (from, h) = h.fold_to(from, false, PROTOCOL, &hub.epoch);
+        let h = h.inline_restarts(PROTOCOL >= "0.4");
+        if q.base == Some(0) {
+            return Some((from, h.after(from)));
+        }
+        Some((from, h))
+    })
+    .await
+    .ok()
+    .flatten();
     match out {
-        Some(h) => {
+        Some((from, h)) => {
             let mut r = Response::new(Body::from(h.to_json(from, to)));
             r.headers_mut().insert(
                 header::CONTENT_TYPE,
@@ -464,8 +674,20 @@ async fn pr(
     Path((owner, name, number)): Path<(String, String, u64)>,
 ) -> Response {
     let repo = format!("{owner}/{name}");
+    let all = st
+        .store
+        .as_ref()
+        .and_then(|s| s.read().pr_all_checks(&format!("{repo}#{number}")));
     match query::pr_detail(&st.mirror.read(), &repo, number) {
-        Some(v) => (StatusCode::OK, axum::Json(v)).into_response(),
+        Some(mut v) => {
+            // The full check list (the entity carries only required / not-passed ones).
+            if let Some(c) = all.and_then(|c| serde_json::to_value(c).ok()) {
+                v["checks"] = c;
+            } else if let Some(c) = v.pointer("/pr/checks").cloned() {
+                v["checks"] = c;
+            }
+            (StatusCode::OK, axum::Json(v)).into_response()
+        }
         None => (
             StatusCode::NOT_FOUND,
             axum::Json(json!({"error": "unknown_pr"})),

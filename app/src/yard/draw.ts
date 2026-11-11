@@ -227,7 +227,7 @@ export class LiveLayer {
       for (const id of box.engines) {
         const e = byId.get(id);
         if (!e) continue;
-        busy += Math.min(e.slots, e.running.length); slots += e.slots;
+        busy += Math.min(e.slots ?? 0, e.running?.length ?? 0); slots += e.slots ?? 0;
       }
       for (const id of box.stats.length ? box.stats : box.engines) {
         const e = byId.get(id);
@@ -241,7 +241,7 @@ export class LiveLayer {
         const e = byId.get(id);
         if (!e) continue;
         const slotsOf = L.slotByEngine.get(id) ?? [];
-        e.running.forEach((pid, i) => {
+        (e.running ?? []).forEach((pid, i) => {
           const s = slotsOf[Math.min(i, slotsOf.length - 1)];
           if (!s) return;
           const p = w.pipelines.get(pid);
@@ -272,16 +272,16 @@ export class LiveLayer {
       const r = w.repos.get(l.repo);
       if (!r) continue;
       const red = isRed(r);
-      const name = r.name;
+      const name = r.name ?? l.repo;
       const parts: [string, string, boolean?][] = [[name, l.repo === this.selected ? C.packet : C.ink, true]];
       if (red) {
         parts.push([` · red ${fmtDur(now - r.main.since)}`, C.redText]);
-        const c = r.main.culprit ? r.main.recent.find((d) => d.sha === r.main.culprit) : undefined;
-        if (c) parts.push([` · culprit ${c.sha.slice(0, 7)} by ${c.author.replace(/\[bot\]$/, '')}`, C.ink3]);
-      } else if (r.main.state === 'running' || r.main.state === 'pending') parts.push([' · building', C.amberText]);
+        const c = r.main.culprit ? (r.main.recent ?? []).find((d) => d?.sha === r.main.culprit) : undefined;
+        if (c) parts.push([` · culprit ${String(c.sha ?? '').slice(0, 7)} by ${String(c.author ?? '').replace(/\[bot\]$/, '')}`, C.ink3]);
+      } else if (r.main?.state === 'running' || r.main?.state === 'pending') parts.push([' · building', C.amberText]);
       else parts.push([' · green', C.ink3]);
       fitRuns(ctx, parts, l.x0, l.y - 13, l.x1 + 22 - l.x0, 12.5);
-      dotLine(ctx, r.main.recent ?? [], l.x0, l.x1 - 14, l.y, l.step, t, { red, culprit: red ? r.main.culprit : null, label: false });
+      dotLine(ctx, r.main?.recent ?? [], l.x0, l.x1 - 14, l.y, l.step, t, { red, culprit: red ? r.main.culprit : null, label: false });
       this.hits.push({ x: l.x0 - 4, y: l.y - 26, w: l.x1 - l.x0 + 26, h: 36, kind: 'repo', id: l.repo, label: l.repo });
     }
     // the rest, as one row
@@ -417,7 +417,7 @@ export class LiveLayer {
     const r = w.repos.get(p.repo);
     const el = p.started ? now - p.started : 0;
     const where = p.state === 'running' ? `building on ${(p.engine ?? '').toLowerCase()} · ${fmtDur(el)}` : p.state === 'pending' ? `queued ${fmtDur(now - p.created)}` : `${p.state} · ${fmtDur((p.finished ?? now) - (p.started ?? p.created))}`;
-    eyebrow(ctx, [['now', C.ink3], [' · ', C.ink4], [`${p.repo.split('/')[1]} #${p.number}`, C.ink2], [` · ${p.branch} · ${where}`, C.ink3]], L.m, y0 + 30);
+    eyebrow(ctx, [['now', C.ink3], [' · ', C.ink4], [`${String(p.repo ?? '').split('/')[1] ?? p.repo} #${p.number}`, C.ink2], [` · ${p.branch} · ${where}`, C.ink3]], L.m, y0 + 30);
     this.hits.push({ x: L.m, y: y0 + 12, w: L.W * 0.5, h: 26, kind: 'pipeline', id: p.id ?? "", label: `${p.repo} #${p.number}` });
     // Steps: the running workflow's (else the first), as many as fit before the main line;
     // a window around the active step, the rest folded into "N done" and "+M" chips.
@@ -474,8 +474,8 @@ export class LiveLayer {
     if (r) {
       const red = isRed(r);
       const x0 = L.cols.mains, x1 = L.W - L.m - 30;
-      runs(ctx, [[r.name, C.ink, true], [red ? ` · red ${fmtDur(now - r.main.since)}` : ' · main', red ? C.redText : C.ink3]], x0, cy - 20, 12.5);
-      dotLine(ctx, r.main.recent ?? [], x0, x1, cy, 18, t, { red, culprit: red ? r.main.culprit : null, r: 5 });
+      runs(ctx, [[r.name ?? r.id, C.ink, true], [red ? ` · red ${fmtDur(now - r.main.since)}` : ' · main', red ? C.redText : C.ink3]], x0, cy - 20, 12.5);
+      dotLine(ctx, r.main?.recent ?? [], x0, x1, cy, 18, t, { red, culprit: red ? r.main.culprit : null, r: 5 });
       text(ctx, red ? 'red → fix forward; the culprit is named' : 'green · each dot is a commit on main', x0, cy + 30, red ? C.redText : C.ink4, 12);
     }
   }
@@ -508,7 +508,7 @@ export class LiveLayer {
     const rows = items.slice(0, 3);
     rows.forEach((p, i) => {
       const y = y0 + 62 + i * 30;
-      const repo = p.repo.split('/')[1] ?? p.repo;
+      const repo = String(p.repo ?? '').split('/')[1] ?? p.repo ?? '';
       runs(ctx, [[`#${p.number} `, C.ink2], [trim(repo, 20), C.ink3]], L.m, y + 4, 12.5);
       let x = L.m + 250;
       const est = p.expected_ms ?? w.repos.get(p.repo)?.p50_build_ms ?? w.stats.p50_build_ms ?? 0;
@@ -551,7 +551,8 @@ function fitRuns(ctx: Ctx2D, parts: [string, string, boolean?][], x: number, y: 
   runs(ctx, out, x, y, px);
 }
 
-function trim(s: string, n: number): string {
+function trim(s: string | undefined, n: number): string {
+  s = s == null ? '' : String(s);
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 

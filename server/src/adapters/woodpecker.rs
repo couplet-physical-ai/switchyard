@@ -320,6 +320,7 @@ impl Mapper {
             started: ms(p.started),
             finished: ms(p.finished),
             queue_pos: None,
+            expected_ms: None,
             engine,
             title: (!title.is_empty()).then_some(title),
             author: (!p.author.is_empty()).then(|| p.author.clone()),

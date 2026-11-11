@@ -12,7 +12,8 @@ test "the palette finds a repo and opens it"
   tap "hit-repo-Northwind-Labs/cicd"
   clock settle
   expect state here == "mainlines"
-  expect tree has "mainline-focus"
+  expect state mlFocus == "Northwind-Labs/cicd"
+  expect tree has "mainlines-focus"
 
 test "an empty palette lists what is on fire"
   clock data

@@ -1169,7 +1169,7 @@
       ]
     }
   ],
-  "protocol": "0.2",
+  "protocol": "0.4",
   "prs": [
     {
       "author": "dependabot",
@@ -1322,12 +1322,9 @@
         {
           "name": "CDK Deploy / Typecheck + tests",
           "state": "failure"
-        },
-        {
-          "name": "CDK Deploy / deploy",
-          "state": "skipped"
         }
       ],
+      "checks_passed": 1,
       "ci": "failure",
       "created": 1794325405000,
       "draft": false,
@@ -1506,20 +1503,9 @@
           "name": "ci/woodpecker/pr/pr-check",
           "required": true,
           "state": "pending"
-        },
-        {
-          "name": "DMG Check / Build unsigned arm64 DMG",
-          "state": "skipped"
-        },
-        {
-          "name": "DMG Check / Build unsigned arm64 DMG",
-          "state": "success"
-        },
-        {
-          "name": "Desktop macOS Preview / Build preview JS bundle",
-          "state": "skipped"
         }
       ],
+      "checks_passed": 3,
       "ci": "pending",
       "created": 1794333273000,
       "draft": false,
@@ -1643,7 +1629,8 @@
       },
       "name": "kestrel-deploy",
       "open_prs": 1,
-      "org": "Northwind-EMS"
+      "org": "Northwind-EMS",
+      "p50_build_ms": 78000
     },
     {
       "default_branch": "main",
@@ -1699,7 +1686,8 @@
       },
       "name": "aurora-api",
       "open_prs": 2,
-      "org": "Northwind-Labs"
+      "org": "Northwind-Labs",
+      "p50_build_ms": 7000
     },
     {
       "app": "borealis-web",
@@ -1729,7 +1717,8 @@
       },
       "name": "borealis-web",
       "open_prs": 0,
-      "org": "Northwind-Labs"
+      "org": "Northwind-Labs",
+      "p50_build_ms": 96000
     },
     {
       "app": "cirrus-hub",
@@ -1773,7 +1762,8 @@
       },
       "name": "cirrus-hub",
       "open_prs": 1,
-      "org": "Northwind-Labs"
+      "org": "Northwind-Labs",
+      "p50_build_ms": 493000
     },
     {
       "app": "delta-stock",
@@ -1940,7 +1930,8 @@
       },
       "name": "nimbus-predict",
       "open_prs": 0,
-      "org": "Northwind-Labs"
+      "org": "Northwind-Labs",
+      "p50_build_ms": 62000
     },
     {
       "default_branch": "main",

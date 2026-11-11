@@ -86,6 +86,7 @@ fn pipeline() -> impl Strategy<Value = Fact> {
                     started,
                     finished,
                     queue_pos: None,
+                    expected_ms: None,
                     engine: started.map(|_| "dagger-ci-153-1".to_string()),
                     title: Some(format!("change {number}")),
                     author: Some(if number == 2 {
@@ -494,34 +495,113 @@ proptest! {
 
     #[test]
     fn ops_replay_to_the_same_tables(facts in prop::collection::vec(fact(), 1..40), every in 1usize..5) {
-        // Applying the emitted ops to an empty client view reproduces the tables.
+        // The emitted ops, encoded as on the wire (upsert / patch / dot / remove) and
+        // applied to an empty client view, reproduce the server's tables exactly.
         let mut s = Store::new(StoreConfig { orgs: vec!["acme".into()], ..Default::default() });
-        let mut view: BTreeMap<(Kind, String), Arc<str>> = BTreeMap::new();
+        let mut view = switchyard::wire::WireState::default();
+        let apply = |ops: Vec<switchyard::store::OpOut>, view: &mut switchyard::wire::WireState| {
+            let inner = switchyard::hub::encode_ops(&ops);
+            let arr: serde_json::Value =
+                serde_json::from_slice(&[b"[".as_slice(), &inner, b"]"].concat()).unwrap();
+            for op in arr.as_array().unwrap() {
+                view.apply_op(op);
+            }
+        };
         for (i, f) in facts.iter().enumerate() {
             s.apply(f.clone(), true);
             if i % every == 0 {
-                for op in s.flush(NOW) {
-                    match op {
-                        switchyard::store::OpOut::Upsert { kind, id, json } => { view.insert((kind, id), json); }
-                        switchyard::store::OpOut::Remove { kind, id } => { view.remove(&(kind, id)); }
-                        switchyard::store::OpOut::Event(_) => {}
-                    }
-                }
+                apply(s.flush(NOW), &mut view);
             }
         }
-        for op in s.flush(NOW) {
-            match op {
-                switchyard::store::OpOut::Upsert { kind, id, json } => { view.insert((kind, id), json); }
-                switchyard::store::OpOut::Remove { kind, id } => { view.remove(&(kind, id)); }
-                switchyard::store::OpOut::Event(_) => {}
-            }
-        }
-        let mut expect: BTreeMap<(Kind, String), Arc<str>> = BTreeMap::new();
+        apply(s.flush(NOW), &mut view);
         for k in Kind::ALL {
-            for (id, j) in s.table(k) {
-                expect.insert((k, id.clone()), j.clone());
-            }
+            let got: BTreeMap<String, serde_json::Value> =
+                view.iter(k).map(|(id, v)| (id.clone(), v.clone())).collect();
+            let want: BTreeMap<String, serde_json::Value> = s
+                .table(k)
+                .iter()
+                .map(|(id, j)| (id.clone(), serde_json::from_str(j).unwrap()))
+                .collect();
+            prop_assert_eq!(got, want, "{}", k.as_str());
         }
-        prop_assert_eq!(view, expect);
     }
+}
+
+/// Progress rings: a running pipeline expects the median duration of its repo's recent
+/// successful runs of the same kind; the repo carries the median of its push runs; a run
+/// finishing re-derives the running sibling's expectation.
+#[test]
+fn expected_durations() {
+    let p = |n: u64, state: CiState, dur_s: Option<i64>, event: PipelineEvent| {
+        let started = NOW - 3_600_000 + n as i64 * 60_000;
+        Fact::Pipeline(Pipeline {
+            id: ids::wp_pipeline("acme/api", n),
+            lane: LaneKind::Roadrunner,
+            repo: "acme/api".into(),
+            number: n,
+            sha: SHAS[(n % 5) as usize].into(),
+            branch: "main".into(),
+            event,
+            state,
+            created: started,
+            started: Some(started),
+            finished: dur_s.map(|d| started + d * 1000),
+            queue_pos: None,
+            expected_ms: None,
+            engine: None,
+            title: None,
+            author: None,
+            pr: None,
+            deploy: false,
+            workflows: vec![],
+            url: String::new(),
+        })
+    };
+    // Flush; if `id` was re-sent (upsert or patch), its current value.
+    let upsert = |s: &mut Store, id: &str| -> Option<serde_json::Value> {
+        let sent = s.flush(NOW).into_iter().any(|o| match o {
+            switchyard::store::OpOut::Upsert {
+                kind: Kind::Pipeline,
+                id: i,
+                ..
+            }
+            | switchyard::store::OpOut::Patch {
+                kind: Kind::Pipeline,
+                id: i,
+                ..
+            } => i == id,
+            _ => false,
+        });
+        sent.then(|| serde_json::from_str(&s.table(Kind::Pipeline)[id]).unwrap())
+    };
+    let fresh = |facts: &[Fact]| {
+        let mut s = Store::new(StoreConfig {
+            orgs: vec!["acme".into()],
+            ..Default::default()
+        });
+        for f in facts {
+            s.apply(f.clone(), true);
+        }
+        s
+    };
+    let mut facts = vec![
+        p(1, CiState::Success, Some(60), PipelineEvent::Push),
+        p(2, CiState::Success, Some(120), PipelineEvent::Push),
+        p(3, CiState::Failure, Some(5), PipelineEvent::Push), // failures don't count
+        p(4, CiState::Success, Some(900), PipelineEvent::PullRequest), // other kind
+        p(9, CiState::Running, None, PipelineEvent::Push),
+    ];
+    let mut s = fresh(&facts);
+    let id9 = ids::wp_pipeline("acme/api", 9);
+    let v = upsert(&mut s, &id9).unwrap();
+    assert_eq!(v["expected_ms"], 120_000, "median of [60 s, 120 s] (upper)");
+    // A third successful push run lands: the running one re-derives (incrementally).
+    s.apply(p(5, CiState::Success, Some(90), PipelineEvent::Push), true);
+    let v = upsert(&mut s, &id9).expect("the running sibling is re-sent");
+    assert_eq!(v["expected_ms"], 90_000);
+    // Finished runs carry no expectation.
+    facts.push(p(9, CiState::Success, Some(100), PipelineEvent::Push));
+    let mut s = fresh(&facts);
+    let v = upsert(&mut s, &id9).unwrap();
+    assert!(v.get("expected_ms").is_none());
 }

@@ -41,7 +41,10 @@ export type Pipeline = {
 export type Pr = {
   id?: string; repo: string; number: number; title: string; author: string; bot?: boolean; draft: boolean;
   created: number; updated: number; head_sha: string; head?: string; base: string; phase: PrPhase; ci?: CiState;
+  /** v0.4: only required checks and checks that have not passed (PrDetail has them all). */
   checks: { name: string; state: CiState; required?: boolean }[];
+  /** v0.4: how many other checks passed. */
+  checks_passed?: number;
   review: { ai?: 'pending' | 'commented' | 'approved' | 'skipped'; human?: string };
   merged_at?: number; merge_sha?: string; blocked_by?: string; stale_ms?: number; url: string;
 };
@@ -93,6 +96,10 @@ export type Event =
 
 export type Op =
   | { op: 'upsert'; kind: Kind; id: string; v: unknown }
+  /** v0.4: an RFC 7386 merge patch on an entity already held (ignored otherwise). */
+  | { op: 'patch'; kind: Kind; id: string; v: unknown }
+  /** v0.4: one main-line dot into repos[id].main.recent (same sha replaced, sorted, newest 12). */
+  | { op: 'dot'; id: string; v: Dot }
   | { op: 'remove'; kind: Kind; id: string }
   | { op: 'event'; e: Event };
 
@@ -103,7 +110,7 @@ export type Frame =
 
 /** A `t:"snapshot"` entry in history replaces the state (a server restart). */
 export type HistoryFrame = Frame | { t: 'snapshot'; seq: number; at: number; v: Snapshot };
-export type History = { from: number; to: number; base?: Snapshot; frames: HistoryFrame[] };
+export type History = { from: number; to: number; base?: Snapshot; frames: HistoryFrame[]; /** the reply's size (a chunked replay sizes its next window by it) */ bytes?: number };
 
 /** One Dagger call from cicd's traces (contract v0.3): oldest first. The demo's older form
  *  (`end`, `parent`, `state`, `cached`) is still read. */
@@ -120,6 +127,8 @@ export type Journey = {
 };
 export type PrDetail = {
   pr: Pr; repo_state?: Repo | null; commits: Commit[]; pipelines: Pipeline[]; deploys?: Deploy[];
+  /** v0.4: every check (Pr.checks lists only required and not-passed ones). */
+  checks?: { name: string; state: CiState; required?: boolean }[];
   /** The demo's: phase changes. */
   timeline?: { at: number; phase: PrPhase; note?: string }[];
 };

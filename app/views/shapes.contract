@@ -24,6 +24,7 @@ shape Conn
   label: string
   kind: string
   needsSetup: bool
+  signIn: string
 
 shape Ack
   ok: bool
@@ -61,24 +62,18 @@ shape SearchHit
 shape Found
   hits: SearchHit[]
 
-shape MainRow
-  id: string
-  name: string
-  org: string
-  orgLabel: string
-  lane: string
-  state: string
-  stateText: string
-  heat: number
-  prs: number
-  app: string
-  last: string
-  ver: number
-
+// Mainlines and PRs are canvas tables: Contract reads their headers, the canvas the rows.
 shape Mainlines
   total: number
   red: number
-  rows: MainRow[]
+  building: number
+  shown: number
+  tick: number
+  top: string
+  atEnd: bool
+  focusText: string
+  focusShown: bool
+  summary: string
 
 shape PrRow
   id: string
@@ -106,6 +101,7 @@ shape PrRow
   org: string
   bad: bool
   badIdx: number
+  draft: bool
 
 shape Prs
   open: number
@@ -113,7 +109,11 @@ shape Prs
   blocked: number
   bots: number
   total: number
-  rows: PrRow[]
+  tick: number
+  top: string
+  atEnd: bool
+  summary: string
+  repo: string
 
 shape AppRow
   id: string
@@ -130,6 +130,9 @@ shape AppRow
   repo: string
   lane: string
   checked: string
+  meta: string
+  version: string
+  deployBad: bool
 
 shape EngineRow
   id: string
@@ -161,6 +164,10 @@ shape Fleet
   degraded: number
   watcher: string
   watcherTripped: bool
+  attention: AppRow[]
+  behindN: number
+  never: number
+  hasLatency: bool
 
 shape SpanRow
   id: string
@@ -218,6 +225,9 @@ shape Journey
   healthText: string
   url: string
   events: JEvent[]
+  ciState: string
+  deployState: string
+  ticks: string[]
 
 shape PCommit
   sha: string

@@ -3,7 +3,7 @@
 // headless shell, the one `exact setup` installs) on real time, and reports
 // cold start (navigation → first fleet frame drawn), frame pacing over a window,
 // and the data module's per-frame draw cost (it records `sy:draw` measures).
-// Usage: bun tools/webperf.mjs [--dist dist] [--url /] [--seconds 10] [--size 1440x900] [--server URL]
+// Usage: bun tools/webperf.mjs [--dist dist] [--url /] [--seconds 10] [--size 1440x900] [--server URL] [--api URL] [--wheel]
 //        [--base http://host:port: measure a build some other server hosts, e.g. switchyard-server --static-dir]
 import { chromium } from 'playwright-core';
 import { existsSync, readdirSync } from 'node:fs';
@@ -18,10 +18,29 @@ const route = arg('url', '/');
 const server = arg('server', '');
 
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.plan': 'application/octet-stream', '.wasm': 'application/wasm' };
-const srv = Bun.serve({ port: 0, fetch(req) {
-  const u = new URL(req.url); let p = join(dist, decodeURIComponent(u.pathname));
+// --api URL: /api/* (HTTP and the stream's WebSocket) is passed to that server, so the page's
+// own origin is a real-data server (the app's default on the web).
+const api = arg('api', '');
+const srv = Bun.serve({ port: 0, async fetch(req, server) {
+  const u = new URL(req.url);
+  if (api && u.pathname.startsWith('/api/')) {
+    if (req.headers.get('upgrade') === 'websocket') return server.upgrade(req, { data: { path: u.pathname + u.search } }) ? undefined : new Response('no upgrade', { status: 400 });
+    const r = await fetch(api + u.pathname + u.search, { headers: { accept: req.headers.get('accept') ?? '*/*' } });
+    return new Response(r.body, { status: r.status, headers: { 'content-type': r.headers.get('content-type') ?? 'application/json' } });
+  }
+  let p = join(dist, decodeURIComponent(u.pathname));
   if (!existsSync(p) || u.pathname === '/') p = join(dist, existsSync(join(dist, u.pathname)) && u.pathname !== '/' ? u.pathname : 'shell.html');
   return new Response(Bun.file(p), { headers: { 'content-type': types[extname(p)] ?? 'application/octet-stream' } });
+}, websocket: {
+  open(ws) {
+    const up = new WebSocket(api.replace(/^http/, 'ws') + ws.data.path);
+    ws.data.up = up; ws.data.q = [];
+    up.onopen = () => { for (const m of ws.data.q) up.send(m); ws.data.q = null; };
+    up.onmessage = (m) => ws.send(m.data);
+    up.onclose = () => ws.close();
+  },
+  message(ws, m) { if (ws.data.q) ws.data.q.push(m); else ws.data.up.send(m); },
+  close(ws) { try { ws.data.up.close(); } catch {} },
 } });
 
 function chrome() {
@@ -55,8 +74,29 @@ const metric = async () => Object.fromEntries((await cdp.send('Performance.getMe
 await page.waitForTimeout(1000);
 await page.evaluate(() => { globalThis.__syFrames.length = 0; globalThis.__syLong.length = 0; });
 const m0 = await metric();
-await page.waitForTimeout(seconds * 1000);
+const profiling = process.argv.includes('--profile');
+if (profiling) { await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 200 }); await cdp.send('Profiler.start'); }
+if (process.argv.includes('--wheel')) {
+  // Scroll the view under the pointer the whole window: 120 px notches every 16 ms, turning
+  // around every 3 s (Mainlines and PRs are one canvas: this is their scroll path).
+  await page.mouse.move(w / 2, h / 2);
+  const end = Date.now() + seconds * 1000;
+  let dir = 1, turn = Date.now() + 3000;
+  while (Date.now() < end) {
+    await page.mouse.wheel(0, 120 * dir);
+    await page.waitForTimeout(16);
+    if (Date.now() > turn) { dir = -dir; turn = Date.now() + 3000; }
+  }
+} else await page.waitForTimeout(seconds * 1000);
 const m1 = await metric();
+if (profiling) {
+  // Self time by function (and file), the top 25: where a frame's script goes.
+  const { profile } = await cdp.send('Profiler.stop');
+  const self = new Map(); const byId = new Map(profile.nodes.map((n) => [n.id, n]));
+  const dt = profile.timeDeltas; let total = 0;
+  profile.samples.forEach((id, i) => { const n = byId.get(id); const f = n.callFrame; const k = `${f.functionName || '(anon)'} ${f.url.split('/').pop()}:${f.lineNumber}`; self.set(k, (self.get(k) ?? 0) + (dt[i] ?? 0)); total += dt[i] ?? 0; });
+  console.log([...self].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([k, v]) => `${(v / 1000).toFixed(0).padStart(6)} ms ${(100 * v / total).toFixed(1).padStart(5)}%  ${k}`).join('\n'));
+}
 const r = await page.evaluate(() => {
   const f = globalThis.__syFrames; const iv = []; for (let i = 1; i < f.length; i++) iv.push(f[i] - f[i - 1]);
   const q = (a, p) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); return +s[Math.min(s.length - 1, Math.floor(p * s.length))].toFixed(2); };

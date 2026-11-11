@@ -21,4 +21,13 @@ if (!existsSync(cli)) { console.error(`no exact2 at ${EXACT2} (no scripts/app-cl
 const { ensureBun } = await import(resolve(EXACT2, 'scripts/bun.mjs'));
 ensureBun("1.4.2");
 const { run } = await import(cli);
-process.exit(await run({ dir: import.meta.dir, name: "app", exact2: EXACT2, args: process.argv.slice(2) }));
+// Switchyard: `test [host]` with no test files runs every suite in tests/ (CI calls it bare), at
+// the desktop size the suites are written for unless --size says otherwise.
+const args = process.argv.slice(2);
+if (args[0] === 'test') {
+  const rest = args.slice(1).filter((a, i, all) => !a.startsWith('-') && !(i > 0 && /^--(size|sim|test|storage|epoch|locale|format-locale|time-zone|seed|url|browser|phone|port|backend)$/.test(all[i - 1])));
+  const hosts = new Set(['web', 'ios', 'macos', 'linux', 'windows', 'android']);
+  if (!rest.some((a) => !hosts.has(a)) && !args.includes('--test')) args.push('tests/*.test.contract');
+  if (!args.includes('--size')) args.push('--size', '1440x900');
+}
+process.exit(await run({ dir: import.meta.dir, name: "app", exact2: EXACT2, args }));

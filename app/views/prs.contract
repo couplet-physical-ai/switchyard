@@ -1,17 +1,55 @@
-// PRs: every pull request as a dashed step-chip pipeline (DESIGN.md, "Views").
+// PRs: every pull request as one row of a canvas table, its phases as dashed mini-chips
+// (DESIGN.md, "Views"); one canvas whatever the count (src/table/). A PR's own page below.
 
-use Prs, PrRow, PrDetail from "./shapes.contract"
+use Prs, PrRow, PrDetail, Hit from "./shapes.contract"
 
 members App
   state prOrg = ""
   state prFilter = "open"
   state prQ = ""
-  resource prData = prs(here == "prs" ? clockMs : 0, prOrg, prFilter, prQ) as shape Prs else empty(open=0, ready=0, blocked=0, bots=0, total=0, rows=[])
+  state prFocus = ""
+  state prWheel = 0
+  state prPx = -1
+  state prPy = -1
+  state prKick = 0
+  resource prData = prs(here == "prs" ? clockMs : 0, prOrg, prFilter, prQ, here == "prs" ? searchParam(top(nav), "repo") : "") as shape Prs else empty(open=0, ready=0, blocked=0, bots=0, total=0, tick=0, top="", atEnd=false, summary="", repo="")
   resource prDet = prDetail(server, tok.token, here == "pr" ? `${top(nav).params.owner}/${top(nav).params.name}` : "", here == "pr" ? top(nav).params.number : "", here == "pr" ? clockMs : 0) as shape PrDetail else empty(ok=false, row=none, commits=[], pipelines=[], timeline=[])
+  mutation prHit as shape Hit then prAfterHit
+  mutation prNav as shape Hit then prAfterNav
+  derive prHitNow = match prHit { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }
+  derive prNavNow = match prNav { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }
   action prPickFilter(f: string)
     prFilter = f
   action prTyped(v: string)
     prQ = v
+  // A press opens the PR under it (or the commit an open row names).
+  action prPress(e: PointerEvent)
+    send prHit = tablePick("prs", e.offsetX, e.offsetY)
+  action prAfterHit
+    if prHitNow.route != ""
+      if prHitNow.kind == "row"
+        prFocus = prHitNow.id
+      nav = go(nav, prHitNow.route)
+  action prMove(e: PointerEvent)
+    prPx = e.offsetX
+    prPy = e.offsetY
+  action prHover(on: bool)
+    if not on
+      prPx = -1
+      prPy = -1
+  action prWheeled(e: WheelEvent)
+    prWheel = prWheel + e.deltaY
+    preventDefault()
+  action prKey(k: string)
+    send prNav = tableKey("prs", k)
+  action prAfterNav
+    prKick = prKick + 1
+    if prNavNow.kind == "focus"
+      prFocus = prNavNow.id
+    else if prNavNow.kind == "open" and prNavNow.route != ""
+      nav = go(nav, prNavNow.route)
+  action prAllRepos
+    nav = replace(nav, "/prs")
 
 fn phaseLabel(i: number): string = i == 0 ? "draft" : (i == 1 ? "checks" : (i == 2 ? "review" : (i == 3 ? "mergeable" : (i == 4 ? "merged" : "deployed"))))
 
@@ -20,9 +58,9 @@ component Track
     row: PrRow
   view
     row align-items="center" gap=0 aria-label=`phase: ${row.phaseText}`
-      for i in [0, 1, 2, 3, 4, 5] key=i
+      for i in (row.draft ? [0, 1, 2, 3, 4, 5] : [1, 2, 3, 4, 5]) key=i
         row align-items="center" gap=0
-          if i > 0
+          if i > (row.draft ? 0 : 1)
             text "→" font-size=10 color=(i <= row.phaseIdx ? "sy.ink3" : "sy.ink4") padding="0 5px"
           column padding="2px 7px" border-radius=4 position="relative"
             border=(i == row.badIdx ? "1px solid sy.red-edge" : (i == row.phaseIdx ? "1px solid sy.machine" : (i < row.phaseIdx ? "1px dashed sy.green-edge" : "1px dashed sy.chip-edge")))
@@ -47,42 +85,48 @@ component PrsView
     data: Prs
     filter: string
     q: string
-    open: action
+    focus: string
+    wheel: number
+    px: number
+    py: number
+    kick: number
+    repo: string
+    active: bool
+    mode: string
     pickFilter: action
     typed: action
+    allRepos: action
+    press: action
+    move: action
+    hover: action
+    wheeled: action
+    key: action
   view
     column flex=1 min-height=0 testId="prs"
-      header appearance="none" display="flex" align-items="flex-end" gap=16 padding="18px 24px 12px" flex-wrap="wrap"
-        column gap=4 flex="1 1 280px"
-          text "Pull requests" role="heading" aria-level=2 font-weight=700 font-size=20
-          text `${data.open} open · ${data.ready} ready to merge · ${data.blocked} blocked · ${data.bots} from bots` color="sy.ink3" font-size=12 testId="prs-count"
-        row role="radiogroup" aria-label="Which" gap=2 padding=3 border-radius=8 background-color="sy.control"
+      header appearance="none" display="flex" align-items="center" gap=12 padding="8px 16px" flex-wrap="wrap" border-bottom="1px solid sy.rule"
+        row gap=10 align-items="baseline" flex="1 1 360px" min-width=0
+          text "Pull requests" role="heading" aria-level=2 font-weight=700 font-size=14
+          text `${data.open} open · ${data.ready} ready to merge · ${data.blocked} blocked · ${data.bots} from bots` color="sy.ink3" font-size=12 white-space="nowrap" testId="prs-count"
+          row gap=5 align-items="center" testId="prs-mode"
+            column width=6 height=6 border-radius=3 background-color=(mode == "live" ? "sy.green" : "sy.amber")
+            text (mode == "live" ? "live" : (mode == "paused" ? "paused" : (mode == "replay" ? "replaying the hour" : "behind live"))) font-size=11 white-space="nowrap" color=(mode == "live" ? "sy.green" : "sy.amber-text")
+          if repo != ""
+            button appearance="none" press=allRepos testId="prs-repo" padding="1px 7px" border-radius=5 border="1px solid sy.edge"
+              text `${repo} ×` font-size=11 color="sy.ink2"
+        row role="radiogroup" aria-label="Which" gap=2 padding=2 border-radius=7 background-color="sy.control"
           for f in ["open", "ready", "blocked", "bots", "shipped"] key=f
-            button role="radio" aria-checked=(filter == f) press=pickFilter(f) testId=`prs-${f}` padding="4px 10px" border-radius=6
+            button role="radio" aria-checked=(filter == f) press=pickFilter(f) testId=`prs-${f}` padding="3px 8px" border-radius=5
               background-color=(filter == f ? "sy.control-on" : "transparent")
-              text f font-size=12 color=(filter == f ? "sy.ink" : "sy.ink3")
-        input type="search" value=q input=typed aria-label="Filter pull requests" placeholder="filter prs" testId="prs-filter" width=180
-          padding="6px 10px" font-size=12 border-radius=8 background-color="sy.raised" border="1px solid sy.edge" color="sy.ink"
-      list id="prs-list" flex=1 min-height=0 padding="0 12px 16px" testId="prs-list"
-        for r in data.rows key=r.id
-          button press=open(`/pr/${r.repo}/${r.number}`) testId=`pr-${r.id}` appearance="none" width="100%" align-items="stretch" text-align="left" padding="10px 12px" border-radius=8
-            row align-items="center" gap=18 flex-wrap="wrap"
-              column width=380 min-width=0 gap=4
-                row gap=8 align-items="baseline"
-                  text `${r.name} #${r.number}` font-weight=700 font-size=13 color="sy.ink" white-space="nowrap"
-                  text (r.bot ? `${r.author} · bot` : r.author) font-size=11 color=(r.bot ? "sy.amber-text" : "sy.ink3")
-                text r.title font-size=12 color="sy.ink2" white-space="nowrap" overflow="hidden" text-overflow="ellipsis"
-              Track(row=r)
-              column flex=1 min-width=160 gap=4 align-items="flex-end"
-                Checks(row=r)
-                row gap=8
-                  if r.ai != ""
-                    text `ai ${r.ai}` font-size=11 color="sy.ink4"
-                  if r.stale != ""
-                    text r.stale font-size=11 color=(r.staleOld ? "sy.amber-text" : "sy.ink4")
-                  text r.updated font-size=11 color="sy.ink4"
-                if r.blockedBy != ""
-                  text `blocked by ${r.blockedBy}` font-size=11 color="sy.red-text"
+              text f font-size=11 color=(filter == f ? "sy.ink" : "sy.ink3")
+        input type="search" value=q input=typed aria-label="Filter pull requests" placeholder="filter prs" testId="prs-filter" width=170
+          padding="4px 9px" font-size=12 border-radius=7 background-color="sy.raised" border="1px solid sy.edge" color="sy.ink"
+          ::placeholder
+            color="sy.ink3"
+      column flex=1 min-height=0 position="relative"
+        if active
+          canvas surface=prsTable(data.tick, focus, wheel, px, py, filter, q, repo, kick) position="absolute" left=0 top=0 width="100%" height="100%"
+            tabindex=0 role="img" aria-label=data.summary touch-action="none" testId="prs-table"
+            pointerdown=press pointermove=move hover=hover wheel=wheeled key=key
 
 component PrView
   props

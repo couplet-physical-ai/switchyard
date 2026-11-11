@@ -3,16 +3,23 @@
 // the canvases read the world directly every frame (`draw`).
 
 import type { Answer, Ctx2D, Frame, Result, Sources, Store } from './app.contract.d.ts';
-import { HttpUpstream, resolveBase, wsUrl, type Upstream } from './src/api.ts';
+import { HttpUpstream, resolveBase, setDefaultServer, wsUrl, type Upstream } from './src/api.ts';
+
+// A release build bakes the team's server in (app/scripts/build-macos-release.sh sets it);
+// dev and test builds leave it empty and ask on first launch.
+const DEFAULT_SERVER = import.meta.env.SWITCHYARD_DEFAULT_SERVER ?? '';
+setDefaultServer(DEFAULT_SERVER);
 import { DEMO_REPLAY, DemoUpstream } from './src/demo.ts';
-import { fleet, journeyView, mainlines, prDetailView, prs, search } from './src/project.ts';
+import { fleet, journeyView, prDetailView, search } from './src/project.ts';
+import { MainlinesModel, stateWords } from './src/table/mainlines.ts';
+import { PrsModel } from './src/table/prs.ts';
 import { Timeline } from './src/timeline.ts';
 import { updateDo, updateState } from './src/update.ts';
 import type { Frame as WireFrame } from './src/wire.ts';
 import { drawStatic, LiveLayer } from './src/yard/draw.ts';
 import { isRed, layout, pickMains, type Layout } from './src/yard/layout.ts';
 import { Motion } from './src/yard/motion.ts';
-import { dotLine, fmtDur } from './src/yard/paint.ts';
+import { fmtDur } from './src/yard/paint.ts';
 
 export const grants = [
   'net.fetch https:',
@@ -38,10 +45,15 @@ let up: Upstream | null = null;
 let demo: DemoUpstream | null = null;
 let seenEpoch = -1;
 const motion = new Motion(() => L, () => clock);
+/** The canvas tables (src/table/): one per view, alive across visits (scroll and focus kept). */
+const mlTable = new MainlinesModel();
+const prTable = new PrsModel();
 const liveLayer = new LiveLayer();
 tl.listener = (e, w) => motion.onEvent(e, w);
 
-function advance(t: number): void {
+/** `asking`: called from a source's answer, so it may fetch (a fetch started elsewhere, in
+ *  `draw` or a promise's continuation, is never run). */
+function advance(t: number, asking = true): void {
   if (t > clock) clock = t;
   tl.tick(clock);
   if (demo) {
@@ -54,8 +66,14 @@ function advance(t: number): void {
       }
     }
     if (tl.replayDone()) tl.resumeLive();
+  } else if (!asking) {
+    // draw: no requests from here; the next answer asks
   } else if (tl.replayDone()) {
     void reloadLive();
+  } else if (rebaseAt && up?.snapshotAt && !chunking) {
+    const at = rebaseAt, u = up;
+    rebaseAt = 0;
+    chunking = u.snapshotAt!(at).then((s) => { if (s) tl.rebaseReplay(s); }, () => { rebaseAt = at; }).finally(() => { chunking = null; });
   } else {
     const next = tl.replayWants(REPLAY_LOOKAHEAD);
     if (next) void fetchChunk(next);
@@ -66,17 +84,37 @@ function advance(t: number): void {
   }
 }
 
-/** A replay streams in chunks of this much server time, fetched this far ahead of the
- *  playhead: an hour of real frames is ~10 MB, too much to hold beside the world at once. */
-const REPLAY_CHUNK = 6 * 60_000;
-const REPLAY_LOOKAHEAD = 3 * 60_000;
+/** A replay streams in chunks of server time, fetched this far ahead of the playhead, each
+ *  reply bounded by REPLAY_CEILING: an hour of real history can be ~30 MB (a server's boot
+ *  burst), far more than the native data module's 64 MiB heap holds beside the world. A chunk
+ *  over the ceiling is refused before any of it is read, and the window halves; quiet
+ *  stretches grow it back. A window that will not fit even at REPLAY_MIN jumps over the gap
+ *  with `/snapshot?at=`. */
+const REPLAY_MAX = 6 * 60_000;
+const REPLAY_MIN = 5_000;
+const REPLAY_LOOKAHEAD = 60_000;
+const REPLAY_CEILING = 1536 << 10;
+let chunkMs = 60_000;
 let chunking: Promise<void> | null = null;
+/** A window that will not fit even at REPLAY_MIN: jump the replay to the fleet at this time. */
+let rebaseAt = 0;
+const refused = (e: unknown) => /refus|ceiling|exceeds/i.test(`${(e as { kind?: string }).kind ?? ''} ${(e as Error).message ?? e}`);
 function fetchChunk(from: number): Promise<void> {
   if (!up || demo || chunking) return chunking ?? Promise.resolve();
-  const to = Math.min(from + REPLAY_CHUNK, tl.replayTo);
-  chunking = up.history(from, to, false).then(
-    (h) => { tl.appendReplay(h); },
-    () => { /* asked again on the next frame */ },
+  const to = Math.min(from + chunkMs, tl.replayTo);
+  chunking = up.history(from, to, false, REPLAY_CEILING).then(
+    (h) => {
+      tl.appendReplay(h);
+      const bytes = h.bytes ?? 0;
+      if (bytes < REPLAY_CEILING / 4) chunkMs = Math.min(REPLAY_MAX, Math.round(chunkMs * 1.5));
+      else if (bytes > REPLAY_CEILING / 2) chunkMs = Math.max(REPLAY_MIN, Math.floor(chunkMs / 2));
+    },
+    (e) => {
+      if (!refused(e)) return; // the network: asked again by the next answer
+      if (chunkMs > REPLAY_MIN) { chunkMs = Math.max(REPLAY_MIN, Math.floor(chunkMs / 2)); return; }
+      console.log(`replay: ${Math.round((to - from) / 1000)} s from ${from} is over ${REPLAY_CEILING >> 10} KB; jumping it`);
+      rebaseAt = to;
+    },
   ).finally(() => { chunking = null; });
   return chunking;
 }
@@ -130,7 +168,7 @@ type Conn = Result<'connect'>;
 
 async function connect(server: string, token: string, epoch0: number): Promise<Conn> {
   epochAtZero = epoch0;
-  const none: Conn = { ok: false, status: 'not connected', error: '', seq: 0, label: '', kind: '', needsSetup: false };
+  const none: Conn = { ok: false, status: 'not connected', error: '', seq: 0, label: '', kind: '', needsSetup: false, signIn: '' };
   try {
     if (server === 'demo') {
       tl.wallNow = (c) => epochAtZero + c;
@@ -157,7 +195,14 @@ async function connect(server: string, token: string, epoch0: number): Promise<C
     motion.sync(tl.world);
     return { ...none, ok: true, status: 'connected', seq: tl.world.seq, label: up.label, kind: 'http' };
   } catch (e) {
-    return { ...none, status: 'offline', error: `Could not reach ${resolveBase(server) || 'the server'}: ${(e as Error).message ?? e}`, needsSetup: !resolveBase(server) };
+    const base = resolveBase(server);
+    const msg = String((e as Error).message ?? e);
+    // The server is there but wants a device token: its /connect page (behind SSO) mints one
+    // and hands it back as a switchyard:// link.
+    if (base && (/ answered 40[13]\b/.test(msg) || /refused the token|needs sign-in/.test(msg))) {
+      return { ...none, status: 'sign in', error: `${base.replace(/^https?:\/\//, '')} needs a device token: sign in on the web to get one.`, needsSetup: true, signIn: `${base}/connect` };
+    }
+    return { ...none, status: 'offline', error: `Could not reach ${base || 'the server'}: ${msg}`, needsSetup: !base };
   }
 }
 
@@ -271,7 +316,7 @@ export const sources: Sources = {
     return connect(server, token, epoch0);
   },
   liveFeed: ([server, token, seq, _gen, ok]) => liveFeed(server, token, seq, ok),
-  overview: ([t]) => { if (t > 0) advance(t); return overview(); },
+  overview: ([t]) => { if (t > 0) advance(t); return safe('overview', EMPTY_OV, overview); },
   timeControl: async ([what, speed]) => {
     if (what === 'pause') tl.pause();
     else if (what === 'play') {
@@ -297,7 +342,10 @@ export const sources: Sources = {
       }
       const to = tl.liveNow();
       const from = to - 3_600_000;
-      const h = await up.history(from, from + REPLAY_CHUNK);
+      chunkMs = 60_000;
+      // The fleet at `from` (v0.3), then frames only: never a base inside a big window.
+      const base = up.snapshotAt ? await up.snapshotAt(from).catch(() => null) : null;
+      const h = base ? { from, to: from, base, frames: [] } : await up.history(from, from + 60_000, true, 12 << 20);
       return { ok: tl.startReplay(h, to), status: 'replay' };
     } catch (e) {
       return { ok: false, status: String((e as Error).message ?? e) };
@@ -312,11 +360,14 @@ export const sources: Sources = {
   },
   search: ([q, t]) => {
     if (t > 0) advance(t);
-    return { hits: search(tl.world, q, tl.playhead).map((h) => ({ kind: h.kind, id: h.id, title: h.title, subtitle: h.subtitle, route: route(h.kind, h.id) })) };
+    return safe('search', { hits: [] }, () => ({ hits: search(tl.world, q, tl.playhead).map((h) => ({ kind: h.kind, id: h.id, title: h.title, subtitle: h.subtitle, route: route(h.kind, h.id) })) }));
   },
-  mainlines: ([t, org, filter, q]) => mainlines(tl.world, t > 0 ? tl.playhead : tl.playhead, org, filter, q),
-  prs: ([_t, org, filter, q]) => prs(tl.world, tl.playhead, org, filter, q),
-  fleet: () => fleet(tl.world, tl.playhead),
+  mainlines: ([_t, org, filter, q, focus]) => safe('mainlines', EMPTY_ML, () => mainlinesHeader(org, filter, q, focus)),
+  prs: ([_t, org, filter, q, repo]) => safe('prs', EMPTY_PRS, () => prsHeader(org, filter, q, repo)),
+  tablePick: ([table, x, y]) => safe('tablePick', NO_HIT, () => tablePick(table, x, y)),
+  viewOnTop: ([here]) => { topView = String(here ?? ''); return { ok: true, status: topView }; },
+  tableKey: ([table, key]) => safe('tableKey', NO_HIT, () => tableKey(table, key)),
+  fleet: () => safe('fleet', EMPTY_FLEET, () => fleet(tl.world, tl.playhead)),
   journey: async ([_s, _tok, repo, sha, t]) => {
     if (t > 0) advance(t);
     if (!repo || !sha) return journeyView(null, tl.playhead, ' ');
@@ -324,7 +375,7 @@ export const sources: Sources = {
       const j = await cached(`j:${repo}@${sha}`, () => (up ? up.journey(repo, sha) : Promise.resolve(null)));
       return journeyView(j, tl.playhead, '', liveLayer.offsetMin);
     } catch (e) {
-      return journeyView(null, tl.playhead, String((e as Error).message ?? e));
+      return journeyView(null, tl.playhead, String((e as Error)?.message ?? e));
     }
   },
   prDetail: async ([_s, _tok, repo, number, t]) => {
@@ -338,6 +389,90 @@ export const sources: Sources = {
     }
   },
 };
+
+// ---- the canvas tables' sources --------------------------------------------------------------
+// Contract asks for headers (counts, a tick that changes when the rows or their words do) every
+// 250 ms; the rows themselves are projected once per world change and filter, and painted by
+// the canvas, only those in view.
+
+type Ml = Result<'mainlines'>;
+type Pl = Result<'prs'>;
+const EMPTY_ML: Ml = { total: 0, red: 0, building: 0, shown: 0, tick: 0, top: '', atEnd: false, focusText: '', focusShown: false, summary: 'Main lines' };
+const EMPTY_PRS: Pl = { open: 0, ready: 0, blocked: 0, bots: 0, total: 0, tick: 0, top: '', atEnd: false, summary: 'Pull requests', repo: '' };
+const NO_HIT = { kind: '', id: '', label: '', route: '' };
+const EMPTY_OV: Result<'overview'> = {
+  status: 'waiting', mode: 'live', speed: 1, sentence: 'waiting for the fleet', summary: 'The delivery yard, waiting for data.', layoutKey: '', repos: 0,
+  building: 0, queued: 0, red: 0, appsUp: 0, appsTotal: 0, behind: '', seq: 0,
+};
+const EMPTY_FLEET = { apps: [], engines: [], queues: [], stats: [], up: 0, total: 0, down: 0, degraded: 0, attention: [], behindN: 0, never: 0, hasLatency: false, watcher: '', watcherTripped: false };
+
+/** A source that throws answers its empty value instead (and says so once in the log): a sparse
+ *  or surprising entity costs a view its rows, never the app. */
+const warned = new Set<string>();
+function safe<T>(name: string, empty: T, f: () => T): T {
+  try {
+    return f();
+  } catch (e) {
+    if (!warned.has(name)) { warned.add(name); console.log(`${name}: ${(e as Error)?.stack ?? e}`); }
+    return empty;
+  }
+}
+
+/** Changes when the rows change, and each second (their ages): what the canvas redraws on. */
+const tickOf = (seq: number) => seq * 100_000 + (Math.floor(tl.playhead / 1000) % 100_000);
+
+function mainlinesHeader(org: string, filter: string, q: string, focus: string): Ml {
+  const now = tl.playhead;
+  mlTable.project(tl.world, org, filter, q);
+  const c = mlTable.counts;
+  const row = focus ? mlTable.row(focus) : undefined;
+  const focusText = row ? `${row.r.name ?? row.id} · ${stateWords(row, now)}` : '';
+  return {
+    total: c.total, red: c.red, building: c.building, shown: c.shown, tick: tickOf(mlTable.seq), top: mlTable.table.topKey(), atEnd: mlTable.table.atEnd(), focusText,
+    focusShown: !!focus && mlTable.table.visible(focus),
+    summary: `Main lines: ${c.shown} repos, ${c.red} red, ${c.building} building.${focusText ? ` Focused: ${focusText}.` : ''} Arrow keys move, Return opens.`,
+  };
+}
+
+function prsHeader(org: string, filter: string, q: string, repo: string): Pl {
+  prTable.project(tl.world, org, filter, q, repo);
+  const c = prTable.counts;
+  return {
+    ...c, tick: tickOf(prTable.seq), top: prTable.table.topKey(), atEnd: prTable.table.atEnd(), repo,
+    summary: `Pull requests: ${c.total} shown, ${c.open} open, ${c.ready} ready to merge, ${c.blocked} blocked. Arrow keys move, Return opens.`,
+  };
+}
+
+function tableOf(name: string): MainlinesModel | PrsModel {
+  return name === 'prs' ? prTable : mlTable;
+}
+
+/** A press on a table: an open row's own target (a link, a dot), else the row. */
+function tablePick(name: string, x: number, y: number) {
+  const m = tableOf(name);
+  const p = m.table.pick(x, y);
+  if (!p) return NO_HIT;
+  if (p.sub) return { kind: p.sub.kind, id: p.sub.id, label: p.sub.label, route: p.sub.route };
+  return { kind: 'row', id: p.key, label: p.key, route: m.routeOf(p.key) };
+}
+
+/** A key on a table: arrows move the focus, Return opens it, the page keys scroll. */
+function tableKey(name: string, key: string) {
+  const m = tableOf(name);
+  const t = m.table;
+  const focus = (id: string) => ({ kind: 'focus', id, label: id, route: '' });
+  switch (key) {
+    case 'ArrowDown': case 'j': return focus(t.neighbour(1));
+    case 'ArrowUp': case 'k': return focus(t.neighbour(-1));
+    case 'PageDown': case ' ': t.scrollBy(t.H * 0.9); return { ...NO_HIT, kind: 'scroll' };
+    case 'PageUp': t.scrollBy(-t.H * 0.9); return { ...NO_HIT, kind: 'scroll' };
+    case 'Home': t.scrollTo(0); return focus(t.keys[0] ?? '');
+    case 'End': t.scrollTo(Infinity); return focus(t.keys.at(-1) ?? '');
+    case 'Escape': return focus('');
+    case 'Enter': return t.focus ? { kind: 'open', id: t.focus, label: t.focus, route: m.routeOf(t.focus) } : NO_HIT;
+    default: return NO_HIT;
+  }
+}
 
 /** A detail fetched at most every 5 s of the module clock while its view is open (the views
  *  re-ask every 250 ms so their ages tick; the server is asked far less). */
@@ -357,11 +492,33 @@ export const answer: Answer = ((source: keyof Sources, args: unknown, store: Sto
   (sources[source] as (a: unknown, s: Store, st: unknown, n: unknown) => unknown)(args, store, storage, native)) as Answer;
 
 // ---- canvases ------------------------------------------------------------------------------
-export const surfaces: Record<string, number> = { yardStatic: 1, yardLive: 2, rowDots: 2 };
+export const surfaces: Record<string, number> = { yardStatic: 1, yardLive: 2, mainlinesTable: 9, prsTable: 9 };
+
+/** The route on top (`viewOnTop`). The yard stays mounted under every other view; its live
+ *  layer animating there cost 3-4× the ops of the view on top. Covered, it is not drawn (the
+ *  canvas keeps its last pixels) and asks for frames still, so it resumes on its first frame. */
+let topView = '';
 
 export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame): boolean {
+  if (surface === 'yardLive' && topView !== '' && topView !== 'yard') return true;
+  try {
+    return drawSurface(surface, args, ctx, frame);
+  } catch (e) {
+    // A draw that throws paints a line saying so, and the app goes on.
+    if (!warned.has(`draw:${surface}`)) { warned.add(`draw:${surface}`); console.log(`draw ${surface}: ${(e as Error)?.stack ?? e}`); }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.clearRect(0, 0, frame.width, frame.height);
+    ctx.font = "12px 'Commit Mono', ui-monospace, monospace";
+    ctx.fillStyle = '#8A8A8A';
+    ctx.fillText(`This view could not be drawn: ${String((e as Error)?.message ?? e).slice(0, 120)}`, 16, 24);
+    return false;
+  }
+}
+
+function drawSurface(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame): boolean {
   if (surface === 'yardStatic') {
-    advance(frame.time);
+    advance(frame.time, false);
     const lay = ensureLayout(frame.width, frame.height);
     drawStatic(ctx, lay);
     return false;
@@ -369,18 +526,32 @@ export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
   if (surface === 'yardLive') {
     const dt = Math.max(0, Math.min(100, frame.time - lastLive));
     lastLive = frame.time;
-    advance(frame.time);
+    advance(frame.time, false);
     const lay = ensureLayout(frame.width, frame.height);
     motion.reduced = args[0] === 'reduced';
     motion.update(clock, tl.world, dt);
     liveLayer.draw(ctx, lay, tl, motion, clock, motion.reduced);
     return true;
   }
-  if (surface === 'rowDots') {
-    const r = tl.world.repos.get(String(args[0]));
-    ctx.clearRect(0, 0, frame.width, frame.height);
-    if (r) dotLine(ctx, r.main?.recent ?? [], 6, frame.width - 30, frame.height / 2 + 3, 15, clock, { red: isRed(r), culprit: isRed(r) ? r.main.culprit : null, r: 4.5 });
-    return false;
+  if (surface === 'mainlinesTable') {
+    // (tick, focus, wheel, px, py, org, filter, q, kick)
+    const [, focus, wheel, px, py, org, filter, q] = args as [number, string, number, number, number, string, string, string, number];
+    mlTable.project(tl.world, String(org ?? ''), String(filter ?? ''), String(q ?? ''));
+    const t = mlTable.table;
+    t.syncWheel(Number(wheel) || 0);
+    t.pointer(Number(px), Number(py));
+    t.setFocus(String(focus ?? ''));
+    return mlTable.draw(ctx, frame, tl.playhead, tl.world.loaded);
+  }
+  if (surface === 'prsTable') {
+    // (tick, focus, wheel, px, py, filter, q, repo, kick)
+    const [, focus, wheel, px, py, filter, q, repo] = args as [number, string, number, number, number, string, string, string, number];
+    prTable.project(tl.world, '', String(filter ?? ''), String(q ?? ''), String(repo ?? ''));
+    const t = prTable.table;
+    t.syncWheel(Number(wheel) || 0);
+    t.pointer(Number(px), Number(py));
+    t.setFocus(String(focus ?? ''));
+    return prTable.draw(ctx, frame, tl.playhead, tl.world.loaded);
   }
   return false;
 }

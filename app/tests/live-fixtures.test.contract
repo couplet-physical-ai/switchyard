@@ -1,0 +1,98 @@
+// The recorded real fleet: contract/fixtures (394 repos, sanitized from the live
+// upstreams). `bun exact.mjs test` starts app.json's `commands.server` (server/mock.ts
+// --fixtures ../contract/fixtures --frozen, read at run time, nothing copied into app/) at the
+// address src/api.ts names, and the server field's `fixtures` connects to it. The same on web
+// and macOS; no devbox server.
+
+test "the real fleet's main lines are one canvas that scrolls, focuses and opens"
+  clock data
+  tap "setup-connect"
+  clock settle
+  type "server-field" "fixtures"
+  tap "settings-save"
+  clock data
+  clock +500
+  expect state conn.ok == true
+  expect state ov.repos == 394
+  tap "tab-mainlines"
+  clock settle
+  clock +600
+  expect tree has "mainlines-table"
+  expect state mlData.total == 394
+  expect state mlData.red == 30
+  expect text "mainlines-count" == "394 repos · 30 red · 0 building"
+  tap "mainlines-table" wheel 0 2000
+  clock +800
+  expect state mlWheel == 2000
+  expect state mlData.top == "Northwind-Labs/kestrel-status"
+  tap "mainlines-table" wheel 0 200000
+  clock +800
+  expect state mlData.atEnd == true
+  tap "mainlines-table" wheel 0 -1000000
+  clock +800
+  expect state mlData.top == "couplet-physical-ai/switchyard"
+  expect state mlData.atEnd == false
+  tap "mainlines-table"
+  clock data
+  clock +400
+  expect state mlData.focusShown == true
+  tap "mainlines-table"
+  clock data
+  clock settle
+  expect state here == "commit"
+  back
+  clock settle
+  clock +400
+  expect state here == "mainlines"
+  expect state mlData.focusShown == true
+
+test "a deep link focuses a repo at the end of the list and scrolls it into view"
+  clock data
+  tap "setup-connect"
+  clock settle
+  type "server-field" "fixtures"
+  tap "settings-save"
+  clock data
+  clock +500
+  type "root" "/mainlines?repo=copper-browser%2Fvivid-harbor"
+  clock settle
+  clock +600
+  expect state mlFocus == "copper-browser/vivid-harbor"
+  expect state mlData.focusShown == true
+  expect tree has "mainlines-focus"
+  tap "state-red"
+  clock +400
+  expect text "mainlines-count" == "30 of 394 repos · 30 red · 0 building"
+
+test "the real fleet's pull requests: one canvas, filters, a row opens its PR"
+  clock data
+  tap "setup-connect"
+  clock settle
+  type "server-field" "fixtures"
+  tap "settings-save"
+  clock data
+  clock +500
+  tap "tab-prs"
+  clock settle
+  clock +600
+  expect tree has "prs-table"
+  expect state prData.open == 765
+  expect state prData.total == 765
+  expect text "prs-count" == "765 open · 376 ready to merge · 300 blocked · 489 from bots"
+  tap "prs-table" wheel 0 3000
+  clock +800
+  expect state prWheel == 3000
+  tap "prs-ready"
+  clock +400
+  expect state prData.total == 376
+  tap "prs-blocked"
+  clock +400
+  expect state prData.total == 300
+  tap "prs-open"
+  clock +400
+  tap "prs-table"
+  clock data
+  clock settle
+  clock data
+  expect state here == "pr"
+  expect tree has "pr-title"

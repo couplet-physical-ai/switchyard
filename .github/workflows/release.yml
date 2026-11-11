@@ -73,6 +73,7 @@ jobs:
         if: env.MODE != 'placeholder'
         run: |
           set -euo pipefail
+          [[ "$(bun --version)" == 1.4.2 ]] || { echo "Exact needs Bun 1.4.2 exactly, got $(bun --version)"; exit 1; }
           git clone -q --filter=blob:none https://github.com/expo/exact.git "$RUNNER_TEMP/exact"
           git -C "$RUNNER_TEMP/exact" checkout -q "${{ steps.v.outputs.exact_pin }}"
           echo "EXACT_DIR=$RUNNER_TEMP/exact" >> "$GITHUB_ENV"
@@ -105,8 +106,10 @@ jobs:
         run: xcrun -sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
       - name: Build
         run: scripts/release/build-macos.sh --mode "$MODE" --version "${{ steps.v.outputs.version }}"
-      - name: Package (ad-hoc sign, zip, dmg, sha256)
-        run: scripts/release/package-macos.sh "${{ steps.v.outputs.version }}"
+      - name: Package (ad-hoc sign, zip, dmg, sha256, latest.json)
+        run: |
+          scripts/release/package-macos.sh "${{ steps.v.outputs.version }}"
+          python3 scripts/release/latest-json.py "${{ steps.v.outputs.version }}" "$GITHUB_SHA"
       - name: Smoke (launch the packaged app for 5 s)
         run: |
           set -euo pipefail
@@ -122,6 +125,7 @@ jobs:
             dist/*.zip
             dist/*.dmg
             dist/SHA256SUMS
+            dist/latest.json
           retention-days: 14
       - name: GitHub release
         if: env.MODE != 'exact-probe' && inputs.publish != false
@@ -135,11 +139,20 @@ jobs:
           cat "$RUNNER_TEMP/notes.md"
           pre=(); [[ "${{ inputs.prerelease }}" == true ]] && pre=(--prerelease)
           if gh release view "v$V" >/dev/null 2>&1; then
-            gh release upload "v$V" dist/*.zip dist/*.dmg dist/SHA256SUMS --clobber
+            gh release upload "v$V" dist/*.zip dist/*.dmg dist/SHA256SUMS dist/latest.json --clobber
             gh release edit "v$V" --notes-file "$RUNNER_TEMP/notes.md"
           else
-            gh release create "v$V" dist/*.zip dist/*.dmg dist/SHA256SUMS --target "$GITHUB_SHA" \
+            gh release create "v$V" dist/*.zip dist/*.dmg dist/SHA256SUMS dist/latest.json --target "$GITHUB_SHA" \
               --title "Switchyard $V" --notes-file "$RUNNER_TEMP/notes.md" "${pre[@]}"
           fi
           gh release view "v$V" --json url,assets --jq '.url, (.assets[] | "  \(.name) \(.size)")'
           echo "The tap's bump-switchyard workflow picks this up within 20 min; scripts/release.sh triggers it at once."
+      - name: macOS tests (app/tests/*.test.contract on the macOS host)
+        if: env.MODE == 'app'
+        # Runs after the release is published (it takes ~17 min) and only reports, for now: on GitHub's 3-core runner the demo's `connect` takes
+        # 230-340 ms of one turn, over Exact's 100 ms budget, so Exact refuses it and 6 of 13
+        # tests fail (they pass on the Mac mini). Make it gating once the client yields there.
+        continue-on-error: true
+        env:
+          EXACT2: ${{ runner.temp }}/exact
+        run: app/scripts/build.sh test macos
