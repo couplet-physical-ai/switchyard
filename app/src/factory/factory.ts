@@ -31,9 +31,8 @@ import { Coffee } from './coffee.ts'; // fab-lens
 import type { FactoryFx } from './lens.ts'; // fab-lens
 import { PLAN, VIA_WORDS } from './layout.ts';
 import { F, HOUR_MS, MONO, SMALL, TITLE, box as boxP, clockWords, crate as crateP, dur, easeInOut, flushLights as flushLightsP, hash, onScreen as onScreenP, pipeWords as pipeWordsP, poly as polyP, quad as quadP, ring as ringP, runningStep } from './prims.ts';
-import type { Bay, Block, Crate, HitBox, Label, LiveFrame, Pt } from './types.ts';
-import { Crates, Reactions } from './crates.ts';
-import { Labels } from './labels.ts';
+import type { Bay, Block, Crate, DistrictBox, FloorPass, HitBox, Label, Layer, LiveFrame, Pt } from './types.ts';
+import { buildLayers } from './layers.ts';
 
 export type { Plan } from './types.ts';
 export { dur };
@@ -50,21 +49,26 @@ export class Factory {
   readonly budget = new Budget();
   private gf = new Gfx();
   private gl = new Gfx();
-  /** Crates in motion and the reactions they set off (crates.ts); the floor's words (labels.ts). */
-  readonly crates = new Crates(this);
-  readonly reactions = new Reactions(this);
-  readonly words = new Labels(this);
-  bays: Bay[] = [];
-  blocks: Block[] = [];
-  blockAt = new Map<string, Block>();
-  districtBox: { team: string; u0: number; v0: number; u1: number; v1: number; n: number }[] = [];
+  // ---- the layers (layers.ts): every stage of the floor, and the registry the loop runs ----
+  private readonly L = buildLayers(this);
+  readonly floor = this.L.floor;
+  readonly plant = this.L.plant;
+  readonly city = this.L.city;
+  readonly crates = this.L.crates;
+  readonly reactions = this.L.reactions;
+  readonly words = this.L.words;
+  /** Back to front: every hook of every layer runs in this order. */
+  readonly order: Layer[] = this.L.order;
+  /** Every machine's slots (plant.ts). */
+  get bays(): Bay[] { return this.plant.bays; }
+  /** The city's blocks, by app, and its districts (city.ts). */
+  get blocks(): Block[] { return this.city.blocks; }
+  get blockAt(): Map<string, Block> { return this.city.blockAt; }
+  get districtBox(): DistrictBox[] { return this.city.districtBox; }
   private hits: HitBox[] = [];
   /** The labels placed this frame (the placer's, labels.ts). */
   get labels(): Label[] { return this.words.list; }
   private floorSig = '';
-  private cityKey = '';
-  private cityRows: Block[][] = [];
-  private cityPitch = 19;
   // ---- the frame budget's plumbing (DESIGN.md "Factory", "Rendering") ----
   /** Stress mode: a 10× fleet for the renderer (stress.ts); `stressWanted` lands at the next draw. */
   readonly stress = new FactoryStress();
@@ -135,7 +139,7 @@ export class Factory {
     this.census.factor = this.stress.on ? FACTOR : 1;
     this.census.invalidate();
     this.qCostAt.fill(-1e12);
-    this.cityKey = '';
+    this.city.invalidate();
   }
 
   // ---- events → crates -----------------------------------------------------------------------
@@ -147,198 +151,17 @@ export class Factory {
   onEvent(e: Event, w: World, t: number): void {
     if (this.reduced) return;
     this.crates.cap();
-    const orgOf = (repo: string) => w.orgOf(repo);
-    const R = this.reactions.rp;
-    switch (e.k) {
-      case 'push': {
-        const org = e.bot || e.author?.endsWith('[bot]') ? BOTS : orgOf(e.repo);
-        const main = e.branch === (w.repos.get(e.repo)?.default_branch ?? 'main');
-        const dv = this.dockV(org);
-        const route: Pt[] = [[DOCK_U1 - 6, dv], [COLLECT_U, dv], [COLLECT_U, AISLE_V]];
-        if (main) route.push([YARD_U1, AISLE_V], [GATE_U + 10, AISLE_V], [RAIL_U0 + 10, this.railV(orgOf(e.repo))]);
-        else route.push([ROW_U[1], AISLE_V], [ROW_U[1], AGE_V[0]]);
-        const cr = this.crates.spawn(`${e.repo}@${e.sha}`, 'commit', route, t, main ? 4200 : 2600, false, '', org);
-        R.add(R_DOOR, DOCK_U1, dv, 6, cr.t0, false, 700);
-        if (main) { R.add(R_RING, GATE_U + 4, AISLE_V, 40, this.crates.arrives(cr, 4), false); R.add(R_RING, RAIL_U0 + 10, this.railV(orgOf(e.repo)), 4, this.crates.arrives(cr, 5), false); }
-        else R.add(R_RING, ROW_U[1], AGE_V[0] + STACK_DV / 2, 4, this.crates.arrives(cr, 4), false, 900);
-        break;
-      }
-      case 'merge': {
-        const org = orgOf(e.repo);
-        const cr = this.crates.spawn(`${e.repo}@${e.sha}`, 'commit', [[ROW_U[3], AGE_V[1]], [ROW_U[3], AISLE_V], [YARD_U1, AISLE_V], [GATE_U + 10, AISLE_V], [RAIL_U0 + 10, this.railV(org)], [RAIL_U0 + 60, this.railV(org)]], t, 2600, false, '', org);
-        R.add(R_RING, GATE_U + 4, AISLE_V, 40, this.crates.arrives(cr, 3), false);
-        R.add(R_RING, RAIL_U0 + 10, this.railV(org), 4, this.crates.arrives(cr, 4), false);
-        break;
-      }
-      case 'enqueue': {
-        const org = orgOf(e.repo);
-        const lane = e.lane === 'gha' ? 1 : 0;
-        const q = lane ? this.census.gha.length : this.census.rr.length;
-        const end = Math.max(INTAKE_U0 + 8, INTAKE_U1 - 8 - q * 11);
-        const cr = this.crates.spawn(e.pipeline, 'pipeline', [[RAIL_U1 - 10, this.railV(org)], [RAIL_U1 + 12, this.railV(org)], [INTAKE_U0, LANE_V[lane]], [end, LANE_V[lane]]], t, 1800, false, '', org);
-        R.add(R_RING, end, LANE_V[lane], 4, this.crates.arrives(cr, 3), false, 900);
-        break;
-      }
-      case 'start': {
-        const p = w.pipelines.get(e.pipeline);
-        const bay = this.bayOf(e.pipeline, w);
-        const lane = p?.lane === 'gha' ? 1 : 0;
-        if (bay) {
-          const cr = this.crates.spawn(e.pipeline, 'pipeline', [[INTAKE_U1 - 6, LANE_V[lane]], [DIST_U, LANE_V[lane]], [DIST_U, bay.v + bay.dv / 2], [bay.u + 6, bay.v + bay.dv / 2]], t, 1600, false, '', p ? orgOf(p.repo) : '');
-          R.add(R_RING, bay.u + bay.du / 2, bay.v + bay.dv / 2, ENG_H, this.crates.arrives(cr, 3), false, 1000);
-        }
-        break;
-      }
-      case 'finish': {
-        const p = w.pipelines.get(e.pipeline);
-        if (!p) break;
-        const red = e.state === 'failure' || e.state === 'error';
-        if (e.state === 'canceled' || e.state === 'skipped') break;
-        const from = this.lastBay.get(e.pipeline);
-        const v0 = from ? from.v + from.dv / 2 : ENG_V0 + ENG_DV / 2;
-        const u0 = from ? from.u + from.du / 2 : ENG_U1 - 20;
-        const org = orgOf(p.repo);
-        const route: Pt[] = [[u0, v0], [ENG_U1 + 6, v0], [SCAN_U, v0]];
-        let dur = 1600;
-        if (red) {
-          route.push([SCAN_U, RETURN_V], [24, RETURN_V], [24, this.dockV(org)], [DOCK_U0 + 8, this.dockV(org)]);
-          dur = 9000;
-        } else route.push([SCAN_U + 14, v0]);
-        const cr = this.crates.spawn(e.pipeline, 'pipeline', route, t, dur, red, red ? `${p.repo.split('/')[1]} · ${failingStep(p)}` : '', org);
-        R.add(R_BEAM, SCAN_U, v0, 56, this.crates.arrives(cr, 2), red, 700);
-        if (red) { R.add(R_DOOR, DOCK_U1, this.dockV(org), 6, this.crates.arrives(cr, 6), true, 1400); R.add(R_RING, DOCK_U0 + 8, this.dockV(org), 8, this.crates.arrives(cr, 6), true, 1400); }
-        break;
-      }
-      case 'deploy': {
-        if (e.state !== 'running' && e.state !== 'success' && e.state !== 'failure') break;
-        const b = this.blockAt.get(e.app);
-        const vi = Math.max(0, VIAS.indexOf((e.via === 'manual' ? 'gha_fallback' : e.via) as typeof VIAS[number]));
-        if (e.state === 'running' && b) {
-          const cr = this.crates.spawn(`${e.app}@${e.sha}`, 'deploy', [[SCAN_U + 14, TRACK_V[vi]], [TRACK_U1, TRACK_V[vi]], [CITY_U0 - 4, b.v + b.d / 2], [b.u + b.d / 2, b.v + b.d / 2]], t, 2400, false, '', '');
-          R.add(R_RING, b.u + b.d / 2, b.v + b.d / 2, b.h + 1.5, this.crates.arrives(cr, 3), false, 1200);
-        }
-        if (e.state !== 'running' && b) R.add(R_RING, b.u + b.d / 2, b.v + b.d / 2, b.h + 1.5, t, e.state === 'failure', 1600, e.state === 'success');
-        break;
-      }
-      case 'health': {
-        const b = this.blockAt.get(e.app);
-        if (b) R.add(R_RING, b.u + b.d / 2, b.v + b.d / 2, b.h + 1.5, t, e.to === 'down' || e.to === 'degraded', 1600, e.to === 'up');
-        break;
-      }
-      default: break;
-    }
+    for (const L of this.order) L.onEvent?.(e, w, t);
   }
 
-  private lastBay = new Map<string, Bay>();
   private flown = false;
   /** fab-lens: every object is a lens (lens.ts); what changed since you last looked (coffee.ts). */
   readonly lens = new Lenses(this);
   readonly coffee = new Coffee(this);
 
-  private dockV(org: string): number {
-    const i = this.census.docks.findIndex((d) => d.org === org);
-    return 66 + (i < 0 ? this.census.docks.length - 1 : i) * 96;
-  }
-
-  private railV(org: string): number {
-    const i = this.census.rails.findIndex((r) => r.org === org);
-    return RAIL_V[i < 0 ? 0 : Math.min(RAIL_V.length - 1, i)];
-  }
-
-  private bayOf(pid: string, w: World): Bay | null {
-    this.layoutBays(w);
-    const b = this.bays.find((x) => x.pid === pid) ?? null;
-    if (b) this.lastBay.set(pid, b);
-    return b;
-  }
-
-  /** Bays: each machine's slots, the k-th running pipeline of a host in bay k. */
-  private layoutBays(w: World): void {
-    void w;
-    const out: Bay[] = [];
-    this.census.groups.forEach((g, gi) => {
-      const v0 = ENG_V0 + gi * ENG_STEP;
-      const n = Math.max(1, g.slots);
-      const span = ENG_U1 - ENG_U0 - 28;
-      const du = span / n;
-      for (let k = 0; k < n; k++) {
-        out.push({ u: ENG_U0 + 14 + k * du + 3, v: v0 + 16, du: du - 6, dv: ENG_DV - 40, group: gi, slot: k, pid: g.running[k] ?? '' });
-      }
-    });
-    this.bays = out;
-    for (const b of out) if (b.pid) this.lastBay.set(b.pid, b);
-  }
-
-  // ---- the city ------------------------------------------------------------------------------
-  private layoutCity(): void {
-    const c = this.census;
-    const key = `${c.districts.map((d) => `${d.team}:${d.apps.length}`).join(',')}`;
-    if (key === this.cityKey) return;
-    this.cityKey = key;
-    // Districts fill columns of the city, back to front, then the next column; a street between.
-    // The pitch shrinks until the whole city fits its plot (stress mode's 2,370 apps too).
-    let pitch = 19;
-    for (; pitch > 4; pitch -= pitch > 10 ? 1 : 0.5) if (this.packCity(pitch, true)) break;
-    this.packCity(pitch, false);
-    // far first; and the rows (one v each), the floor's batches
-    this.blocks.sort((a, b) => (a.u + a.v * 3.47) - (b.u + b.v * 3.47));
-    const rows = new Map<number, Block[]>();
-    for (const b of this.blocks) { let r = rows.get(b.v); if (!r) { r = []; rows.set(b.v, r); } r.push(b); }
-    this.cityRows = [...rows.entries()].sort((a, b) => a[0] - b[0]).map((e) => e[1]);
-    this.cityPitch = pitch;
-  }
-
-  /** The city's blocks at `pitch`; `dry`: only whether they fit the plot. */
-  private packCity(pitch: number, dry: boolean): boolean {
-    const c = this.census;
-    const d = Math.max(3, Math.round(pitch * 0.68 * 2) / 2), street = Math.max(6, Math.round(pitch * 0.84));
-    const hk = pitch / 19;
-    const cols = Math.floor((CITY_U1 - CITY_U0 + 6) / pitch);
-    let u = CITY_U0, v = CITY_V0;
-    let colW = 0;
-    if (!dry) { this.blocks = []; this.blockAt.clear(); this.districtBox = []; }
-    let virt = 0;
-    for (let di = 0; di < c.districts.length; di++) {
-      const dist = c.districts[di];
-      const n = dist.apps.length;
-      // Pack districts as rectangles: width in cells chosen so the district is about square.
-      let w = Math.max(2, Math.min(cols, Math.ceil(Math.sqrt(n * 1.1))));
-      if (n > 60) w = Math.min(cols, Math.max(7, Math.ceil(Math.sqrt(n * 0.4))));
-      const h = Math.ceil(n / w);
-      if (v + h * pitch > CITY_V1 + 4) { u += colW * pitch + street; v = CITY_V0; colW = 0; }
-      if (dry) {
-        if (u + w * pitch > CITY_U1 + 8 || v + h * pitch > CITY_V1 + 4) return false;
-        v += h * pitch + street;
-        colW = Math.max(colW, w);
-        continue;
-      }
-      const u0 = u, v0 = v;
-      dist.apps.forEach((id, i) => {
-        const bu = u0 + (i % w) * pitch, bv = v0 + Math.floor(i / w) * pitch;
-        const deps = c.deploys24.get(id) ?? 0;
-        const idle = id.startsWith('~idle');
-        const hv = idle ? 4 : id.includes('~') ? -2 - virt++ : -1;
-        const b: Block = { id, u: bu, v: bv, d, h: idle ? 3 + (hash(id) % 4) : (4 + Math.min(16, deps * 2.2) + (hash(id) % 3)) * hk, district: di, hv };
-        this.blocks.push(b);
-        this.blockAt.set(id, b);
-      });
-      this.districtBox.push({ team: dist.team, u0, v0, u1: u0 + w * pitch - (pitch - d), v1: v0 + h * pitch - (pitch - d), n });
-      v += h * pitch + street;
-      colW = Math.max(colW, w);
-    }
-    if (!dry) this.stress.ensureHealth(virt);
-    return true;
-  }
-
-  /** A block's health light: 0 up, 1 degraded, 2 down, 3 unknown, 4 none (the idle floor). */
-  private healthOf(b: Block): number {
-    if (b.hv === -1) {
-      const h = this.world.apps.get(b.id)?.health;
-      return h === 'up' ? 0 : h === 'degraded' ? 1 : h === 'down' ? 2 : 3;
-    }
-    if (b.hv >= 0) return b.hv;
-    return this.stress.health[-2 - b.hv] ?? 0;
-  }
+  /** The v of an org's dock and of its main-line rail (floor.ts). */
+  dockV(org: string): number { return this.floor.dockV(org); }
+  railV(org: string): number { return this.floor.railV(org); }
 
   // ---- pointer, camera -------------------------------------------------------------------------
   pointer(kind: string, x: number, y: number, buttons: number, t: number): HitBox | null {
@@ -442,45 +265,6 @@ export class Factory {
   /** A small crate (a cube) at floor point (u, v), side `d` world units. */
   crate(g: Gfx, u: number, v: number, d: number, red: boolean, dim: boolean, z = 2): void { crateP(this.cam, g, u, v, d, red, dim, z); }
 
-  /** A belt (a flow band) along an axis-aligned polyline; `lanes` ∝ throughput. */
-  private beltPath(g: Gfx, pts: Pt[], hw: number): void {
-    for (let i = 1; i < pts.length; i++) {
-      const [a, b] = [pts[i - 1], pts[i]];
-      const u0 = Math.min(a[0], b[0]) - (a[1] === b[1] ? 0 : hw), u1 = Math.max(a[0], b[0]) + (a[1] === b[1] ? 0 : hw);
-      const v0 = Math.min(a[1], b[1]) - (a[0] === b[0] ? 0 : hw), v1 = Math.max(a[1], b[1]) + (a[0] === b[0] ? 0 : hw);
-      this.quad(g, u0, v0, u1, v1, 0.5);
-    }
-  }
-
-  // ---- the plan: belts (polylines) and their last-hour throughput ------------------------------
-  private belts(): { id: string; pts: Pt[]; n: number; label: string; at: Pt }[] {
-    const c = this.census, f = c.flow;
-    const out: { id: string; pts: Pt[]; n: number; label: string; at: Pt }[] = [];
-    c.docks.forEach((d, i) => {
-      const v = 66 + i * 96;
-      out.push({ id: `dock${i}`, pts: [[DOCK_U1, v], [COLLECT_U, v]], n: d.perHour, label: '', at: [84, v] });
-    });
-    const v0 = 66, v1 = 66 + (c.docks.length - 1) * 96;
-    out.push({ id: 'collect', pts: [[COLLECT_U, v0], [COLLECT_U, v1]], n: f.pushes, label: '', at: [COLLECT_U, 200] });
-    out.push({ id: 'aisle', pts: [[COLLECT_U, AISLE_V], [YARD_U1, AISLE_V]], n: f.pushes, label: `${f.pushes} pushes/h`, at: [116, AISLE_V] });
-    out.push({ id: 'gate', pts: [[YARD_U1, AISLE_V], [RAIL_U0 - 6, AISLE_V]], n: f.merges, label: `${f.merges} merged/h`, at: [YARD_U1 + 4, AISLE_V] });
-    out.push({ id: 'intake', pts: [[RAIL_U1 + 14, 291], [INTAKE_U0, 291]], n: f.enqueued, label: `${f.enqueued} queued/h`, at: [RAIL_U1 + 16, 291] });
-    out.push({ id: 'feed', pts: [[INTAKE_U1, 291], [DIST_U, 291]], n: f.started, label: '', at: [INTAKE_U1, 291] });
-    const gv0 = ENG_V0 + ENG_DV / 2, gv1 = ENG_V0 + (c.groups.length - 1) * ENG_STEP + ENG_DV / 2;
-    out.push({ id: 'dist', pts: [[DIST_U, gv0], [DIST_U, gv1]], n: f.started, label: `${f.started} started/h`, at: [DIST_U, gv0] });
-    c.groups.forEach((_g, i) => {
-      const v = ENG_V0 + i * ENG_STEP + ENG_DV / 2;
-      out.push({ id: `out${i}`, pts: [[ENG_U1, v], [SCAN_U, v]], n: Math.round(f.finished / Math.max(1, c.groups.length)), label: '', at: [ENG_U1, v] });
-    });
-    VIAS.forEach((via, i) => {
-      out.push({ id: `track${i}`, pts: [[SCAN_U + 10, TRACK_V[i]], [TRACK_U1, TRACK_V[i]]], n: f.byVia[via] ?? 0, label: '', at: [SCAN_U + 14, TRACK_V[i]] });
-    });
-    out.push({ id: 'return', pts: [[SCAN_U, RETURN_V], [24, RETURN_V]], n: f.failed, label: '', at: [SCAN_U, RETURN_V] });
-    return out;
-  }
-
-  private laneW(n: number): number { return 5 + Math.min(4, Math.max(1, Math.ceil(n / 25))) * 4; }
-
   // ---- the floor layer -------------------------------------------------------------------------
   /** Fits the camera and recounts the census when due; true when it counted this turn (the
    *  count is the heavy part: a draw that counted leaves its painting to the next frame, so
@@ -490,8 +274,7 @@ export class Factory {
     const now = this.tl.playhead;
     const counted = this.census.update(this.world, now, t);
     if (counted) this.heavy = 1;
-    this.layoutCity();
-    this.layoutBays(this.world);
+    for (const L of this.order) L.census?.(this.world);
     return counted;
   }
 
@@ -518,326 +301,26 @@ export class Factory {
     ctx.clearRect(0, 0, f.width, f.height);
     g.fillRect(0, 0, f.width, f.height, C.canvas);
     this.floorSig = want;
-    // the floor slab
-    g.begin_(); this.poly(g, [0, 0, 0, LU, 0, 0, LU, LV, 0, 0, LV, 0]); g.fill(F.floor);
-    // a faint isometric grid: every 20 units, a stronger line every 100 (low detail: only those)
-    const step = cam.s * 20 > 9 ? 20 : 40;
-    if (!lo) {
-      g.begin_();
-      for (let u = step; u < LU; u += step) if (u % 100) { g.move(cam.x(u, 0), cam.y(u, 0)); g.line(cam.x(u, LV), cam.y(u, LV)); }
-      for (let v = step; v < LV; v += step) if (v % 100) { g.move(cam.x(0, v), cam.y(0, v)); g.line(cam.x(LU, v), cam.y(LU, v)); }
-      g.stroke(F.grid, g.hair);
-    }
-    g.begin_();
-    for (let u = 100; u < LU; u += 100) { g.move(cam.x(u, 0), cam.y(u, 0)); g.line(cam.x(u, LV), cam.y(u, LV)); }
-    for (let v = 100; v < LV; v += 100) { g.move(cam.x(0, v), cam.y(0, v)); g.line(cam.x(LU, v), cam.y(LU, v)); }
-    g.stroke(F.gridMajor, g.hair);
-    // the slab's front lip
-    g.begin_(); this.poly(g, [0, LV, 0, LU, LV, 0, LU, LV, -6, 0, LV, -6]); g.fill('#0A0A0B');
-    g.begin_(); this.poly(g, [LU, 0, 0, LU, LV, 0, LU, LV, -6, LU, 0, -6]); g.fill('#080809');
-    g.begin_(); this.poly(g, [0, 0, 0, LU, 0, 0, LU, LV, 0, 0, LV, 0]); g.stroke(F.floorEdge, g.hair * 1.5);
-    // painted zones (dashed), one per stage
-    g.dash(true, 3, 4);
-    const zones: [number, number, number, number][] = [[4, 24, 72, 588], [YARD_U0 - 6, 92, YARD_U1 + 4, 600], [RAIL_U0 - 4, 98, RAIL_U1 + 6, 482], [INTAKE_U0 - 8, 252, INTAKE_U1 + 6, 330], [ENG_U0 - 8, 22, ENG_U1 + 40, 600], [CITY_U0 - 8, CITY_V0 - 8, CITY_U1 + 4, CITY_V1 + 6]];
-    g.begin_();
-    for (const z of zones) this.quad(g, z[0], z[1], z[2], z[3], 0);
-    g.stroke(F.zone, g.hair * 1.5);
-    g.dash(false);
-    // belts: one path for every belt's bed, one for their edges
-    const belts = this.belts();
-    g.begin_();
-    for (const b of belts) this.beltPath(g, b.pts, this.laneW(b.n) / 2);
-    g.fill(F.belt);
-    g.begin_();
-    for (const b of belts) this.beltPath(g, b.pts, this.laneW(b.n) / 2);
-    g.stroke(F.beltEdge, g.hair * 1.5);
-    // main-line rails and deploy tracks (two rails and sleepers), every track in two paths
-    const tracks: [number, number, number][] = [];
-    for (let i = 0; i < this.census.rails.length; i++) tracks.push([RAIL_U0, RAIL_U1, RAIL_V[i]]);
-    for (let i = 0; i < 3; i++) tracks.push([SCAN_U + 10, TRACK_U1, TRACK_V[i]]);
-    if (!lo) {
-      g.begin_();
-      for (const [u0, u1, v] of tracks) for (let u = u0 + 4; u < u1; u += 8) { g.move(cam.x(u, v - 5), cam.y(u, v - 5)); g.line(cam.x(u, v + 5), cam.y(u, v + 5)); }
-      g.stroke(F.sleeper, Math.max(1, cam.s * 1.6));
-    }
-    g.begin_();
-    for (const [u0, u1, v] of tracks) {
-      g.move(cam.x(u0, v - 3), cam.y(u0, v - 3)); g.line(cam.x(u1, v - 3), cam.y(u1, v - 3));
-      g.move(cam.x(u0, v + 3), cam.y(u0, v + 3)); g.line(cam.x(u1, v + 3), cam.y(u1, v + 3));
-    }
-    g.stroke(F.rail, g.hair * 2);
-    // rail ends converge into the intake funnel
-    g.begin_();
-    for (let i = 0; i < this.census.rails.length; i++) { g.move(cam.x(RAIL_U1, RAIL_V[i]), cam.y(RAIL_U1, RAIL_V[i])); g.line(cam.x(RAIL_U1 + 14, 291), cam.y(RAIL_U1 + 14, 291)); }
-    g.stroke(F.beltEdge, g.hair * 1.5);
-    // the blocks, far to near; each item is culled by its floor box
+    // the layers, back to front: each paints its ground now and hands its extruded things to one
+    // depth sort (far to near across every layer, each culled by its floor box); then what sits
+    // over them (the cars, the city), in the order asked
     const items: { k: number; f: () => void }[] = [];
-    const add = (u: number, v: number, fn: () => void, u1: number, v1: number, h: number) => { if (this.onScreen(u, v, u1, v1, h)) items.push({ k: u * 0.19 + v * 0.66, f: fn }); };
-    // sources: docks
-    this.census.docks.forEach((d, i) => {
-      const v = 66 + i * 96;
-      add(DOCK_U0, v, () => {
-        this.box(g, DOCK_U0, v - 30, DOCK_U1 - DOCK_U0, 60, 14);
-        // the dock's door: a dark slot on its right face
-        g.begin_(); this.poly(g, [DOCK_U1, v - 12, 1, DOCK_U1, v + 12, 1, DOCK_U1, v + 12, 10, DOCK_U1, v - 12, 10]); g.fill(F.bay);
-        if (d.org === BOTS) { g.begin_(); this.quad(g, DOCK_U0 + 6, v - 24, DOCK_U1 - 6, v + 24, 14); g.stroke(F.edgeHi, g.hair); }
-      }, DOCK_U1, v + 30, 14);
-    });
-    // the PR yard: a low slab with racks; stacks by phase (columns) × age (depth)
-    add(YARD_U0, 92, () => {
-      this.box(g, YARD_U0, 92, YARD_U1 - YARD_U0, 452, 2, '#141416', '#101011', '#0F0F10', F.floorEdge);
-    }, YARD_U1, 544, 2);
-    PHASES.forEach((_ph, r) => {
-      AGE_V.forEach((v, b) => {
-        const s = this.census.stacks[r][b];
-        const u0 = ROW_U[r] - ROW_DU / 2;
-        add(u0, v, () => this.stack(g, u0, v, s.n, s.stuck, s.red, b, lo), u0 + ROW_DU, v + STACK_DV, 48);
-      });
-    });
-    this.census.pallets.forEach((p, i) => {
-      const u0 = YARD_U0 + 8 + i * 76;
-      add(u0, PALLET_V, () => this.pallet(g, u0, PALLET_V - 16, p.n), u0 + 64, PALLET_V + 18, 34);
-    });
-    // merge gate: two posts and a beam over the aisle
-    add(GATE_U, AISLE_V - 30, () => {
-      this.box(g, GATE_U, AISLE_V - 36, 8, 8, 40);
-      this.box(g, GATE_U, AISLE_V + 28, 8, 8, 40);
-      this.box(g, GATE_U, AISLE_V - 36, 8, 72, 6 + 0, F.topHi);
-      g.begin_(); this.quad(g, GATE_U, AISLE_V - 36, GATE_U + 8, AISLE_V + 36, 40); g.fill(F.topHi);
-      g.begin_(); this.quad(g, GATE_U, AISLE_V - 36, GATE_U + 8, AISLE_V + 36, 40); g.stroke(F.edgeHi, g.hair * 1.5);
-    }, GATE_U + 8, AISLE_V + 36, 40);
-    // intake: the holding belt's frame (two rails along it)
-    add(INTAKE_U0, 256, () => {
-      this.box(g, INTAKE_U0, 258, INTAKE_U1 - INTAKE_U0, 4, 6);
-      this.box(g, INTAKE_U0, 320, INTAKE_U1 - INTAKE_U0, 4, 6);
-      g.begin_(); this.quad(g, INTAKE_U0, 291 - 1, INTAKE_U1, 291 + 1, 0.6); g.fill(F.beltEdge);
-    }, INTAKE_U1, 324, 6);
-    // the consumption engine: one big machine per host
-    this.census.groups.forEach((gr, gi) => {
-      const v0 = ENG_V0 + gi * ENG_STEP;
-      add(ENG_U0, v0, () => this.engineBlock(g, gr.online, gr.hosted, v0, gi, lo), ENG_U1 + 4, v0 + ENG_DV + 4, ENG_H);
-      // cpu / mem gauges: two towers at the machine's right end
-      add(ENG_U1 + 10, v0 + 40, () => {
-        this.box(g, ENG_U1 + 12, v0 + 34, 9, 9, 64, '#1B1B1D');
-        this.box(g, ENG_U1 + 25, v0 + 34, 9, 9, 64, '#1B1B1D');
-      }, ENG_U1 + 34, v0 + 43, 64);
-    });
-    // the test scanner: a tall frame across the floor
-    add(SCAN_U - 4, 30, () => {
-      this.box(g, SCAN_U - 4, 30, 8, 8, 56);
-      this.box(g, SCAN_U - 4, 590, 8, 8, 56);
-      g.begin_(); this.quad(g, SCAN_U - 4, 30, SCAN_U + 4, 598, 56); g.fill(F.topHi);
-      g.begin_(); this.quad(g, SCAN_U - 4, 30, SCAN_U + 4, 598, 56); g.stroke(F.edgeHi, g.hair * 1.5);
-    }, SCAN_U + 4, 598, 56);
+    const afters: (() => void)[] = [];
+    const fp: FloorPass = {
+      g, lo, idle,
+      add: (u, v, fn, u1, v1, h) => { if (this.onScreen(u, v, u1, v1, h)) items.push({ k: u * 0.19 + v * 0.66, f: fn }); },
+      after: (fn) => { afters.push(fn); },
+    };
+    for (const L of this.order) L.floor?.(fp);
     items.sort((a, b) => a.k - b.k);
     for (const it of items) it.f();
-    // the main lines' cars: they change at a merge or a run's end, which redraws this layer
-    // (`floorKey`), not every frame
-    if (!idle) this.drawCars(g, lo);
-    // the city: one block per app, a row (one v) at a time, far to near, batched (DESIGN.md "LOD")
-    this.drawCity(g, lo, idle);
+    for (const fn of afters) fn();
     const st = this.stat;
     st.floorDraws++;
     st.floorOps = g.ops;
     st.floorMs = this.budget.estimate(g.ops, g.arcs, g.texts, 0);
     if (!this.heavy) this.heavy = 2;
     return false;
-  }
-
-  /** The main lines' cars: the org's newest merged commits, newest at the right; one path per
-   *  face and state (settled gray, running amber, red), edges only zoomed in. */
-  private drawCars(g: Gfx, lo: boolean): void {
-    const cam = this.cam, c = this.census;
-    const carG = this.bA, carA = this.bB, carR = this.bC;
-    let cars = 0;
-    c.rails.forEach((r, i) => {
-      const v = RAIL_V[i];
-      const n = r.cars.length;
-      r.cars.forEach((car, k) => {
-        const u = RAIL_U1 - 12 - (n - 1 - k) * 10;
-        if (u < RAIL_U0 + 4) return;
-        const x = cam.x(u, v), y = cam.y(u, v);
-        if (x < -24 || x > cam.W + 24 || y < -24 || y > cam.H + 24) return;
-        const run = car.state === 'running' || car.state === 'pending';
-        (car.culprit ? carR : run ? carA : carG).add(u - 4, v - 4, 8, 8, 5);
-        cars++;
-      });
-    });
-    const carPx = 8 * cam.s;
-    const edge = !lo && carPx >= 6;
-    carG.flush(g, cam, '#6E6A62', '#4A4844', '#3E3C38', edge ? '#8A867E' : '', g.hair, 3);
-    carA.flush(g, cam, F.crateTop, F.crateSide, F.crateFront, edge ? '#F0CC8A' : '', g.hair, 3);
-    carR.flush(g, cam, F.redTop, F.redSide, F.redFront, edge ? '#E08088' : '', g.hair, 3);
-    this.stat.cars = cars;
-  }
-
-  /** cpu and mem fill each machine's two towers (gray; a red cap over 90 %); no reading: the
-   *  slots' utilization in a darker gray. */
-  private drawGauges(g: Gfx): void {
-    const cam = this.cam, c = this.census;
-    const gauge = this.bA, util = this.bB, cap = this.bC;
-    c.groups.forEach((gr, gi) => {
-      const v0 = ENG_V0 + gi * ENG_STEP;
-      const used = gr.slots ? gr.running.length / gr.slots : 0;
-      const vals = [gr.cpu >= 0 ? gr.cpu : -1, gr.mem >= 0 ? gr.mem : -1];
-      vals.forEach((val, k) => {
-        const u0 = ENG_U1 + 12 + k * 13;
-        if (val < 0) {
-          if (k === 0) util.add(u0, v0 + 34, 9, 9, 2 + 60 * used);
-          return;
-        }
-        const hh = 2 + 60 * clamp(val / 100, 0, 1);
-        gauge.add(u0, v0 + 34, 9, 9, hh);
-        if (val >= 90) cap.add(u0, v0 + 34, 9, 9, 0, hh);
-      });
-    });
-    util.flush(g, cam, '#3E3E42', '#2C2C30', '#262629', '', 1, 3);
-    gauge.flush(g, cam, '#9A9A9E', '#6A6A6E', '#58585C', '', 1, 3);
-    cap.flushQuads(g, cam, C.red);
-  }
-
-  /** The city's blocks with their health lights. LOD by a block's size on screen:
-   *  LOD0 (≥ 10 px) faces and edges, round lights; LOD1 (≥ 5 px) faces, square lights;
-   *  LOD2 (≥ 4 px) the silhouette and its top, a light only where it is not up; LOD3 a
-   *  district's run of blocks in a row as one low strip (a heatmap row). The ladder's low detail
-   *  takes one step coarser. Rows off screen, and blocks beside it, are skipped. */
-  private drawCity(g: Gfx, lo: boolean, idle: boolean): void {
-    const cam = this.cam;
-    const px = (this.blocks[0]?.d ?? 13) * cam.s;
-    let lod = px >= 10 ? 0 : px >= 5 ? 1 : px >= 4 ? 2 : 3;
-    if (lo) lod = Math.min(3, lod + 1);
-    const hist = this.stat.lod;
-    hist[0] = hist[1] = hist[2] = hist[3] = 0;
-    const batch = this.bA;
-    const lights = [this.bB, this.bC, this.bD];
-    const LIGHT = ['#6FA27C', C.packet, C.red];
-    const r = Math.max(1.1, Math.min(2.6, cam.s * 1.9));
-    const sq = Math.max(1, Math.min(2.2, cam.s * 1.4));
-    for (const row of this.cityRows) {
-      const v = row[0].v;
-      const d = row[0].d;
-      // the row's screen band
-      const yTop = cam.y(CITY_U1, v, 30), yBot = cam.y(CITY_U0, v + d, 0);
-      if (yBot < -20 || yTop > cam.H + 20) { hist[3] += row.length; continue; }
-      let n = 0;
-      // LOD3: a district's run of blocks in this row is one low strip (a heatmap row)
-      let runU0 = 0, runU1 = -1, runH = 0, runK = 0;
-      for (const b of row) {
-        const x0 = cam.x(b.u, b.v + b.d), x1 = cam.x(b.u + b.d, b.v);
-        if (x1 < -10 || x0 > cam.W + 10) { hist[3]++; continue; }
-        n++;
-        if (lod < 3) { batch.add(b.u, b.v, b.d, b.d, b.h); continue; }
-        if (runU1 >= 0 && b.u - runU1 <= this.cityPitch) { runU1 = b.u + b.d; runH += b.h; runK++; continue; }
-        if (runU1 >= 0) batch.add(runU0, v, runU1 - runU0, d, runH / runK);
-        runU0 = b.u; runU1 = b.u + b.d; runH = b.h; runK = 1;
-      }
-      if (lod === 3 && runU1 >= 0) batch.add(runU0, v, runU1 - runU0, d, runH / runK);
-      if (!n) continue;
-      hist[Math.min(2, lod)] += n;
-      if (lod === 0) batch.flush(g, cam, '#202023', '#161618', '#121214', '#333337', g.hair * 1.5, 3);
-      else if (lod === 1) batch.flush(g, cam, '#202023', '#161618', '#121214', '', 1, 3);
-      else batch.flush(g, cam, '#1E1E21', '#141416', '#141416', '', 1, 2);
-      if (idle) continue;
-      // the lights on this row's roofs, one path per colour
-      for (const b of row) {
-        const hl = this.healthOf(b);
-        if (hl > 2 || (lod >= 2 && hl === 0)) continue;
-        const lx = cam.x(b.u + b.d / 2, b.v + b.d / 2);
-        if (lx < -10 || lx > cam.W + 10) continue;
-        lights[hl].add(b.u + b.d / 2, b.v + b.d / 2, 0, 0, 0, b.h + 1.5);
-      }
-      for (let k = 0; k < 3; k++) this.flushLights(g, lights[k], LIGHT[k], lod === 0 ? r : lod === 1 ? sq : sq * 1.4, lod === 0);
-    }
-    // the glow under trouble breathes on the live layer (motion.ts's beat)
-  }
-
-  private flushLights(g: Gfx, b: BoxBatch, col: string, r: number, round: boolean): void { flushLightsP(this.cam, g, b, col, r, round); }
-
-  private stack(g: Gfx, u0: number, v0: number, n: number, stuck: number, red: number, bucket: number, lo = false): void {
-    // a pallet on the floor, crates stacked by count (1 crate layer per 2 PRs, a cap with a break)
-    this.box(g, u0, v0, ROW_DU, STACK_DV, 2, '#19191B', '#121214', '#101012', '#2A2A2E');
-    if (!n) return;
-    const layers = Math.min(16, Math.ceil(n / 3));
-    const lh = 2.6;
-    // neutral cargo: a conflict-majority stack gets one red mark (its edge), a stale-majority
-    // one a brighter edge (red is for failures, amber for what is in flight)
-    const hot = red > 0 && red >= n / 2 ? 'red' : stuck >= n / 2 ? 'stale' : '';
-    void bucket;
-    const top = hot === 'stale' ? '#323235' : '#2B2B2E';
-    const side = '#1E1E21';
-    const front = '#19191B';
-    const edge = hot === 'red' ? '#A04A50' : hot === 'stale' ? '#77777C' : '#3C3C40';
-    const inset = 7;
-    this.box(g, u0 + inset, v0 + inset, ROW_DU - inset * 2, STACK_DV - inset * 2, 2 + layers * lh, top, side, front, edge);
-    const cam = this.cam;
-    const ua = u0 + inset, ub = u0 + ROW_DU - inset, va = v0 + inset, vb = v0 + STACK_DV - inset;
-    // layer seams on the front and right faces (not on the low-detail floor)
-    if (!lo) {
-      g.begin_();
-      for (let k = 1; k < layers; k++) {
-        const z = 2 + k * lh;
-        g.move(cam.x(ua, vb), cam.y(ua, vb, z)); g.line(cam.x(ub, vb), cam.y(ub, vb, z)); g.line(cam.x(ub, va), cam.y(ub, va, z));
-      }
-      g.stroke(withAlpha(edge, 0.55), g.hair);
-    }
-    if (n > 48) {
-      // the cap: more than the stack shows
-      g.begin_(); this.quad(g, ua + 4, va + 4, ub - 4, vb - 4, 2 + layers * lh); g.stroke(edge, g.hair * 1.5);
-    }
-  }
-
-  private pallet(g: Gfx, u0: number, v0: number, n: number): void {
-    this.box(g, u0, v0, 64, 34, 3, '#1C1A16', '#141310', '#12110E', '#3A352B');
-    // crates on it: a grid whose fill grows with the count (up to 4×2 × 6 high)
-    const cols = 4, rows = 2;
-    const per = Math.max(1, Math.ceil(n / (cols * rows)));
-    const h = Math.min(30, 3 + Math.sqrt(per) * 4);
-    this.box(g, u0 + 5, v0 + 5, 54, 24, 3 + h, '#2E2A22', '#221F19', '#1C1A15', '#4A4334');
-    const cam = this.cam;
-    g.begin_();
-    for (let k = 1; k < cols; k++) { const u = u0 + 5 + k * 13.5; g.move(cam.x(u, v0 + 29), cam.y(u, v0 + 29, 3)); g.line(cam.x(u, v0 + 29), cam.y(u, v0 + 29, 3 + h)); g.line(cam.x(u, v0 + 5), cam.y(u, v0 + 5, 3 + h)); }
-    g.move(cam.x(u0 + 5, v0 + 17), cam.y(u0 + 5, v0 + 17, 3 + h)); g.line(cam.x(u0 + 59, v0 + 17), cam.y(u0 + 59, v0 + 17, 3 + h));
-    g.stroke('#4A4334', g.hair);
-  }
-
-  private engineBlock(g: Gfx, online: boolean, hosted: boolean, v0: number, gi: number, lo = false): void {
-    const edge = online ? F.edgeHi : F.edge;
-    // the plinth, then the machine: a long block with recessed bays on its top
-    this.box(g, ENG_U0 - 4, v0 - 4, ENG_U1 - ENG_U0 + 8, ENG_DV + 8, 3, '#141416', '#101012', '#0E0E10', F.floorEdge);
-    this.box(g, ENG_U0, v0, ENG_U1 - ENG_U0, ENG_DV, ENG_H, hosted ? '#1F1F22' : '#252528', '#19191B', '#151517', edge, g.hair * 2);
-    const cam = this.cam;
-    // bays: dark recesses, every bay of the machine in one path per part. A bay narrower than
-    // 6 px on screen (stress mode's ten times the slots) is a recess and its rail only.
-    const fine = !lo && (this.bays.find((b) => b.group === gi)?.du ?? 0) * cam.s >= 6;
-    const rec = this.bA, wall = this.bB, rail = this.bC;
-    for (const b of this.bays) {
-      if (b.group !== gi) continue;
-      rec.add(b.u, b.v, b.du, b.dv, 0, ENG_H);
-      rail.add(b.u, b.v + b.dv + 4, b.du, 5, 0, ENG_H);
-    }
-    rec.flushQuads(g, cam, F.bay);
-    if (fine) {
-      // the recess's inner walls (the far wall shows) and its rim
-      g.begin_();
-      for (const b of this.bays) if (b.group === gi) this.poly(g, [b.u, b.v, ENG_H, b.u + b.du, b.v, ENG_H, b.u + b.du, b.v, ENG_H - 5, b.u, b.v, ENG_H - 5]);
-      g.fill('#0B0B0C');
-      for (const b of this.bays) if (b.group === gi) wall.add(b.u, b.v, b.du, b.dv, 0, ENG_H);
-      wall.flushQuads(g, cam, '#38383C', true, g.hair);
-    }
-    // the progress rail along each bay's front lip
-    rail.flushQuads(g, cam, '#101012');
-    // vents on the front face
-    if (!lo) {
-      g.begin_();
-      for (let u = ENG_U0 + 12; u < ENG_U1 - 10; u += 9) { g.move(cam.x(u, v0 + ENG_DV), cam.y(u, v0 + ENG_DV, 8)); g.line(cam.x(u, v0 + ENG_DV), cam.y(u, v0 + ENG_DV, ENG_H - 8)); }
-      g.stroke('#1F1F22', g.hair * 1.5);
-    }
-    if (hosted) {
-      // hosted: dashed outline, a machine we do not own
-      g.dash(true, 3, 3);
-      g.begin_(); this.quad(g, ENG_U0 - 4, v0 - 4, ENG_U1 + 4, v0 + ENG_DV + 4, 3); g.stroke(F.edge, g.hair * 1.5);
-      g.dash(false);
-    }
   }
 
   // ---- the live layer ---------------------------------------------------------------------------
@@ -873,188 +356,18 @@ export class Factory {
     const sec = Math.floor(t / 1000);
     if (sec !== st.sec) { st.floorRate = st.floorDraws; st.floorDraws = 0; st.sec = sec; }
     if (c.skeleton) { this.words.idle(g); this.awake = false; return false; }
-    const z = cam.zoom;
-    const detail = z >= 1.6;
     const q = this.budget.quality;
     const fr = this.fr;
-    fr.ctx = ctx; fr.f = f; fr.t = t; fr.now = now; fr.q = q; fr.detail = detail;
-    const offX = (x: number) => x < -24 || x > cam.W + 24;
-    const offY = (y: number) => y < -24 || y > cam.H + 24;
-    // the floor moved under us (pan, zoom, a new shape): the floor layer redraws on its key;
-    // until it does, nothing here depends on it.
-    // 1. heat haze: a warm glow under the stage that backs up
-    if (c.bottleneck && q < 3) {
-      const at: Record<string, [number, number, number]> = { prs: [270, 300, 180], intake: [705, 291, 90], engines: [915, 300, 230], deploy: [1165, 330, 90] };
-      const [u, v, r] = at[c.bottleneck] ?? [0, 0, 0];
-      if (r) {
-        const x = cam.x(u, v), y = cam.y(u, v), R = r * cam.s;
-        const heat = clamp(c.heat[c.bottleneck], 0.3, 1.4) * (0.8 + 0.2 * breathe(t, 4));
-        const gr = ctx.createRadialGradient(x, y, 0, x, y, R);
-        gr.addColorStop(0, withAlpha('#E5934F', 0.16 * heat));
-        gr.addColorStop(0.55, withAlpha('#E5934F', 0.06 * heat));
-        gr.addColorStop(1, withAlpha('#E5934F', 0));
-        ctx.save(); ctx.translate(x, y); ctx.scale(1, 0.55); ctx.translate(-x, -y);
-        ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(x, y, R, 0, TAU); ctx.fill(); ctx.restore();
-        g.ops += 12; g.arcs++;
-      }
-    }
-    // 2. belts: slats drift at a speed set by the belt's last-hour throughput, logarithmically
-    //    (motion.ts: 6 + 10·log₂(1 + rate/min) px/s at the fit; a belt with nothing on it stands)
-    if (q < 2 && !this.reduced) {
-      g.begin_();
-      for (const b of this.belts()) {
-        if (!b.n) continue;
-        const hw = this.laneW(b.n) / 2;
-        const speed = beltSpeedPx(b.n) / cam.fitS;
-        const off = ((t / 1000) * speed) % 12;
-        for (let i = 1; i < b.pts.length; i++) {
-          const [a, e] = [b.pts[i - 1], b.pts[i]];
-          const len = Math.hypot(e[0] - a[0], e[1] - a[1]);
-          const du = (e[0] - a[0]) / len, dv = (e[1] - a[1]) / len;
-          for (let s = off; s < len; s += 12) {
-            const u = a[0] + du * s, v = a[1] + dv * s;
-            const x = cam.x(u, v);
-            if (offX(x)) continue;
-            g.move(cam.x(u - dv * hw, v - du * hw), cam.y(u - dv * hw, v - du * hw, 0.6));
-            g.line(cam.x(u + dv * hw, v + du * hw), cam.y(u + dv * hw, v + du * hw, 0.6));
-          }
-        }
-      }
-      g.stroke(F.slat, Math.max(1, cam.s * 1.4));
-    }
-    // 3. cars on the main-line rails (the static floor paints them, redrawn when one changes):
-    //    here, their hits and the selection's ring
-    let selCar: Pt | null = null;
-    const lamps = this.bD;
-    c.rails.forEach((r, i) => {
-      const v = RAIL_V[i];
-      const n = r.cars.length;
-      r.cars.forEach((car, k) => {
-        const u = RAIL_U1 - 12 - (n - 1 - k) * 10;
-        if (u < RAIL_U0 + 4 || car.sha.charCodeAt(0) === 126) return; // a stress copy: nothing to open
-        const x = cam.x(u, v), y = cam.y(u, v);
-        if (offX(x) || offY(y)) return;
-        const id = `${car.repo}@${car.sha}`;
-        this.hit(x - 6, cam.y(u, v, 8) - 6, 12, 12, 'commit', id, `${car.repo.split('/')[1]} · ${car.title}`);
-        if (this.selected === id) selCar = [u, v];
-        if (car.state === 'running' || car.state === 'pending') lamps.add(u, v, 0, 0, 0, 9);
-      });
-    });
-    // a running car's lamp blinks on the beat; the newest culprit's beacon flashes on it
-    if (blink(t)) this.flushLights(g, lamps, C.packet, 1.8, q < 2); else lamps.n = 0;
-    if (c.focal && !this.selected) {
-      const ri = c.rails.findIndex((r) => r.org === w.orgOf(c.focal!.repo));
-      const rail = c.rails[ri];
-      const k = rail ? rail.cars.findIndex((x) => x.sha === c.focal!.sha && x.repo === c.focal!.repo) : -1;
-      if (rail && k >= 0) {
-        const u = RAIL_U1 - 12 - (rail.cars.length - 1 - k) * 10, v = RAIL_V[ri];
-        const x = cam.x(u, v), y = cam.y(u, v, 11), fx = flash(t);
-        g.begin_(); g.circle(x, y, (3 + 5 * fx) * Math.max(1, cam.s)); g.fill(withAlpha(C.red, 0.12 + 0.3 * fx));
-        g.begin_(); g.circle(x, y, 1.8 * Math.max(1, cam.s)); g.fill(C.red);
-      }
-    }
-    if (selCar) this.ring(g, selCar[0], selCar[1], 8);
-    // 4. intake: queued crates in a visible line, the oldest nearest the engines
-    const dim = this.bA;
-    [c.rr, c.gha].forEach((ids, lane) => {
-      ids.slice(0, 8).forEach((id, k) => {
-        const u = INTAKE_U1 - 10 - k * 11, v = LANE_V[lane];
-        dim.crate(u, v, 8);
-        this.hit(cam.x(u, v) - 7, cam.y(u, v, 8) - 7, 14, 14, 'pipeline', id, this.pipeWords(w.pipelines.get(id)));
-      });
-    });
-    dim.flush(g, cam, F.dockTop, F.dockSide, F.dockFront, '', 1, q >= 2 ? 1 : 3);
-    // 5. the consumption engine: lit bays, progress along each bay, the job's crate inside. A
-    //    stress copy's slots are busy by a hash of (slot, 3 s); bays narrower than 6 px drop
-    //    their rims and crates (LOD1).
-    const lit = this.bA, rim = this.bB, prog = this.bC, crates = this.bD;
-    const progRed: number[] = [];
-    let selBay: Bay | null = null;
-    st.bays = 0;
-    const F_ = c.factor;
-    for (const b of this.bays) {
-      const gr = c.groups[b.group];
-      const virtual = F_ > 1 && !b.pid && b.slot >= Math.round((gr?.slots ?? 0) / F_) && this.stress.busy(b.group, b.slot, t);
-      if (!b.pid && !virtual) continue;
-      if (offX(cam.x(b.u + b.du / 2, b.v + b.dv / 2))) continue;
-      st.bays++;
-      const p = b.pid ? w.pipelines.get(b.pid) : undefined;
-      lit.add(b.u, b.v, b.du, b.dv, 0, ENG_H);
-      rim.add(b.u, b.v, b.du, b.dv, 0, ENG_H);
-      let u01: number, over = false;
-      if (virtual) u01 = this.stress.progress(b.group, b.slot, t);
-      else {
-        const exp = p?.expected_ms ?? w.repos.get(p?.repo ?? '')?.p50_build_ms ?? w.stats.p50_build_ms ?? 0;
-        const el = p?.started ? Math.max(0, now - p.started) : 0;
-        u01 = exp > 0 ? clamp(el / exp, 0.03, 1) : 0.5;
-        over = exp > 0 && el > exp * 1.5;
-      }
-      if (over) progRed.push(b.u, b.v + b.dv + 4, b.du * u01);
-      else if (!virtual || q < 4) prog.add(b.u, b.v + b.dv + 4, b.du * u01, 5, 0, ENG_H);
-      // the job's crate rides the bay with its progress
-      crates.crate(b.u + 6 + (b.du - 12) * u01, b.v + b.dv / 2, Math.min(10, b.du * 0.8), ENG_H - 3);
-      if (!virtual) {
-        this.hit(cam.x(b.u, b.v + b.dv), cam.y(b.u, b.v, ENG_H) - 4, (b.du * 0.86 + b.dv * 0.4) * cam.s, (b.dv * 0.66 + b.du * 0.19) * cam.s + 10, 'pipeline', b.pid, this.pipeWords(p));
-        if (this.selected === b.pid) selBay = b;
-      }
-    }
-    const bayFine = (this.bays[0]?.du ?? 0) * cam.s >= 6;
-    lit.flushQuads(g, cam, F.bayLit);
-    if (bayFine) rim.flushQuads(g, cam, withAlpha(C.packet, 0.45 + 0.4 * breathe(t)), true, g.hair * 2); else rim.n = 0;
-    prog.flushQuads(g, cam, C.packet);
-    for (let i = 0; i < progRed.length; i += 3) prog.add(progRed[i], progRed[i + 1], progRed[i + 2], 5, 0, ENG_H);
-    prog.flushQuads(g, cam, C.red);
-    if (bayFine) crates.flush(g, cam, F.crateTop, F.crateSide, F.crateFront, '', 1, q >= 2 ? 1 : 3); else crates.n = 0;
-    if (selBay) this.ring(g, selBay.u + selBay.du / 2, selBay.v + selBay.dv / 2, 14, ENG_H);
-    // gauges: the engines' cpu and mem towers (a sample every few seconds; a few boxes)
-    this.drawGauges(g);
-    // 6. the city: its lights are the floor's (redrawn when health changes); here, a hit per
-    //    block big enough to point at (LOD0/1), and deploys landing
-    if ((this.blocks[0]?.d ?? 13) * cam.s >= 5) {
-      for (const b of this.blocks) {
-        const x = cam.x(b.u, b.v + b.d);
-        if (offX(x)) continue;
-        this.hit(x, cam.y(b.u, b.v, b.h) - 2, b.d * 1.3 * cam.s, (b.d * 0.75 + b.h) * cam.s + 4, 'app', b.id, b.id);
-      }
-    }
-    // trouble in the city breathes on the beat (degraded amber, down red): the loud spots
-    if (q < 4) {
-      const trouble = this.troubleBlocks();
-      const br = breathe(t);
-      for (const b of trouble) {
-        const x = cam.x(b.u + b.d / 2, b.v + b.d / 2);
-        if (offX(x)) continue;
-        const y = cam.y(b.u + b.d / 2, b.v + b.d / 2, b.h + 2);
-        g.begin_(); g.circle(x, y, Math.max(2.4, cam.s * 2) * (4 + br)); g.fill(withAlpha(this.healthOf(b) === 2 ? C.red : C.packet, 0.08 + 0.14 * br));
-      }
-    }
-    // reactions (motion.ts), each where and when its crate arrived: rings, the scanner's beam,
-    // a dock's door
-    const pulsing = this.reactions.live(g, fr);
-    // deploys in flight sit on their track, nearer the city the longer they have run
-    const lanes = [0, 0, 0];
-    const dep = this.bA;
-    g.begin_();
-    let rings = 0;
-    for (const d of [...c.deploying].sort((a, b) => a.started - b.started)) {
-      const b = this.blockAt.get(d.app);
-      // the oldest leads; the ones behind it queue a crate's length back on the same track
-      const k = clamp(Math.min((now - d.started) / 90_000, 0.92 - lanes[d.via]++ * 0.09), 0.05, 0.92);
-      const v = TRACK_V[d.via];
-      const u = SCAN_U + 16 + (TRACK_U1 - SCAN_U - 24) * k;
-      dep.crate(u, v, 8);
-      if (d.sha.charCodeAt(0) !== 126) this.hit(cam.x(u, v) - 7, cam.y(u, v, 8) - 7, 14, 14, 'commit', `${w.apps.get(d.app)?.repo ?? ''}@${d.sha}`, `deploy ${d.app}`);
-      if (b) { g.circle(cam.x(b.u + b.d / 2, b.v + b.d / 2), cam.y(b.u + b.d / 2, b.v + b.d / 2, b.h + 1.5), 3.2); rings++; }
-    }
-    if (rings) g.stroke(withAlpha(C.packet, 0.9), 1);
-    dep.flush(g, cam, F.crateTop, F.crateSide, F.crateFront, '', 1, q >= 2 ? 1 : 3);
-    // 7. crates in motion: one path per face and colour; on the ladder's train rungs, crates on
-    //    the same stretch of the same route ride as one with a ×N badge
-    const moving = this.crates.live(g, fr);
-    // 8. the journey of the selection: its path lights across the floor, the rest dims to 25 %
+    fr.ctx = ctx; fr.f = f; fr.t = t; fr.now = now; fr.q = q; fr.detail = cam.zoom >= 1.6;
+    // the layers, back to front (layers.ts): each one's hits, then each one's live drawing (the
+    // haze, belts and cars; the intake, bays and gauges; the city's hits and trouble; the
+    // reactions; deploys on their tracks; crates in motion; the labels). One still moving keeps
+    // the frames coming.
+    for (const L of this.order) L.hits?.(fr);
+    let moving = false;
+    for (const L of this.order) if (L.live?.(g, fr)) moving = true;
+    // the journey of the selection: its path lights across the floor, the rest dims to 25 %
     const selP = this.selPipeline();
-    // 9. labels: stage titles in the band above the floor's back edge, with leader lines
-    this.words.live(g, fr);
     this.lens.draw(g, ctx, f, t); // fab-lens: the lens on top dims the rest and tells its story
     if (this.selected) this.drawJourney(g, ctx, f, selP, t);
     // failures riding home are named (failure is the main character), under the conveyor
@@ -1110,7 +423,7 @@ export class Factory {
     // Loud (a crate travelling, a reaction showing, a pointer, a flight, a replay, the HUD,
     // stress): every frame. Calm: sleep; the 125 ms pulse (motion.ts CALM_MS) wakes the layer for
     // the belts and the beat, 8 frames a second.
-    const awake = moving || pulsing || flying || !!this.drag || this.hoverId !== '' || hudOn || this.stress.on || this.tl.mode === 'replay' || this.tl.mode === 'behind';
+    const awake = moving || flying || !!this.drag || this.hoverId !== '' || hudOn || this.stress.on || this.tl.mode === 'replay' || this.tl.mode === 'behind';
     if (!awake) st.slept++;
     this.awake = awake;
     return awake;
@@ -1119,18 +432,6 @@ export class Factory {
   /** The draw estimate (ms) each quality rung cost when it was last drawn, and when. */
   private qCost = new Float32Array(5);
   private qCostAt = new Float64Array(5).fill(-1e12);
-  private trouble: Block[] = [];
-  private troubleAt = '';
-
-  /** The city's blocks that are degraded or down (recomputed when the health or the city moved). */
-  private troubleBlocks(): Block[] {
-    const key = `${this.census.healthSig}|${this.cityKey}|${this.blocks.length}`;
-    if (key !== this.troubleAt) {
-      this.troubleAt = key;
-      this.trouble = this.blocks.filter((b) => { const h = this.healthOf(b); return h === 1 || h === 2; });
-    }
-    return this.trouble;
-  }
 
   /** The developer HUD (⌘⇧D) over the floor: top right, left of an open drawer. */
   private drawHud(g: Gfx, f: Frame): void {
@@ -1147,9 +448,7 @@ export class Factory {
   }
 
   /** One car (a lens draws a lit one over the floor's batched cars). */
-  private car(g: Gfx, u: number, v: number, red: boolean, settled: boolean): void {
-    this.box(g, u - 4, v - 4, 8, 8, 5, red ? F.redTop : settled ? '#6E6A62' : F.crateTop, red ? F.redSide : settled ? '#4A4844' : F.crateSide, red ? F.redFront : settled ? '#3E3C38' : F.crateFront, red ? '#E08088' : settled ? '#8A867E' : '#F0CC8A', this.gl.hair);
-  }
+  car(g: Gfx, u: number, v: number, red: boolean, settled: boolean): void { this.floor.car(g, u, v, red, settled, this.gl.hair); }
 
   private ring(g: Gfx, u: number, v: number, r: number, z = 0): void { ringP(this.cam, g, u, v, r, z); }
 
@@ -1180,7 +479,7 @@ export class Factory {
     pts.push([YARD_U1, AISLE_V], [GATE_U + 4, AISLE_V], [RAIL_U0, rv], [RAIL_U1, rv], [INTAKE_U0, LANE_V[p?.lane === 'gha' ? 1 : 0]], [INTAKE_U1, LANE_V[p?.lane === 'gha' ? 1 : 0]]);
     stops.push([[GATE_U + 4, AISLE_V], 'merged']);
     stops.push([[INTAKE_U0 + 20, LANE_V[p?.lane === 'gha' ? 1 : 0]], 'queued']);
-    const bay = p ? (this.bays.find((b) => b.pid === p.id) ?? this.lastBay.get(p.id ?? '')) : undefined;
+    const bay = p ? (this.bays.find((b) => b.pid === p.id) ?? this.plant.lastBay.get(p.id ?? '')) : undefined;
     const gi = p?.lane === 'gha' ? this.census.groups.length - 1 : 0;
     const bv = bay ? bay.v + bay.dv / 2 : ENG_V0 + gi * ENG_STEP + ENG_DV / 2;
     const bu = bay ? bay.u + bay.du / 2 : (ENG_U0 + ENG_U1) / 2;
