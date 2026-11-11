@@ -69,12 +69,12 @@ export class Plant implements Layer {
         const route: Pt[] = [[u0, v0], [ENG_U1 + 6, v0], [SCAN_U, v0]];
         let dur = 1600;
         if (red) {
-          route.push([SCAN_U, RETURN_V], [24, RETURN_V], [24, this.f.dockV(org)], [DOCK_U0 + 8, this.f.dockV(org)]);
+          route.push([SCAN_U, RETURN_V], [24, RETURN_V], [24, this.f.dockV(p.repo)], [DOCK_U0 + 8, this.f.dockV(p.repo)]); // fab-w2: home to its group dock
           dur = 9000;
         } else route.push([SCAN_U + 14, v0]);
         const cr = this.f.crates.spawn(e.pipeline, 'pipeline', route, t, dur, red, red ? `${p.repo.split('/')[1]} · ${failingStep(p)}` : '', org);
         R.add(R_BEAM, SCAN_U, v0, 56, this.f.crates.arrives(cr, 2), red, 700);
-        if (red) { R.add(R_DOOR, DOCK_U1, this.f.dockV(org), 6, this.f.crates.arrives(cr, 6), true, 1400); R.add(R_RING, DOCK_U0 + 8, this.f.dockV(org), 8, this.f.crates.arrives(cr, 6), true, 1400); }
+        if (red) { R.add(R_DOOR, DOCK_U1, this.f.dockV(p.repo), 6, this.f.crates.arrives(cr, 6), true, 1400); R.add(R_RING, DOCK_U0 + 8, this.f.dockV(p.repo), 8, this.f.crates.arrives(cr, 6), true, 1400); } // fab-w2
         break;
       }
       default: break;

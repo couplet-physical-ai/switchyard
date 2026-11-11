@@ -38,6 +38,7 @@ import { Strip } from './strip.ts';
 import type { Bay, Block, DistrictBox, FloorPass, HitBox, Label, Layer, Lens, LiveFrame } from './types.ts';
 import { Lenses } from './lens.ts'; // fab-lens
 import { Coffee } from './coffee.ts'; // fab-lens
+import { GroupFloor } from './groupfloor.ts'; // fab-w2: group docks, stripes, trend marks
 import type { FactoryFx } from './lens.ts'; // fab-lens
 
 export type { Plan } from './types.ts';
@@ -112,6 +113,7 @@ export class Factory {
   /** fab-lens: every object is a lens (lens.ts); what changed since you last looked (coffee.ts). */
   readonly lens = new Lenses(this);
   readonly coffee = new Coffee(this);
+  readonly w2 = new GroupFloor(this); // fab-w2: groups and trends on the floor (groupfloor.ts)
 
   constructor(public tl: Timeline) {
     // The floor's full rung costs ~4.4 ms on Hermes at 1× (its words: ~80 texts at ~22 µs);
@@ -246,7 +248,7 @@ export class Factory {
 
   /** The static floor's key: the camera, the fleet's shape, the apps' health (the lights are
    *  painted here, not every frame), and whether the ladder wants the low-detail floor. */
-  get floorKey(): string { return `${this.cam.key}|${this.census.sig}|${this.census.healthSig}|${this.census.carSig}|${this.budget.quality >= 3 ? 'lo' : 'hi'}`; }
+  get floorKey(): string { return `${this.cam.key}|${this.census.sig}|${this.census.healthSig}|${this.census.carSig}|${this.budget.quality >= 3 ? 'lo' : 'hi'}|${this.w2.sig}`; } // fab-w2: |w2.sig
 
   drawFloor(ctx: Ctx2D, f: Frame, t: number): boolean {
     this.applyStress();

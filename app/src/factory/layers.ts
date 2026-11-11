@@ -23,6 +23,7 @@ export function buildLayers(f: Factory) {
     reactions, // crates.ts: rings, beams and doors where crates arrive
     tracks, //    plant.ts: deploys in flight on the deploy tracks
     crates, //    crates.ts: crates in motion, trains, stress crates
+    { name: 'groups', live: (g, fr) => { f.w2.over(g, fr.t); return false; } }, // fab-w2 groupfloor.ts: bay stripes, group dock names and hits
     words, //     labels.ts: stage titles, names and counts (the greedy placer)
   ];
   return { floor, plant, city, reactions, tracks, crates, words, order };

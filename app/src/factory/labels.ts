@@ -110,6 +110,7 @@ export class Labels implements Layer {
       g.begin_(); g.circle(ax, ay, 1.8); g.fill('#7A7A7E');
       g.fillRect(x - 4, y - TITLE, wv + 8, 38, withAlpha(C.canvas, 0.86));
       g.runs([[`${n} `, C.ink3], [title, C.ink, true]], x, y, TITLE);
+      this.f.w2.notch(g, n, x + l1 + 6, y); // fab-w2: the stage's trend notch
       g.runs([[stat, statCol], [why ? ` · ${why}` : '', C.ink3]], x, y + 17, SMALL);
       this.f.hit(x - 3, y - 14, wv + 6, 36, 'stage', id, title);
     };
@@ -211,7 +212,7 @@ export class Labels implements Layer {
       if (yy >= 0) g.text(`${p.bot} ${p.n}`, x, yy, C.ink3, SMALL);
     });
     // sources: each dock's org and push rate
-    c.docks.forEach((d, i) => {
+    if (!this.f.w2.on) c.docks.forEach((d, i) => { // fab-w2: group docks name themselves
       const v = 66 + i * 96;
       const x = cam.x(DOCK_U0, v + 30) - 4, y = cam.y(DOCK_U0, v + 30) + 14;
       const s = `${d.short} ${d.perHour}/h`;

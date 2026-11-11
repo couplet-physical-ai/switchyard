@@ -41,7 +41,7 @@ export class Floor implements Layer {
       case 'push': {
         const org = e.bot || e.author?.endsWith('[bot]') ? BOTS : orgOf(e.repo);
         const main = e.branch === (w.repos.get(e.repo)?.default_branch ?? 'main');
-        const dv = this.dockV(org);
+        const dv = this.dockV(org === BOTS ? BOTS : e.repo); // fab-w2: the repo's group dock
         const route: Pt[] = [[DOCK_U1 - 6, dv], [COLLECT_U, dv], [COLLECT_U, AISLE_V]];
         if (main) route.push([YARD_U1, AISLE_V], [GATE_U + 10, AISLE_V], [RAIL_U0 + 10, this.railV(orgOf(e.repo))]);
         else route.push([ROW_U[1], AISLE_V], [ROW_U[1], AGE_V[0]]);
@@ -64,6 +64,7 @@ export class Floor implements Layer {
 
   /** The v of an org's dock (the bots' dock, last, for an org without one). */
   dockV(org: string): number {
+    const gv = this.f.w2.dockV(org); if (gv >= 0) return gv; // fab-w2: a repo, org or BOTS → its group dock
     const i = this.f.census.docks.findIndex((d) => d.org === org);
     return 66 + (i < 0 ? this.f.census.docks.length - 1 : i) * 96;
   }
@@ -88,7 +89,7 @@ export class Floor implements Layer {
   belts(): Belt[] {
     const c = this.f.census, f = c.flow;
     const out: Belt[] = [];
-    c.docks.forEach((d, i) => {
+    if (!this.f.w2.belts(out)) c.docks.forEach((d, i) => { // fab-w2: the group docks' belts
       const v = 66 + i * 96;
       out.push({ id: `dock${i}`, pts: [[DOCK_U1, v], [COLLECT_U, v]], n: d.perHour, label: '', at: [84, v] });
     });
@@ -171,7 +172,7 @@ export class Floor implements Layer {
     g.stroke(F.beltEdge, g.hair * 1.5);
     // the blocks, far to near (every layer's, sorted together); each culled by its floor box
     // sources: docks
-    this.f.census.docks.forEach((d, i) => {
+    if (!this.f.w2.floor(g, add)) this.f.census.docks.forEach((d, i) => { // fab-w2: group docks, embers, stack stripes
       const v = 66 + i * 96;
       add(DOCK_U0, v, () => {
         box(cam, g, DOCK_U0, v - 30, DOCK_U1 - DOCK_U0, 60, 14);
