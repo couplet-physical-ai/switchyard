@@ -73,11 +73,14 @@ component App
   state facPulse = 0
   // fx-kc: the token is read once, async, through the module: the window and the floor never
   // wait on it (a Keychain prompt from an older build's item waits with the window up). The
-  // route's ?keychain=denied is the agent's test hook (one read answers denied).
-  resource tok = loadToken(tokGen, searchParam(top(nav), "keychain")) as shape Tok else empty(ver="", has=false, status="loading", detail="")
+  // route's ?keychain=denied is the agent's test hook (one read answers denied); ?keychain=left
+  // says an old Keychain item was left (Settings' Security note).
+  resource tok = loadToken(tokGen, searchParam(top(nav), "keychain")) as shape Tok else empty(ver="", has=false, status="loading", detail="", left=false)
   state tokSlow = false
   resource link = parseLink(searchParam(top(nav), "u"), searchParam(top(nav), "server"), searchParam(top(nav), "token")) as shape Link else empty(server="", token="", ok=false)
-  resource conn = connect(server, tok.ver, gen) with time.epochAtZero, time.utcOffset, tok.status as shape Conn else empty(ok=false, status="connecting", error="", seq=0, label="", kind="", needsSetup=false, signIn="")
+  // fx-kc: asked again when the token's read fails or recovers (tokBad), not for each status
+  derive tokBad = tok.status == "denied" or tok.status == "error"
+  resource conn = connect(server, tok.ver, gen) with time.epochAtZero, time.utcOffset, tokBad as shape Conn else empty(ok=false, status="connecting", error="", seq=0, label="", kind="", needsSetup=false, signIn="")
   resource feed = liveFeed(server, tok.ver, conn.seq, gen, conn.ok) as shape Ack else empty(ok=false, status="idle")
   resource ov = overview(clockMs, conn.seq, conn.ok) as shape Overview else empty()
   resource found = search(q, clockMs) as shape Found else empty(hits=[])
@@ -95,7 +98,10 @@ component App
   // of waiting, or at once after "Try again"; the module is the macOS one where the updater is),
   // or a read that was denied or failed
   state tokRetrying = false
-  derive tokState = tokRetrying ? "loading" : tok.status
+  // loading: the read is out. pending(tok), not only its value: the build bakes the answer a
+  // module-less bake gets ("none") as the first frame's, which stands until the read lands.
+  derive tokLoading = pending(tok) or tok.status == "loading"
+  derive tokState = (tokLoading or tokRetrying) ? "loading" : tok.status
   derive tokCard = not conn.ok and ((tokState == "loading" and (tokSlow or tokRetrying) and upd.supported) or tokState == "denied" or tokState == "error")
   derive hitNow = match hit { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }
   derive replayOk = match replayed { case some(r) => r.ok, case none => false }
@@ -129,8 +135,10 @@ component App
 
   task pulse mount
     every(250, tick)
-  task tokWait when tok.status == "loading" and not tokSlow
+  task tokWait when tokLoading and not tokSlow
     after(400, tokWaited)
+  task tokCalm when tokSlow and not tokLoading and not tokRetrying
+    after(1, tokSlowOff)
   task tokRetried when tokRetrying and not pending(tok)
     after(1, tokRetryDone)
   // The factory floor's calm clock: while it is on top and calm, its live layer (asleep when
@@ -165,6 +173,8 @@ component App
     clockMs = performanceNow()
   action tokWaited
     tokSlow = true
+  action tokSlowOff
+    tokSlow = false
   // fx-kc: the token card's buttons: read again, or type one in Settings
   action tokRetry
     tokRetrying = true
@@ -173,6 +183,10 @@ component App
     tokRetrying = false
   action tokEnter
     openSettings()
+  // Sign out: the token file goes (and the old Keychain item's delete is tried); then reconnect
+  action forgetToken
+    draftToken = ""
+    send saved = forgetToken()
   action facPulseTick
     facPulse = facPulse + 1
   action retry
@@ -468,9 +482,18 @@ component App
               padding="8px 10px" font-size=13 border-radius=8 background-color="sy.canvas" border="1px solid sy.edge" color="sy.ink"
             text "blank: the server this page came from · demo: the built-in fleet" font-size=11 color="sy.ink3"
           column gap=6
-            text (tok.has ? "Token (one is saved; type to replace it)" : "Token") font-size=12 color="sy.ink3"
+            row align-items="center" gap=8
+              text (tok.has ? "Token (one is saved; type to replace it)" : "Token") font-size=12 color="sy.ink3" flex=1
+              if tok.has
+                button press=forgetToken commandfor="settings" command="close" appearance="none" testId="settings-forget" padding="1px 6px" border-radius=5
+                  text "Forget token" font-size=11 color="sy.ink3"
             input type="password" value=draftToken input=editToken aria-label="Token" placeholder="kept on this device, for your account only" testId="token-field" class=Field
               padding="8px 10px" font-size=13 border-radius=8 background-color="sy.canvas" border="1px solid sy.edge" color="sy.ink"
+          // fx-kc: an older build's Keychain item that macOS would not let this build delete
+          if tok.left
+            column gap=4 padding-top=10 border-top="1px solid sy.rule" testId="settings-security"
+              text "SECURITY" font-size=10 letter-spacing="0.08em" color="sy.ink3" font-weight=700
+              text "An old Switchyard token remains in your login Keychain; remove it in Keychain Access → search 'switchyard'." font-size=12 color="sy.ink2" testId="settings-security-note"
           row gap=8 align-items="center"
             button appearance="none" press=toggleStress testId="settings-stress" padding="4px 10px" border-radius=6 border="1px solid sy.edge"
               text (ov.stress ? "Stress mode: on (10× synthetic fleet)" : "Stress mode: off") font-size=12 color=(ov.stress ? "sy.red-text" : "sy.ink3")

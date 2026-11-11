@@ -36,6 +36,8 @@ struct SYTokenAnswer: Equatable {
     var detail = ""
     /// Where a ready token came from: `file`, or `keychain` (moved to the file by this read).
     var source = ""
+    /// The old Keychain item may still be there (its delete failed): Settings says so.
+    var keychainLeft = false
 
     static let noToken = SYTokenAnswer(status: "none")
     static func ready(_ token: String, from source: String, detail: String = "") -> SYTokenAnswer {
@@ -46,6 +48,7 @@ struct SYTokenAnswer: Equatable {
         var out: [String: Any] = ["status": status]
         if status == "ready" { out["token"] = token; out["source"] = source }
         if !detail.isEmpty { out["detail"] = detail }
+        out["keychainLeft"] = keychainLeft
         return out
     }
 }
@@ -157,8 +160,29 @@ struct SYTokenFileStore {
         guard !token.isEmpty else { return .failure(SYHookRefusal("no token to keep")) }
         let bytes = Array(token.utf8)
         guard bytes.count <= SYTokenFile.maxBytes else { return .failure(SYHookRefusal("a token is at most \(SYTokenFile.maxBytes) bytes")) }
+        return put(bytes, at: url)
+    }
+
+    // The two marks beside the token, each a 0600 file of one line:
+    /// `migrated`: the old Keychain item was dealt with (moved, absent, replaced or forgotten);
+    /// once it is there the Keychain is never read again, whatever else happens.
+    var migratedURL: URL { dir.appendingPathComponent("migrated", isDirectory: false) }
+    /// `keychain-left`: deleting the old item failed (another build owns it), so it may still be
+    /// there; Settings says so until a delete succeeds.
+    var leftURL: URL { dir.appendingPathComponent("keychain-left", isDirectory: false) }
+    var migrated: Bool { FileManager.default.fileExists(atPath: migratedURL.path) }
+    var left: Bool { FileManager.default.fileExists(atPath: leftURL.path) }
+    @discardableResult func markMigrated() -> Result<Void, SYHookRefusal> { migrated ? .success(()) : put(Array("migrated=1\n".utf8), at: migratedURL) }
+    @discardableResult func markLeft(_ on: Bool) -> Result<Void, SYHookRefusal> {
+        if on { return left ? .success(()) : put(Array("keychain-left=1\n".utf8), at: leftURL) }
+        if unlink(leftURL.path) == 0 || errno == ENOENT { return .success(()) }
+        return .failure(SYHookRefusal("cannot delete \(leftURL.path): \(String(cString: strerror(errno)))"))
+    }
+
+    /// `bytes` to `target` atomically: a 0600 temp file in the folder, synced, renamed over it.
+    private func put(_ bytes: [UInt8], at target: URL) -> Result<Void, SYHookRefusal> {
         if case .failure(let why) = folder() { return .failure(why) }
-        let tmp = dir.appendingPathComponent(".token.\(getpid()).\(UInt32.random(in: 0 ... .max))", isDirectory: false).path
+        let tmp = dir.appendingPathComponent(".\(target.lastPathComponent).\(getpid()).\(UInt32.random(in: 0 ... .max))", isDirectory: false).path
         let fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { return .failure(SYHookRefusal("cannot create \(tmp): \(String(cString: strerror(errno)))")) }
         var ok = fchmod(fd, 0o600) == 0
@@ -170,10 +194,10 @@ struct SYTokenFileStore {
         ok = ok && fsync(fd) == 0
         let why = ok ? "" : String(cString: strerror(errno))
         close(fd)
-        guard ok, rename(tmp, url.path) == 0 else {
+        guard ok, rename(tmp, target.path) == 0 else {
             let reason = ok ? String(cString: strerror(errno)) : why
             unlink(tmp)
-            return .failure(SYHookRefusal("cannot write \(url.path): \(reason)"))
+            return .failure(SYHookRefusal("cannot write \(target.path): \(reason)"))
         }
         return .success(())
     }
@@ -207,13 +231,19 @@ final class SYTokenStore: @unchecked Sendable {
     let file: SYTokenFileStore
     /// The item older builds kept; nil under the agent (and in a store that has none).
     let legacy: SYLegacyToken?
-    /// The agent's test hook: `simulate: "denied"` answers denied (tests/token.test.contract).
+    /// The agent's test hooks (tests/token.test.contract): `simulate: "denied"` answers denied;
+    /// `simulate: "left"` answers as ever, saying the old item was left (Settings' note).
     let agent: Bool
     /// Told each token read, for the kept-answer scrub (SYKeptScrub with the token's value).
     var onRead: (String) -> Void = { _ in }
     var log: (String) -> Void = { SYHookLog.line($0) }
     private let files = DispatchQueue(label: "com.exowatt.switchyard.token.file", qos: .userInitiated)
     private let keychain = DispatchQueue(label: "com.exowatt.switchyard.token.keychain", qos: .userInitiated)
+    /// Deletes of the old item (never a prompt) beside a read that may be waiting on one.
+    private let deletes = DispatchQueue(label: "com.exowatt.switchyard.token.delete", qos: .utility)
+    /// On `files`: the answers waiting for the one read of the old item in flight. A `tokenGet`
+    /// asked again meanwhile (its first asker was let go) waits for that read: one prompt, not two.
+    private var reading: [(SYTokenAnswer) -> Void]?
 
     init(file: SYTokenFileStore, legacy: SYLegacyToken?, agent: Bool) {
         self.file = file
@@ -221,84 +251,141 @@ final class SYTokenStore: @unchecked Sendable {
         self.agent = agent
     }
 
-    /// The token: the file's; with no file, the old Keychain item's, moved to the file.
+    /// The token: the file's; with no file, and only before the old item was ever dealt with
+    /// (`migrated`), the old Keychain item's, moved to the file.
     func get(_ request: [String: Any], done: @escaping (SYTokenAnswer) -> Void) {
         if agent, request["simulate"] as? String == "denied" {
             files.async { done(SYTokenAnswer(status: "denied", detail: "denied by the test hook (agent only)")) }
             return
         }
+        if agent, request["simulate"] as? String == "left" {
+            return get([:]) { a in var a = a; a.keychainLeft = true; done(a) }
+        }
         files.async { [self] in
-            switch file.read() {
-            case .success(let token?): onRead(token); return done(.ready(token, from: "file"))
-            case .failure(let why): log("token: refused \(why.reason)"); return done(SYTokenAnswer(status: "error", detail: why.reason))
-            case .success(nil): break
+            if let answer = fromFile() { return done(answer) }
+            // The mark is checked before any SecItem call: after the move, never again.
+            guard let legacy, !file.migrated else { return done(with(.noToken)) }
+            if reading != nil { reading?.append(done); return }
+            reading = [done]
+            keychain.async { [self] in
+                migrate(legacy) { [self] answer in
+                    files.async { [self] in
+                        let waiting = reading ?? []
+                        reading = nil
+                        waiting.forEach { $0(answer) }
+                    }
+                }
             }
-            guard let legacy else { return done(.noToken) }
-            keychain.async { [self] in migrate(legacy, done: done) }
         }
     }
 
-    /// On `keychain`: one read of the old item (it may wait on the prompt); a success goes to the
-    /// file, answers, then deletes the item.
+    /// On `files`: the file's answer, or nil when there is no file.
+    private func fromFile() -> SYTokenAnswer? {
+        switch file.read() {
+        case .success(let token?): onRead(token); return with(.ready(token, from: "file"))
+        case .failure(let why): log("token: refused \(why.reason)"); return with(SYTokenAnswer(status: "error", detail: why.reason))
+        case .success(nil): return nil
+        }
+    }
+
+    private func with(_ a: SYTokenAnswer) -> SYTokenAnswer { var a = a; a.keychainLeft = file.left; return a }
+
+    private var service: String { (legacy as? SYKeychainItem)?.service ?? "the app's id" }
+
+    /// On `keychain`: one read of the old item (it may wait on the prompt). A success goes to the
+    /// file, is marked migrated, and the item is deleted where macOS lets it; then the answer.
     private func migrate(_ legacy: SYLegacyToken, done: @escaping (SYTokenAnswer) -> Void) {
         // A read before this one may have moved it already, or a save made the file meanwhile.
-        if case .success(let token?) = files.sync(execute: { file.read() }) { onRead(token); return done(.ready(token, from: "file")) }
+        if let early: SYTokenAnswer = files.sync(execute: { fromFile() ?? (file.migrated ? with(.noToken) : nil) }) { return done(early) }
         let t0 = Date()
         let (status, value) = legacy.read()
         let ms = Int(Date().timeIntervalSince(t0) * 1000)
-        guard status == errSecSuccess, let raw = value else {
-            if status != errSecItemNotFound { log("token: the Keychain item was not read in \(ms) ms: \(SYKeychainStatus.message(status))") }
-            return done(SYKeychainStatus.of(status))
-        }
-        let token = SYTokenFile.trim(raw)
-        guard !token.isEmpty else { return done(.noToken) }
-        // A token saved while the prompt waited is the newer one: it stays, and the item still goes.
-        let answer: SYTokenAnswer = files.sync {
-            if case .success(let newer?) = file.read() { return .ready(newer, from: "file") }
+        let token = SYTokenFile.trim(value ?? "")
+        // What the read found, with what happened while it waited, settled in one turn of `files`:
+        // the answer, and whether the item is deleted now.
+        let (answer, drop): (SYTokenAnswer, Bool) = files.sync {
+            // A token saved while the prompt waited is the newer one: it stands, whatever the read
+            // said (its save marked migrated and tried the delete).
+            if let newer = fromFile() { return (newer, false) }
+            // Signed out while the prompt waited (Forget token marks migrated and tries the
+            // delete): what the read found is dropped, never written back.
+            if file.migrated { return (with(.noToken), false) }
+            guard status == errSecSuccess, !token.isEmpty else {
+                if status == errSecSuccess || status == errSecItemNotFound {
+                    // nothing to move: the Keychain is not asked again
+                    _ = file.markMigrated()
+                    return (with(.noToken), false)
+                }
+                // Denied or failed: not marked, so Try again (or the next launch) reads again.
+                log("keychain: the old item was not read in \(ms) ms: \(SYKeychainStatus.message(status))")
+                return (with(SYKeychainStatus.of(status)), false)
+            }
             switch file.write(token) {
             case .success:
-                log("token: read the Keychain item in \(ms) ms and moved it to \(file.url.path)")
-                return .ready(token, from: "keychain")
+                _ = file.markMigrated()
+                log("keychain: read the old item in \(ms) ms and moved it to \(file.url.path)")
+                return (.ready(token, from: "keychain"), true)
             case .failure(let why):
                 // Used for this launch; the next one reads the item again.
-                log("token: read the Keychain item in \(ms) ms; not moved: \(why.reason)")
-                return .ready(token, from: "keychain", detail: why.reason)
+                log("keychain: read the old item in \(ms) ms; not moved: \(why.reason)")
+                return (.ready(token, from: "keychain", detail: why.reason), false)
             }
         }
-        onRead(answer.token)
-        done(answer)
-        guard answer.detail.isEmpty else { return }
-        let gone = legacy.delete()
-        log(gone == errSecSuccess || gone == errSecItemNotFound
-            ? "token: deleted the Keychain item; the token lives only in \(file.url.path)"
-            : "token: the Keychain item stays (\(SYKeychainStatus.message(gone)))")
+        if answer.source == "keychain" { onRead(answer.token) }
+        if drop { dropLegacy(legacy) }
+        var a = answer
+        a.keychainLeft = files.sync { file.left }
+        done(a)
     }
 
-    /// Keep `token` in the file. Answers `{ok}` or `{ok: false, detail}`.
+    /// On `keychain`: delete the old item. macOS lets only the build that made an item delete it
+    /// (another identity gets -25244, errSecInvalidOwnerEdit, at once, with no prompt), so an
+    /// older build's item usually stays: that is remembered (`keychain-left`, for Settings) and
+    /// logged once; a delete that works clears it.
+    private func dropLegacy(_ legacy: SYLegacyToken) {
+        let gone = legacy.delete()
+        let ok = gone == errSecSuccess || gone == errSecItemNotFound
+        let was: Bool = files.sync { let was = file.left; _ = file.markLeft(!ok); return was }
+        if ok {
+            if gone == errSecSuccess || was { log("keychain: deleted the old item (service \"\(service)\", account \"\(syTokenAccount)\")") }
+        } else if !was {
+            log("keychain: old item left (owned by an earlier build); not read again (\(SYKeychainStatus.message(gone)); delete \"\(syTokenAccount)\" under \"\(service)\" in Keychain Access)")
+        }
+    }
+
+    /// Keep `token` in the file. Before the old item was dealt with, it goes too (a delete, never
+    /// a read, on `deletes`, so never behind a read that waits on the prompt), and the Keychain is
+    /// not read again. Answers `{ok, keychainLeft}` or `{ok: false, detail}`, after that delete.
     func set(_ request: [String: Any], done: @escaping ([String: Any]) -> Void) {
         let token = request["token"] as? String ?? ""
         files.async { [self] in
-            switch file.write(token) {
-            case .success: done(["ok": true])
-            case .failure(let why): log("token: not saved: \(why.reason)"); done(["ok": false, "detail": why.reason])
+            if case .failure(let why) = file.write(token) {
+                log("token: not saved: \(why.reason)")
+                return done(["ok": false, "detail": why.reason, "keychainLeft": file.left])
+            }
+            let first = legacy != nil && !file.migrated
+            if first { _ = file.markMigrated() }
+            guard first, let legacy else { return done(["ok": true, "keychainLeft": file.left]) }
+            deletes.async { [self] in
+                dropLegacy(legacy)
+                done(["ok": true, "keychainLeft": files.sync { file.left }])
             }
         }
     }
 
-    /// The file gone, and the old item with it (else the next launch would move it back).
+    /// Sign out: the file gone, and a delete of the old item tried (never a read); `migrated`
+    /// stays, so a delete that fails never makes the app read the Keychain again.
     func forget(_ request: [String: Any], done: @escaping ([String: Any]) -> Void) {
         files.async { [self] in
             let removed = file.remove()
-            guard let legacy else {
-                if case .failure(let why) = removed { return done(["ok": false, "detail": why.reason]) }
-                return done(["ok": true])
+            if legacy != nil { _ = file.markMigrated() }
+            let finish = { [self] in
+                let left = files.sync { file.left }
+                if case .failure(let why) = removed { return done(["ok": false, "detail": why.reason, "keychainLeft": left]) }
+                done(["ok": true, "keychainLeft": left])
             }
-            keychain.async {
-                let gone = legacy.delete()
-                if case .failure(let why) = removed { return done(["ok": false, "detail": why.reason]) }
-                if gone != errSecSuccess && gone != errSecItemNotFound { return done(["ok": false, "detail": SYKeychainStatus.message(gone)]) }
-                done(["ok": true])
-            }
+            guard let legacy else { return finish() }
+            deletes.async { [self] in dropLegacy(legacy); finish() }
         }
     }
 }
@@ -314,8 +401,11 @@ enum SYToken {
         lock.withLock {
             if let made { return made }
             let id = SYKeychainItem.appIdentity()
-            let file = context.agent ? SYTokenFileStore(dir: context.data) : (SYTokenFileStore.app(id) ?? SYTokenFileStore(dir: context.data))
-            let s = SYTokenStore(file: file, legacy: context.agent ? nil : SYKeychainItem(service: id), agent: context.agent)
+            // As Exact's own stores: under the agent a scratch store and no Keychain, unless the
+            // drive asks for the platform's (EXACT_STORE=real).
+            let scratch = context.agent && ProcessInfo.processInfo.environment["EXACT_STORE"] != "real"
+            let file = scratch ? SYTokenFileStore(dir: context.data) : (SYTokenFileStore.app(id) ?? SYTokenFileStore(dir: context.data))
+            let s = SYTokenStore(file: file, legacy: scratch ? nil : SYKeychainItem(service: id), agent: context.agent)
             // The kept-answer scrub (f3ab409) with the stored token's value, as loadToken's
             // native.call once did: older builds' kept answers holding it are deleted.
             s.onRead = { token in _ = SYHooks.shared.scrub(["token": token]) }

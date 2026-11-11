@@ -13,6 +13,8 @@ shape Tok
   // fx-kc: how the one async read went: "loading" | "ready" | "none" | "denied" | "error"
   status: string
   detail: string
+  // the old Keychain item may still be there (macOS let only the build that made it delete it)
+  left: bool
 
 shape Link
   server: string

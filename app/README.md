@@ -67,12 +67,25 @@ we tried it on a Mac, and the partition still prompts. With a Developer ID we wo
 service `com.exowatt.switchyard`, account `switchyard.token`). The first launch with no token file
 reads that item once, with its window already up; macOS may ask once whether Switchyard may read
 it, and the floor says *Waiting for Keychain access…* meanwhile. Allow, and the token moves to the
-file and the Keychain item is deleted; the Keychain is never read again. Deny, and the card offers
+file and `migrated` (`0600`, beside it) is marked: it is checked before any Keychain call, so
+the app never reads the Keychain again, and later updates never ask. Deny, and the card offers
 **Try again** and **Enter token**. Nothing at boot waits on the token, and the demo and the page's
 own server never do.
 
+The app then deletes the old item, but macOS lets only the build that made an item delete it
+(another build gets `errSecInvalidOwnerEdit` at once, with no prompt), so an older build's item
+usually stays, unread. Switchyard remembers that (`keychain-left`, beside the token), logs it once
+to `~/Library/Logs/Switchyard/switchyard.log`, and Settings shows, under **Security**:
+
+> An old Switchyard token remains in your login Keychain; remove it in Keychain Access → search
+> 'switchyard'.
+
+(Keychain Access lists it as `com.exowatt.switchyard`, account `switchyard.token`.) The note goes
+once a delete succeeds. **Forget token** in Settings signs out: it deletes the token file and tries
+the item's delete again (never a read); `migrated` stays.
+
 The token is never in a Contract value or argument, Exact's kept answers (`kv/exact.kept`), a
-persisted state, argv or a log line. Contract sees `tok` as `{has, ver, status, detail}`, `ver` an
+persisted state, argv or a log line. Contract sees `tok` as `{has, ver, status, detail, left}`, `ver` an
 8-character hash. It travels only as `Authorization: Bearer`, and as the stream's `?token=` (a
 WebSocket carries no header).
 

@@ -75,3 +75,42 @@ test "a denied read's Enter token opens Settings, and a saved token connects"
   expect state tok.has == true
   expect state conn.ok == true
   expect tree missing "tok-card"
+
+test "Forget token signs out: the token is gone, after a reload too"
+  clock data
+  tap "setup-connect"
+  clock settle
+  type "server-field" "fixtures"
+  type "token-field" "syd_kcTESTtoken0123456789"
+  tap "settings-save"
+  clock data
+  clock settle
+  expect state tok.has == true
+  tap "open-settings"
+  clock settle
+  expect tree has "settings-forget"
+  expect tree missing "settings-security"
+  tap "settings-forget"
+  clock data
+  clock settle
+  expect state tok.has == false
+  expect state tok.status == "none"
+  expect state tok.left == false
+  expect state conn.ok == true
+  reload
+  clock data
+  clock settle
+  expect state tok.has == false
+  expect state tok.status == "none"
+
+test "an old Keychain item left behind: Settings says how to remove it"
+  clock data
+  type "root" "/?keychain=left"
+  clock data
+  clock settle
+  expect state tok.left == true
+  expect state tokCard == false
+  tap "setup-connect"
+  clock settle
+  expect tree has "settings-security"
+  expect text "settings-security-note" == "An old Switchyard token remains in your login Keychain; remove it in Keychain Access → search 'switchyard'."

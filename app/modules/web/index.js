@@ -21,10 +21,12 @@ export async function later(request) {
   if (op === 'tokenGet') {
     // The agent's test hook (tests/token.test.contract): a read that answers denied.
     if (agent && request.simulate === 'denied') return { status: 'denied', detail: 'denied by the test hook (agent only)' };
-    if (!s) return { status: 'none' };
+    // …and one that says an old Keychain item was left (macOS's Settings note; agent only)
+    const left = agent && request.simulate === 'left' ? { keychainLeft: true } : {};
+    if (!s) return { status: 'none', ...left };
     try {
       const token = (s.getItem(KEY) ?? '').trim();
-      return token ? { status: 'ready', token, source: 'web' } : { status: 'none' };
+      return token ? { status: 'ready', token, source: 'web', ...left } : { status: 'none', ...left };
     } catch (e) {
       return { status: 'error', detail: String(e?.message ?? e) };
     }
