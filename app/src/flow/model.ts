@@ -84,6 +84,8 @@ export interface FlowView {
   machines: FlowMachine[];           // each engine host: busy/slots/online
   events: FlowEvent[];               // now (all, cap 40) + just (≤ 20, 15 min) + earlier (≤ 30, 2 h)
   lastEventAt?: number;
+  /** (extra) `now` rows still waiting for CI (pushed, no pipeline yet). */
+  waiting?: number;
 }
 export interface FlowStepDetail { name: string; state: FlowState; ms?: number; cached?: boolean; errorLine?: string; started?: number }
 export interface FlowWorkflowDetail { name: string; state: FlowState; started?: number; finished?: number; machine?: FlowMachine; steps: FlowStepDetail[] }
@@ -307,7 +309,8 @@ function machineNow(p: Pipeline, idx: EngIndex, ghaBusy: number, engine?: string
   const name = engine ?? engineName(p);
   const pid = p.id ?? '';
   const pos = idx.slotOf.get(pid);
-  if (pos) {
+  // (a workflow that names its own agent, in the steps panel, is placed by that agent)
+  if (pos && (!engine || engine === pos.agent || idx.byName.get(engine)?.label === pos.agent)) {
     const h = idx.hosts.get(pos.host)!;
     return hostMachine(h, { slot: pos.slot, agent: pos.agent });
   }
@@ -586,7 +589,7 @@ function eventOf(w: World, d: Draft, idx: EngIndex, ghaBusy: number, now: number
   const pr = d.pipes.find((p) => p.pr != null)?.pr ?? c?.pr;
   const ev: FlowEvent = {
     id: d.id, kind: d.kind, repo: d.repo, branch, sha: d.sha, author,
-    bot: !!(c?.bot) || /\[bot\]$/.test(author), title, at, url: eventUrl(w, d.repo, d.sha, d.kind, pr),
+    bot: !!(c?.bot) || /(\[bot\]|-bot)$/i.test(author), title, at, url: eventUrl(w, d.repo, d.sha, d.kind, pr),
     band: 'now', jobs, state,
   };
   if (repo?.group) ev.group = repo.group;
@@ -714,6 +717,9 @@ function build(w: World, now: number, filter?: FlowFilter): FlowView {
     machines: machinesOf(idx, gha), events,
   };
   if (lastEventAt != null) view.lastEventAt = lastEventAt;
+  let waitingRows = 0;
+  for (const e of nowEv) if (e.state === 'waiting') waitingRows++;
+  if (waitingRows) view.waiting = waitingRows;
   return view;
 }
 
