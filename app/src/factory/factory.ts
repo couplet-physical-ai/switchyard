@@ -249,7 +249,7 @@ export class Factory {
 
   /** The static floor's key: the camera, the fleet's shape, the apps' health (the lights are
    *  painted here, not every frame), and whether the ladder wants the low-detail floor. */
-  get floorKey(): string { return `${this.cam.key}|${this.census.sig}|${this.census.healthSig}|${this.census.carSig}|${this.budget.quality >= 3 ? 'lo' : 'hi'}|${this.w2.sig}|${this.plant.sig}`; } // fab-w2: |w2.sig · fab-w6: |plant.sig (the machine walls' 24 h)
+  get floorKey(): string { return `${this.cam.key}|${this.census.sig}|${this.census.healthSig}|${this.census.carSig}|${this.budget.quality >= 3 ? 'lo' : 'hi'}|${this.w2.sig}|${this.plant.sig}|${this.city.sig}`; } // fab-w2: |w2.sig · fab-w6: |plant.sig (the machine walls' 24 h) · fab-w5: |city.sig (heights, ghosts, rings)
 
   drawFloor(ctx: Ctx2D, f: Frame, t: number): boolean {
     this.applyStress();
