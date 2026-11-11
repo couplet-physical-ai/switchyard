@@ -186,6 +186,8 @@ export type JobLine = {
   links: Link[];
   /** the chain: where → the steps (lit as they pass) → the result */
   chain: Chip[]; note: string;
+  /** the chain under ~1300 px: "vm 154 · 5" → N done → the live (or failed) step → +N */
+  chainS: Chip[];
   /** the whole name (the tooltip; the line may cut it) */
   full: string;
 };
@@ -280,6 +282,33 @@ function chainOf(w: World, j: FlowJob, now: number): Chip[] {
   return out;
 }
 
+/** The short chain (a narrow window): where in a word, what is done folded, the step that
+ *  matters (running, or where it failed), what is left folded. */
+function chainShort(w: World, j: FlowJob, now: number): Chip[] {
+  const out: Chip[] = [];
+  const add = (id: string, text: string, st: string, arrow: boolean, hot = false) => out.push({ id, text, st, arrow, hot });
+  if (j.state === 'queued' || j.state === 'waiting') {
+    const age = now - j.created;
+    add('w', `waiting ${timer(age)}`, age > 3_600_000 ? 'bad' : age > 120_000 ? 'wait' : 'idle', false);
+    if (j.expectedMs) add('est', `~${dur(j.expectedMs)} build`, 'idle', true);
+    return out;
+  }
+  const m = j.machine;
+  add('where', j.ci === 'gha' ? 'gha' : m ? `${m.label.toLowerCase()}${m.slot ? ` · ${m.slot}` : ''}` : 'roadrunner', 'idle', false);
+  const p = w.pipelines.get(j.id);
+  const wfs = p?.workflows ?? [];
+  const wf = wfs.find((x) => x.state === 'running') ?? wfs.find((x) => x.state === 'failure' || x.state === 'error') ?? wfs[0];
+  const steps = wf?.steps ?? [];
+  if (!steps.length) return out;
+  let act = steps.findIndex((x) => x.state === 'running' || x.state === 'failure' || x.state === 'error');
+  if (act < 0) return out;
+  const done = steps.slice(0, act).filter((x) => x.state === 'success').length;
+  if (done) add('done', `${done} done`, 'ok', true);
+  add(`s${act}`, trimTo(steps[act].name, 14), stepSt(steps[act].state), !done, steps[act].state === 'running');
+  if (act + 1 < steps.length) add('more', `+${steps.length - act - 1}`, 'idle', false);
+  return out;
+}
+
 function jobLine(w: World, j: FlowJob, last: boolean, now: number): JobLine {
   const p = w.pipelines.get(j.id);
   const r = j.result, d = r.deploy;
@@ -313,7 +342,7 @@ function jobLine(w: World, j: FlowJob, last: boolean, now: number): JobLine {
     kind: j.kind, name: kindName, where: whereOf(j), machine: j.machine?.label ?? '', machineSel: j.machine ? `machine:${j.machine.id}` : '',
     step, pct, hasPct, over, timer: tmr, usual, result, err, app, health,
     dur: !live(j.state) ? dur(r.durationMs ?? (j.finished && j.started ? j.finished - j.started : undefined)) : '',
-    links, chain: chainOf(w, j, now), note: noteOf(w, j, now),
+    links, chain: chainOf(w, j, now), chainS: chainShort(w, j, now), note: noteOf(w, j, now),
     full: fit(`${j.kind}${d ? ` → ${d.app}` : j.name && j.name !== j.kind ? ` · ${j.name}` : ''}`, 160),
   };
 }
