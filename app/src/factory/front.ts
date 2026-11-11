@@ -23,8 +23,9 @@
 //                    left of the slab (the roads' hull, edged like the slab), and every road
 //                    starts 24 h back at an ORIGIN MARK inside it: a curb stub across the road
 //                    and a post, in the lane's hue. Nothing runs off into the void.
-//   lane curbs       §E: along the front strip, in front of the PR yard, the main lines and the
-//                    engine, one row per lane in its hue and in lane order: the lane's failures an
+//   lane curbs       §E: along the front strip, in front of the PR yard and the main lines (p3:
+//                    they end at the main lines' end, the intake's edge), one row per lane in its
+//                    hue and in lane order: the lane's failures an
 //                    hour as a step profile, red only above its p90 (dashed). fx-polish (note 11):
 //                    each row's left end is capped by its dock's hue chip, and every row is a
 //                    hover (the lane, its failures an hour over 24 h) and the group's lens.
@@ -86,7 +87,7 @@ export const TITLE_Z = 80;
 
 /** The lane curbs: their span (u), the first row's v, the rows' pitch and depth (v), the
  *  profile's full height (z). */
-export const CURB = { U0: YARD_U0 + 18, U1: ENG_U1, V0: LV + 10, PITCH: 14, FAN: 20, DV: 4, Z: 12 } as const;
+export const CURB = { U0: YARD_U0 + 18, U1: RAIL_U1 + 10, V0: LV + 10, PITCH: 14, FAN: 20, DV: 4, Z: 12 } as const;
 /** Curb row i's v at u: the rows converge on NOW (their right end, `PITCH` apart) and fan out
  *  toward their oldest hour (`PITCH + FAN` apart), into the dark lower left, which the
  *  projection leaves deep in front of the PR yard and shallow in front of the engine. */
