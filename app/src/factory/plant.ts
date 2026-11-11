@@ -113,9 +113,9 @@ export function heatLevel(v: number, max: number): number {
 }
 /** The yard's paint: a bay's floor in its lane hue (15 %), a level's alpha over it, the outline. */
 const YARD_BAY = 0.09, YARD_LVL = [0, 0.18, 0.25, 0.32, 0.4, 0.48, 0.57, 0.66], YARD_EDGE = '#3A3A3F';
-/** A slot's afterimage at full strength (the lane hue over the idle bay), its lip ticks' strip
- *  (v past the bay's front) and the inner wall's tide strip (v past the machine's back). */
-const AFTER_A = 0.18, TICK_V0 = 11, TICK_V1 = 19, TIDE_V0 = WALL_V + 1.5, TIDE_V1 = 14;
+/** A slot's afterimage at full strength (the lane hue over the idle bay) and its lip ticks' strip
+ *  (v past the bay's front). */
+const AFTER_A = 0.18, TICK_V0 = 11, TICK_V1 = 19;
 
 /** The lit look of a bay for a group hue: the recess floor (the hue over the machine) and the rim. */
 function lit(hex: string): { floor: string; rim: string } {
@@ -575,18 +575,18 @@ export class Plant implements Layer {
     const rec = this.f.bA;
     for (const b of this.bays) if (b.group === gi) rec.add(b.u, b.v, b.du, b.dv, 0, ENG_H);
     rec.flushQuads(g, cam, IDLE_BAY);
-    this.slotPast(g, gi, v0, lo);
+    this.slotPast(g, gi);
     this.wall(g, gr, v0, lo);
   }
 
   /** w2-engine2 (REVIEW-iter3 #3): an idle machine is never two black boxes. Each slot keeps its
    *  LAST job as an afterimage (the bay's floor in that job's lane hue at 18 %, fading to nothing
    *  over 30 min, in sixths), and its lip a 1-px tick in the lane hue for every job that started
-   *  in the last hour (at its start: the lip is the hour, now at its right end). Along the
-   *  machine's back, under the wall, the INNER WALL's tide: the 24 h busy share as a heat strip
-   *  (half-hour cells, amber ∝ busy/slots; gaps stay bare), so a quiet machine still has its
-   *  day. All on the static floor (`sig`: the dealt slots, a minute's tick, a sixth's fade). */
-  private slotPast(g: Gfx, gi: number, v0: number, lo: boolean): void {
+   *  in the last hour (at its start: the lip is the hour, now at its right end). (p3, #6: the
+   *  inner wall's heat strip, the 24 h busy share a second time under the wall's own tide, is
+   *  gone: one 24 h busy display a machine, the wall's.) All on the static floor (`sig`: the
+   *  dealt slots, a minute's tick, a sixth's fade). */
+  private slotPast(g: Gfx, gi: number): void {
     const cam = this.f.cam, sp = this.slotPaint[gi];
     const bays = this.bays.filter((b) => b.group === gi).sort((a, b) => a.slot - b.slot);
     if (sp) {
@@ -619,19 +619,6 @@ export class Plant implements Layer {
         g.stroke(hex, Math.max(1, g.hair * 1.2));
       }
     }
-    // the inner wall's tide: 48 half-hour cells along the wall's own time axis
-    const t = this.hist.tide(this.f.census.groups[gi]?.id ?? '');
-    if (!t || lo) return;
-    const ua = ENG_U0 + 3, ub = ENG_U1 - 3, n = 48, per = t.n / n;
-    const lv: BoxBatch[] = [];
-    for (let i = 0; i < n; i++) {
-      let s = 0, k = 0;
-      for (let j = Math.floor(i * per); j < Math.floor((i + 1) * per); j++) { const x = t.busy[j]!; if (x === x) { s += x; k++; } }
-      if (!k) continue;
-      const level = Math.min(5, Math.round((s / k) * 5));
-      (lv[level] ??= new BoxBatch()).add(ua + ((ub - ua) * i) / n + 0.3, v0 + TIDE_V0, (ub - ua) / n - 0.6, TIDE_V1 - TIDE_V0, 0, ENG_H);
-    }
-    lv.forEach((B, level) => B?.flushQuads(g, cam, withAlpha(C.packet, 0.07 + 0.13 * level)));
   }
 
   /** w2-engine2 (REVIEW-iter3 #11): the apron in front of the intake and the engine is the intake's

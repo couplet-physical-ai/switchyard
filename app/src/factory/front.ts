@@ -20,8 +20,8 @@
 //                    the road in the lane's hue; an hour whose failures ran over the lane's p90
 //                    gets red tips (≤ 30 % of the bar): bright for the last hour, desaturated after.
 //                    fx-polish (overseer note 10): the fan runs on its own APRON, the dark band
-//                    left of the slab (the roads' hull, lipped like the slab; p3: no hairline), and every road
-//                    starts 24 h back at an ORIGIN MARK inside it: a curb stub across the road
+//                    left of the slab (the roads' hull, lipped like the slab; p3: no hairline),
+//                    and every road starts 24 h back at an ORIGIN MARK inside it: a curb stub across the road
 //                    and a post, in the lane's hue. Nothing runs off into the void.
 //   lane curbs       §E: along the front strip, in front of the PR yard and the main lines (p3:
 //                    they end at the main lines' end, the intake's edge), one row per lane in its
@@ -63,6 +63,10 @@ type Pt = [number, number];
 /** A back-wall board: its stage, title, span along the wall (u) and height (z0 → z1). */
 export type Board = { id: 'pushes' | 'opened' | 'merges' | 'landed' | 'intake' | 'busy' | 'tests' | 'apps'; stage: string; title: string; u0: number; u1: number; z0: number; z1: number };
 
+/** p3 (#3): the engine board's foot stands clear over the back machine's wall (its top's back edge,
+ *  v ENG_V0 at z ENG_H + 22, projects to z ≈ 30 at v 0), 4 units of dark between: its bars no
+ *  longer run down into the machine's 24 h chart. */
+const BUSY_Z0 = 34;
 /** The boards, left → right. Each is as tall as the band over it allows (the titles' row stays
  *  clear: labels.ts `titleRow`); the apps board stands over the city's back row.
  *  w2-chrome (REVIEW-iter3 #12): every stage title has a board of its own, wide enough for its
@@ -75,7 +79,7 @@ export const BOARDS: readonly Board[] = [
   { id: 'merges', stage: '03', title: 'merge gate', u0: YARD_U1 - 106, u1: GATE_U - 2, z0: 4, z1: 62 },
   { id: 'landed', stage: '04', title: 'main lines', u0: GATE_U + 14, u1: RAIL_U1, z0: 4, z1: 122 },
   { id: 'intake', stage: '05', title: 'intake', u0: INTAKE_U0 - 14, u1: ENG_U0 - 24, z0: 10, z1: 176 },
-  { id: 'busy', stage: '06', title: 'consumption engine', u0: ENG_U0 - 14, u1: ENG_U1 - 22, z0: 10, z1: 132 },
+  { id: 'busy', stage: '06', title: 'consumption engine', u0: ENG_U0 - 14, u1: ENG_U1 - 22, z0: BUSY_Z0, z1: 132 },
   { id: 'tests', stage: '07', title: 'tests · deploy', u0: ENG_U1 + 14, u1: TRACK_U1 + 4, z0: 6, z1: 244 },
   { id: 'apps', stage: '09', title: 'apps', u0: CITY_U0 + 4, u1: CITY_U1 - 4, z0: 30, z1: 272 },
 ];
