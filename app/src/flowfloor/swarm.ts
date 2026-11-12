@@ -25,7 +25,7 @@ const SRC = { x: 24, s: 56, ys: [222, 350, 478] };
 const IN = { x: 150, y: 274, cols: 6, rows: 6, cell: 22, gap: 4 };
 const ENG = { x: 350, w: 444, plate: 70, pitch: 61, bay: 54, rows: [190, 350, 510], h: 136 };
 const GATE = { x: 830, w: 52, y0: 270, y1: 430 };
-const PIT = { x0: 640, x1: 1020, y0: 684, y1: 764 };
+const PIT = { x0: 640, x1: 1020, y0: 664, y1: 768 };
 const YARD = { x0: 928, x1: 1164, y0: 172, row: 21, rows: 22 };
 const PRESS = { x: 1192, w: 64, y0: 288, y1: 412 };
 const SKY = { x0: 1280, x1: 1436, base: 546, top: 112 };
@@ -41,6 +41,8 @@ export type SwarmOpts = {
   t: number;
   /** the world's now (server ms) */
   now: number;
+  /** the tests' pass rate over the FAILED bin's window */
+  pass: { total: number; failed: number; rate: number };
   window: string;
   selected: string;
   failed: Item[];
@@ -328,22 +330,24 @@ function drawPit(g: Gfx, o: SwarmOpts, hits: Hit[], t: number): void {
   for (let i = 0; i < 4; i++) { g.alpha((0.05 + 0.03 * Math.sin(t / 700 + i)) * heat); g.fillRect(x0, y1 - 10 - i * 14, x1 - x0, 10 + i * 14, RED); }
   g.alpha(1);
   g.fillRect(x0 - 10, y1, x1 - x0 + 20, 6, '#1A1314');
-  // up to 8: each cube with its repo beside it, three to a row (rows of 3, 3, 2); more: two rows of
-  // bare cubes
-  const named = f.length <= 8;
-  const pitch = named ? Math.floor((x1 - x0 - 12) / 3) : 26, perRow = named ? 3 : Math.floor((x1 - x0 - 16) / pitch);
-  const rows = named ? 3 : 2;
-  f.slice(0, perRow * rows).forEach((it, i) => {
+  // every failed cube carries its repo beside it, three to a row, newest first; past nine the
+  // ninth place says how many more (the inspector and the 2h window show them all)
+  const cap = 9, perRow = 3, pitch = Math.floor((x1 - x0 - 12) / perRow);
+  const shown = f.length > cap ? f.slice(0, cap - 1) : f;
+  shown.forEach((it, i) => {
     const c = i % perRow, r = Math.floor(i / perRow);
-    const cx = x0 + 20 + c * pitch, cy = named ? y0 + 34 + r * 20 : y1 - 16 - r * 24;
+    const cx = x0 + 20 + c * pitch, cy = y0 + 38 + r * 22;
     // a fresh one (in the last 2 minutes) still glows hot; older ones cool to a deeper red
     const fresh = o.now - (it.finished ?? 0) < 120_000;
-    cube(g, cx, cy, named ? 14 : 17, fresh ? '#FF7A6E' : RED, fresh ? 1.2 + 0.3 * Math.sin(t / 220) : 0.8);
-    if (named) g.text(g.fit(it.name, 10, pitch - 26), cx + 13, cy + 4, C.redText, 10);
-    if (o.selected === it.id) brackets(g, cx - (named ? 11 : 14), cy - (named ? 11 : 14), named ? 22 : 28, named ? 22 : 28);
-    hits.push({ kind: 'failed', id: it.id, x: cx - 12, y: cy - (named ? 10 : 14), w: named ? pitch - 6 : 28, h: named ? 20 : 28, url: it.url, label: `${it.name} #${it.number}` });
+    cube(g, cx, cy, 14, fresh ? '#FF7A6E' : RED, fresh ? 1.2 + 0.3 * Math.sin(t / 220) : 0.8);
+    g.text(g.fit(it.name, 10, pitch - 26), cx + 13, cy + 4, C.redText, 10);
+    if (o.selected === it.id) brackets(g, cx - 11, cy - 11, 22, 22);
+    hits.push({ kind: 'failed', id: it.id, x: cx - 12, y: cy - 10, w: pitch - 6, h: 20, url: it.url, label: `${it.name} #${it.number}` });
   });
-  if (f.length > perRow * rows) g.text(`+${f.length - perRow * rows}`, x1 - 8, y0 + 16, C.redText, 11, true, 'right');
+  if (f.length > cap) {
+    const i = cap - 1, c = i % perRow, r = Math.floor(i / perRow);
+    g.text(`+${f.length - (cap - 1)} more`, x0 + 20 + c * pitch - 6, y0 + 38 + r * 22 + 4, C.redText, 10, true);
+  }
   // the newest, named over the pile: repo #n · the step it failed at · how long ago
   const nw = f[0];
   if (nw) {
@@ -481,12 +485,12 @@ function ago(ms: number): string {
 }
 
 /** Each station's label just above it: the name, the big number, its unit. (x centre, y top). */
-export function drawHeads(g: Gfx, S: Stages, now: number): void {
+export function drawHeads(g: Gfx, S: Stages, now: number, o: SwarmOpts): void {
   const at: [string, number, number, string, string, string][] = [
     ['sources', SRC.x + SRC.s / 2 + 18, SRC.ys[0] - SRC.s / 2, `${S.sources.perHour}`, '/h', C.ink],
     ['intake', IN.x + 76, IN.y - 6, `${S.intake.waiting}`, S.intake.waiting ? `waiting · ${ago(now - S.intake.oldestAt)}` : 'waiting', S.intake.waiting ? AMBER : C.ink3],
     ['engines', ENG.x + ENG.w / 2, ENG.rows[0] - ENG.h / 2, `${S.engines.running}`, `of ${S.engines.slots} busy`, S.engines.running ? AMBER : C.ink3],
-    ['tests', GATE.x + GATE.w / 2, GATE.y0 - 12, `${Math.round(S.tests.passRate * 100)}%`, 'pass', S.tests.passRate >= 0.85 ? C.greenInk : C.amberText],
+    ['tests', GATE.x + GATE.w / 2, GATE.y0 - 12, o.pass.total ? `${Math.round(o.pass.rate * 100)}%` : '–', 'pass', !o.pass.total ? C.ink3 : o.pass.rate >= 0.85 ? C.greenInk : C.amberText],
     ['main lines', (YARD.x0 + YARD.x1) / 2, YARD.y0 - 8, `${S.mains.red.length}`, `red · ${S.mains.green} green`, S.mains.red.length ? C.redText : C.greenInk],
     ['deploy', PRESS.x + PRESS.w / 2, PRESS.y0, `${S.deploy.running.length}`, 'now', S.deploy.running.length ? AMBER : C.ink3],
     ['apps', (SKY.x0 + SKY.x1) / 2, appsTop(S) - 8, S.apps.down.length ? `${S.apps.down.length}` : `${S.apps.up}`, S.apps.down.length ? 'down' : `of ${S.apps.total} up`, S.apps.down.length ? C.redText : C.greenInk],
@@ -495,7 +499,13 @@ export function drawHeads(g: Gfx, S: Stages, now: number): void {
     const unit = ` ${unit0}`;
     const wn = g.width(n, 22, true), wu = g.width(unit, 11.5);
     const y = top - 12;
-    g.text(name, x, y - 26, C.ink, 13, true, 'center');
+    // the tests say their window (the FAILED bin's): "tests · last 30m"
+    const sub = name === 'tests' ? ` · last ${o.window}` : '';
+    if (sub) {
+      const w1 = g.width(name, 13, true), w2 = g.width(sub, 11);
+      g.text(name, x - (w1 + w2) / 2, y - 26, C.ink, 13, true);
+      g.text(sub, x - (w1 + w2) / 2 + w1, y - 26, C.ink3, 11);
+    } else g.text(name, x, y - 26, C.ink, 13, true, 'center');
     g.text(n, x - (wn + wu) / 2, y, col, 22, true);
     g.text(unit, x - (wn + wu) / 2 + wn, y, C.ink3, 11.5);
   }
@@ -517,6 +527,6 @@ export function drawSwarmFloor(g: Gfx, S: Stages, now: number, o: SwarmOpts): { 
   drawApps(g, S, hits, o.t);
   drawPit(g, o, hits, o.t);
   const cubes = drawSwarm(g, ls, o.t);
-  drawHeads(g, S, now);
+  drawHeads(g, S, now, o);
   return { hits, cubes };
 }

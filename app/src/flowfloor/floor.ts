@@ -9,7 +9,7 @@ import type { World } from '../world.ts';
 import { Gfx } from '../yard/gfx.ts';
 import { C } from '../yard/theme.ts';
 import { D, WINDOWS, drawSwarmFloor, type Hit } from './swarm.ts';
-import { failedIn, stagesOf } from './stages.ts';
+import { failedIn, passIn, stagesOf } from './stages.ts';
 
 /** the inspector panel beside the floor: 420 wide + its 18 px padding each side + its 1 px rule */
 export const INSPECTOR_W = 458;
@@ -69,7 +69,7 @@ export class FlowFloor {
     ctx.beginPath(); ctx.rect(0, headTop + 4, W - right, H - headTop - 4); ctx.clip();
     ctx.translate(this.fitX, this.fitY);
     ctx.scale(sc, sc);
-    const r = drawSwarmFloor(g, S, now, { t, now, window: a.win, selected: a.sel, failed });
+    const r = drawSwarmFloor(g, S, now, { t, now, pass: passIn(w, now, windowMs(a.win)), window: a.win, selected: a.sel, failed });
     ctx.restore();
     this.hits = r.hits.map((h) => ({ ...h, x: h.x * sc + this.fitX, y: h.y * sc + this.fitY, w: h.w * sc, h: h.h * sc }));
     // for the tests (as the old floor did): where the bin's newest crate is, once per layout

@@ -235,3 +235,17 @@ export function failedIn(w: World, now: number, windowMs: number): Item[] {
   }
   return out.sort((a, b) => (b.finished ?? 0) - (a.finished ?? 0));
 }
+
+/** The tests' pass rate over the same window as the FAILED bin: of the runs that finished inside
+ *  it (canceled and skipped ones aside), how many passed. */
+export function passIn(w: World, now: number, windowMs: number): { total: number; failed: number; rate: number } {
+  const t0 = now - windowMs;
+  let total = 0, failed = 0;
+  for (const p of w.pipelines.values()) {
+    if (!p.finished || p.finished < t0 || p.finished > now + 60_000) continue;
+    if (p.state === 'canceled' || p.state === 'skipped') continue;
+    total++;
+    if (p.state === 'failure' || p.state === 'error') failed++;
+  }
+  return { total, failed, rate: total ? (total - failed) / total : 1 };
+}
