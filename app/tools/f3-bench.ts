@@ -159,7 +159,9 @@ while (performance.now() < end) {
     const { Board3 } = await import('../src/factory3/board.ts');
     const ref = new Board3();
     const paint0 = (globalThis as { __paint0?: (...a: unknown[]) => void }).__paint0!;
-    const refSeam = (await import(`${process.env.EXACT2 ?? '/home/farce/src/exact'}/canvas/recorder.js`)).canvasSeam((_s: string, _a: unknown[], c: unknown) => { paint0.call(ref, c, lp.f, lp.scene, lp.L, true); return false; });
+    // (the reference paints the marks in the scene's own order: the words' grouping is checked too)
+    const { setGroupWords } = await import('../src/factory3/board.ts');
+    const refSeam = (await import(`${process.env.EXACT2 ?? '/home/farce/src/exact'}/canvas/recorder.js`)).canvasSeam((_s: string, _a: unknown[], c: unknown) => { setGroupWords(false); try { paint0.call(ref, c, lp.f, lp.scene, lp.L, true); } finally { setGroupWords(true); } return false; });
     const out = JSON.parse(refSeam.draw({ canvas: 7, generation: 1, surface: 'ref', args: [], frame: lp.f }, measureHost)) as { lists: string[] };
     await pix.fresh('F');
     pix.put('F', out.lists);

@@ -67,6 +67,63 @@ const DIRTY_MAX = 0.3;
 const TILE = 16;
 /** over this many changed boxes, a repaint is cleared and clipped by its tiles (tileRuns) */
 const MANY_BOXES = 24;
+/** p5-board: the order the marks are painted in. Every change of font sends the face's whole
+ *  family list (Exact's recorder: a number per character, ~400 B), and the board's words alternate
+ *  fonts (a bold name, a plain detail): ~120 font changes, half of a whole board's ~100 KB. So a
+ *  word that no later mark and no other word overlaps is painted last, with the others of its
+ *  font (and colour): nothing painted after it covers it, and it covers nothing painted after
+ *  it, so the pixels are the same. The rest keep their places. (Off: the bench's reference.) */
+let groupWords = true;
+/** A mark's ink (CSS px), for the order: a square's own box and a pixel round it; a word's run of
+ *  advances (the face is monospaced) and two pixels each side, an em above its baseline and
+ *  0.35 em under it, a pixel more each way (opBox, the repaints' box, is far looser). */
+function inkBox(op: Op, s: number, out: number[]): void {
+  if (op[0] === 'r') { out.push(op[1] * s - 1, op[2] * s - 1, (op[1] + op[3]) * s + 1, (op[2] + op[4]) * s + 1); return; }
+  const px = op[5], w = op[1].length * advOf(px) * s, x = op[2] * s, y = op[3] * s;
+  const x0 = op[7] === 2 ? x - w : op[7] === 1 ? x - w / 2 : x;
+  out.push(x0 - 2, y - (px + 1) * s, x0 + w + 2, y + (px * 0.35 + 1) * s);
+}
+export function setGroupWords(on: boolean): void { groupWords = on; }
+const ordBox: number[] = [];
+function paintOrder(ops: Op[], s: number, cols: number, rows: number, group: boolean): number[] {
+  const n = ops.length, order: number[] = [];
+  if (!groupWords || !group) { for (let i = 0; i < n; i++) order.push(i); return order; }
+  // each mark's box and the tiles it is on (a list of marks per tile)
+  const B = new Float64Array(n * 4), head = new Int32Array(cols * rows).fill(-1), nxt: number[] = [], itm: number[] = [];
+  for (let i = 0; i < n; i++) {
+    ordBox.length = 0;
+    inkBox(ops[i], s, ordBox);
+    B[i * 4] = ordBox[0]; B[i * 4 + 1] = ordBox[1]; B[i * 4 + 2] = ordBox[2]; B[i * 4 + 3] = ordBox[3];
+    const tx0 = Math.max(0, Math.floor(ordBox[0] / TILE)), tx1 = Math.min(cols - 1, Math.floor(ordBox[2] / TILE));
+    for (let ty = Math.max(0, Math.floor(ordBox[1] / TILE)), ty1 = Math.min(rows - 1, Math.floor(ordBox[3] / TILE)); ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) { const t = ty * cols + tx; itm.push(i); nxt.push(head[t]); head[t] = itm.length - 1; }
+    }
+  }
+  const late: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (ops[i][0] !== 't') { order.push(i); continue; }
+    let free = true;
+    const x0 = B[i * 4], y0 = B[i * 4 + 1], x1 = B[i * 4 + 2], y1 = B[i * 4 + 3];
+    const tx0 = Math.max(0, Math.floor(x0 / TILE)), tx1 = Math.min(cols - 1, Math.floor(x1 / TILE));
+    scan: for (let ty = Math.max(0, Math.floor(y0 / TILE)), ty1 = Math.min(rows - 1, Math.floor(y1 / TILE)); ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        for (let e = head[ty * cols + tx]; e >= 0; e = nxt[e]) {
+          const j = itm[e];
+          if (j === i || (j < i && ops[j][0] === 'r')) continue; // (a square painted before it stays under it)
+          if (B[j * 4] < x1 && B[j * 4 + 2] > x0 && B[j * 4 + 1] < y1 && B[j * 4 + 3] > y0) { free = false; break scan; }
+        }
+      }
+    }
+    if (free) late.push(i); else order.push(i);
+  }
+  // (by font, then colour, each in the scene's order)
+  const key = (i: number) => { const op = ops[i] as ['t', string, number, number, string, number, 0 | 1, 0 | 1 | 2]; return `${op[6]}|${op[5]}|${op[4]}`; };
+  const keys = late.map(key);
+  const idx = late.map((_, k) => k).sort((a, b) => (keys[a] < keys[b] ? -1 : keys[a] > keys[b] ? 1 : a - b));
+  for (const k of idx) order.push(late[k]);
+  return order;
+}
+
 /** The dirty tiles as rects (x0, y0, x1, y1, CSS px): runs along each row of tiles, a run that
  *  continues the same run of the row above merged into it. */
 function tileRuns(T: Uint8Array, cols: number, rows: number, W: number, H: number): number[] {
@@ -386,7 +443,9 @@ export class Board3 {
     }
     let fill = '', font = '', align = -1, redrawn = 0;
     const box: number[] = [];
-    for (const op of ops) {
+    // (a few small boxes, a second's timers: in the scene's order; a whole or a tiled repaint grouped)
+    for (const oi of paintOrder(ops, s, cols, rows, !only || !exact)) {
+      const op = ops[oi];
       if (only) {
         // only the marks under a changed box (its tiles first: most marks are under none)
         box.length = 0;
