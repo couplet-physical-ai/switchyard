@@ -11,12 +11,15 @@
 //   e  nothing (the baseline: an empty draw at 60 fps)
 //   f  base64 of 100 KB into a Uint8Array, then String.fromCharCode per 8 KB chunk + join
 //   t  ~400 fillText runs a frame across 3 fonts (the host's text measure, every run)
+//   n  30 Number.toLocaleString('en-US') a frame (the old floor's labels)
+//   k  a sort of 100 names by localeCompare(…, 'en', { numeric: true }) a frame
+//   K  the same sort by plain localeCompare(…)
 //   r  ~300 regex uses a frame (literal replace, split, a RegExp made from a string)
 //   L  (with others) a ~12 MB live set, 1 % of it replaced each frame (old-generation churn, as
 //      the fleet's world in a live session)
 //   A  as a, to ~400 KB (a big canvas's base64: past the size where Hermes keeps a string outside its heap)
 //   C  as c, with a 400 KB string
-//   X,Y,…  the listed modes in turn, 90 s each (e.g. 1:A,C)
+//   X,Y,…  the listed modes in turn, 60 s each (e.g. 1:A,C)
 //   cycle  a, b, c, d, e, f in turn, 2 minutes each, round and round (one launch, every mode)
 //   real  no churn: the app draws as it does, and every 10 s the line adds each surface's draws
 //         and the external bytes its draw turns added (before the collections between calls)
@@ -64,7 +67,7 @@ const phaseAt = (time: number): string => {
   if (mode === 'cycle') return PHASES[Math.floor((time - t0) / PHASE_MS) % PHASES.length];
   if (!mode.includes(',')) return mode;
   const list = mode.split(',');
-  return list[Math.floor((time - t0) / 90_000) % list.length];
+  return list[Math.floor((time - t0) / 60_000) % list.length];
 };
 
 function stat(time: number): void {
@@ -128,6 +131,21 @@ function probeDraw(ctx: Ctx2D, frame: Frame): boolean {
       ctx.fillText(label, (i % 8) * 170, 14 + Math.floor(i / 8) * 16 + (w > 1e9 ? 1 : 0));
     }
     sink = frames;
+  }
+  if (m.includes('n')) {
+    let n = 0;
+    for (let i = 0; i < 30; i++) n += (12_345.678 * i + frames).toLocaleString('en-US').length;
+    sink = n;
+  }
+  if (m.includes('k')) {
+    const names = Array.from({ length: 100 }, (_, i) => `engine-${(i * 37 + frames) % 100}`);
+    names.sort((x, y) => x.localeCompare(y, 'en', { numeric: true }));
+    sink = names[0].length;
+  }
+  if (m.includes('K')) {
+    const names = Array.from({ length: 100 }, (_, i) => `engine-${(i * 37 + frames) % 100}`);
+    names.sort((x, y) => x.localeCompare(y));
+    sink = names[0].length;
   }
   if (m.includes('r')) {
     let n = 0;

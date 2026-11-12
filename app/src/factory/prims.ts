@@ -49,6 +49,20 @@ export const HOUR_MS = 3_600_000;
 
 // ---- geometry primitives ---------------------------------------------------------------------
 /** A closed polygon through (u, v, z) triples. */
+/** `x.toLocaleString('en-US')` (grouped thousands, at most 3 decimals) without Intl. leak: the
+ *  old floor's live draw (its hover lines format numbers every frame) was the one draw whose
+ *  frames raised Hermes's external-memory count on macOS (~9 KB a frame, never given back);
+ *  Intl in a draw is the suspect, not yet proven by a probe (src/heapprobe.ts mode n). */
+export function thousands(x: number): string {
+  if (!Number.isFinite(x)) return Number.isNaN(x) ? 'NaN' : x > 0 ? '∞' : '-∞';
+  const r = Math.round(Math.abs(x) * 1000) / 1000;
+  const s = String(r), dot = s.indexOf('.');
+  const int = dot < 0 ? s : s.slice(0, dot);
+  let out = '';
+  for (let i = 0; i < int.length; i++) out += (i > 0 && (int.length - i) % 3 === 0 ? ',' : '') + int[i];
+  return (x < 0 ? '-' : '') + out + (dot < 0 ? '' : s.slice(dot));
+}
+
 export function poly(cam: Cam, g: Gfx, pts: number[]): void {
   for (let i = 0; i < pts.length; i += 3) {
     const x = cam.x(pts[i], pts[i + 1]), y = cam.y(pts[i], pts[i + 1], pts[i + 2]);

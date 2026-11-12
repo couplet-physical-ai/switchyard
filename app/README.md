@@ -365,7 +365,8 @@ Hermes OOM with RSS flat. The web logs its own console line (performance.memory)
 
 **`SWITCHYARD_HEAPLOG=1:<mode>`** (a diagnostic, `src/heapprobe.ts`): the yard's live canvas
 runs a synthetic churn every frame (`a` `+=` strings, `b` ArrayBuffer doubling, `c` JSON, `d` a
-3000-op canvas, `t` text, `r` regexes, `e` nothing, `X,Y` in turn) and logs `probe <mode>: … ext
+3000-op canvas, `t` text, `r` regexes, `n` toLocaleString, `k`/`K` localeCompare, `e` nothing,
+`X,Y` in turn, 60 s each) and logs `probe <mode>: … ext
 … live …` every 10 s; `1:real` draws the app as it is and adds each surface's draws and the
 external bytes its draw turns added.
 
