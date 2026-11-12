@@ -503,3 +503,75 @@ Where the floor is:
 - With nothing changing (paused, or a frozen fleet), the board still costs ~1.9–2.1 %.
 - That is the 1 Hz `pulseIdle` re-asking `overview(clockMs)` and the runner re-evaluating what reads `ov`.
 - Next: make `liveFeed` answer per stream frame so `ov` follows it, and stop the pulse when nothing on top ticks.
+
+## Pass 3, the shell (p3-shell): the pulse sleeps (2026-11-12)
+
+Branch `sy/mac-p3shell`, base `f6019ae` (pass 2 merged). What a quiet second costs now:
+
+- **Nothing shown ticks** (paused, a still fleet, Live filtered to a quiet repo): no pulse at all
+  (`ov.pace` 2).
+  - The stream's frames wake the clock: `liveFeed` keeps them in an inbox, moves `feed.wake`, and
+    Contract ticks once 30 ms later (`fed`), so the overview, the canvases and Live follow the
+    stream, not a clock.
+  - A ladder of one-shot wakes reaches the playhead's next minute (32/16/8/4/2/1 s: about six a
+    minute) for ages, hh:mm and the heap line; one more a second after any change.
+- **A shown timer runs** (`ov.pace` 1): the 1 s tick moves only `clockMs`.
+  - `rk` (ov.tick plus the second) redraws the canvases; Live's feed and panel and the board's
+    inspector re-stamp at `tickMs`.
+  - The overview is not asked, and neither is `f3Stats` (now per board change; per second only
+    with the HUD).
+- **Busy** (the demo, a replay, playing behind, the HUD, stress, the web's older floors): the 250 ms
+  pulse, as before.
+- Also:
+  - the palette's search runs per query and per open, not per stream frame;
+  - the old floor's coffee visits run only on `/factory?v=1`;
+  - no pulse before a fleet loads;
+  - the token file's "connected" is logged as the connect answers, not at the next tick.
+- **Live covered or paused**: its forever-breathing marks (the LIVE beat, a live step's chip) are
+  still. Live stays mounted under the board and the Yard; on the web those animations kept 60
+  style recalcs a second going behind every view.
+- **The board shown again**: each visit mounts the Factory's canvases afresh (the tabs pop and
+  push the route). A fresh mount now:
+  - keeps the face's measures (12 `measureText` round trips before);
+  - starts no transit for what moved while it was away (it moved unseen; the transit also built
+    the scene twice in that frame);
+  - paints the last scene unbuilt when nothing changed.
+  - Bun, the fixtures' board after 60 frames covered: 1.85 → 1.33–1.56 ms, 0 measures, 0 transits.
+
+**Web** (Chromium, Playwright's headless shell, this devbox), `server/mock.ts --frozen` (3 builds
+"running": the 1 Hz timers, no stream frames); paused = the time control's Pause (Live's from the
+Yard). Script / main-thread task ms per second over 15 s, style recalcs per second, and data-module
+source calls per 20 s (an instrumented build):
+
+| Web, ms/s · recalcs/s · source calls | base `f6019ae` | head |
+|---|---|---|
+| Live, timers | 16.3 / 34.1 · 61 · overview 20, nowFeed 19 | 17.4 / 38.8 · 61 · nowFeed 20 |
+| Board, timers | 15.3 / 35.8 · 60 · overview 20, f3Stats 20 | 10.2 / 19.5 · 0 · 0 |
+| Yard, timers | 15.3 / 36.5 · 60 · overview 20 | 10.3 / 20.0 · 0 · 0 |
+| Live, paused | 16.1 / 32.5 · 60 | 2.5 / 9.7 · 0 · 0 |
+| Board, paused | 15.1 / 30.7 · 60 · overview 20, f3Stats 20 | 2.6 / 8.6 · 0 · 0 |
+| Yard, paused | 13.9 / 29.5 · 60 | 2.4 / 8.0 · 0 · 0 |
+| Live, the mock's moving fleet | 41.9 / 65.3 · 61 · overview 65, nowFeed 27, search 12 | 31.0 / 61.5 · 61 · overview 17, nowFeed 37 |
+
+How to read it:
+
+- Live on top with work running keeps its beat and its live chips (real work), which are most of
+  the web's script time there.
+- Live's timers: one `nowFeed` re-stamp a second, and nothing else.
+- On the moving fleet, the overview is asked per batch of stream frames (17 in 20 s, was 65).
+- The Mac mini numbers for this pass come after sy-ship's 0.1.5 gate (the mini was busy).
+
+**Launch → connected** (pass 2's logs, LIVE, token file):
+
+- Warm: the token file is read and the connect starts at ~170 ms; "connected" at 856–980 ms. In
+  between, the fetch takes ~440 ms (first byte ~170 ms, 715 KB brotli) and the parse and load ~250 ms.
+- The log line came up to 250 ms after the connect itself (fixed above).
+- Cold, a new build's first launch: Exact's first line comes at 2.5 s and "connected" at 3.4 s.
+  - The 2.5 s is the OS starting a new binary for the first time (code-signature checks,
+    dyld), before any app code runs.
+  - The app's own part is the same ~700–900 ms as warm.
+- A local cache of the last fleet would not help a first launch (there is none). Two pieces can
+  still come down:
+  - parse the snapshot as it streams in (a byte stream overlapping the ~270 ms download with the
+    ~250 ms parse);
+  - a larger parse step on native.
