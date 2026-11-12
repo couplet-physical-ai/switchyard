@@ -69,6 +69,16 @@ export function dur(ms: number | undefined): string {
   const h = Math.floor(m / 60);
   return `${h}h ${m % 60 < 10 ? '0' : ''}${m % 60}m`;
 }
+/** p6: a machine ring's fill, in whole device pixels of its arc (now.contract: a dash of
+ *  pct × 40.84 user units at 2×, half a unit a pixel): the arc ends within half a pixel of the
+ *  exact fill, and its svg changes when a pixel does (every few seconds for a 5-minute run), not
+ *  every second. Off (RING_PX 0): the exact fill (the A/B switch, SWITCHYARD_CANVAS=noq). */
+export const RING = { px: 2 };
+export function ringPct(pct: number): number {
+  if (!RING.px) return pct;
+  const n = 40.84 * RING.px;
+  return Math.round(pct * n) / n;
+}
 export function ago(ms: number): string {
   if (ms < 45_000) return 'now';
   if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
@@ -666,7 +676,7 @@ export function buildFeed(d: NowDeps, args: FeedArgs): NowFeed {
   const urls = ms.map((m) => engineUrl(w, m));
   const mach = (t: number): Mach[] => ms.map((m, mi) => {
     const b = m.busy ?? 0, s = m.slots ?? 0;
-    const pp = (runs.get(m.id) ?? []).map((r) => (r.x ? Math.min(0.98, Math.max(0.02, (t - r.s) / r.x)) : -1));
+    const pp = (runs.get(m.id) ?? []).map((r) => (r.x ? ringPct(Math.min(0.98, Math.max(0.02, (t - r.s) / r.x))) : -1));
     return {
       id: m.id, label: (m.label === 'GitHub runner' ? 'github actions' : m.label).toLowerCase(), text: m.online === false ? 'offline' : s ? `${b}/${s}` : `${b}`,
       cells: s ? Array.from({ length: Math.min(s, 16) }, (_, i) => ({ id: `${m.id}#${i}`, on: i < b, pct: i < b ? Math.max(0, pp[i] ?? -1) : 0, known: i < b && (pp[i] ?? -1) >= 0 })) : [],

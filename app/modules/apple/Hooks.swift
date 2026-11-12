@@ -11,9 +11,10 @@
 //                                  launch, the way the agent's `screenshot` draws it.
 //   SWITCHYARD_HEAPLOG=1:<mode>    a hidden probe of the JS heap's external bytes (src/heapprobe.ts):
 //                                  the yard's live canvas churns every frame, a line every 10 s.
-//   SWITCHYARD_CANVAS=<gpu|board,info> a hidden A/B switch (p6): those canvases claim the GPU as
-//                                  in pass 5 (the board, the Yard's info layer); unset, both stay
-//                                  with Core Graphics (app.ts canvasAsk).
+//   SWITCHYARD_CANVAS=<gpu|board,info>[,noq] a hidden A/B switch (p6): those canvases claim the
+//                                  GPU as in pass 5 (the board, the Yard's info layer); unset, both
+//                                  stay with Core Graphics; noq: progress rings at their exact fill,
+//                                  not by the pixel (app.ts canvasAsk).
 //
 // Always, every 30 s: the data module's `heap: <MB> MB · live · ext · cap · frames <n>` line
 // (src/memlog.ts, the `heapLog` op), which the release soak reads.

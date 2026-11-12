@@ -15,7 +15,7 @@ import { DEMO_REPLAY, DemoUpstream } from './src/demo.ts';
 import { EngineHistory } from './src/enginehist.ts';
 import { bindInsights } from './src/insights.ts';
 import { search } from './src/project.ts';
-import { feedTicking, feedUntil, nowSources } from './src/now/view.ts';
+import { RING, feedTicking, feedUntil, nowSources } from './src/now/view.ts';
 import { FlowFloor } from './src/flowfloor/floor.ts';
 import { Board3 } from './src/factory3/board.ts';
 import { NO_F3, f3Detail, tidyLog } from './src/factory3/inspect.ts';
@@ -181,9 +181,9 @@ const flow = new FlowFloor();
 /** Factory 3 (FACTORY3.md, src/factory3/): the berth board, at /factory?v=3. */
 const f3 = new Board3();
 factory.hud = yard.hud;
-/** p6: SWITCHYARD_CANVAS=<gpu|board,info> (macOS, a hidden A/B switch: modules/apple/Hooks.swift):
- *  those canvases claim the GPU as in pass 5. Asked once, from a data turn (the overview's first),
- *  before the board or the Yard's info layer is drawn on top. */
+/** p6: SWITCHYARD_CANVAS=<gpu|board,info>[,noq] (macOS, a hidden A/B switch: modules/apple/Hooks.swift):
+ *  those canvases claim the GPU as in pass 5; noq: the progress rings at their exact fill, not by the
+ *  pixel. Asked once, from a data turn (the overview's first), before anything is drawn on top. */
 let canvasAsked = false;
 function canvasAsk(native: Native): void {
   if (canvasAsked) return;
@@ -195,7 +195,8 @@ function canvasAsk(native: Native): void {
     const on = (k: string) => v === 'gpu' || v.split(',').includes(k);
     Board3.boardGpu = on('board');
     InfoLayer.cg = !on('info');
-    console.log(`canvas: SWITCHYARD_CANVAS=${v}: the board ${Board3.boardGpu ? 'GPU' : 'Core Graphics'}, the Yard's info layer ${InfoLayer.cg ? 'Core Graphics' : 'GPU'}`);
+    if (v.split(',').includes('noq')) { Yard.ringPx = false; RING.px = 0; }
+    console.log(`canvas: SWITCHYARD_CANVAS=${v}: the board ${Board3.boardGpu ? 'GPU' : 'Core Graphics'}, the Yard's info layer ${InfoLayer.cg ? 'Core Graphics' : 'GPU'}, rings ${Yard.ringPx ? 'by the pixel' : 'exact'}`);
   } catch { /* no module: the defaults */ }
 }
 /** Stress mode (a 10× synthetic fleet for the renderers): one switch for the yard and the floor. */

@@ -40,3 +40,20 @@ for (let i = 0; i < secs; i++) {
 const q = (a: number[], p: number) => { const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p * s.length))] ?? 0; };
 for (const [k, a] of Object.entries(T)) console.log(`${k.padEnd(8)} n ${String(a.length).padStart(3)} · p50 ${q(a, 0.5).toFixed(3)} · p90 ${q(a, 0.9).toFixed(3)} · mean ${(a.reduce((x, y) => x + y, 0) / Math.max(1, a.length)).toFixed(3)} ms`);
 console.log(board.workLine());
+
+// --real: the same 60 seconds through Exact's recorder (canvas/recorder.js: the list, base64 and
+// the JSON a native draw hands the host), as the Mac's data module runs a draw
+if (args.includes('--real')) {
+  const b2 = new Board3();
+  const seam = (await import(`${process.env.EXACT2 ?? '/home/farce/src/exact'}/canvas/recorder.js`)).canvasSeam((_s: string, a: unknown[], c: unknown, f: unknown) =>
+    b2.drawBoard(c as never, f as never, w, t0 + Number(a[0]) * 1000 + 137, { win: '30m', sel: '', mode: 'live', reduced: false, dock: false, hov: '' }));
+  const host = { measure: (j: string) => { const r = JSON.parse(j); const x = 6.6 * String(r.text).length; return JSON.stringify([x, 0, x, 9, 3, 11, 3, 9, 3, 0, 0]); }, image: () => '' };
+  const ms: number[] = [], kb: number[] = [];
+  for (let i = 0; i < secs; i++) {
+    const f = { time: 1000 + i * 1000, width: 1440, height: 840, dpr: 2, scale: 2, pixelWidth: 2880, pixelHeight: 1680, mounted: 0, cause: i ? 'args' : 'mount', causes: [i ? 'args' : 'mount'] };
+    const s = performance.now();
+    const out = JSON.parse(seam.draw({ canvas: 1, generation: 1, surface: 'f3Board', args: [i], frame: f }, host)) as { lists: string[] };
+    if (i) { ms.push(performance.now() - s); kb.push(out.lists.reduce((a, l) => a + l.length * 0.75, 0) / 1024); }
+  }
+  console.log(`real     n ${String(ms.length).padStart(3)} · p50 ${q(ms, 0.5).toFixed(3)} · p90 ${q(ms, 0.9).toFixed(3)} ms · list KB p50 ${q(kb, 0.5).toFixed(2)}`);
+}

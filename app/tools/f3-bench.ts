@@ -16,6 +16,8 @@ const server = args.find((a, i) => !a.startsWith('--') && !(args[i - 1] ?? '').s
 const secs = Number(opt('--secs', '60'));
 const [W, H] = opt('--size', '1440x900').split('x').map(Number) as [number, number];
 const topName = opt('--top', 'factory');
+// p6: --top yard draws the Yard's layers (yardInfo, yardLive; yardStatic at the mount) instead of the board's
+const YARD = topName === 'yard', BOARD = YARD ? 'yardInfo' : 'f3Board', LIVE = YARD ? 'yardLive' : 'f3Live';
 
 (globalThis as { scheduler?: unknown }).scheduler = { yield: () => new Promise<void>((r) => setTimeout(r, 0)) };
 const { sources, draw } = await import('../app.ts');
@@ -91,13 +93,28 @@ const pixRuns: { at: number; kind: string; n: number; max: number }[] = [];
 let lastPaint: { scene: unknown; L: unknown; f: unknown; whole: boolean } | null = null;
 if (pix) await pix.fresh('P');
 const listKB: number[] = [];
+const sent: Record<string, number> = {};
 const lastKB: Record<string, number> = {};
+// --dump <surface>: that surface's canvas calls, for two draws 5 s in (what a second redraws)
+const DUMP = opt('--dump', '');
+let dumped = 0;
 const drawVia = (surface: string, a: unknown[], c: never, f: never): boolean => {
+  if (DUMP === surface && now() > 5000 && dumped < 2) {
+    dumped++;
+    const calls: string[] = [];
+    const rec = new Proxy({}, {
+      get: (_t, k) => (k === 'measureText' ? (s: string) => ({ width: 6.6 * String(s).length }) : k === 'canvas' ? { width: W, height: H } : k === 'createLinearGradient' || k === 'createRadialGradient' ? () => ({ addColorStop: noop }) : (...x: unknown[]) => { calls.push(`${String(k)} ${x.map((v) => (typeof v === 'number' ? +v.toFixed(1) : JSON.stringify(v))).join(',')}`); }),
+      set: (_t, k, v) => { calls.push(`${String(k)}=${JSON.stringify(v)}`); return true; },
+    }) as never;
+    const r = draw(surface, a, rec, f);
+    console.log(`--- ${surface} at ${(now() / 1000).toFixed(2)} s: ${calls.length} calls\n${calls.join('\n')}`);
+    return r;
+  }
   if (!seam) return draw(surface, a, c, f);
-  const out = JSON.parse(seam.draw({ canvas: surface === 'f3Board' ? 1 : 2, generation: 1, surface, args: a, frame: f }, measureHost)) as { lists: string[]; frame: boolean };
+  const out = JSON.parse(seam.draw({ canvas: surface === 'f3Board' || surface === 'yardInfo' ? 1 : surface === 'yardStatic' ? 3 : 2, generation: 1, surface, args: a, frame: f }, measureHost)) as { lists: string[]; frame: boolean };
   let bytes = 0;
   for (const l of out.lists) bytes += l.length;
-  if (bytes) listKB.push((bytes * 0.75) / 1024);
+  if (bytes) { listKB.push((bytes * 0.75) / 1024); sent[surface] = (sent[surface] ?? 0) + 1; }
   if (pix && surface === 'f3Board') pix.put('P', out.lists);
   lastKB[surface] = (bytes * 0.75) / 1024;
   return out.frame;
@@ -139,8 +156,8 @@ while (performance.now() < end) {
   const ft = now();
   const n0 = turns.length;
   await tasks(ft);
-  const bArgs = ['30m', '', ov.mode, false, false, '', rk()];
-  const lArgs = [rk()];
+  const bArgs = YARD ? [ov.layoutKey, rk()] : ['30m', '', ov.mode, false, false, '', rk()];
+  const lArgs = YARD ? ['full', '', rk()] : [rk()];
   const fr = (cause: string) => ({ time: ft, width: W, height: H, dpr: 2, scale: 2, pixelWidth: W * 2, pixelHeight: H * 2, mounted: 0, cause, causes: [cause] }) as never;
   const bk = JSON.stringify(bArgs), lk = JSON.stringify(lArgs);
   if (pix && wanted.size && !mounted) {
@@ -149,8 +166,8 @@ while (performance.now() < end) {
     fs.forEach((f, i) => adv.set(f, a[i]!));
     boardMore = true; refont = true;
   }
-  if (bk !== boardKey || boardMore) { const c = mounted ? 'mount' : refont ? 'font' : bk !== boardKey ? 'args' : 'frame'; refont = false; boardKey = bk; boardMore = timed('draw f3Board', () => drawVia('f3Board', bArgs, ctx, fr(c))); }
-  if (lk !== liveKey || liveMore) { const c = mounted ? 'mount' : lk !== liveKey ? 'args' : 'frame'; liveKey = lk; liveMore = timed('draw f3Live', () => drawVia('f3Live', lArgs, ctx, fr(c))); }
+  if (bk !== boardKey || boardMore) { const c = mounted ? 'mount' : refont ? 'font' : bk !== boardKey ? 'args' : 'frame'; refont = false; boardKey = bk; if (YARD && c === 'mount') drawVia('yardStatic', [ov.layoutKey, 0], ctx, fr(c)); boardMore = timed(`draw ${BOARD}`, () => drawVia(BOARD, bArgs, ctx, fr(c))); }
+  if (lk !== liveKey || liveMore) { const c = mounted ? 'mount' : lk !== liveKey ? 'args' : 'frame'; liveKey = lk; liveMore = timed(`draw ${LIVE}`, () => drawVia(LIVE, lArgs, ctx, fr(c))); }
   mounted = false;
   frameN++;
   if (pix && lastPaint) {
@@ -171,7 +188,7 @@ while (performance.now() < end) {
   }
   const mine = turns.slice(n0).filter((x) => !x.what.startsWith('  '));
   const ms = mine.reduce((a, b) => a + b.ms, 0);
-  const kb = REAL ? ` · board ${(lastKB.f3Board ?? 0).toFixed(1)} KB, live ${(lastKB.f3Live ?? 0).toFixed(1)} KB` : '';
+  const kb = REAL ? ` · board ${(lastKB[BOARD] ?? 0).toFixed(1)} KB, live ${(lastKB[LIVE] ?? 0).toFixed(1)} KB` : '';
   if (mine.length) frameWork.push({ at: ft, ms, what: mine.filter((x) => x.ms > 2).map((x) => `${x.what} ${x.ms.toFixed(1)}`).join(', ') + kb });
   lastKB.f3Board = 0; lastKB.f3Live = 0;
   // the next display slot (the stream's messages land in between)
@@ -190,7 +207,7 @@ for (const [k, a] of [...by].sort((x, y) => y[1].reduce((p, c) => p + c, 0) - x[
 const fw = frameWork.map((f) => f.ms);
 console.log(`frame work: p50 ${q(fw, 0.5).toFixed(2)} p90 ${q(fw, 0.9).toFixed(2)} p99 ${q(fw, 0.99).toFixed(2)} max ${q(fw, 1).toFixed(2)} ms · over 8 ms ${fw.filter((x) => x > 8).length} · over 16 ms ${fw.filter((x) => x > 16).length}`);
 for (const f of [...frameWork].sort((a, b) => b.ms - a.ms).slice(0, 12)) console.log(`  ${(f.at / 1000).toFixed(2)} s  ${f.ms.toFixed(1)} ms  ${f.what}`);
-console.log(`board: ${((sources as unknown as { f3Stats: (a: unknown[]) => { work: string } }).f3Stats([])).work}`);
+if (!YARD) console.log(`board: ${((sources as unknown as { f3Stats: (a: unknown[]) => { work: string } }).f3Stats([])).work}`);
 if (pixRuns.length) {
   const part = pixRuns.filter((x) => x.kind === 'part'), whole = pixRuns.filter((x) => x.kind === 'whole');
   const bad = pixRuns.filter((x) => x.n);
@@ -198,5 +215,5 @@ if (pixRuns.length) {
   await pix!.close();
 }
 if ((globalThis as { __why?: unknown }).__why) console.log('paints by kind', JSON.stringify((globalThis as { __why?: unknown }).__why));
-if (listKB.length) console.log(`lists sent: ${listKB.length} · KB p50 ${q(listKB, 0.5).toFixed(1)} p90 ${q(listKB, 0.9).toFixed(1)} max ${q(listKB, 1).toFixed(1)}`);
+if (listKB.length) console.log(`lists sent: ${listKB.length} (${Object.entries(sent).map(([k, n]) => `${k} ${n}`).join(", ")}) · KB p50 ${q(listKB, 0.5).toFixed(1)} p90 ${q(listKB, 0.9).toFixed(1)} max ${q(listKB, 1).toFixed(1)}`);
 process.exit(0);

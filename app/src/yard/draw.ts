@@ -26,6 +26,13 @@ import { Aggregates, RANKED, buildingIds, isRed, mainStory, queueTruth } from '.
 import { StressFleet } from './stress.ts';
 import { C, T, TAU, clamp, easeOut, withAlpha } from './theme.ts';
 
+/** p6: a ring's fill `u` (0..1) rounded to whole pixels of its arc, `rpx` its radius in device pixels. */
+function ringU(u: number, rpx: number): number {
+  if (!Yard.ringPx || !(rpx > 0)) return u;
+  const n = TAU * rpx;
+  return Math.round(u * n) / n;
+}
+
 export type Hit = { kind: string; id: string; label: string };
 
 const TINTS = [C.packet, C.red, C.green, C.dotDim];
@@ -343,6 +350,8 @@ export class Yard {
   liveSkips = 0;
   /** Off: the live layer draws every redraw, as before p3-yard. */
   static gateLive = true;
+  /** p6: progress rings in whole device pixels of arc (rings) */
+  static ringPx = true;
   private lastTopCost = 0;
 
   /** The overlay over the info layer: the hover lens (an element promoted to LOD0) and the
@@ -401,7 +410,10 @@ export class Yard {
           const exp = pl?.expected_ms ?? w.repos.get(pl?.repo ?? '')?.p50_build_ms ?? fallback;
           const el = pl?.started ? Math.max(0, now - pl.started) : 0;
           const r = s.r + 2.5;
-          if (exp > 0) { const u = clamp(el / exp, 0.02, 0.98); g.arc(s.x, s.y, r, -Math.PI / 2, -Math.PI / 2 + u * TAU); anyTrack = true; }
+          // (p6: the fill in whole device pixels of arc, as drawn: the arc ends within half a pixel
+          // of the exact fill, and a still yard's live layer is replayed when a pixel moves, every
+          // few seconds for a 5-minute run, not every second; Yard.ringPx 0: exact, SWITCHYARD_CANVAS=noq)
+          if (exp > 0) { const u = ringU(clamp(el / exp, 0.02, 0.98), r * g.px); g.arc(s.x, s.y, r, -Math.PI / 2, -Math.PI / 2 + u * TAU); anyTrack = true; }
           else { unknown[nUnknown++] = s.x; unknown[nUnknown++] = s.y; anySpin = true; }
         }
       }
