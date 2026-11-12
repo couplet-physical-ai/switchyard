@@ -78,12 +78,13 @@ component App
   resource conn = connect(server, tok.ver, gen) with time.epochAtZero, time.utcOffset, tokBad as shape Conn else empty(ok=false, status="connecting", error="", seq=0, label="", kind="", needsSetup=false, signIn="")
   resource feed = liveFeed(server, tok.ver, conn.seq, gen, conn.ok) as shape Ack else empty(ok=false, status="idle")
   resource ov = overview(clockMs, conn.seq, conn.ok) as shape Overview else empty()
-  resource found = search(q, clockMs) as shape Found else empty(hits=[])
+  // (asked again when the query or the fleet changes; never on the clock)
+  resource found = search(q, ov.seq) as shape Found else empty(hits=[])
   mutation ctl as shape Ack refreshes ov
   mutation replayed as shape Ack refreshes ov then afterReplay
-  mutation hit as shape Hit then afterHit
+  mutation hit as shape Hit refreshes ov then afterHit
   mutation hov as shape Hit
-  mutation fac as shape Hit then afterFac
+  mutation fac as shape Hit refreshes ov then afterFac
   mutation saved as shape Ack then afterSave
   derive reduced = media.prefersReducedMotion
   derive here = top(nav).name
@@ -104,6 +105,8 @@ component App
   // fx-day: a replay's answer says its speed (60 the hour, 720 the day; a resumed one its own)
   derive replaySpeed = match replayed { case some(r) => (match parseNumber(r.status) { case some(n) => n, case none => 60 }), case none => 60 }
   derive hovering = match hov { case some(h) => h.kind != "", case none => false }
+  // the yard's lens: what the pointer is over and where (redrawn as it moves; at rest, still)
+  derive hovAt = match hov { case some(h) => (h.kind != "" ? `${h.id}@${h.route}` : ""), case none => "" }
   // the Factory (FACTORY3.md): the berth board; the square swarm stays at /factory?v=2 and the
   // old floor at /factory?v=1 for now
   // macOS never mounts the two older floors (they animate every frame): ?v=1 and ?v=2 are the
@@ -130,7 +133,9 @@ component App
   derive visitNow = match visit { case some(v) => v.status, case none => "" }
   // fx-glance: the coffee header's totals (as drawn) are the status line's, word for word
   derive headAgrees = ov.facHead != "" and ov.facHead == `${ov.red} red · ${ov.building} building · ${ov.queued} queued · ${ov.appsDown} down`
-  resource coffee = coffeeOpen(server, visits, conn.seq, conn.ok, ov.tick) as shape Ack else empty(ok=false, status="")
+  // (the old floor's alone: asked only while it is on top; elsewhere it fetches nothing)
+  derive facV1 = here == "factory" and not facV2 and not facV3
+  resource coffee = coffeeOpen(server, visits, conn.seq, conn.ok and facV1, facV1 ? ov.tick : 0) as shape Ack else empty(ok=false, status="")
   members "./views/now.contract"
   members "./views/flow.contract"
   members "./views/factory3.contract"
@@ -138,8 +143,14 @@ component App
   members "./views/update.contract"
   members "./views/hooks.contract"
 
-  task pulse mount
+  // The clock (mac-perf, "idle = still"): 4 times a second while something moves or plays
+  // (ov.pace 0: the demo, a replay, a change in the last 3 s); idle, once a second, only to see
+  // the stream's next frame and the clock turn. The canvases follow ov.tick, which moves only
+  // when what they show changed.
+  task pulse when ov.pace == 0
     every(250, tick)
+  task pulseIdle when ov.pace != 0
+    every(1000, tick)
   task tokWait when tokLoading and not tokSlow
     after(400, tokWaited)
   task tokCalm when tokSlow and not tokLoading and not tokRetrying
@@ -503,7 +514,7 @@ component App
               canvas surface=yardStatic(ov.layoutKey, ov.stress) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-static"
               canvas surface=yardInfo(ov.layoutKey, ov.tick) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-info"
               canvas surface=yardLive(reduced ? "reduced" : "full", picked, ov.tick) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-live"
-              canvas surface=yardTop(ov.hud, hovering) position="absolute" left=0 top=0 width="100%" height="100%"
+              canvas surface=yardTop(ov.hud, hovAt) position="absolute" left=0 top=0 width="100%" height="100%"
                 role="img" aria-label=ov.summary pointerdown=pressYard pointermove=moveYard touch-action="none" testId="yard-top"
               // The dial is the replay: the canvas draws its face, this button is its words and its press.
               button appearance="none" press=startReplay testId="yard-replay" aria-label="Replay the last hour, sped up" disabled=(ov.mode == "replay" or not conn.ok)

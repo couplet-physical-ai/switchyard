@@ -59,7 +59,10 @@ shape Overview
   facHead: string
   behind: string
   seq: number
+  // the canvases' redraw key: moves only when what they show changed (app.ts `redraw`)
   tick: number
+  // the pulse: 0 every 250 ms (something moves or plays), 1 every second (idle)
+  pace: number
   host: string
   dial: string
   dialPad: number

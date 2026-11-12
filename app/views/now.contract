@@ -220,13 +220,14 @@ members App
   // under ~1300 px a whole chain wraps: the short one (where · N done · the live step · +N)
   derive nowCompact = nowVp.width > 0 and nowVp.width < 1300
   derive nowTight = nowVp.width > 0 and nowVp.width < 1000
-  derive nowSec = floor(clockMs / 1000)
   // filters live in the URL (deep-linkable): /?repo=owner/name, /?app=slug, /?sha=owner/name@sha
   derive nowRepo = searchParam(top(nav), "repo")
   derive nowApp = searchParam(top(nav), "app")
   derive nowSha = searchParam(top(nav), "sha")
-  resource nowData = nowFeed(here == "now" ? nowSec : 0, nowRepo, nowApp, nowSha) as shape NowFeed else empty()
-  resource nowPanelData = nowPanel(nowSel, (here == "now" and nowSel != "") ? nowSec : 0) as shape NowPanel else empty()
+  // asked again when what they show changed (ov.tick: the fleet, or the clock where a shown
+  // timer or age follows it), never 4 times a second
+  resource nowData = nowFeed(here == "now" ? ov.tick : 0, nowRepo, nowApp, nowSha) as shape NowFeed else empty()
+  resource nowPanelData = nowPanel(nowSel, (here == "now" and nowSel != "") ? ov.tick : 0) as shape NowPanel else empty()
   // The log tail: only with the server's capability; every 10 s while its step runs; dropped
   // (an empty selection) when the detail closes.
   resource nowLogData = nowLog(nowSel, nowPanelData.logStep, nowPanelData.logWorkflow, nowPanelData.logLive ? floor(clockMs / 10000) : 0, nowSel.startsWith("job:") and nowPanelData.logCap, nowPanelData.logFail) as shape NowLog else empty()
@@ -328,7 +329,7 @@ component NowStatus
     // the Yard's top line: LIVE (green, spaced), the headline in 19, the rest in muted captions
     row flex-shrink=0 flex-wrap="wrap" align-items="baseline" column-gap=14 row-gap=6 padding=(narrow ? "10px 12px 8px" : "14px 16px 10px") testId="now-status"
       row gap=6 align-items="baseline" testId="now-live"
-        text (mode == "live" ? "LIVE" : (mode == "replay" ? "REPLAY" : (mode == "paused" ? "PAUSED" : "BEHIND"))) font-size=11 letter-spacing="1px" color=(mode == "live" ? "sy.green" : "sy.amber-text") animation=((mode == "live" and not reduced) ? "nowBeat 1s ease-in-out infinite alternate" : "none")
+        text (mode == "live" ? "LIVE" : (mode == "replay" ? "REPLAY" : (mode == "paused" ? "PAUSED" : "BEHIND"))) font-size=11 letter-spacing="1px" color=(mode == "live" ? "sy.green" : "sy.amber-text") animation=((mode == "live" and d.running > 0 and not reduced) ? "nowBeat 1s ease-in-out infinite alternate" : "none")
       row gap=8 align-items="baseline" white-space="nowrap" testId="now-counts"
         text `${d.running}` font-size=19 font-weight=700 color=(d.running > 0 ? "zr.run" : "zr.ink") testId="now-running"
         text "building" font-size=19 font-weight=700 color="zr.ink"

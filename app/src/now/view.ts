@@ -520,7 +520,7 @@ export function feedAnswer(d: NowDeps, [tick, repo, app, sha]: FeedArgs): NowFee
   const last = v.lastEventAt;
   const filterText = filter.sha ? `commit ${sha7(shaOnly)}${shaRepo ? ` in ${repoName(shaRepo)}` : ''}` : filter.app ? `app ${filter.app}` : filter.repo ? `repo ${repoName(filter.repo)}` : '';
   const feed: NowFeed = {
-    ok: true, tick, clock: hhmm(now, off, true),
+    ok: true, tick, clock: hhmm(now, off), // (hh:mm: a clock's seconds would move every second for nothing)
     running: v.running, queued: v.queued, waiting: v.waiting ?? 0, busy, slots, machines,
     needs: all, needsN: all.length, needsMore: needsMore(all, BROKEN_SHOWN),
     now: nowEv, just, earlier, intake,

@@ -250,12 +250,14 @@ export class Yard {
     // Sleep when nothing moves (a game's idle frame): the canvas keeps its last picture and the
     // 250 ms tick (a surface argument) redraws it, enough for the slow progress rings. The HUD
     // keeps frames coming, since it measures them.
-    return this.hud.on || this.tl.mode === 'replay' || this.tl.mode === 'behind' || this.hover.kind !== '' || p.busy(t);
+    // (a resting pointer is not motion: the lens is the top layer's, redrawn as the pointer moves)
+    return this.hud.on || this.tl.mode === 'replay' || this.tl.mode === 'behind' || p.busy(t);
   }
   private lastTopCost = 0;
 
   /** The overlay over the info layer: the hover lens (an element promoted to LOD0) and the
-   *  HUD. It animates only while a lens shows or fades, or the HUD is on. */
+   *  HUD. It animates only while a lens fades in or out, or the HUD is on; a lens at rest is
+   *  redrawn when the pointer moves (its position is a surface argument). */
   drawTop(ctx: Ctx2D, f: Frame, t: number): boolean {
     const S = this.ensure(f.width, f.height, f.scale, t);
     const g = this.gt;
@@ -271,7 +273,7 @@ export class Yard {
       infoDraws: this.infoRate, infoMs: this.infoMs, stress: this.stress.on, host: this.budget.host, scale: S.k, sceneW: S.W, sceneH: S.H,
     });
     this.lastTopCost = this.budget.estimate(g.ops, g.arcs, g.texts, 0);
-    return lensOn || this.hud.on || this.hover.kind !== '';
+    return lensOn || this.hud.on;
   }
 
   /** The estimate at quality qq, from this frame's at q: packets are most of the difference. */
@@ -708,6 +710,7 @@ export class Yard {
     return null;
   }
 
+  /** Draws the lens; true while it fades in or out (frames wanted), false at rest or gone. */
   private drawLens(g: Gfx, S: Scene, t: number): boolean {
     const hv = this.hover, L = this.lens;
     if (hv.kind) {
@@ -777,7 +780,7 @@ export class Yard {
       g.text(`${w.pushesSince(L.id, now - 600_000)} pushes in the last 10 minutes`, x + 10, y + 54, C.ink3, px);
     }
     g.alpha(1);
-    return true;
+    return a < 1;
   }
 }
 

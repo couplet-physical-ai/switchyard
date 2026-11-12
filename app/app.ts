@@ -486,16 +486,42 @@ function overview(): Result<'overview'> {
     : 'waiting for the fleet';
   const summary = w.loaded ? `The delivery yard: ${building} pipelines building, ${queued} queued, ${red} main ${red === 1 ? 'line' : 'lines'} red, ${appsUp} of ${appsTotal} apps up.` : 'The delivery yard, waiting for data.'; // fx-glance
   const k = S?.k ?? 1;
-  factory.city.pump(clock); // fab-w5: the city's app histories (H7), a few fetches per data turn, never from a draw
+  if (oldFloorOn()) factory.city.pump(clock); // fab-w5: the city's app histories (H7), a few fetches per data turn, never from a draw (only while the old floor is drawn: it alone shows them)
   const dial = replayDial(); // fx-day: the dial counts a day replay's hours (and logs a replay's streaming when it ends)
+  const vis = redraw(w, building + queued);
   return {
     status: w.loaded ? 'ready' : 'waiting', mode: tl.mode, speed: tl.speed, sentence, summary, layoutKey: `${S?.key ?? ''}|${yard.budget.quality >= 3 ? 'lo' : 'hi'}`, repos: w.repos.size,
     building, queued, red, appsUp, appsTotal, appsDown, facHead: factory.coffee.glance0.drawn, behind, seq: w.seq, // fx-glance: the coffee header's totals as drawn
-    tick: Math.floor(clock / 250), host: hostLabel(), dial, dialPad: Math.round(((S?.m ?? 16) + 22) * k), dialFont: Math.round(11 * k), dialH: Math.round(34 * k),
+    tick: vis.tick, pace: vis.pace, host: hostLabel(), dial, dialPad: Math.round(((S?.m ?? 16) + 22) * k), dialFont: Math.round(11 * k), dialH: Math.round(34 * k),
     hud: yard.hud.on, stress: stressOn, quality: yard.budget.quality, facKey: factory.floorKey,
     facDrawer: factory.selected !== '', facQ: factory.budget.quality, facStress: factory.stress.on, facCalm: factory.calm, facStats: factory.statsLine(), ...factory.counts(),
   };
 }
+
+/** The canvases' redraw key (`ov.tick`) and the pulse's pace (`ov.pace`) (mac-perf, "idle = still").
+ *  The key moves only when something the view on top shows has changed: the world (a new
+ *  version), the mode or speed, the view on top, and the clock only where a shown text follows
+ *  it: each second while anything runs or waits (its m:ss timer), else each minute (clock times
+ *  and ages); a replay's playhead 4 times a second. Idle, it stands still: no canvas is asked
+ *  for a frame and no source re-asked through it. The pace: 0, the 250 ms pulse (the demo, a
+ *  replay, playing behind, a change in the last 3 s, the HUD, stress); 1, the 1 s pulse, which
+ *  only notices the stream's next frame and the clock turning. */
+let visTick = 0, visSig = '', visData = '', visChanged = -1e9;
+function redraw(w: { ver: number }, active: number): { tick: number; pace: number } {
+  const replaying = tl.mode === 'replay';
+  const g = replaying ? 250 : active > 0 || tl.mode === 'behind' ? 1000 : 60_000;
+  const data = `${tl.epoch}|${w.ver}|${tl.mode}|${tl.speed}|${stressOn ? 1 : 0}|${yard.hud.on ? 1 : 0}`;
+  if (data !== visData) { visData = data; visChanged = clock; }
+  const sig = `${topView}|${data}|${Math.floor(tl.playhead / g)}`;
+  if (sig !== visSig) { visSig = sig; visTick++; }
+  const busy = !!demo || replaying || tl.mode === 'behind' || clock - visChanged < 3000 || yard.hud.on || stressOn || !w.ver;
+  return { tick: visTick, pace: busy ? 0 : 1 };
+}
+
+/** The old floor (/factory?v=1, the web's) was drawn in the last 5 s: its histories are fetched
+ *  only then (the board, the Yard and Live never show them). */
+let oldFloorAt = -1e9;
+const oldFloorOn = () => clock - oldFloorAt < 5000;
 
 function route(kind: string, id: string): string {
   switch (kind) {
@@ -646,7 +672,7 @@ export const sources: Sources = {
     return c;
   },
   liveFeed: ([server, _ver, seq, _gen, ok]) => liveFeed(server, needsToken(server) ? token : '', seq, ok),
-  overview: ([t]) => { if (t > 0) advance(t); safe('plantHist', 0, () => { factory.plant.pump(clock); return 0; }); return safe('overview', EMPTY_OV, overview); }, // fab-w6: the machine walls' 24 h histories are asked here (a source), never in a draw
+  overview: ([t]) => { if (t > 0) advance(t); if (oldFloorOn()) safe('plantHist', 0, () => { factory.plant.pump(clock); return 0; }); return safe('overview', EMPTY_OV, overview); }, // fab-w6: the machine walls' 24 h histories are asked here (a source), never in a draw
   timeControl: async ([what, speed]) => {
     if (what === 'pause') tl.pause();
     else if (what === 'play') {
@@ -687,7 +713,8 @@ export const sources: Sources = {
   hoverAt: ([x, y]) => {
     const k = yard.S?.k ?? 1;
     const h = yard.hoverAt(x < 0 ? -1 : x / k, y / k, clock);
-    return h ? { kind: h.kind, id: h.id, label: h.label, route: '' } : { kind: '', id: '', label: '', route: '' };
+    // (route: where the pointer is, the lens's surface argument: it is redrawn as it moves, not every frame)
+    return h ? { kind: h.kind, id: h.id, label: h.label, route: `${Math.round(x)},${Math.round(y)}` } : { kind: '', id: '', label: '', route: '' };
   },
   facPointer: ([kind, x, y, buttons]) => {
     // fab-w4: any input skips the coffee check's replay; S replays it, W cycles its window
@@ -735,8 +762,8 @@ export const sources: Sources = {
     else if (what === 'stress') setStress(on === 1);
     return { ok: true, status: `${what} ${on === 1 ? 'on' : 'off'}` };
   },
-  search: ([q, t]) => {
-    if (t > 0) advance(t);
+  // (asked again when the query or the world's seq changes: its second argument is a key, not a clock)
+  search: ([q]) => {
     return safe('search', { hits: [] }, () => ({ hits: search(tl.world, q, tl.playhead).map((h) => ({ kind: h.kind, id: h.id, title: h.title, subtitle: h.subtitle, route: route(h.kind, h.id) })) }));
   },
   viewOnTop: ([here]) => { topView = String(here ?? ''); return { ok: true, status: topView }; },
@@ -747,7 +774,7 @@ export const sources: Sources = {
 const EMPTY_OV: Result<'overview'> = {
   status: 'waiting', mode: 'live', speed: 1, sentence: 'waiting for the fleet', summary: 'The delivery yard, waiting for data.', layoutKey: '', repos: 0,
   building: 0, queued: 0, red: 0, appsUp: 0, appsTotal: 0, appsDown: 0, facHead: '', behind: '', seq: 0, // fx-glance
-  tick: 0, host: '', dial: '1 hour, sped up', dialPad: 38, dialFont: 11, dialH: 34, hud: false, stress: false, quality: 0, facKey: '', facDrawer: false, facQ: 0, facStress: false, facCalm: true, facStats: '', facCity: 0, facCars: 0, facBays: 0, facLens: 0, facLensTop: '',
+  tick: 0, pace: 0, host: '', dial: '1 hour, sped up', dialPad: 38, dialFont: 11, dialH: 34, hud: false, stress: false, quality: 0, facKey: '', facDrawer: false, facQ: 0, facStress: false, facCalm: true, facStats: '', facCity: 0, facCars: 0, facBays: 0, facLens: 0, facLensTop: '',
 };
 /** A source that throws answers its empty value instead (and says so once in the log): a sparse
  *  or surprising entity costs a view its rows, never the app. */
@@ -784,13 +811,15 @@ export const surfaces: Record<string, number> = { factoryFloor: 3, factoryLive: 
 
 /** The route on top (`viewOnTop`). The yard stays mounted under every other view; its live
  *  layer animating there cost 3-4× the ops of the view on top. Covered, it is not drawn (the
- *  canvas keeps its last pixels) and asks for frames still, so it resumes on its first frame. */
+ *  canvas keeps its last pixels) and asks for no frame; `ov.tick` moves when the view on top
+ *  changes, so it is drawn again as it comes back. */
 let topView = '';
 
 export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame): boolean {
   // macOS never mounts the older floors (hostKind); were one mounted for a moment, it draws nothing
   if (NATIVE && (surface === 'flowFloor' || surface === 'factoryFloor' || surface === 'factoryLive' || surface === 'factoryTop')) return false;
-  if ((surface === 'yardLive' || surface === 'yardInfo' || surface === 'yardTop') && topView !== '' && topView !== 'yard') return true;
+  // Covered, the yard sleeps too (no frame asked); `ov.tick` moves when it is on top again.
+  if ((surface === 'yardLive' || surface === 'yardInfo' || surface === 'yardTop') && topView !== '' && topView !== 'yard') return false;
   // Covered, the floor's live layer sleeps; the 250 ms tick (a surface argument) wakes it when
   // it is on top again.
   if ((surface === 'factoryLive' || surface === 'factoryTop' /* fab-w7 */) && topView !== '' && topView !== 'factory') return false;
@@ -822,12 +851,14 @@ function drawSurface(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
   if (surface === 'f3Live') return f3.drawLive(ctx, frame);
   if (surface === 'factoryFloor') {
     advance(frame.time, false);
+    oldFloorAt = clock;
     factory.wheel(Number(args[2]) || 0);
     const flying = factory.cam.step(frame.time);
     return factory.drawFloor(ctx, frame, clock) || flying;
   }
   if (surface === 'factoryLive') {
     advance(frame.time, false);
+    oldFloorAt = clock;
     factory.reduced = args[0] === 'reduced';
     return factory.drawLive(ctx, frame, clock, Number(args[2]) || 0);
   }
