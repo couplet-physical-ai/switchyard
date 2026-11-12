@@ -5,7 +5,7 @@
 // leaving the floor. The data side (the fresh set against a fingerprint, the windows, an
 // all-green world showing no marks): tools/coffee.test.ts.
 
-test "a visit counts after 20 s of looking, then every minute"
+test "a visit counts after 20 s of looking, then every minute" on web
   clock data
   type "root" "/factory?v=1"
   clock settle
@@ -26,7 +26,7 @@ test "a visit counts after 20 s of looking, then every minute"
   clock data
   expect state visitN == 2
 
-test "leaving the floor marks the visit"
+test "leaving the floor marks the visit" on web
   clock data
   type "root" "/factory?v=1"
   clock settle
@@ -43,7 +43,7 @@ test "leaving the floor marks the visit"
   expect state looking == false
   expect state visitN == 2
 
-test "W cycles the window: since the visit, last hour, 24 h, 7 d"
+test "W cycles the window: since the visit, last hour, 24 h, 7 d" on web
   clock data
   type "root" "/factory?v=1"
   clock settle
@@ -64,7 +64,7 @@ test "W cycles the window: since the visit, last hour, 24 h, 7 d"
   clock data
   expect state facNow.id == "visit"
 
-test "S replays the window"
+test "S replays the window" on web
   clock data
   type "root" "/factory?v=1"
   clock settle
@@ -81,7 +81,7 @@ test "S replays the window"
 // `ov.appsDown`), word for word (`headAgrees`): live, in a replay, and in stress mode (the 10×
 // fleet's own: w7's "260 main lines red" over a footer saying 26 came from the strip counting
 // the census, which stress multiplies, while the status line counted the real fleet).
-test "the coffee header's totals are the status line's, live"
+test "the coffee header's totals are the status line's, live" on web
   clock data
   type "root" "/factory?v=1"
   clock settle
@@ -97,7 +97,7 @@ test "the coffee header's totals are the status line's, live"
   clock data
   expect state headAgrees == true
 
-test "the coffee header's totals are the status line's, in a replay"
+test "the coffee header's totals are the status line's, in a replay" on web
   clock data
   type "root" "/factory?v=1"
   clock settle
@@ -119,7 +119,7 @@ test "the coffee header's totals are the status line's, in a replay"
 
 // fx-day: and in the day replay ("24 h in 2 min"; the demo's is its last 2 h at 120×), read after
 // the intro and held, as the hour's
-test "the coffee header's totals are the status line's, in the day replay"
+test "the coffee header's totals are the status line's, in the day replay" on web
   clock data
   type "root" "/factory?v=1"
   clock settle
@@ -148,7 +148,7 @@ test "the coffee header's totals are the status line's, in the day replay"
   clock data
   expect state headAgrees == true
 
-test "the coffee header's totals are the status line's, in stress mode"
+test "the coffee header's totals are the status line's, in stress mode" on web
   clock data
   type "root" "/factory?v=1"
   clock settle

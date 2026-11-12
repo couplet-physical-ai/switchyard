@@ -161,6 +161,8 @@ function needsToken(server: string): boolean {
 }
 
 // ---- state ---------------------------------------------------------------------------------
+/** The native data module (macOS: Hermes); the web's runs in the browser. */
+const NATIVE = typeof (globalThis as { HermesInternal?: unknown }).HermesInternal !== 'undefined';
 const tl = new Timeline();
 /** The module clock: the runner's ms, as draws and beats report it. */
 let clock = 0;
@@ -738,6 +740,8 @@ export const sources: Sources = {
     return safe('search', { hits: [] }, () => ({ hits: search(tl.world, q, tl.playhead).map((h) => ({ kind: h.kind, id: h.id, title: h.title, subtitle: h.subtitle, route: route(h.kind, h.id) })) }));
   },
   viewOnTop: ([here]) => { topView = String(here ?? ''); return { ok: true, status: topView }; },
+  // macOS (the native data module, Hermes): the older floors (?v=1, ?v=2) are never mounted there
+  hostKind: () => ({ ok: NATIVE, status: NATIVE ? 'native' : 'web' }),
 };
 
 const EMPTY_OV: Result<'overview'> = {
@@ -784,6 +788,8 @@ export const surfaces: Record<string, number> = { factoryFloor: 3, factoryLive: 
 let topView = '';
 
 export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame): boolean {
+  // macOS never mounts the older floors (hostKind); were one mounted for a moment, it draws nothing
+  if (NATIVE && (surface === 'flowFloor' || surface === 'factoryFloor' || surface === 'factoryLive' || surface === 'factoryTop')) return false;
   if ((surface === 'yardLive' || surface === 'yardInfo' || surface === 'yardTop') && topView !== '' && topView !== 'yard') return true;
   // Covered, the floor's live layer sleeps; the 250 ms tick (a surface argument) wakes it when
   // it is on top again.

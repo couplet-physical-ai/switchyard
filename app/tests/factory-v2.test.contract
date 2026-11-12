@@ -6,7 +6,7 @@
 
 size 1440x900
 
-test "swarm: the Factory route keeps a floor behind the setup card"
+test "swarm: the Factory route keeps a floor behind the setup card" on web
   clock data
   type "root" "/factory?v=2"
   clock settle
@@ -17,7 +17,7 @@ test "swarm: the Factory route keeps a floor behind the setup card"
   expect tree missing "fl-inspector"
   expect text "tab-factory" == "Factory"
 
-test "swarm: the demo fills the floor; the failed bin's window starts at 30 minutes"
+test "swarm: the demo fills the floor; the failed bin's window starts at 30 minutes" on web
   clock data
   type "root" "/factory?v=2"
   clock settle
@@ -33,7 +33,7 @@ test "swarm: the demo fills the floor; the failed bin's window starts at 30 minu
   expect tree has "replay"
   expect tree has "replay-day"
 
-test "swarm: the recorded real fleet fills the floor"
+test "swarm: the recorded real fleet fills the floor" on web
   clock data
   type "root" "/factory?v=2"
   clock settle
@@ -48,7 +48,7 @@ test "swarm: the recorded real fleet fills the floor"
   expect state ov.repos == 394
   expect tree missing "fl-inspector"
 
-test "swarm: the tabs reach Yard and Factory; a Live deep link leaves the Factory"
+test "swarm: the tabs reach Yard and Factory; a Live deep link leaves the Factory" on web
   clock data
   type "root" "/factory?v=2"
   clock settle

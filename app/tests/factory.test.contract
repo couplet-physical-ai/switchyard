@@ -10,7 +10,7 @@
 
 size 1440x900
 
-test "the Factory route keeps an idle floor behind the setup card"
+test "the Factory route keeps an idle floor behind the setup card" on web
   clock data
   type "root" "/factory?v=1"
   clock settle
@@ -21,7 +21,7 @@ test "the Factory route keeps an idle floor behind the setup card"
   expect state ov.facDrawer == false
   expect text "tab-factory" == "Factory"
 
-test "the demo fills the floor"
+test "the demo fills the floor" on web
   clock data
   type "root" "/factory?v=1"
   clock settle
@@ -35,7 +35,7 @@ test "the demo fills the floor"
   expect state ov.facCity == 64
   expect state ov.facDrawer == false
 
-test "the recorded real fleet fills the floor"
+test "the recorded real fleet fills the floor" on web
   clock data
   type "root" "/factory?v=1"
   clock settle
@@ -55,7 +55,7 @@ test "the recorded real fleet fills the floor"
   expect state ov.facCars == 151
   expect state ov.facBays == 3
 
-test "the tabs reach Yard and Factory; a Live deep link leaves the Factory"
+test "the tabs reach Yard and Factory; a Live deep link leaves the Factory" on web
   clock data
   type "root" "/factory?v=1"
   clock settle
@@ -81,7 +81,7 @@ test "the tabs reach Yard and Factory; a Live deep link leaves the Factory"
   clock settle
   expect state here == "factory"
 
-test "a press on a busy bay opens its lens, Escape walks back"
+test "a press on a busy bay opens its lens, Escape walks back" on web
   clock data
   type "root" "/factory?v=1"
   clock settle
@@ -102,7 +102,7 @@ test "a press on a busy bay opens its lens, Escape walks back"
   clock +300
   expect state ov.facLens == 0
 
-test "a press on a car on a main line opens its lens, Backspace walks back"
+test "a press on a car on a main line opens its lens, Backspace walks back" on web
   clock data
   type "root" "/factory?v=1"
   clock settle
@@ -124,7 +124,7 @@ test "a press on a car on a main line opens its lens, Backspace walks back"
   clock +300
   expect state ov.facLens == 0
 
-test "stress mode puts a 10x fleet on the floor and takes it off"
+test "stress mode puts a 10x fleet on the floor and takes it off" on web
   clock data
   type "root" "/factory?v=1"
   clock settle
@@ -154,7 +154,7 @@ test "stress mode puts a 10x fleet on the floor and takes it off"
   expect state ov.facStress == false
   expect state ov.facCity == 64
 
-test "the developer HUD turns on over the floor"
+test "the developer HUD turns on over the floor" on web
   clock data
   type "root" "/factory?v=1"
   clock settle

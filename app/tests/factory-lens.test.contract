@@ -2,7 +2,7 @@
 // point, so these drive the floor's keys and read what it answers: the key ("?") and the lens
 // stack's walk back (Esc). The coffee check's own: tests/factory-coffee.test.contract.
 
-test "? shows the key and Esc puts it away"
+test "? shows the key and Esc puts it away" on web
   clock data
   type "root" "/factory?v=1"
   clock settle
@@ -19,7 +19,7 @@ test "? shows the key and Esc puts it away"
 
 // fab-w3: the return conveyor parks failures by cluster, the biggest open one nearest the scanner,
 // so its first crate is always at the same spot on the fitted floor (u 1082, v 626 at 1440x900).
-test "a parked failure opens its cluster lens and Escape walks back"
+test "a parked failure opens its cluster lens and Escape walks back" on web
   clock data
   type "root" "/factory?v=1"
   clock settle

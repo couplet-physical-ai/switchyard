@@ -57,7 +57,7 @@ test "the hour replay plays history at 60× and comes back live"
 
 // fx-day: the demo's last 2 h at 120×; a server's last 24 h at 720×. Pause holds the
 // playhead and Play resumes at the day's speed.
-test "the 24 h replay plays the day at its speed, pauses and resumes at it, and comes back live"
+test "the 24 h replay plays the day at its speed, pauses and resumes at it, and comes back live" on web
   clock data
   type "root" "/factory?v=1"
   clock settle
@@ -94,7 +94,7 @@ test "the 24 h replay plays the day at its speed, pauses and resumes at it, and 
   expect state ov.mode == "live"
   expect state ov.speed == 1
 
-test "the 24 h replay of a server plays at the day's speed, 720×"
+test "the 24 h replay of a server plays at the day's speed, 720×" on web
   clock data
   type "root" "/factory?v=1"
   clock settle

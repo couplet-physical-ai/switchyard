@@ -27,7 +27,7 @@ test "board: v=3 keeps a board behind the setup card"
   expect tree missing "f3-inspector"
   expect text "tab-factory" == "Factory"
 
-test "board: /factory is the board; /factory?v=2 and /factory?v=1 are not"
+test "board: /factory is the board; /factory?v=2 and /factory?v=1 are not" on web
   clock data
   type "root" "/factory"
   clock settle
@@ -44,6 +44,22 @@ test "board: /factory is the board; /factory?v=2 and /factory?v=1 are not"
   expect state facV3 == false
   expect state facV2 == false
   expect tree missing "factory-moving"
+
+// macOS never mounts the older floors (they animate every frame): ?v=2 and ?v=1 are the board
+test "board (macOS): /factory?v=2 and /factory?v=1 are the board" on macos
+  clock data
+  expect state oldFloors == false
+  type "root" "/factory?v=2"
+  clock settle
+  expect state facV3 == true
+  expect state facV2 == false
+  expect tree has "factory-moving"
+  type "root" "/factory?v=1"
+  clock settle
+  expect state facV3 == true
+  expect state facV2 == false
+  expect tree has "factory-moving"
+  expect tree missing "factory-top"
 
 test "board: the demo fills it; the failed bin's window starts at 30 minutes"
   clock data

@@ -106,8 +106,12 @@ component App
   derive hovering = match hov { case some(h) => h.kind != "", case none => false }
   // the Factory (FACTORY3.md): the berth board; the square swarm stays at /factory?v=2 and the
   // old floor at /factory?v=1 for now
-  derive facV2 = here == "factory" and searchParam(top(nav), "v") == "2"
-  derive facV3 = here == "factory" and searchParam(top(nav), "v") != "1" and not facV2
+  // macOS never mounts the two older floors (they animate every frame): ?v=1 and ?v=2 are the
+  // board there (`hostKind`: the native data module answers ok; the web keeps both floors)
+  resource host = hostKind() as shape Ack else empty(ok=false, status="")
+  derive oldFloors = not host.ok
+  derive facV2 = here == "factory" and searchParam(top(nav), "v") == "2" and oldFloors
+  derive facV3 = here == "factory" and (searchParam(top(nav), "v") != "1" or not oldFloors) and not facV2
   derive facNow = match fac { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }
   // fab-lens: the coffee check (src/factory/coffee.ts). The last visit per server, kept as the
   // server is: marked once 20 s of looking at the floor count as a visit (fab-w4, §E), every
