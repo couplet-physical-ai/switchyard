@@ -127,8 +127,10 @@ scripts/release.sh $N --gate
 SY_UPDATE_FEED=https://github.com/couplet-physical-ai/switchyard/releases/download/v$N/latest.json \
   SY_TOKEN_FILE=$T SY_SEED_TOKEN=1 scripts/release/update-e2e-mini.sh $P $N --keep
 # 2. a live soak of at least 20 min of the installed N: it stays alive, no crash report, and the
-#    heap and RSS stay flat.
-SY_TOKEN_FILE=$T SY_SOAK_NEED_HEAP=1 SY_SOAK_HEAP_CAP_MB=<cap> scripts/release/soak-mini.sh $N 25
+#    heap and RSS stay flat; with the view cycle each segment is gated on its own heap, and the
+#    Yard must draw frames.
+SY_TOKEN_FILE=$T SY_SOAK_NEED_HEAP=1 SY_SOAK_HEAP_CAP_MB=<cap> SY_SOAK_CYCLE=live:8,factory:8,yard:9 \
+  scripts/release/soak-mini.sh $N   # 0.1.6+: cycles the views via switchyard://view/<name>
 # 3. only now: Latest + tap, then the users' paths: the stable feed and a fresh brew install.
 scripts/release.sh $N --promote
 SY_TOKEN_FILE=$T scripts/release/update-e2e-mini.sh $P $N

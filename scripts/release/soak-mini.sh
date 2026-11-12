@@ -16,10 +16,23 @@
 #
 #   SY_TOKEN_FILE=<local 600 file> scripts/release/soak-mini.sh <version> [minutes]
 #
+# SY_SOAK_CYCLE=live:8,factory:8,yard:9 (0.1.6+) cycles the views: each segment opens
+# switchyard://view/<name> in the running app, requires its `route: /<name>` log line (Live is
+# `route: /`), and is gated on its own: the heap cap and plateau over the segment (its first
+# minute is the switch), and frames > 0 on the Yard. A Factory segment with 0 frames is only
+# reported (the board draws when a run changes place). The total length is the segments' sum.
+#
 # The token goes over as a 600 file (never argv or a URL) and is deleted afterwards. The app is
 # quit at the end (only /Applications' copy; dev builds share the bundle id). CSV: /tmp/sy-soak-<v>.csv
 set -euo pipefail
 V=${1:?version}; MIN=${2:-20}
+CYCLE=${SY_SOAK_CYCLE:-}
+if [[ -n "$CYCLE" ]]; then
+  MIN=0; for seg in ${CYCLE//,/ }; do
+    [[ "$seg" =~ ^(live|factory|yard):[0-9]+$ ]] || { echo "bad SY_SOAK_CYCLE segment $seg (want live|factory|yard:<min>)" >&2; exit 2; }
+    MIN=$(( MIN + ${seg#*:} ))
+  done
+fi
 HOST=${SY_MINI:-mini-user@192.0.2.1}
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 "$HOST")
 DIR=/Users/${HOST%@*}/.switchyard-e2e
@@ -54,9 +67,23 @@ pid=""; for i in \$(seq 1 40); do pid=\$(pgrep -f "\$P" | head -1 || true); [[ -
 for i in \$(seq 1 40); do grep -q "pid \$pid token-file: connected" \$LOG && break; sleep 1; done
 grep -q "pid \$pid token-file: connected" \$LOG || { quit_; echo "FAIL: $V (pid \$pid) did not connect live" >&2; exit 1; }
 echo "soak: $V pid \$pid connected live; $MIN min, RSS every minute"
-echo "CSV,minute,rss_mb,heap"
+# the view schedule: minute → view (empty CYCLE: one segment, the default view)
+sched=""; at=0
+for seg in ${CYCLE//,/ }; do sched="\$sched \$at:\${seg%%:*}"; at=\$(( at + \${seg#*:} )); done
+view=default
+route_() {  # switch the running app to view \$1 and require its route line
+  local want=/\$1; [[ \$1 == live ]] && want=/
+  local L0=\$(wc -l < \$LOG)
+  gui open "switchyard://view/\$1"
+  for i in \$(seq 1 30); do tail -n +\$((L0+1)) \$LOG | grep -q "pid \$pid route: \$want\$" && break
+    grep -q "pid \$pid route: \$want\$" \$LOG && [[ "\$(grep "pid \$pid route:" \$LOG | tail -1 | sed 's/.*route: //')" == "\$want" ]] && break; sleep 1; done
+  [[ "\$(grep "pid \$pid route:" \$LOG | tail -1 | sed 's/.*route: //')" == "\$want" ]] || { quit_; echo "FAIL: no 'route: \$want' after switchyard://view/\$1" >&2; exit 1; }
+  echo "view: \$1 (route: \$want) at minute \$m"
+}
+echo "CSV,minute,rss_mb,heap,view"
 for m in \$(seq 0 $MIN); do
   [[ \$m -gt 0 ]] && sleep 60
+  for e in \$sched; do [[ \${e%%:*} == \$m ]] && { view=\${e#*:}; route_ \$view; }; done
   if ! kill -0 \$pid 2>/dev/null; then
     echo "FAIL: $V (pid \$pid) died at minute \$m" >&2
     ls -t ~/Library/Logs/DiagnosticReports/Switchyard* 2>/dev/null | head -1 | sed 's/^/crash report: /'
@@ -64,7 +91,7 @@ for m in \$(seq 0 $MIN); do
     exit 1
   fi
   rss=\$(ps -o rss= -p \$pid | tr -d ' '); heap=\$(grep "pid \$pid heap:" \$LOG | tail -1 | sed 's/.* heap: *//' | cut -c1-80 || true)
-  echo "CSV,\$m,\$((rss / 1024)),\${heap:-}"
+  echo "CSV,\$m,\$((rss / 1024)),\${heap:-},\$view"
 done
 quit_
 for f in \$(find ~/Library/Logs/DiagnosticReports -name 'Switchyard*.ips' -newer \$M 2>/dev/null); do
@@ -98,8 +125,12 @@ def mb(h):
     return float(m.group(1)) if m else None
 heap = [mb(r["heap"]) for r in rows if r["heap"]]
 heap = [h for h in heap if h is not None]
+cycled = any((r.get("view") or "default") != "default" for r in rows)
 if len(heap) >= 3:
-    ok = plateau("JS heap MB", heap) and ok
+    # cycled: the heap legitimately steps at a view switch, so its plateau is gated per segment below
+    hp = plateau("JS heap MB", heap)
+    if cycled: print("  (whole-run heap plateau reported only: SY_SOAK_CYCLE gates it per segment)")
+    else: ok = hp and ok
     if cap > 0:
         last10 = max(heap[-11:])
         print(f"JS heap: max over the last 10 min {last10:g} MB (cap {cap:g})")
@@ -112,7 +143,30 @@ fr = [(i, int(m.group(1))) for i, m in fr if m]
 if len(fr) >= 2:
     fps = [(b[1] - a[1]) / (60.0 * (b[0] - a[0])) for a, b in zip(fr, fr[1:]) if b[0] > a[0] and b[1] >= a[1]]
     if fps: print(f"fps (from frames): first {fps[0]:.1f}, last {fps[-1]:.1f}, min {min(fps):.1f}, mean {sum(fps)/len(fps):.1f}")
-print(f"soak: alive {n} min, " + ("memory plateaus" if ok else "memory does NOT plateau"))
+# per view segment (SY_SOAK_CYCLE): its own heap cap + plateau, and frames > 0 on the Yard
+segs = []
+for i, r in enumerate(rows):
+    v = r.get("view") or "default"
+    if not segs or segs[-1][0] != v or (i and rows[i-1].get("view") != v): segs.append((v, []))
+    segs[-1][1].append(r)
+if cycled:
+    for v, rs in segs:
+        hs = [mb(r["heap"]) for r in rs[1:] if r["heap"]]; hs = [h for h in hs if h is not None]
+        fs = [int(m.group(1)) for m in (re.search(r"frames\s+([0-9]+)", r["heap"]) for r in rs) if m]
+        dfr = (fs[-1] - fs[0]) if len(fs) >= 2 else 0
+        mins = max(1, len(rs) - 1)
+        line = f"segment {v} ({mins} min): frames +{dfr} ({dfr / (60.0 * mins):.1f} fps)"
+        if hs:
+            line += f", heap {hs[0]:g} → {hs[-1]:g} MB, max {max(hs):g}"
+            if cap > 0 and max(hs) > cap: line += f" OVER CAP {cap:g}"; ok = False
+            if len(hs) >= 3:
+                t0 = hs[-1 - min(3, len(hs) - 1)]; g = 100.0 * (hs[-1] - t0) / t0
+                line += f", last {min(3, len(hs) - 1)} min {g:+.1f}%"
+                if g > tail_pct: line += " GROWING"; ok = False
+        if v == "yard" and dfr <= 0: line += " — FAIL: the Yard drew no frames"; ok = False
+        if v == "factory" and dfr <= 0: line += " (no run changed place: reported, not gated)"
+        print(line)
+print(f"soak: alive {n} min, " + ("all memory/frame gates pass" if ok else "a memory/frame gate FAILED (see above)"))
 sys.exit(0 if ok else 1)
 PY
 echo "soak: $V OK"
