@@ -75,7 +75,7 @@ component App
   // says an old Keychain item was left (Settings' Security note).
   resource tok = loadToken(tokGen, searchParam(top(nav), "keychain")) as shape Tok else empty(ver="", has=false, status="loading", detail="", left=false)
   state tokSlow = false
-  resource link = parseLink(searchParam(top(nav), "u"), searchParam(top(nav), "server"), searchParam(top(nav), "token")) as shape Link else empty(server="", token="", ok=false)
+  resource link = parseLink(searchParam(top(nav), "u"), searchParam(top(nav), "server"), searchParam(top(nav), "token")) as shape Link else empty(server="", token="", ok=false, view="")
   // fx-kc: asked again when the token's read fails or recovers (tokBad), not for each status
   derive tokBad = tok.status == "denied" or tok.status == "error"
   resource conn = connect(server, tok.ver, gen) with time.epochAtZero, time.utcOffset, tokBad as shape Conn else empty(ok=false, status="connecting", error="", seq=0, label="", kind="", needsSetup=false, signIn="")
@@ -182,6 +182,10 @@ component App
     after(16000, tick)
   task wake32 when ov.pace != 0 and ov.wake == 32 key=ov.wakeKey
     after(32000, tick)
+  // switchyard://view/<live|factory|yard> switches the tab with no confirm (the release soak's
+  // tab cycle drives the installed app with `open`); its connect screen is left at once.
+  task linkView when here == "connect" and link.view != "" key=link.view
+    after(1, openLinkView)
   task tokWait when tokLoading and not tokSlow
     after(400, tokWaited)
   task tokCalm when tokSlow and not tokLoading and not tokRetrying
@@ -408,6 +412,9 @@ component App
   action afterSave
     tokGen = tokGen + 1
     gen = gen + 1
+  action openLinkView
+    tick()
+    nav = go(back(nav), link.view)
   action connectLink
     server = link.server
     send saved = saveToken(link.token, link.token != "")

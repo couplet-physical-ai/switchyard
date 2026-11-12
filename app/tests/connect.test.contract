@@ -23,3 +23,26 @@ test "a link with a bad server is refused"
   clock settle
   expect tree has "connect"
   expect state link.ok == false
+
+// The release soak's tab cycle: switchyard://view/<live|factory|yard> switches the tab, no confirm.
+test "a switchyard://view link switches the tab and asks nothing"
+  clock data
+  tap "now-setup-demo"
+  clock data
+  type "root" "/connect?u=switchyard%3A%2F%2Fview%2Ffactory"
+  clock settle
+  clock +100
+  expect state here == "factory"
+  expect tree missing "connect"
+  type "root" "/connect?u=switchyard%3A%2F%2Fview%2Fyard"
+  clock settle
+  clock +100
+  expect state here == "yard"
+  type "root" "/connect?u=switchyard%3A%2F%2Fview%2Flive"
+  clock settle
+  clock +100
+  expect state here == "now"
+  type "root" "/connect?u=switchyard%3A%2F%2Fview%2Fsettings"
+  clock settle
+  expect tree has "connect"
+  expect state link.ok == false

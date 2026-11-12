@@ -71,3 +71,12 @@ export function logHeap(at: number, native: NativeModule | null | undefined, con
   const limit = Number(memory?.jsHeapSizeLimit ?? 0) || 0;
   console.log(`heap: ${MB(used)} MB live${total > 0 ? ` · ${MB(total)} MB total` : ''}${limit > 0 ? ` · ${MB(limit)} MB limit` : ''}`);
 }
+
+let routeLogged = '';
+/** macOS: `route: /factory` in switchyard.log when the view on top changes (the release soak
+ *  switches tabs with `open switchyard://view/<name>` and checks this line). */
+export function logRoute(view: string, native: NativeModule | null | undefined): void {
+  if (!view || view === routeLogged || !native?.available) return;
+  routeLogged = view;
+  try { native.call({ op: 'heapLog', line: `route: ${view === 'now' ? '/' : `/${view}`}` }); } catch { /* no heapLog: nothing to say */ }
+}

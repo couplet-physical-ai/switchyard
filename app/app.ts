@@ -20,7 +20,7 @@ import { FlowFloor } from './src/flowfloor/floor.ts';
 import { Board3 } from './src/factory3/board.ts';
 import { NO_F3, f3Detail, tidyLog } from './src/factory3/inspect.ts';
 import { detailOf, logOf, NO_DETAIL } from './src/flowfloor/inspect.ts';
-import { logHeap, noteFrame } from './src/memlog.ts';
+import { logHeap, logRoute, noteFrame } from './src/memlog.ts';
 import { probeAsk, probeFlush, probeInside, probeWrap, probing } from './src/heapprobe.ts'; // leak: SWITCHYARD_HEAPLOG=1:<mode> (macOS)
 import { nextChunkMs, replaySizing, Timeline } from './src/timeline.ts';
 import { bindBaselineStore } from './src/factory/agg/baseline.ts';
@@ -596,7 +596,16 @@ function route(kind: string, id: string): string {
 /** `switchyard://connect?server=…&token=…` (it arrives as `/connect?u=<the whole URL>`), or a
  *  web link `/connect?server=…&token=…`. Only an http(s) server or a bare host is taken, and a
  *  token of URL-safe characters; anything else leaves the link refused (ok false). */
-export function parseLink(u: string, server: string, token: string): { server: string; token: string; ok: boolean } {
+/** `switchyard://view/<live|factory|yard>`: a tab to switch to (a script, e.g. the release soak,
+ *  drives the installed app with `open`), no server, no token, no confirm. The route, else "". */
+export function linkView(u: string): string {
+  const m = /^switchyard:\/\/view\/(live|now|factory|yard)\/?$/.exec(u.trim());
+  return !m ? '' : m[1] === 'live' || m[1] === 'now' ? '/' : `/${m[1]}`;
+}
+
+export function parseLink(u: string, server: string, token: string): { server: string; token: string; ok: boolean; view: string } {
+  const view = linkView(u);
+  if (view) return { server: '', token: '', ok: false, view };
   let sv = server, tk = token;
   if (u) {
     sv = ''; tk = '';
@@ -614,7 +623,7 @@ export function parseLink(u: string, server: string, token: string): { server: s
   sv = sv.trim(); tk = tk.trim();
   const okServer = /^(https?:\/\/)?[A-Za-z0-9.-]+(:\d{1,5})?(\/[A-Za-z0-9._~\/-]*)?$/.test(sv);
   const okToken = tk === '' || /^[A-Za-z0-9._~-]{1,512}$/.test(tk);
-  return okServer && okToken ? { server: sv, token: tk, ok: true } : { server: okServer ? sv : '', token: '', ok: false };
+  return okServer && okToken ? { server: sv, token: tk, ok: true, view: '' } : { server: okServer ? sv : '', token: '', ok: false, view: '' };
 }
 
 /** Is the page older than the web build the server now serves? Web only (a native app has no
@@ -823,7 +832,7 @@ export const sources: Sources = {
   search: ([q]) => {
     return safe('search', { hits: [] }, () => ({ hits: search(tl.world, q, tl.playhead).map((h) => ({ kind: h.kind, id: h.id, title: h.title, subtitle: h.subtitle, route: route(h.kind, h.id) })) }));
   },
-  viewOnTop: ([here]) => { topView = String(here ?? ''); return { ok: true, status: topView }; },
+  viewOnTop: ([here], _store, _storage, native) => { topView = String(here ?? ''); logRoute(topView, native); return { ok: true, status: topView }; },
   // macOS (the native data module, Hermes): the older floors (?v=1, ?v=2) are never mounted there
   hostKind: () => ({ ok: NATIVE, status: NATIVE ? 'native' : 'web' }),
 };
