@@ -1,0 +1,412 @@
+Switchyard patch 0005 (app/scripts/patch-exact.sh applies it, after 0001-0004): macOS host only.
+After a batch that only gives text new words, the Mac presenter's text pass asks only of the
+paragraphs that batch touched, instead of every paragraph near the viewport.
+
+Problem. Presenter.batchApplied (host/apple/Sources/ExactKit/Mac/PresenterMac.swift) ran
+refreshVisibleText(limit: 0) after every batch, and every batch with ops dropped the
+TextViewportIndex. So a running timer's text changing once a second rebuilt the index (a
+convertRect per shown paragraph, the whole page) and walked every paragraph within 1600 pt of
+the viewport. Per paragraph the walk asks canRasterText three times and textIsSmall once (four
+pixelScale -> convertToBacking transform walks and three canvasAbove ancestor walks), even
+though for a small label (most UI text) every answer is "nothing to do". Measured on an M-series
+Mac mini (Switchyard 0.1.8 candidate, Live tab idle with three running timers, `sample` 10 s):
+refreshVisibleText was 23 of 77 non-waiting samples of the whole process (30 %; canRasterText
+16, pixelScale 9, TextViewportIndex.init 5, replaceVisible 5, canvasAbove 4), the largest single
+cost of a ~1.85 % CPU idle.
+
+Design. A batch is "words only" when every op is a paragraph's runs, a props op that sets or
+clears only `text`, `title` or `accessibilityLabel`, or an svg/animations/canvas2d/surface/
+surfaceWork op (wordsOnly). Such a batch keeps the index and records the ids it touched, with
+each id's paragraph owner and text ancestors, as `touched` walks them (textTouched; any other
+batch, nested ones included, sets it to nil and drops the index as before). After the outermost
+batch, batchApplied runs the same refreshVisibleText(limit: 0), with candidates filtered to the
+touched ids and every other band entry kept, when textQuiet holds; otherwise it drops the index
+(when the batches had ops, as before) and runs the full pass. textQuiet:
+- no text work is owed: textPending is false, so the last pass settled every other paragraph
+  (anything left unsettled sets textPending and the pump's full passes own it);
+- not inside a scroll callback, no capture, no selection, no flight, no exit, no reader paragraph;
+- TextViewportIndex.unmoved: no NodeView moved, resized, mounted, unmounted or reparented, and no
+  BlockView (a moved subtree's container) was placed, since the index was built
+  (NodeView.textGeometry, as iOS's TextIndexIOS.swift); and each indexed document's visibleRect
+  and convertToBacking(1x1) are as they were (no scroll at any level, window resize, page zoom
+  or display/backing change).
+Scroll callbacks, the pump, settlePump and topLayerChanged still run the full pass.
+
+Why the output is the same. The full pass after a words-only batch differs from the restricted
+one only in untouched paragraphs. For those, every input of the pass is unchanged since the last
+pass that settled them: their geometry and candidate set (unmoved), their raster keys (spec,
+size, box and pixel scale: no op reached them, unmoved), their bands (unmoved), selection and
+capture state, and the raster workers' outstanding work (textPending false). So the full pass
+would do nothing for them: no replaceVisible job, no ensure, no admit. Text work arising between
+batches never relied on a later batch (an idle page has none): it is driven by the display path
+(updateLayer/draw -> ensure, requestTextPublication), scroll callbacks and the pump. The only
+state the restricted pass leaves that the full pass would not: visibleText entries that draw()
+added lazily for paragraphs that do not paint through bands; they are pruned by the next full
+pass and are not read meanwhile. Touched paragraphs get exactly the old per-node treatment
+(same order, same limit, same replaceVisible batching and wait).
+
+Checks. TextTouchedMacTests (new, in this patch): after words-only batches the surface shows the
+new words, an untouched paragraph keeps its very IOSurface, and a full refreshVisibleText() run
+afterwards finds nothing to do; a frame move, a page zoom and a mount each make the index stale.
+The existing Mac classes of the text, scroll, zoom, split and table paths (PageZoomMacTests,
+PageScrollMacTests, InnerScrollMacTests, TextParityMacTests, TextSelectionMacTests,
+TextDecorationMacTests, PixelGridMacTests, PaintCaptureMacTests, SplitMacTests, SheetHostMacTests,
+TableFeedMacTests, CollectionMacTests, AgentStickyRevealMacTests, ScrollAnchoringMacTests,
+OwnerScrollMacTests, BoxFilterTests, PressWashMacTests, HeldStateTests, HDRColorTests, ...). A real
+app (Switchyard's Live tab: dozens of 1 s timers over a long list), base vs head: the window
+server's pictures at the same agent-clock moments after ticks, a held scroll, a release, a resize
+and new rows; and the idle tab's CPU, interleaved. The kit is Switchyard's app/tools/p7/; the
+results are in app/PERF.md, pass 7. The web is untouched.
+
+Measured (Mac mini, Apple silicon, 1× display, dev builds, interleaved): Live idle with its
+timers 1.86 % → 1.44 % CPU (refreshVisibleText 5 → 0 profile samples, main-thread samples
+38 → 20); every other tab's idle, paused and busy numbers unchanged within noise; window-server
+pictures after ticks and a scroll 0 px different; TextTouchedMacTests pass; PixelGridMacTests
+fails identically with and without this patch on a 1× display (it expects a 2× backing scale).
+
+diff --git a/host/apple/Sources/ExactKit/Mac/BlockHostMac.swift b/host/apple/Sources/ExactKit/Mac/BlockHostMac.swift
+index e4835240..2cd32108 100644
+--- a/host/apple/Sources/ExactKit/Mac/BlockHostMac.swift
++++ b/host/apple/Sources/ExactKit/Mac/BlockHostMac.swift
+@@ -42,12 +42,12 @@ final class BlockView: NSView {
+     override func setFrameOrigin(_ newOrigin: NSPoint) {
+         let old = frame.origin
+         super.setFrameOrigin(newOrigin)
+-        if newOrigin != old { positionChanged?() }
++        if newOrigin != old { NodeView.textGeometry &+= 1; positionChanged?() } // 0005
+     }
+     override func setFrameSize(_ newSize: NSSize) {
+         let old = frame.size
+         super.setFrameSize(newSize)
+-        if newSize != old { sizeChanged?(newSize) }
++        if newSize != old { NodeView.textGeometry &+= 1; sizeChanged?(newSize) } // 0005
+     }
+ }
+ 
+diff --git a/host/apple/Sources/ExactKit/Mac/NodeViewMac.swift b/host/apple/Sources/ExactKit/Mac/NodeViewMac.swift
+index bafc778b..1f5a686e 100644
+--- a/host/apple/Sources/ExactKit/Mac/NodeViewMac.swift
++++ b/host/apple/Sources/ExactKit/Mac/NodeViewMac.swift
+@@ -1273,6 +1273,7 @@ package final class NodeView: NSView, NSTextViewDelegate, NSTextFieldDelegate {
+ 
+     package override func viewDidMoveToSuperview() {
+         pressMoves &+= 1
++        Self.textGeometry &+= 1 // TextViewportIndexMac.swift (Switchyard patch 0005)
+         super.viewDidMoveToSuperview()
+         if superview == nil { boxFilter?.remove() } else if boxFilter != nil { renderFilter() }
+         paintOrderMoved()
+@@ -1291,6 +1292,7 @@ package final class NodeView: NSView, NSTextViewDelegate, NSTextFieldDelegate {
+     package override func setFrameOrigin(_ newOrigin: NSPoint) {
+         let moved = newOrigin != frame.origin
+         super.setFrameOrigin(newOrigin)
++        if moved { Self.textGeometry &+= 1 } // TextViewportIndexMac.swift (0005)
+         if moved, !backdropOperations.isEmpty { applyBackdrop() }
+     }
+ 
+@@ -1300,6 +1302,7 @@ package final class NodeView: NSView, NSTextViewDelegate, NSTextFieldDelegate {
+         let changed = newSize != frame.size
+         super.setFrameSize(newSize)
+         guard changed else { return }
++        Self.textGeometry &+= 1 // TextViewportIndexMac.swift (0005)
+         if let row = superview as? NodeView, row.style["appearance"] != nil { row.needsLayout = true } // its bezel (FormRowsMac.swift)
+         if focusVisible { noteFocusRingMaskChanged() } // the ring follows the box
+         layerPaintCache = nil
+diff --git a/host/apple/Sources/ExactKit/Mac/PresenterMac.swift b/host/apple/Sources/ExactKit/Mac/PresenterMac.swift
+index 4fc85845..ec29ac63 100644
+--- a/host/apple/Sources/ExactKit/Mac/PresenterMac.swift
++++ b/host/apple/Sources/ExactKit/Mac/PresenterMac.swift
+@@ -107,6 +107,25 @@ package final class Presenter {
+     private var scrollObserver: NSObjectProtocol?
+     private var visibleText: [UInt32: NSRect] = [:]
+     private var textViewportIndex: TextViewportIndex?
++    /// The paragraphs (and other nodes) the batches since the last pass after
++    /// a batch touched, when each of them only gave paragraphs new words or
++    /// repainted something that is not text (`wordsOnly`); nil once one did
++    /// anything else. The pass after them then asks only of these, when
++    /// nothing else can owe it work (`textQuiet`): a running timer's second
++    /// was a walk of every paragraph near the viewport (Switchyard patch 0005).
++    private var textTouched: Set<UInt32>? = []
++    /// An op that gives a node new words (a plain text's `text`, a paragraph's
++    /// runs), names it (`title`, `accessibilityLabel`), or repaints what is
++    /// not text (an svg scene, its animations, a canvas). None moves, mounts,
++    /// hides or restyles a box: a box's place and size come in `frame` ops.
++    private static func wordsOnly(_ op: BatchOp) -> Bool {
++        switch op.op {
++        case .paragraph, .svg, .animations, .canvas2d, .surface, .surfaceWork: return true
++        case .props: return op.props.keys.allSatisfy(wordProps.contains) && op.clear.allSatisfy(wordProps.contains)
++        default: return false
++        }
++    }
++    private static let wordProps: Set<String> = ["text", "title", "accessibilityLabel"]
+     /// The native menu arm (LLP 1021 D3).
+     lazy var menus = MenuHost(presenter: self)
+     lazy var dialogs = DialogHost(self)
+@@ -257,15 +276,18 @@ package final class Presenter {
+     /// Bring bands up to date. Visible paragraphs always; others up to
+     /// `limit` of them (nil: all). True when some were left for a later slice.
+     @discardableResult
+-    func refreshVisibleText(limit: Int? = nil, afterFrame: Bool = false) -> Bool {
++    func refreshVisibleText(limit: Int? = nil, afterFrame: Bool = false, only: Set<UInt32>? = nil) -> Bool {
+         // Bounds notifications can arrive while a batch is still changing the
+         // hierarchy. Query its final geometry once the outermost batch ends.
+         guard !applying else { return false }
+         if textViewportIndex == nil { textViewportIndex = TextViewportIndex(selection.shownParagraphs) }
+-        var next: [UInt32: NSRect] = [:]
++        // `only` (`batchApplied`): the same pass over those paragraphs alone;
++        // every other band stays as the last pass left it.
++        func asked(_ nodes: [NodeView]) -> [NodeView] { only.map { ids in nodes.filter { ids.contains($0.id) } } ?? nodes }
++        var next: [UInt32: NSRect] = only.map { ids in visibleText.filter { !ids.contains($0.key) } } ?? [:]
+         var waiting: [(CGFloat, NodeView)] = []
+         var rasters: [NodeView] = []
+-        let candidates = textViewportIndex!.candidates(reach: Self.textRasterReach)
++        let candidates = asked(textViewportIndex!.candidates(reach: Self.textRasterReach))
+         var readersDeferred = false
+         for node in candidates {
+             node.readerParagraph?.update(node, afterFrame: afterFrame)
+@@ -292,7 +314,7 @@ package final class Presenter {
+         }
+         // Region readers own their pixel bands and publish positioned layers.
+         // The ordinary backing-store band must not invalidate them a second time.
+-        for node in textViewportIndex!.candidates(reach: Self.textBandSlack)
++        for node in asked(textViewportIndex!.candidates(reach: Self.textBandSlack))
+             where node.readerParagraph == nil && node.needsTextRaster && !node.rastersText && !node.textIsSmall {
+             let want = textBand(node, reach: Self.textBandSlack)
+             guard !want.isEmpty else { continue }
+@@ -477,9 +499,31 @@ package final class Presenter {
+     private func batchApplied() {
+         // Mounting and layout already spent this frame's main-thread time.
+         // Keep visible pixels urgent; prepare offscreen text in a later slice.
++        // Batches that only gave paragraphs new words ask only of those (0005).
++        let touched = textTouched
++        textTouched = []
++        if let touched, textQuiet {
++            if !touched.isEmpty, refreshVisibleText(limit: 0, only: touched) { textPending = true; startPump() }
++            return
++        }
++        // As every batch with ops did: an index of the hierarchy as it is now.
++        if touched?.isEmpty != true { textViewportIndex = nil }
+         if refreshVisibleText(limit: 0) { textPending = true; startPump() }
+     }
+ 
++    /// Whether a pass after a batch owes nothing but the paragraphs the batch
++    /// touched (0005). The last pass left no work (`textPending`), so every
++    /// other paragraph's pixels and band were settled, and nothing it reads
++    /// of them has changed since: no box moved, was mounted or unmounted, no
++    /// scroller scrolled, no scale or zoom changed (`TextViewportIndex.unmoved`),
++    /// and no selection, capture, flight, exit, reader paragraph or scroll
++    /// callback takes part. Anything else is the full pass, as before.
++    private var textQuiet: Bool {
++        guard !textPending, !inScrollCallback, !Capture.capturing, !selection.isActive, flights.isEmpty, leaving.isEmpty,
++              session?.text.readerParagraphs.isEmpty != false, let index = textViewportIndex else { return false }
++        return index.unmoved
++    }
++
+     /// An offscreen worker supplied pixels, or a display pass found both
+     /// workers busy: publish them, or ask again, with the next text slice.
+     func requestTextPublication() {
+@@ -1060,7 +1104,19 @@ package final class Presenter {
+             // Only scheduled: the hit-test is the next display frame's.
+             if relaid { followPointer() }
+         }
+-        if !batch.ops.isEmpty { textViewportIndex = nil }
++        // A batch that only gives paragraphs new words, or repaints what is
++        // not text, moves nothing the index holds: it is kept, and the pass
++        // after it asks only of what the batch touched (0005, `textTouched`).
++        if !batch.ops.isEmpty {
++            if textTouched != nil, batch.ops.allSatisfy(Self.wordsOnly) {
++                for op in batch.ops {
++                    // The node (an inline run's paragraph), and the paragraphs it is part of (as `touched`).
++                    textTouched?.insert(op.id)
++                    var at = views[op.id] ?? inlineOwners[op.id].flatMap { views[$0.owner] }
++                    while let node = at, node.kind == "text" { textTouched?.insert(node.id); at = node.superview as? NodeView }
++                }
++            } else { textTouched = nil; textViewportIndex = nil }
++        }
+         var reparented = Set<UInt32>()
+         let structureChanged = batch.ops.contains { [.children, .roots, .destroy, .create, .style].contains($0.op) }
+         if structureChanged { selection.structureChanged() }
+diff --git a/host/apple/Sources/ExactKit/Mac/TextViewportIndexMac.swift b/host/apple/Sources/ExactKit/Mac/TextViewportIndexMac.swift
+index 8b53f8c7..f3014815 100644
+--- a/host/apple/Sources/ExactKit/Mac/TextViewportIndexMac.swift
++++ b/host/apple/Sources/ExactKit/Mac/TextViewportIndexMac.swift
+@@ -14,10 +14,15 @@ struct TextViewportIndex {
+     private struct Group {
+         let document: NSView
+         var entries: [Entry]
++        /// What the document showed, and its device pixels per point, when indexed.
++        var shown = NSRect.zero, unit = NSSize.zero
+     }
+     private var groups: [Group] = []
++    /// `NodeView.textGeometry` when indexed.
++    private let geometry: UInt64
+ 
+     init(_ paragraphs: [NodeView]) {
++        geometry = NodeView.textGeometry
+         var positions: [ObjectIdentifier: Int] = [:]
+         for node in paragraphs {
+             // A paragraph outside every scroll view (a heading over a split's
+@@ -26,7 +31,10 @@ struct TextViewportIndex {
+             guard let document = node.enclosingScrollView?.documentView ?? node.window?.contentView else { continue }
+             let key = ObjectIdentifier(document)
+             let index = positions[key] ?? groups.count
+-            if index == groups.count { positions[key] = index; groups.append(Group(document: document, entries: [])) }
++            if index == groups.count {
++                positions[key] = index
++                groups.append(Group(document: document, entries: [], shown: document.visibleRect, unit: document.convertToBacking(NSSize(width: 1, height: 1))))
++            }
+             let rect = node.convert(node.bounds, to: document)
+             groups[index].entries.append(Entry(node: node, rect: rect, bottom: rect.maxY))
+         }
+@@ -40,6 +48,19 @@ struct TextViewportIndex {
+         }
+     }
+ 
++    /// Nothing it holds or led to has moved since it was built: no box was
++    /// moved, resized, mounted or unmounted (`NodeView.textGeometry`), and
++    /// each document shows what it showed, at the scale it had (no scroll,
++    /// resize, zoom or display change). A new index would be this one, and
++    /// the bands and raster keys of the paragraphs in it still stand.
++    /// (Switchyard patch 0005: what lets a batch's pass ask only of what the
++    /// batch touched, `Presenter.textQuiet`.)
++    var unmoved: Bool {
++        geometry == NodeView.textGeometry && groups.allSatisfy {
++            $0.document.visibleRect == $0.shown && $0.document.convertToBacking(NSSize(width: 1, height: 1)) == $0.unit
++        }
++    }
++
+     /// Paragraphs within `reach`, nearest each scroll document's visible rect
+     /// first. A tall distant paragraph must not delay a short imminent one.
+     func candidates(reach: CGFloat = 0) -> [NodeView] {
+@@ -72,4 +93,12 @@ struct TextViewportIndex {
+         }.map { $0.1 }
+     }
+ }
++
++extension NodeView {
++    /// Bumped whenever a box may have moved within its document: a node's
++    /// frame moved or resized, a node mounted, unmounted or reparented, a
++    /// moved subtree's container placed (`BlockHostMac.swift`). As iOS's
++    /// (TextIndexIOS.swift); an index built at another value is stale.
++    static var textGeometry: UInt64 = 0
++}
+ #endif
+diff --git a/host/apple/tests/ExactKitTests/TextTouchedMacTests.swift b/host/apple/tests/ExactKitTests/TextTouchedMacTests.swift
+new file mode 100644
+index 00000000..7ccb86b1
+--- /dev/null
++++ b/host/apple/tests/ExactKitTests/TextTouchedMacTests.swift
+@@ -0,0 +1,114 @@
++#if os(macOS)
++import AppKit
++import XCTest
++@testable import ExactKit
++
++/// A batch that only gives text new words (a running timer's second) asks
++/// the text pass only of what it touched (`Presenter.textTouched`,
++/// `textQuiet`). What shows is still the new words' pixels, the paragraphs
++/// it did not touch keep theirs, and a full pass after it finds nothing to do.
++@MainActor
++final class TextTouchedMacTests: XCTestCase {
++    private var window: NSWindow!
++    private var session: ExactSession?
++
++    override func tearDown() { session?.destroy(); session = nil; window?.orderOut(nil); window = nil; super.tearDown() }
++
++    private static let style: [String: Any] = ["font_size": 24.0, "line_height": "30px", "text_color": [0.0, 0.0, 0.0, 255.0]]
++
++    /// A column (1) of two large paragraphs (2, 4: surfaces) and a small label (3).
++    private func fixture() -> Presenter {
++        _ = NSApplication.shared
++        let session = ExactApp.shared.makeSession(label: "text-touched")
++        self.session = session
++        let p = session.presenter
++        window = NSWindow(contentRect: NSRect(x: 40, y: 40, width: 460, height: 260), styleMask: [.borderless], backing: .buffered, defer: false)
++        window.isReleasedWhenClosed = false
++        window.backgroundColor = .white
++        window.appearance = NSAppearance(named: .aqua)
++        window.contentView = p.viewport
++        p.apply(wireBatch([
++            ["op": "create", "id": 1, "kind": "view"],
++            ["op": "create", "id": 2, "kind": "text", "props": ["text": "Running 0:01, deploy, step 3 of 5"], "style": Self.style],
++            ["op": "create", "id": 3, "kind": "text", "props": ["text": "0:01"], "style": ["font_size": 11.0, "text_color": [0.0, 0.0, 0.0, 255.0]]],
++            ["op": "create", "id": 4, "kind": "text", "props": ["text": "Waiting 0:07 behind four other builds"], "style": Self.style],
++            ["op": "children", "id": 1, "ids": [2, 3, 4]],
++            ["op": "roots", "ids": [1]],
++            ["op": "frame", "id": 1, "x": 0.0, "y": 0.0, "w": 460.0, "h": 260.0],
++            ["op": "frame", "id": 2, "x": 10.0, "y": 10.0, "w": 440.0, "h": 60.0],
++            ["op": "frame", "id": 3, "x": 10.0, "y": 80.0, "w": 40.0, "h": 16.0],
++            ["op": "frame", "id": 4, "x": 10.0, "y": 110.0, "w": 440.0, "h": 60.0],
++        ]))
++        window.orderFrontRegardless()
++        return p
++    }
++
++    private func settle(_ p: Presenter) {
++        for _ in 0..<3 {
++            window.displayIfNeeded()
++            CATransaction.flush()
++            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
++        }
++    }
++
++    private func words(_ node: NodeView) -> String? { node.textRasterKey?.spec.runs.map(\.text).joined() }
++
++    func testAWordsOnlyBatchShowsTheNewWordsAndLeavesTheRestAsAFullPassWould() throws {
++        let p = fixture()
++        settle(p)
++        let running = try XCTUnwrap(p.views[2]), label = try XCTUnwrap(p.views[3]), waiting = try XCTUnwrap(p.views[4])
++        guard running.rastersText, waiting.rastersText else { throw XCTSkip("the paragraphs are drawn here, not rasterized (scale \(running.pixelScale ?? 0))") }
++        XCTAssertFalse(label.rastersText, "a small label draws")
++        XCTAssertEqual(words(running), "Running 0:01, deploy, step 3 of 5")
++        let kept = try XCTUnwrap(waiting.textRaster)
++        let index = TextViewportIndex(p.selection.shownParagraphs)
++        XCTAssertTrue(index.unmoved)
++
++        for second in 2...4 {
++            p.apply(wireBatch([
++                ["op": "props", "id": 2, "set": ["text": "Running 0:0\(second), deploy, step 3 of 5"]],
++                ["op": "props", "id": 3, "set": ["text": "0:0\(second)"]],
++            ]))
++            settle(p)
++            XCTAssertEqual(words(running), "Running 0:0\(second), deploy, step 3 of 5", "the surface shows the batch's words")
++            XCTAssertTrue(running.textRasterReady)
++            XCTAssertFalse(running.needsTextRaster)
++            XCTAssertEqual(label.paragraphSpec().runs.map(\.text).joined(), "0:0\(second)")
++            XCTAssertTrue(waiting.textRaster === kept, "an untouched paragraph keeps its pixels")
++            XCTAssertTrue(index.unmoved, "words move no box")
++            // The full pass the batch no longer runs has nothing left to do.
++            XCTAssertFalse(p.refreshVisibleText())
++            XCTAssertTrue(waiting.textRaster === kept)
++            XCTAssertEqual(words(running), "Running 0:0\(second), deploy, step 3 of 5")
++        }
++    }
++
++    func testAMoveOrAScaleMakesTheIndexStaleAndTheNextPassFull() throws {
++        let p = fixture()
++        settle(p)
++        let waiting = try XCTUnwrap(p.views[4])
++        let index = TextViewportIndex(p.selection.shownParagraphs)
++        XCTAssertTrue(index.unmoved)
++        // A box moved: the paragraph's place in the document changed.
++        p.apply(wireBatch([["op": "frame", "id": 4, "x": 10.0, "y": 180.0, "w": 440.0, "h": 60.0]]))
++        XCTAssertFalse(index.unmoved)
++        settle(p)
++        // Words after the move: the paragraph that moved still shows the new words where it is.
++        p.apply(wireBatch([["op": "props", "id": 4, "set": ["text": "Waiting 0:08 behind four other builds"]]]))
++        settle(p)
++        if waiting.rastersText {
++            XCTAssertEqual(words(waiting), "Waiting 0:08 behind four other builds")
++            XCTAssertEqual(waiting.textRasterKey?.size, waiting.bounds.size)
++        }
++        // A page zoom changes the document's device pixels: stale too.
++        let zoomed = TextViewportIndex(p.selection.shownParagraphs)
++        XCTAssertTrue(zoomed.unmoved)
++        session?.pageZoom = 1.25
++        XCTAssertFalse(zoomed.unmoved)
++        // Mounting a box is a move.
++        let mounted = TextViewportIndex(p.selection.shownParagraphs)
++        p.apply(wireBatch([["op": "create", "id": 5, "kind": "text", "props": ["text": "new"], "style": Self.style], ["op": "children", "id": 1, "ids": [2, 3, 4, 5]]]))
++        XCTAssertFalse(mounted.unmoved)
++    }
++}
++#endif

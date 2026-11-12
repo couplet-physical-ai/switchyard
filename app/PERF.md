@@ -1049,3 +1049,101 @@ Rerun (from `app/`, ~60 min each, both at once):
 add `--server http://127.0.0.1:<port> --no-token` for a local `switchyard-server --demo --speed 10
 --auth open`. The token comes from `SWITCHYARD_TOKEN_FILE` (default `~/.config/switchyard/e2e-token`)
 and is never printed.
+
+## Pass 7 (p7-text): Exact's Mac text pass asks only what a batch touched (exact-patches/0005, 2026-11-12)
+
+Branch `sy/mac-p7`, base `df6e18a` (pass 6, the 0.1.8 candidate). Brief: Live idle with timers
+≤ 1.5 % on the mini (better ≤ 1.0 %), with the patch tiny, macOS-host only, and the look unchanged.
+
+**The cost** (pass 6's mini profile, Live idle with three running timers, `sample` 10 s, 77
+non-waiting samples):
+- `Presenter.refreshVisibleText` was 23 of them, 30 % of the process.
+- Every batch with ops dropped the `TextViewportIndex`, so one timer text changing once a second
+  meant:
+  - rebuilding the index, a `convertRect` per shown paragraph of the page (5 samples);
+  - walking every paragraph within 1600 pt of the viewport.
+- Per paragraph, the walk asks `canRasterText` three times and `textIsSmall` once. That is four
+  `pixelScale` → `convertToBacking` transform walks (9 samples) and three `canvasAbove` ancestor
+  walks (4). For a small label, which is most of Live, every answer is "nothing to do".
+
+**The change** (`scripts/exact-patches/0005-mac-text-pass-touched-only.patch`; its header is the
+upstream write-up):
+- **Words-only batches.** A batch is words-only when every op is one of:
+  - a paragraph's runs;
+  - a `props` op that sets or clears only `text`, `title` or `accessibilityLabel` (a timer's
+    second is a `props text` op);
+  - an svg, CSS-animation, canvas2d or canvas-surface op.
+
+  Such a batch keeps the index and records the ids it touched, with their inline owners and text
+  ancestors (as `touched` walks them).
+- **After the batch,** `batchApplied` runs the same `refreshVisibleText(limit: 0)` with its
+  candidates filtered to those ids, keeping every other band. It does so only when all of these
+  hold:
+  - no text work is owed (`textPending`);
+  - no selection, capture, flight, exit, reader paragraph or scroll callback is involved;
+  - the index is `unmoved`: no NodeView or BlockView moved, resized, mounted or reparented since it
+    was built (a `NodeView.textGeometry` counter, as iOS's `TextIndexIOS.swift` has), and each
+    indexed document's `visibleRect` and `convertToBacking` unit are unchanged (no scroll at any
+    level, resize, zoom or display change).
+- **Anything else** gets the old full pass with a fresh index. Scroll callbacks, the pump,
+  `settlePump` and `topLayerChanged` are unchanged.
+- **Why the pixels are the same:**
+  - For an untouched paragraph, every input of the pass is as it was when the last pass settled
+    it. So the full pass would do nothing for it.
+  - Text work that arises between batches never waits for a later batch: an idle page has none.
+    Updates come from the display path (updateLayer/draw → ensure, requestTextPublication),
+    scroll callbacks or the pump.
+  - Touched paragraphs get exactly the old per-node treatment.
+- **The new XCTest class `TextTouchedMacTests`** (in the patch) checks:
+  - the new words' surface is shown;
+  - an untouched paragraph keeps its very IOSurface;
+  - a full pass afterwards finds nothing to do;
+  - a frame move, a page zoom and a mount each make the index stale.
+
+**Measured on the mini (sy-client, 18:10–19:03Z, quiet, load 1.1–2.3).** Head = df6e18a + 0005
+(Exact 0001–0005), base = df6e18a (0001–0004), dev builds, interleaved, 56–57 s windows:
+
+| | base | head |
+|---|---|---|
+| Live idle, timers ticking (ABBA ×3) | 1.66, 2.05, 1.88 → **1.86 %** | 1.43, 1.40, 1.48 → **1.44 %** |
+| Board idle, timers | 1.42 % | 1.40 % |
+| Yard idle, timers | 0.89 % | 0.89 % |
+| Live paused (×3) | 0.09, 0.23, 0.37 (0.23) % | 0.21, 0.21, 0.14 (0.19) %; 0 frames both |
+| Live busy 10×, CPU | 16.46 % | 13.90 % |
+| Board busy 10× (×2), main window | 59.38 / 59.39 fps, 12.18 / 12.14 % | 58.81 / 59.38 fps, 11.79 / 11.86 % |
+| Yard busy 10× (×2), main window | 59.30 / 59.22 fps (10 of 768 missed), 23.31 / 23.46 % | 59.45 / 59.36 fps (8 of 752), 23.07 / 22.79 % |
+
+- **Profile** (`sample` 10 s, Live idle): `Presenter.refreshVisibleText` 5 samples → **0**,
+  `TextViewportIndex.init` 2 → 0; main-thread active samples 38 → 20 (process 66 → 41).
+- **Pictures** (window server, the demo on the agent's clock): start, two timer ticks, a scroll,
+  a tick after it: **0 of 1,370,880 px differ** base vs head, base vs base2 and head vs head2
+  at every step. The drive stopped at its next step, a *held* wheel: the agent's terminal on the
+  mini may not post synthetic wheel events (Accessibility), so the held scroll, its release, the
+  resize and the new rows were not pictured. Those paths take the full pass (the moved-geometry
+  counter and the visible-rect check), which `TextTouchedMacTests` covers.
+- **XCTests:** `TextTouchedMacTests` 2/2 pass. Of 23 classes, only `PixelGridMacTests` fails, and
+  it fails the same way on the base copy (17 assertions, a 1.0 backing scale where it expects 2:
+  the mini drives a 1× display), so it is standing, not 0005's.
+- **The macOS suite** on head: 38 passed, 0 failed.
+- **Verdict: 0005 passes.** Live idle with timers 1.86 → 1.44 %, no regression elsewhere,
+  pixel-identical where pictured.
+
+How it was measured:
+- **The kit:** `app/tools/p7/` runs the whole proof as one detached job:
+  - `kit.sh` clones head and base, and `p7-all.sh` makes two private Exact copies (0001–0005 and
+    0001–0004), builds both, and runs:
+    - the interleaved CPU batch: Live idle ABBA ×3, board and Yard idle, Live paused, busy 10×
+      Live, board and Yard, then one `sample` profile of each;
+    - the window server's pictures of a deterministic drive (the demo on the agent's clock: ticks,
+      a scroll, a held scroll and its release, a resize, new rows), head, base, base2 and head2;
+    - Exact's XCTests;
+    - the macOS suite.
+  - `collect.sh` judges the results; `cleanup.sh` removes everything it made.
+- **Pass criteria:**
+  - Live idle with timers ≤ 1.5 % (head mean);
+  - board and Yard idle no worse than base +0.15 pp;
+  - paused ≤ 0.2 %;
+  - busy fps no worse than base, and ≥ 59 on the board and the Yard;
+  - window pictures base vs head identical step by step, or differing only where base vs base2
+    does;
+  - the XCTests and the suite pass.
