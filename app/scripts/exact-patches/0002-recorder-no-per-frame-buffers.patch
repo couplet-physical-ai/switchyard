@@ -1,0 +1,81 @@
+Switchyard patch 0002 (app/scripts/patch-exact.sh applies it): the native canvas seam stops making
+per-frame garbage that Hermes counts as external memory. Each canvas's list writer is reused across
+frames (no 256 B -> doubling ArrayBuffer chain per frame), base64 goes into one reused byte buffer
+and becomes strings 4 KB at a time, and the reply is joined once around them (no `out +=` four
+characters at a time, no second copy through JSON.stringify). The reply's bytes are identical
+(checked against the unpatched seam on 78 replies: empty, 1-40000 ops, sealed lists, text, throws).
+The web's seam (host/web-js/ts-draw.js) keeps `take()` and is untouched.
+
+--- a/canvas/recorder.js
++++ b/canvas/recorder.js
+@@ -480,6 +480,9 @@
+     this.len = need; this.ops++;
+   }
+   finish() { return new Uint8Array(this.buf, 0, this.len); }
++  // Switchyard patch (app/scripts/exact-patches/0002): the native seam encodes the list and
++  // records the next frame into the same buffer, so a canvas stops growing a fresh one per frame.
++  reset() { this.len = 8; this.ops = 0; }
+ }
+ 
+ // --- the recorder (canvas/src/context.rs) ------------------------------------
+@@ -1099,18 +1102,34 @@
+ // --- the seam: one recorder per canvas generation (LLP 1056 D4) --------------
+ 
+ const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+-function base64(bytes) {
+-  let out = "", i = 0;
+-  for (; i + 2 < bytes.length; i += 3) {
+-    const n = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
+-    out += B64[n >> 18] + B64[(n >> 12) & 63] + B64[(n >> 6) & 63] + B64[n & 63];
+-  }
+-  if (i < bytes.length) {
+-    const n = (bytes[i] << 16) | ((bytes[i + 1] ?? 0) << 8);
+-    out += B64[n >> 18] + B64[(n >> 12) & 63] + (i + 1 < bytes.length ? B64[(n >> 6) & 63] : "=") + "=";
++// Switchyard patch (app/scripts/exact-patches/0002): base64 into one reused buffer of ASCII codes,
++// turned into strings 4 KB at a time and joined once, with the reply around them. Building it
++// with `out +=` four characters at a time left Hermes's external-memory count higher after every
++// frame (its concatenation buffers), which Hades counts toward the heap cap: a long-lived window
++// drawing every frame ended in GCBase::oom with a flat live set. The reply's bytes are the same.
++const B64_CODES = Array.from(B64, (c) => c.charCodeAt(0));
++const B64_PIECE = 4096;
++let b64Scratch = new Uint8Array(4096);
++/** `bytes` in base64, pushed onto `parts` as strings of at most B64_PIECE characters. */
++function base64Parts(bytes, parts) {
++  const n = bytes.length, size = Math.ceil(n / 3) * 4;
++  if (b64Scratch.length < size) b64Scratch = new Uint8Array(Math.max(size, b64Scratch.length * 2));
++  const out = b64Scratch, C = B64_CODES;
++  let o = 0, i = 0;
++  for (; i + 2 < n; i += 3) {
++    const v = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
++    out[o] = C[v >> 18]; out[o + 1] = C[(v >> 12) & 63]; out[o + 2] = C[(v >> 6) & 63]; out[o + 3] = C[v & 63];
++    o += 4;
++  }
++  if (i < n) {
++    const v = (bytes[i] << 16) | ((i + 1 < n ? bytes[i + 1] : 0) << 8);
++    out[o] = C[v >> 18]; out[o + 1] = C[(v >> 12) & 63]; out[o + 2] = i + 1 < n ? C[(v >> 6) & 63] : 61; out[o + 3] = 61;
++    o += 4;
+   }
+-  return out;
++  for (let k = 0; k < o; k += B64_PIECE) parts.push(String.fromCharCode.apply(null, out.subarray(k, Math.min(o, k + B64_PIECE))));
++  return parts;
+ }
++function base64(bytes) { return base64Parts(bytes, []).join(""); }
+ 
+ /** The executor's draw seam over the module's `draw`: requests in, JSON
+  * `{lists: [base64…], frame, error}` out; a throw keeps what it recorded.
+@@ -1135,7 +1154,14 @@
+       }
+       inner.env = { ...inner.env, host: null };
+       const notes = inner.notes.splice(0);
+-      return JSON.stringify({ lists: inner.take().map(base64), frame: wants && !error, error, notes });
++      // Switchyard patch (0002): JSON.stringify({lists, frame, error, notes})'s bytes, joined once;
++      // the open list is encoded from the canvas's own buffer, which the next frame reuses.
++      const parts = ['{"lists":['];
++      const list = (bytes) => { parts.push(parts.length > 1 ? ',"' : '"'); base64Parts(bytes, parts); parts.push('"'); };
++      for (const bytes of inner.sealed.splice(0)) list(bytes);
++      if (inner.writer.ops) { list(inner.writer.finish()); inner.writer.reset(); }
++      parts.push('],"frame":', wants && !error ? "true" : "false", ',"error":', JSON.stringify(error), ',"notes":', JSON.stringify(notes), "}");
++      return parts.join("");
+     },
+     retire(retired) { for (const [canvas, generation] of retired) if (recorders.get(canvas)?.generation === generation) recorders.delete(canvas); },
+   };
