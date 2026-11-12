@@ -19,8 +19,9 @@ members App
   mutation tf as shape TokenFile then connectTokenFile
   derive tfNow = match tf { case some(t) => t, case none => TokenFile(server="", ok=false) }
   // Asked each tick from the connect until the outcome is reported (a native call from the
-  // connect's own continuation is not one the host takes).
-  resource tfr = tokenFileReport(tfUsed and not tfReported ? clockMs : 0) as shape Ack else empty(ok=false, status="idle")
+  // connect's own continuation is not one the host takes), and as the connect answers (its
+  // status, its seq), so the log's "connected" is the connect's own moment, not the next tick's.
+  resource tfr = tokenFileReport(tfUsed and not tfReported ? `${clockMs}|${conn.status}|${conn.seq}` : "") as shape Ack else empty(ok=false, status="idle")
   task tfTake mount
     after(1, takeTokenFile)
   task tfDone when tfr.ok and not tfReported
