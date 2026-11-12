@@ -32,6 +32,7 @@ Switchyard only reads its upstreams, so no CI run, deploy, or upstream record wa
 | 18:50–19:03 | The warm boot lets runs, deploys, engines and the queue through (`9bb1679`), and the served snapshot follows them (`03a3e12`). |
 | 19:14 | Server `03a3e12` and web client `6b6135b` are live. Across a restart, a finished run shows finished within 5 s. |
 | 19:18 | A failed GitHub Actions deploy run no longer keeps a main line red once the commit's deploy succeeded (`844f290`). |
+| 19:36 | A pipeline number Woodpecker reuses after deleting a phantom is treated as a new run (`a2c2011`, deployed with the 0.1.8 web client). |
 
 ## Causes and fixes
 
@@ -60,6 +61,8 @@ The warm boot held every entity change until the store settled, 6–10 minutes a
 Woodpecker stores a pipeline as `created` on every webhook before it reads the repository's configuration, then deletes it unpublished when no workflow matches the event (a merged or closed pull request, a label change). The reconcile and feed polls caught such pipelines in that window and mapped them to Pending. The later 404 was ignored, and Pending pipelines are never pruned, so they sat in the waiting column forever.
 
 **Fix** (`b23b922`): a `created` pipeline without workflows maps to no facts; a real one is published again with its workflows moments later. A 404 on a pipeline's detail sends `Fact::PipelineGone`, and the store removes it through `Store::remove_pipeline`, the same path as the age-based prune. Timeouts, 401s, and 5xx responses change nothing. `server/tests/pipeline_gone.rs` covers it.
+
+Woodpecker also gives a deleted pipeline's number to the next run. The store compared lifecycles across the two, so a phantom's "running" rejected the real run's "pending" facts until the real run got further. Since `a2c2011`, a Roadrunner pipeline with another commit or creation time is another run: the newer one replaces the old whole, with no lifecycle comparison and no transition events against the old one, and a late fact about the older run is ignored.
 
 ### 5. False red main lines and false failed deploys (server)
 

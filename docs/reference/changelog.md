@@ -4,9 +4,9 @@ This page lists tagged releases newest first, from `v0.1.8` back to `v0.0.1`. Da
 
 ## v0.1.8
 
-<!-- PENDING: 0.1.8 tag date (tagged after the release soak) -->
+<!-- PENDING: confirm the 0.1.8 tag date once the gated release is promoted -->
 
-**Date:** 2026-11-12 (release candidate; the tag follows the release soak)
+**Date:** 2026-11-12
 
 *Theme: The last performance pass: one Factory, a quieter Live, and no stale runs.*
 
@@ -29,6 +29,7 @@ busy frames is in Exact's runtime, not the app ([why](performance/releases.md#wh
 - Live keeps its displayed rows by identity and its one-second answer shrinks from 8.5 KB to 4.5 KB; that answer is no longer written to disk every second. The first feed lands four rows at a time, so the connect's longest frame falls from 96–192 ms to 14.5–15 ms. (`81f4ba5`)
 - Progress rings fill in whole device pixels, so a still ring redraws every few seconds rather than every second. (`a9ae29c`)
 - Idle with timers: Factory 1.81 → 1.25 %, Yard 1.41 → 0.89 %. ([Numbers per release](performance/releases.md))
+- The 40-minute release soak: heap peak 16.3 MB, external memory 3.8–5.1 MB (7.4–8.8 MB in 0.1.7, before the old floors were deleted).
 
 **Fixes**
 
@@ -38,7 +39,7 @@ busy frames is in Exact's runtime, not the app ([why](performance/releases.md#wh
 
 - During a warm boot, runs, running deploys, engines and the queue update live, and `/snapshot` follows them; a run that finishes during the boot no longer stays "running" until the boot settles. (`9bb1679`, `03a3e12`)
 - A client resuming at or before the sequence a restarted server began from is reset. (`a65ad31`)
-- Woodpecker pipelines created and then deleted for want of a matching workflow no longer sit in the waiting column. (`b23b922`)
+- Woodpecker pipelines created and then deleted for want of a matching workflow no longer sit in the waiting column, and a pipeline number Woodpecker reuses for the next run replaces the old run whole. (`b23b922`, `a2c2011`)
 - Main lines read each red commit's own checks, so CodeQL, Dependabot and pull-request runs no longer turn a main line red (24 → 12 red on the live fleet). A manual redeploy that passes supersedes a failed push deploy. (`f95db94`, `6b6135b`, `844f290`)
 
 **Release and docs**

@@ -7,8 +7,6 @@ about 1–2) unless a row says otherwise. The raw logs and the method for each p
 [`app/PERF.md`](https://github.com/couplet-physical-ai/switchyard/blob/main/app/PERF.md); how
 to reproduce a measurement is in [How it is measured](index.md).
 
-<!-- PENDING: 0.1.8 release soak row (filled from the release engineer's final table) -->
-
 ## How to read the tables
 
 - **Idle CPU:** the app's CPU over about 57 s, sampled every 2 s.
@@ -35,7 +33,7 @@ fails on a crash, a rising heap or external-memory slope, or a Yard that stops d
 | 0.1.5 | Pass: a 30 min three-tab soak, a 30 min Yard soak and a 25 min release soak | 23.2 MB (cap now 512 MiB; gate 96 MB) | +1 % over the last 10 min | 138–251 MB |
 | 0.1.6 | Pass: a 30 min soak cycling the tabs through view links, and a 25 min cycled release soak | 18.7 MB | flat, 8.6 MB | 138–220 MB |
 | 0.1.7 | Pass: a 40 min soak (Live 20, Factory 10, Yard 10 min). Live heap half-means 15.85 and 15.86 MB, slope +0.002 MB/min | about 19 MB | flat, 7.8–8.8 MB | steps at each tab's first visit (+11 MB Factory, +15 MB Yard), flat within a tab: 188→214, 225→227, 242→243 MB |
-| 0.1.8 | Pending: the release soak runs before the tag. A headless 60-minute trace of Live's retained heap on the live fleet found Live's own share growing about 0.004 MB/min, flat object counts | | | |
+| 0.1.8 | Pass: a 40 min soak on the live fleet (Live 15, Factory 15, Yard 10 min). Heap slopes +0.02, +0.03 and +0.12 MB/min; half-means 12.5/12.9, 13.5/13.5 and 13.8/14.5 MB. A headless 60 min trace of Live's retained heap found Live's own share growing about 0.004 MB/min | 16.3 MB | **3.8–5.1 MB**, slopes ≤ +0.014 MB/min (lower than 0.1.7's 7.4–8.8 MB: the retired floors are gone) | steps at each tab's first visit, flat within a tab: 135→216 MB over Live's warm-up, 225→226, 259→260 MB |
 
 Switching tabs 25 times in a row (Live → Factory → Yard) grows RSS about 0.5 MB a round, slowing
 down as it goes: 0.1.6 ends at 236–237 MB, 0.1.7 at 232–233 MB.
@@ -53,9 +51,12 @@ Frozen fleet: three builds running, so timers tick.
 | 0.1.5 as shipped (`f6019ae`) | 2.86–3.28 % | 1.88–4.44 % | 3.05–3.60 % | Live and the board 0; the Yard about 12 per 30 s |
 | 0.1.6 | 1.73 % | 1.40 % | 1.23 % | 0 |
 | 0.1.7 | 2.00 % | 1.54 % | 1.19 % | 0 |
-| 0.1.8 | **1.44 %** (1.84–1.86 % before Exact patch 0005) | 1.23–1.25 % | 0.89 % | 0 |
+| 0.1.8 before Exact patch 0005 (pass 6) | 1.84–1.86 % | 1.23–1.25 % | 0.89 % | 0 |
+| **0.1.8** as released (pass 6 + 0005) | **1.40–1.48 %** (mean 1.44) | 1.40 % | 0.89 % | 0 |
 
-**Paused**, 0.1.7 and later: **0.09–0.11 % on every tab, 0 frames.** Earlier paused numbers
+The two 0.1.8 Factory numbers come from different sessions on the mini; in the 0005 run itself the board measured 1.42 % without the patch and 1.40 % with it.
+
+**Paused**, 0.1.7 and later: **0.09–0.23 % on every tab, 0 frames** (0.1.8: 0.14–0.21 %). Earlier paused numbers
 (1.3–1.6 %) were inflated by a bug in the test mock: it refused the stream and the app
 reconnected in a loop. The mock was fixed, and in 0.1.7 the app stopped refetching the whole
 fleet on every retry.
@@ -69,7 +70,7 @@ fleet on every retry.
 | 0.1.5 (`f6019ae`) | 1×: 60 fps, p99 16.5–17 ms | 1×: 60 fps. 10×: 40.5 fps, p99 192–384 ms (stalls) | 1×: 58.6–59 fps, p99 24–48 ms. 10×: 51.5 fps, p99 48–96 ms, about 90 % of frames late |
 | 0.1.6 | 59.2 fps, p99 24–48 ms | 32–40 fps, 0.2–0.8 s stalls | 57.6 fps, p99 24–48 ms, 8 % late |
 | 0.1.7 | 58.4 fps, CPU 16.7 % | **59.9 fps, p99 16.5–17 ms**, 0 of 196 frames missed | p99 16.5–17 / 21.5–22 ms, 1–2 % late |
-| 0.1.8 | 56.8–58.7 fps, work p99 14–19.5 ms; CPU 16.5 → 13.9 % with patch 0005 | 59.7 fps | 59.3–59.5 fps; p99 16.5–17 ms in 2 of 3 windows, 24–48 ms in the third; about 5 % of frames late |
+| 0.1.8 | 57.1–58.7 fps, work p99 14–19.5 ms, **CPU 13.9 %** (16.5 % without patch 0005) | 59.4 fps, CPU 11.8 % | 59.3–59.5 fps; p99 16.5–17 ms in most windows, 24–48 ms in some; about 5 % of frames late |
 
 ### Why the Yard is not a steady 17 ms p99
 
@@ -91,6 +92,8 @@ With a token file, against the live server.
 | 0.1.5 | 0.86–0.98 s | 1.3–3.4 s |
 | 0.1.6 | 0.78–0.79 s | 3.6 s |
 | 0.1.7 | 0.70–0.78 s | 3.5 s |
+
+0.1.8 did not re-measure launch; 0.1.7's numbers stand.
 
 About 2.5 s of a cold launch is macOS verifying and loading a binary it has never run, before any
 app code. The app's own part is 0.7–0.9 s.
