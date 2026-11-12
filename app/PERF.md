@@ -550,20 +550,21 @@ source calls per 20 s (an instrumented build):
 
 | Web, ms/s · recalcs/s · source calls | base `f6019ae` | head |
 |---|---|---|
-| Live, timers | 16.3 / 34.1 · 61 · overview 20, nowFeed 19 | 17.4 / 38.8 · 61 · nowFeed 20 |
+| Live, timers | 16.3 / 34.1 · 61 · overview 20, nowFeed 19 | 17.4 / 38.8 · 61 · nowTick 20 (8.7 KB each) |
 | Board, timers | 15.3 / 35.8 · 60 · overview 20, f3Stats 20 | 10.2 / 19.5 · 0 · 0 |
 | Yard, timers | 15.3 / 36.5 · 60 · overview 20 | 10.3 / 20.0 · 0 · 0 |
 | Live, paused | 16.1 / 32.5 · 60 | 2.5 / 9.7 · 0 · 0 |
 | Board, paused | 15.1 / 30.7 · 60 · overview 20, f3Stats 20 | 2.6 / 8.6 · 0 · 0 |
 | Yard, paused | 13.9 / 29.5 · 60 | 2.4 / 8.0 · 0 · 0 |
-| Live, the mock's moving fleet | 41.9 / 65.3 · 61 · overview 65, nowFeed 27, search 12 | 31.0 / 61.5 · 61 · overview 17, nowFeed 37 |
+| Live, the mock's moving fleet | 41.9 / 65.3 · 61 · overview 65, nowFeed 27, search 12 | 31.0 / 61.5 · 61 · overview 16, nowFeed 16, nowTick 44 |
 
 How to read it:
 
 - Live on top with work running keeps its beat and its live chips (real work), which are most of
   the web's script time there.
-- Live's timers: one `nowFeed` re-stamp a second, and nothing else.
-- On the moving fleet, the overview is asked per batch of stream frames (17 in 20 s, was 65).
+- Live's timers: one small `nowTick` re-stamp a second, and nothing else.
+- On the moving fleet, the overview and the whole feed are asked per batch of stream frames (16 in 20 s; the overview was 65).
+- The time columns before `91aff90` (`nowTick`); the source calls at it.
 - The Mac mini numbers for this pass come after sy-ship's 0.1.5 gate (the mini was busy).
 
 **Launch → connected** (pass 2's logs, LIVE, token file):
