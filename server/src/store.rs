@@ -307,6 +307,7 @@ impl Store {
                 }
             }
             Fact::Pipeline(p) => self.apply_pipeline(p, live),
+            Fact::PipelineGone { id } => self.remove_pipeline(&id),
             Fact::Pr(p) => self.apply_pr(p),
             Fact::Status(s) => self.apply_status(s),
             Fact::Deploy(d) => self.apply_deploy(d),
@@ -763,6 +764,33 @@ impl Store {
 }
 
 impl Store {
+    /// Drop one pipeline register and its index entries; a no-op for an unknown id.
+    fn remove_pipeline(&mut self, id: &str) {
+        let Some(p) = self.pipelines.remove(id) else {
+            return;
+        };
+        let sk = sha_key(&p.repo, &p.sha);
+        idx_del(&mut self.idx.sha_pipelines, &sk, id);
+        let sibs: Vec<String> = self
+            .idx
+            .sha_pipelines
+            .get(&sk)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default();
+        for s in sibs {
+            self.mark(Kind::Pipeline, &s);
+        }
+        idx_del(&mut self.idx.repo_pipelines, &p.repo, id);
+        if let Some(n) = p.pr {
+            self.mark(Kind::Pr, &ids::pr(&p.repo, n));
+        }
+        self.mark(Kind::Pipeline, id);
+        self.mark(Kind::Commit, &sk);
+        self.mark(Kind::Repo, &p.repo);
+        self.mark(Kind::Stats, "fleet");
+        self.mark_active_pipelines(&p.repo);
+    }
+
     fn mark_active_pipelines(&mut self, repo: &str) {
         let ids: Vec<String> = self
             .idx
@@ -1041,24 +1069,7 @@ impl Store {
             .map(|(k, _)| k.clone())
             .collect();
         for id in dead {
-            if let Some(p) = self.pipelines.remove(&id) {
-                let sk = sha_key(&p.repo, &p.sha);
-                idx_del(&mut self.idx.sha_pipelines, &sk, &id);
-                let sibs: Vec<String> = self
-                    .idx
-                    .sha_pipelines
-                    .get(&sk)
-                    .map(|s| s.iter().cloned().collect())
-                    .unwrap_or_default();
-                for s in sibs {
-                    self.mark(Kind::Pipeline, &s);
-                }
-                idx_del(&mut self.idx.repo_pipelines, &p.repo, &id);
-                self.mark(Kind::Pipeline, &id);
-                self.mark(Kind::Commit, &sk);
-                self.mark(Kind::Repo, &p.repo);
-                self.mark_active_pipelines(&p.repo);
-            }
+            self.remove_pipeline(&id);
         }
         let dead: Vec<String> = self
             .commits

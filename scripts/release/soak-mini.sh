@@ -19,7 +19,13 @@
 # SY_SOAK_CYCLE=live:8,factory:8,yard:9 (0.1.6+) cycles the views: each segment opens
 # switchyard://view/<name> in the running app, requires its `route: /<name>` log line (Live is
 # `route: /`), and is gated on its own: the heap cap and plateau over the segment (its first
-# minute is the switch), and frames > 0 on the Yard. A Factory segment with 0 frames is only
+# minute is the switch) and its least-squares heap slope ≤ SY_SOAK_SLOPE_MB_MIN (0.3) and external
+# slope ≤ SY_SOAK_EXT_SLOPE_MB_MIN (0.05) (external memory is what leaked in 0.1.3/0.1.4), on
+# segments of ≥ 10 min its second-half mean at most SY_SOAK_HALF_MB (1.5) above the first, and
+# frames > 0 on the Yard. A Live segment of ≥ 12 min must also show no slow creep on its post-GC
+# floor (each minute's lowest heap sample, CSV column heapmin): floor slope ≤ SY_SOAK_LIVE_SLOPE_MB_MIN
+# (0.1 MB/min) OR floor half-means ≤ +SY_SOAK_LIVE_HALF_MB (1 MB); when both legs are within 20 %
+# of their limits the run is BORDERLINE (exit 3: report, do not promote). Use ≥ 15-min segments: an 8-min slope is ±0.25 MB/min by GC noise alone. A Factory segment with 0 frames is only
 # reported (the board draws when a run changes place). The total length is the segments' sum.
 #
 # The token goes over as a 600 file (never argv or a URL) and is deleted afterwards. The app is
@@ -61,6 +67,13 @@ v=\$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "\$A/Content
 quit_
 LOG=~/Library/Logs/Switchyard/switchyard.log; mkdir -p ~/Library/Logs/Switchyard; touch \$LOG
 M=\$(mktemp); trap 'rm -f \$M' EXIT
+# switchyard:// links must reach /Applications' copy: unregister every other Switchyard.app
+LSR=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+\$LSR -dump 2>/dev/null | sed -nE 's/^path: +(.*Switchyard[^/]*\\.app)( \\(0x.*)?\$/\\1/p' | sort -u | { grep -v '^/Applications/' || true; } \\
+  | while IFS= read -r p; do \$LSR -u "\$p" 2>/dev/null || true; done
+\$LSR -f "\$A"
+others=\$(pgrep -fl 'Switchyard.app/Contents/MacOS/Switchyard' | grep -v ' /Applications/' || true)
+[[ -z "\$others" ]] || { echo "FAIL: other Switchyard apps are running on the mini (the soak needs it to itself): \$others" >&2; exit 1; }
 gui open --env SWITCHYARD_TOKEN_FILE=$TOK_REMOTE "\$A"
 pid=""; for i in \$(seq 1 40); do pid=\$(pgrep -f "\$P" | head -1 || true); [[ -n "\$pid" ]] && break; sleep 0.25; done
 [[ -n "\$pid" ]] || { echo "FAIL: $V did not start" >&2; exit 1; }
@@ -73,6 +86,11 @@ for seg in ${CYCLE//,/ }; do sched="\$sched \$at:\${seg%%:*}"; at=\$(( at + \${s
 view=default
 route_() {  # switch the running app to view \$1 and require its route line
   local want=/\$1; [[ \$1 == live ]] && want=/
+  # already there (Live is the launch view): no link — a link right after connecting raced the
+  # token-file connect once and left the app on /connect (0.1.7 rerun 1)
+  if [[ "\$(grep "pid \$pid route:" \$LOG | tail -1 | sed 's/.*route: //')" == "\$want" ]]; then
+    echo "view: \$1 (route: \$want, already) at minute \$m"; return 0
+  fi
   local L0=\$(wc -l < \$LOG)
   gui open "switchyard://view/\$1"
   for i in \$(seq 1 30); do tail -n +\$((L0+1)) \$LOG | grep -q "pid \$pid route: \$want\$" && break
@@ -80,7 +98,8 @@ route_() {  # switch the running app to view \$1 and require its route line
   [[ "\$(grep "pid \$pid route:" \$LOG | tail -1 | sed 's/.*route: //')" == "\$want" ]] || { quit_; echo "FAIL: no 'route: \$want' after switchyard://view/\$1" >&2; exit 1; }
   echo "view: \$1 (route: \$want) at minute \$m"
 }
-echo "CSV,minute,rss_mb,heap,view"
+HL=\$(wc -l < \$LOG)
+echo "CSV,minute,rss_mb,heap,view,heapmin"
 for m in \$(seq 0 $MIN); do
   [[ \$m -gt 0 ]] && sleep 60
   for e in \$sched; do [[ \${e%%:*} == \$m ]] && { view=\${e#*:}; route_ \$view; }; done
@@ -91,7 +110,10 @@ for m in \$(seq 0 $MIN); do
     exit 1
   fi
   rss=\$(ps -o rss= -p \$pid | tr -d ' '); heap=\$(grep "pid \$pid heap:" \$LOG | tail -1 | sed 's/.* heap: *//' | cut -c1-80 || true)
-  echo "CSV,\$m,\$((rss / 1024)),\${heap:-},\$view"
+  # the minute's post-GC floor: the lowest heap: total logged since the last sample
+  hmin=\$(tail -n +\$((HL+1)) \$LOG | grep "pid \$pid heap:" | sed -E 's/.* heap: *([0-9.]+).*/\1/' | sort -n | head -1 || true)
+  HL=\$(wc -l < \$LOG)
+  echo "CSV,\$m,\$((rss / 1024)),\${heap:-},\$view,\${hmin:-}"
 done
 quit_
 for f in \$(find ~/Library/Logs/DiagnosticReports -name 'Switchyard*.ips' -newer \$M 2>/dev/null); do
@@ -106,7 +128,7 @@ echo "$out" | grep '^CSV,' | cut -d, -f2- > "$CSV"
 cat "$CSV"
 grep -qx SOAK-DONE <<<"$out" || { echo "soak: did not reach the end" >&2; exit 1; }
 python3 - "$CSV" "$MIN" "$TAIL" "$TAIL_PCT" "$HALF_PCT" "${SY_SOAK_NEED_HEAP:-0}" "${SY_SOAK_HEAP_CAP_MB:-0}" <<'PY'
-import csv, re, sys
+import csv, os, re, sys
 path, n, tail, tail_pct, half_pct, need_heap, cap = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5]), sys.argv[6] == "1", float(sys.argv[7])
 rows = [r for r in csv.DictReader(open(path))]
 
@@ -143,6 +165,17 @@ fr = [(i, int(m.group(1))) for i, m in fr if m]
 if len(fr) >= 2:
     fps = [(b[1] - a[1]) / (60.0 * (b[0] - a[0])) for a, b in zip(fr, fr[1:]) if b[0] > a[0] and b[1] >= a[1]]
     if fps: print(f"fps (from frames): first {fps[0]:.1f}, last {fps[-1]:.1f}, min {min(fps):.1f}, mean {sum(fps)/len(fps):.1f}")
+def slope(xs):
+    n = len(xs); mx = (n - 1) / 2.0; my = sum(xs) / n
+    return sum((i - mx) * (x - my) for i, x in enumerate(xs)) / sum((i - mx) ** 2 for i in range(n))
+def ext(h):
+    m = re.search(r"ext\s+([0-9.]+)", h); return float(m.group(1)) if m else None
+slope_max = float(os.environ.get("SY_SOAK_SLOPE_MB_MIN", "0.3"))
+ext_max = float(os.environ.get("SY_SOAK_EXT_SLOPE_MB_MIN", "0.05"))
+half_max = float(os.environ.get("SY_SOAK_HALF_MB", "1.5"))
+live_slope_max = float(os.environ.get("SY_SOAK_LIVE_SLOPE_MB_MIN", "0.1"))
+live_half_mb = float(os.environ.get("SY_SOAK_LIVE_HALF_MB", "1"))
+borderline = []
 # per view segment (SY_SOAK_CYCLE): its own heap cap + plateau, and frames > 0 on the Yard
 segs = []
 for i, r in enumerate(rows):
@@ -159,14 +192,39 @@ if cycled:
         if hs:
             line += f", heap {hs[0]:g} → {hs[-1]:g} MB, max {max(hs):g}"
             if cap > 0 and max(hs) > cap: line += f" OVER CAP {cap:g}"; ok = False
-            if len(hs) >= 3:
-                t0 = hs[-1 - min(3, len(hs) - 1)]; g = 100.0 * (hs[-1] - t0) / t0
-                line += f", last {min(3, len(hs) - 1)} min {g:+.1f}%"
-                if g > tail_pct: line += " GROWING"; ok = False
+            # least-squares slopes: a GC sawtooth swings ±2 MB minute to minute, so two single samples
+            # (the old "last 3 min" check) trip on a peak; a slope over the segment does not.
+            if len(hs) >= 4:
+                hsl = slope(hs); line += f", slope {hsl:+.2f} MB/min (≤ {slope_max:g})"
+                if hsl > slope_max: line += " GROWING"; ok = False
+            if len(hs) >= 10:  # half-means: robust to the sawtooth on ≥ 10-min segments
+                k = len(hs) // 2; d = sum(hs[k:]) / (len(hs) - k) - sum(hs[:k]) / k
+                line += f", half-means {d:+.2f} MB (≤ {half_max:g})"
+                if d > half_max: line += " HALVES GROWING"; ok = False
+            # slow creep where nothing redraws (Live): the post-GC floor (each minute's lowest heap
+            # sample), not the raw samples — an 8-min raw slope is ±0.25 MB/min from GC noise alone
+            fl = [float(r["heapmin"]) for r in rs[1:] if r.get("heapmin")]
+            if v == "live" and len(fl) >= 12:
+                k = len(fl) // 2; fsl = slope(fl); fh = sum(fl[k:]) / (len(fl) - k) - sum(fl[:k]) / k
+                creep_ok = fsl <= live_slope_max or fh <= live_half_mb
+                line += (f", creep (post-GC floor): slope {fsl:+.3f} (≤ {live_slope_max:g}) or half-means {fh:+.2f} MB"
+                         f" (≤ {live_half_mb:g}) → {'ok' if creep_ok else 'CREEP'}")
+                if not creep_ok: ok = False
+                # borderline: both legs within 20 % of their limits → report, do not promote
+                if creep_ok and fsl > 0.8 * live_slope_max and fh > 0.8 * live_half_mb:
+                    line += " BORDERLINE"; borderline.append(f"live floor slope {fsl:+.3f}, half-means {fh:+.2f} MB")
+            elif v == "live" and len(rs) >= 13:
+                line += " — FAIL: no post-GC floor (heapmin) samples"; ok = False
+            es = [ext(r["heap"]) for r in rs[1:] if r["heap"]]; es = [e for e in es if e is not None]
+            if len(es) >= 4:
+                esl = slope(es); line += f", ext slope {esl:+.3f} (≤ {ext_max:g})"
+                if esl > ext_max: line += " EXT GROWING"; ok = False
         if v == "yard" and dfr <= 0: line += " — FAIL: the Yard drew no frames"; ok = False
         if v == "factory" and dfr <= 0: line += " (no run changed place: reported, not gated)"
         print(line)
 print(f"soak: alive {n} min, " + ("all memory/frame gates pass" if ok else "a memory/frame gate FAILED (see above)"))
+if ok and borderline:
+    print("soak: BORDERLINE (report, do not promote): " + "; ".join(borderline)); sys.exit(3)
 sys.exit(0 if ok else 1)
 PY
 echo "soak: $V OK"

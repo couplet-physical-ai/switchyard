@@ -669,3 +669,83 @@ fn engines_link_to_their_machine_page() {
     assert_eq!(url("wp-agent-3"), "https://ci.dev.example.com/admin/agents");
     assert_eq!(url("wp-agent-9"), "https://ci.dev.example.com/admin/agents");
 }
+
+#[test]
+fn created_without_workflows_is_not_a_pipeline_yet() {
+    let m = wp_mapper();
+    // Woodpecker stores every webhook's pipeline as `created` before reading its config,
+    // and deletes it unpublished when no workflow matches: a feed row, a list row and a
+    // detail of one in that window.
+    for raw in [
+        serde_json::json!({"number": 61, "status": "created", "event": "pull_request_closed",
+                           "repo_id": 7, "full_name": "acme/api", "created": 1_794_339_609}),
+        serde_json::json!({"number": 61, "status": "created", "event": "push", "workflows": null}),
+        serde_json::json!({"number": 61, "status": "created", "event": "push", "workflows": []}),
+    ] {
+        let p: WpPipeline = serde_json::from_value(raw).unwrap();
+        assert!(pre_config(&p));
+        assert!(m.facts("acme/api", 7, &p).is_empty(), "{p:?}");
+    }
+    // Published with its workflows it is pending, as before.
+    let e = &wp_events()[0];
+    assert_eq!(e.pipeline.status, "created");
+    assert!(!pre_config(&e.pipeline));
+    let f = m.facts(&e.repo.full_name, e.repo.id, &e.pipeline);
+    assert_eq!(pipeline(&f).state, CiState::Pending);
+    // Other states without workflows still map (an `error` never got that far).
+    let err: WpPipeline = typed("woodpecker/pipeline_full_error.json");
+    assert!(!pre_config(&err));
+    let pend: WpPipeline =
+        serde_json::from_value(serde_json::json!({"number": 3, "status": "pending"})).unwrap();
+    assert!(!pre_config(&pend));
+    assert_eq!(
+        pipeline(&m.facts("acme/api", 7, &pend)).state,
+        CiState::Pending
+    );
+}
+
+/// A fake Woodpecker: #1 exists, #2 was deleted (404), #3 fails (500).
+async fn fake_woodpecker() -> String {
+    use axum::Router;
+    use axum::extract::Path;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use axum::routing::get;
+    let app = Router::new().route(
+        "/api/repos/7/pipelines/{n}",
+        get(|Path(n): Path<u64>| async move {
+            match n {
+                1 => axum::Json(serde_json::json!({"number": 1, "status": "running"}))
+                    .into_response(),
+                2 => StatusCode::NOT_FOUND.into_response(),
+                _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            }
+        }),
+    );
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn pipeline_detail_tells_deleted_from_failing() {
+    let base = fake_woodpecker().await;
+    let c = WpClient::new(
+        base,
+        WP_URL.into(),
+        "t".into(),
+        reqwest::Client::new(),
+        std::sync::Arc::new(switchyard::runtime::Adapters::default()),
+    );
+    let p = c.pipeline(7, 1).await.unwrap().expect("exists");
+    assert_eq!((p.number, p.status.as_str()), (1, "running"));
+    assert!(c.pipeline(7, 2).await.unwrap().is_none(), "404 → gone");
+    assert!(c.pipeline(7, 3).await.is_err(), "500 is not gone");
+    // Plain `get` still fails on a 404.
+    let e = c
+        .get::<WpPipeline>("/api/repos/7/pipelines/2")
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("HTTP 404"), "{e}");
+}

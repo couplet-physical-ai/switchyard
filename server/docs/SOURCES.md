@@ -33,7 +33,10 @@ nothing internal is hard-coded beyond the public hostnames already used across t
   permissions on every active repo; the stream only carries repos the caller may see, so a
   personal token would show a partial fleet. The SSE connection is re-established with
   backoff and every reconnect triggers a reconcile (`/api/user/feed` + pipeline detail), so
-  a dropped stream can delay but never lose an update.
+  a dropped stream can delay but never lose an update. A `created` pipeline without
+  workflows is not shown: Woodpecker stores one per webhook before reading its config and
+  deletes it unpublished when no workflow matches. A pipeline whose detail turns 404 was
+  deleted upstream and is removed from the board.
 - **GitHub is polled through GraphQL, not REST, not webhooks.** One GraphQL query returns
   25–50 repositories with their heads, rollups and checks for a cost of ~1 point (budget
   5,000/h), so the whole fleet costs ~200 points/h. There is no fleet-wide GitHub webhook
