@@ -179,8 +179,10 @@ export class InfoLayer {
     }
     // All parts banded (disjoint bands, so their order does not matter): parts are matched by
     // band and calls, whatever their number (a queue one row longer repaints that row).
-    let banded = alone && n > 1 && !!was && was.n > 1 && was.banded && parts.every((q) => !!q.band);
-    now.banded = parts.every((q) => !!q.band);
+    let allBanded = true;
+    for (let i = 0; i < n && allBanded; i++) allBanded = !!parts[i].band;
+    let banded = alone && n > 1 && !!was && was.n > 1 && was.banded && allBanded;
+    now.banded = allBanded;
     if (was && (was.n === n || banded) && n > 1 && alone) {
       // the changed parts' boxes, before and after, out to whole device pixels
       const px = g.px;
@@ -737,9 +739,7 @@ function drawGates(g: Gfx, v: View, r: Rect): void {
   g.runs([['review', C.ink2], [` · ${review}`, C.amberText]], G.review.x, G.review.y - 5, T.caption, r.w);
   g.runs([[`${thousands(s.prs_open || w.prs.size)} prs open`, C.ink3]], G.review.x, G.review.y + G.review.h + 13, T.caption, r.w - 2);
   // The gate's last verdicts, newest right: a dot per finished pipeline.
-  const fin: Pipeline[] = [];
-  for (const p of w.pipelines.values()) if (p.finished && (p.state === 'success' || p.state === 'failure' || p.state === 'error')) fin.push(p);
-  fin.sort((a, b) => (a.finished ?? 0) - (b.finished ?? 0));
+  const fin = verdicts(w);
   const n = Math.min(fin.length, Math.floor((r.w - 6) / 7));
   const yy = G.review.y + G.review.h + 30;
   if (n > 0 && yy < S.divY - 24) {
@@ -751,6 +751,20 @@ function drawGates(g: Gfx, v: View, r: Rect): void {
     }
   }
   void ready;
+}
+
+/** Every finished pipeline with a verdict, oldest first (the gates' dots), kept while the
+ *  pipelines are the same (p5-yard: the panel is asked each minute and on every pr and stats
+ *  change, and this walked and sorted every pipeline each time). */
+const verdictCache = new WeakMap<World, { kv: number; v: Pipeline[] }>();
+function verdicts(w: World): Pipeline[] {
+  const hit = verdictCache.get(w);
+  if (hit && hit.kv === w.kv.pipeline) return hit.v;
+  const fin: Pipeline[] = [];
+  for (const p of w.pipelines.values()) if (p.finished && (p.state === 'success' || p.state === 'failure' || p.state === 'error')) fin.push(p);
+  fin.sort((a, b) => (a.finished ?? 0) - (b.finished ?? 0));
+  verdictCache.set(w, { kv: w.kv.pipeline, v: fin });
+  return fin;
 }
 
 // ---- main lines -------------------------------------------------------------------------------

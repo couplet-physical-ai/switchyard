@@ -22,7 +22,7 @@ import { InfoLayer, type View, fmtDur, fmtShort, mainLine } from './info.ts';
 import { type Leg, type Scene, census, engineGroups, enginesOf, layout, scaleFor } from './layout.ts';
 import { LodBook } from './lod.ts';
 import { E_FLASH, E_POP, E_PORT, E_PULSE, Pool, ST_RET, ST_SLOT, T_AMBER, T_GRAY, T_GREEN, T_RED, engineOf } from './pool.ts';
-import { Aggregates, buildingIds, isRed, mainStory, queueTruth } from './select.ts';
+import { Aggregates, RANKED, buildingIds, isRed, mainStory, queueTruth } from './select.ts';
 import { StressFleet } from './stress.ts';
 import { C, T, TAU, clamp, easeOut, withAlpha } from './theme.ts';
 
@@ -108,7 +108,7 @@ export class Yard {
     const ra = this.agg.repos;
     if (t - this.picksAt > PICKS_MS || ra.fresh !== this.picksFresh || !this.picks.length) {
       // (the scene is laid out again only when the picks changed, not each time they are looked at)
-      const next = ra.ranked.slice(0, 120);
+      const next = ra.ranked.slice(0, RANKED);
       if (next.length !== this.picks.length || next.some((id, i) => id !== this.picks[i])) { this.picks = next; this.picksVer++; }
       this.picksAt = t;
       this.picksFresh = ra.fresh;

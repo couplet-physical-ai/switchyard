@@ -243,7 +243,8 @@ export type RepoAgg = {
   state: Uint8Array;
   /** [org, start, end) runs over `ids`. */
   orgs: { org: string; start: number; end: number; red: number }[];
-  /** Main lines by attention: current reds (hottest first), building, then by heat. */
+  /** Main lines by attention: current reds (hottest first), building, then by heat (the
+   *  first RANKED). */
   ranked: string[];
   red: number;
   green: number;
@@ -256,6 +257,9 @@ export type RepoAgg = {
   /** A hash of `state`: the heatmap redraws only when a cell's colour changed. */
   sig: number;
 };
+
+/** The main lines ranked by attention, as many as the yard picks rows from (draw.ts). */
+export const RANKED = 120;
 
 /** A red younger than this is a current streak. */
 export const FRESH_MS = 86_400_000;
@@ -354,14 +358,26 @@ export class Aggregates {
           if (s === S_RED) return 2e6 + r.main.since / 1e13;
           return 1e6 + (r.last_activity ?? 0) / 1e13;
         };
-        const scores = new Map<string, number>();
-        for (const r of list) {
-          const sc = score(r);
-          scores.set(r.id, sc);
+        const scores = new Float64Array(list.length);
+        for (let k = 0; k < list.length; k++) {
+          const sc = score(list[k]);
+          scores[k] = sc;
           if (sc >= 5e6) fresh++;
           if (sc >= 2e6) hot++;
         }
-        const ranked = list.slice().sort((a, b) => scores.get(b.id)! - scores.get(a.id)! || COLL.compare(a.id, b.id)).map((r) => r.id);
+        // p5-yard: only the first RANKED rank (the yard's picks): kept by insertion, highest
+        // score first, ties by id as the collator orders them (the full sort's first RANKED, a
+        // fraction of its comparisons, no Map lookups)
+        const top: number[] = [];
+        const L = list;
+        const before = (i: number, j: number) => scores[i] > scores[j] || (scores[i] === scores[j] && COLL.compare(L[i].id, L[j].id) < 0);
+        for (let k = 0; k < list.length; k++) {
+          if (top.length === RANKED && !before(k, top[RANKED - 1])) continue;
+          let at = top.length < RANKED ? top.length : RANKED - 1;
+          while (at > 0 && before(k, top[at - 1])) { top[at] = top[at - 1]; at--; }
+          top[at] = k;
+        }
+        const ranked = top.map((k) => L[k].id);
         let sig = list.length;
         for (let k = 0; k < state.length; k++) sig = (Math.imul(sig, 31) + state[k] * (k + 1)) | 0;
         this.repos = { ids, state, orgs, ranked, red, green, oldestRed, ver, fresh, hot, sig };

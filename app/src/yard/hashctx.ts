@@ -13,6 +13,9 @@ import type { Ctx2D } from '../../app.contract.d.ts';
 const F64 = new Float64Array(1);
 const U32 = new Uint32Array(F64.buffer);
 
+/** A font string's size (px), read once per string (the yard sets a handful, thousands of times). */
+const FONT_PX = new Map<string, number>();
+
 // what a part sets before it uses it
 const S_FILL = 1, S_STROKE = 2, S_WIDTH = 4, S_FONT = 8, S_ALIGN = 16;
 
@@ -102,8 +105,13 @@ export class HashCtx {
   get font(): string { return this._font; }
   set font(v: string) {
     this._font = v; this.set |= S_FONT; this.n(4); this.s(v);
-    const m = /(\d+(?:\.\d+)?)px/.exec(v);
-    this.fontPx = m ? Number(m[1]) : 12;
+    let px = FONT_PX.get(v);
+    if (px === undefined) {
+      const m = /(\d+(?:\.\d+)?)px/.exec(v);
+      px = m ? Number(m[1]) : 12;
+      if (FONT_PX.size < 256) FONT_PX.set(v, px);
+    }
+    this.fontPx = px;
   }
   get textAlign(): string { return this._textAlign; }
   set textAlign(v: string) { this._textAlign = v; this.set |= S_ALIGN; this.n(5); this.s(v); }
