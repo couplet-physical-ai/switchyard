@@ -729,3 +729,58 @@ stays). Now:
 - A reload while paused stays paused.
 - `tests/reconnect.test.contract`: the mock's `/nostream/` (the same API, the stream 404'd);
   retries at 2, 4, 8, 16, 30, 30, 30 s, never sooner; `gen` stands (one snapshot); Live's rows stand.
+
+**The mini** (2026-11-12 13:22–13:37Z; 1440×900, dev builds, real taps, `EXACT_AGENT=live`,
+`EXACT_CANVAS_STATS=1`, the recorded fleet at 10× on a fresh `switchyard-server --demo --speed 10`
+per run; base `50768b6` and head built side by side, runs interleaved, nothing else on the mini;
+load average logged per run). Window A is 30 s of the busy board, window B 12 s with `sample`.
+
+| Run | Window | Callbacks | FPS | Missed slots | Frame time p99 | Work median / p99 / max (late) | Canvas stats while squares move | CPU (load) |
+|---|---|---|---|---|---|---|---|---|
+| base 1 | A | 180 | 55.58 | 14 of 194 | 48–96 ms | 9.5–10 / 48–96 / 48–96 ms (12) | **0 gpu/s, 44.9 recorded/s** | 11.2 % (1.09 → 1.50) |
+| base 1 | B | 76 | **42.06** | 32 of 108 | **384–768 ms** | 8–8.5 / 48–96 / 48–96 ms (11) | | |
+| head 1 | A | 193 | **59.70** | 1 of 194 | **16.5–17 ms** | 9–9.5 / 24–48 / 24–48 ms (12) | **33.9–49.8 gpu/s, 0 recorded/s** | 11.7 % (1.59 → 1.36) |
+| head 1 | B | 15 | 60.00 | 0 of 15 | 16.5–17 ms | 8.5–9 / 19.5–20 / 19.5–20 ms (3) | | |
+| base 2 | A | 173 | 56.31 | 11 of 184 | 48–96 ms | 9–9.5 / 48–96 / 48–96 ms (11) | 0 gpu/s, 39–40.9 recorded/s | 12.0 % (1.48 → 1.30) |
+| head 2 | A | 198 | **59.39** | 2 of 200 | 24–48 ms | 9–9.5 / 24–48 / 24–48 ms (15) | 40.7–61.7 gpu/s, 0 recorded/s | 12.6 % (1.23 → 1.14) |
+
+(The board asks for frames only while a run's square travels: ~190 of a 30 s window's 1,800 slots.)
+- **Cause 1, proven**: at base the board's canvases are never on the GPU (`0.0 gpu/s`), and while
+  squares move Core Animation records ~40–45 lists a second on the main thread; the 0.4–0.8 s
+  frames follow. At head both are on Vello (`34–62 gpu/s`, `0.0 recorded/s`).
+- Head: 59.4–59.7 fps in window A (1–2 missed slots of ~195), 60 in B. Frame time p99 16.5–17 ms
+  (run 1) and 24–48 ms (run 2: its 2 missed slots). The work's maximum is still 24–48 ms (12–15
+  late records a window): the GPU replays read 5–16 ms each while squares move.
+
+**A refused stream on the mini** (the frozen mock's `/nostream/`, paused Live, 70 s window after
+the pause; both apps on the head clone's mock):
+
+| Tree | Frames in the 70 s | CPU (load) | Snapshot GETs in the run | Stream opens |
+|---|---|---|---|---|
+| base `50768b6` | 68 (three bursts of 21–24: Live's rows entering again) | 1.72 % (1.48 → 1.30) | 7 (the connect's 2, then one a rung) | 6 |
+| head | **0** | **0.08 %** (1.23 → 1.10) | **2** (the connect's) | 6 (2, 4, 8, 16, 30 s) |
+
+**Idle with timers** (the frozen mock, which serves `tstream`: 3 builds running, so the 1 Hz
+timers tick; 58 s windows):
+
+| Tab | Tree | Frames in the windows | CPU (load) |
+|---|---|---|---|
+| Live | head | 0 | 2.14 % (1.22 → 1.68) |
+| Board | head | 0 frame callbacks; 1 GPU replay a second (the timers' repaint, 4.7–7.9 ms each) | 1.93 % (1.08 → 1.17) |
+| Board | base `50768b6` | 0; 0.5–1 bitmap replay a second (Core Graphics, off the main thread) | 1.51 % (1.28 → 1.30) |
+
+The refused stream is fixed outright (0 frames, 0.08 % CPU, one snapshot). The board meets 60 fps
+at 10× with its stalls gone; idle with timers does not meet ≤ 1.5 % on Live (2.14 %) or the board
+(1.93 %), and the board's idle CPU went up from base's 1.51 %: on Vello, the one repaint a second
+(the timers, ~0.1 % of the board) costs a whole GPU replay of the canvas (4.7–7.9 ms), where Core
+Graphics updated the bitmap in place.
+
+**What is left.**
+- The board asks for frames during a transit only to land it (`land`: the square drawn in its
+  berth). If the live layer kept the landed squares until the board's next argument change, the
+  board would never animate: it could stay on Core Graphics (cheap partial repaints, never
+  recorded), and only the live layer would need the GPU claim. That would bring the idle board
+  back to ~1.5 % and take the per-frame board replays (5–16 ms GPU each) out of the busy frames.
+- Live's idle with timers (2.14 %): one 1 Hz tick re-stamps `nowTickData`; the cost is likely the
+  runtime's apply (texts relaid each second), not the module (0.005 ms in Bun). Unmeasured.
+- A layout change still repaints the whole board (~70 KB now, ~1 per 45 s at 10×).
