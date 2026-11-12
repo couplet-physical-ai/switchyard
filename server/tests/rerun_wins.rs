@@ -119,3 +119,47 @@ fn other_events_and_deploy_runs_still_count_on_their_own() {
     ]);
     assert_eq!(s.commit_ci(REPO, SHA), Failure);
 }
+
+fn status(context: &str, state: CiState, at: Ms) -> Fact {
+    Fact::Status(StatusFact {
+        repo: REPO.into(),
+        sha: SHA.into(),
+        context: context.into(),
+        state,
+        at,
+        url: None,
+    })
+}
+
+#[test]
+fn without_its_pipelines_the_statuses_follow_the_same_rule() {
+    use CiState::*;
+    // edge-smoke 4d2fddb on Nov 12: its pipelines are older than the fetch window, so
+    // only GitHub's statuses are left: push #6 failed at deploy, manual #8 passed.
+    let s = store(vec![
+        status("ci/woodpecker/push/ci", Success, NOW - 9_000),
+        status("ci/woodpecker/push/deploy", Failure, NOW - 9_000),
+        status("ci/woodpecker/manual/ci", Success, NOW - 5_000),
+        status("ci/woodpecker/manual/deploy", Success, NOW - 5_000),
+        status("ci/woodpecker/manual/setup", Success, NOW - 5_000),
+    ]);
+    assert_eq!(s.commit_ci(REPO, SHA), Success);
+    // viewer-updates b6fe4e3: the manual deploy failed too, the commit stays red.
+    let s = store(vec![
+        status("ci/woodpecker/manual/ci", Success, NOW - 5_000),
+        status("ci/woodpecker/manual/deploy", Failure, NOW - 5_000),
+    ]);
+    assert_eq!(s.commit_ci(REPO, SHA), Failure);
+    // A newer failed push after a manual pass is red; other contexts still count.
+    let s = store(vec![
+        status("ci/woodpecker/manual/deploy", Success, NOW - 9_000),
+        status("ci/woodpecker/push/deploy", Failure, NOW - 5_000),
+    ]);
+    assert_eq!(s.commit_ci(REPO, SHA), Failure);
+    let s = store(vec![
+        status("ci/woodpecker/push/deploy", Failure, NOW - 9_000),
+        status("ci/woodpecker/manual/deploy", Success, NOW - 5_000),
+        status("ci/woodpecker/cron/renovate", Failure, NOW - 1_000),
+    ]);
+    assert_eq!(s.commit_ci(REPO, SHA), Failure);
+}

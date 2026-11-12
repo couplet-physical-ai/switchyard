@@ -1506,14 +1506,33 @@ impl Store {
             states.extend(latest.values().map(|(_, s)| *s));
         }
         if let Some(ss) = self.idx.sha_statuses.get(&sk) {
+            // Without its pipelines (older than the fetch window) a Roadrunner commit
+            // reads from its statuses, one per event and workflow
+            // (ci/woodpecker/<event>/<workflow>): the same rule, the newer of a push
+            // and a manual run's status for one workflow counts.
+            let mut wp: BTreeMap<&str, (Ms, CiState)> = BTreeMap::new();
             for k in ss {
                 if let Some(s) = self.statuses.get(k) {
-                    if has_wp && s.context.starts_with("ci/woodpecker") {
-                        continue;
+                    if s.context.starts_with("ci/woodpecker") {
+                        if has_wp {
+                            continue;
+                        }
+                        let wf = s
+                            .context
+                            .strip_prefix("ci/woodpecker/push/")
+                            .or_else(|| s.context.strip_prefix("ci/woodpecker/manual/"));
+                        if let Some(wf) = wf {
+                            let e = wp.entry(wf).or_insert((s.at, s.state));
+                            if s.at >= e.0 {
+                                *e = (s.at, s.state);
+                            }
+                            continue;
+                        }
                     }
                     states.push(s.state);
                 }
             }
+            states.extend(wp.values().map(|(_, s)| *s));
         }
         combine_states(states)
     }
