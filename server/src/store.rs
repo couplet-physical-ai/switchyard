@@ -560,16 +560,28 @@ impl Store {
     fn apply_pipeline(&mut self, p: Pipeline, live: bool) {
         let id = p.id.clone();
         let old = self.pipelines.get(&id);
-        if let Some(o) = old
-            && pipeline_version(o) >= pipeline_version(&p)
-        {
-            return;
+        // Woodpecker reuses the number of a pipeline it deleted (help-agent #65: a
+        // phantom, then a pull request's run): the id is the same, the run is another one.
+        // The newer run replaces the old one whole, whatever their lifecycles; a fact of
+        // the older run is old news. Same run: the later lifecycle wins.
+        let reused = old.is_some_and(|o| {
+            o.lane == LaneKind::Roadrunner && (o.sha != p.sha || o.created != p.created)
+        });
+        if let Some(o) = old {
+            let stale = if reused && o.created != p.created {
+                p.created < o.created
+            } else {
+                pipeline_version(o) >= pipeline_version(&p)
+            };
+            if stale {
+                return;
+            }
         }
         // Old news (a reconcile catching up on a finished run) does not animate.
         let fresh = self.now == 0
             || p.finished.or(p.started).unwrap_or(p.created) >= self.now - 10 * 60_000;
         if live && fresh {
-            pipeline_events(old, &p, &mut self.events);
+            pipeline_events(if reused { None } else { old }, &p, &mut self.events);
         }
         let key = sha_key(&p.repo, &p.sha);
         // The pipeline also tells us about its commit; that view is derived
