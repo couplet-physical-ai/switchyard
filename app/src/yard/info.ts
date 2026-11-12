@@ -41,7 +41,7 @@ function banded(f: (g: Gfx) => void, y0: number, y1: number): Part {
   return p;
 }
 /** What a panel (or each of its parts) painted last: its calls' hash and the box they ink. */
-type Drawn = { h1: Int32Array; h2: Int32Array; box: Float64Array; n: number };
+type Drawn = { h1: Int32Array; h2: Int32Array; box: Float64Array; n: number; banded?: boolean };
 
 const h = (a: number, b: number) => (Math.imul(a ^ 0x5bd1e995, 31) + b) | 0;
 const hs = (a: number, s: string) => { for (let i = 0; i < s.length; i++) a = h(a, s.charCodeAt(i)); return h(a, s.length); };
@@ -152,26 +152,48 @@ export class InfoLayer {
       for (let i = 0; i < n && same; i++) same = was.h1[i] === now.h1[i] && was.h2[i] === now.h2[i];
       if (same) { this.stats.same++; return; }
     }
-    if (was && was.n === n && n > 1 && alone) {
+    // All parts banded (disjoint bands, so their order does not matter): parts are matched by
+    // band and calls, whatever their number (a queue one row longer repaints that row).
+    let banded = alone && n > 1 && !!was && was.n > 1 && was.banded && parts.every((q) => !!q.band);
+    now.banded = parts.every((q) => !!q.band);
+    if (was && (was.n === n || banded) && n > 1 && alone) {
       // the changed parts' boxes, before and after, out to whole device pixels
       const px = g.px;
       const boxes: number[] = [];
       let changed = 0;
-      for (let i = 0; i < n; i++) {
-        if (was.h1[i] === now.h1[i] && was.h2[i] === now.h2[i]) continue;
-        changed++;
-        for (const b of [was.box, now.box]) {
-          // clamped to the panel (a whole repaint clears no more), out to whole device pixels
-          const x0 = Math.max(r.x, b[i * 4]), y0 = Math.max(r.y, b[i * 4 + 1]), x1 = Math.min(r.x + r.w, b[i * 4 + 2]), y1 = Math.min(r.y + r.h, b[i * 4 + 3]);
-          if (!(x1 > x0) || !(y1 > y0)) continue;
-          addBox(boxes, Math.floor(x0 * px) / px, Math.floor(y0 * px) / px, Math.ceil(x1 * px) / px, Math.ceil(y1 * px) / px);
+      const add = (b: Float64Array, i: number) => {
+        // clamped to the panel (a whole repaint clears no more), out to whole device pixels
+        const x0 = Math.max(r.x, b[i * 4]), y0 = Math.max(r.y, b[i * 4 + 1]), x1 = Math.min(r.x + r.w, b[i * 4 + 2]), y1 = Math.min(r.y + r.h, b[i * 4 + 3]);
+        if (!(x1 > x0) || !(y1 > y0)) return;
+        addBox(boxes, Math.floor(x0 * px) / px, Math.floor(y0 * px) / px, Math.ceil(x1 * px) / px, Math.ceil(y1 * px) / px);
+      };
+      if (banded) {
+        const key = (d: Drawn, i: number) => `${d.box[i * 4 + 1]},${d.box[i * 4 + 3]},${d.h1[i]},${d.h2[i]}`;
+        const olds = new Map<string, number>();
+        for (let j = 0; j < was.n; j++) { const k = key(was, j); olds.set(k, (olds.get(k) ?? 0) + 1); }
+        for (let i = 0; i < n; i++) {
+          const k = key(now, i), c = olds.get(k) ?? 0;
+          if (c > 0) olds.set(k, c - 1); else { changed++; add(now.box, i); }
+        }
+        const left = new Map<string, number>(olds);
+        for (let j = 0; j < was.n; j++) { const k = key(was, j), c = left.get(k) ?? 0; if (c > 0) { left.set(k, c - 1); changed++; add(was.box, j); } }
+        // the dirty bands under most of the panel: all of it
+        let area = 0;
+        for (let b = 0; b < boxes.length; b += 4) area += (boxes[b + 2] - boxes[b]) * (boxes[b + 3] - boxes[b + 1]);
+        if (area > r.w * r.h * 0.7) banded = false, changed = n;
+        else changed = 0;
+      } else {
+        for (let i = 0; i < n; i++) {
+          if (was.h1[i] === now.h1[i] && was.h2[i] === now.h2[i]) continue;
+          changed++;
+          add(was.box, i); add(now.box, i);
         }
       }
       if (changed * 2 <= n) {
         this.stats.parts++;
         if (InfoLayer.debug) {
           const ch: string[] = [];
-          for (let i = 0; i < n; i++) if (was.h1[i] !== now.h1[i] || was.h2[i] !== now.h2[i]) ch.push(`${i}:[${[...was.box.slice(i * 4, i * 4 + 4)].map((x) => x.toFixed(1))}]->[${[...now.box.slice(i * 4, i * 4 + 4)].map((x) => x.toFixed(1))}]`);
+          for (let i = 0; i < Math.min(n, was.n); i++) if (was.h1[i] !== now.h1[i] || was.h2[i] !== now.h2[i]) ch.push(`${i}:[${[...was.box.slice(i * 4, i * 4 + 4)].map((x) => x.toFixed(1))}]->[${[...now.box.slice(i * 4, i * 4 + 4)].map((x) => x.toFixed(1))}]`);
           console.log(`info ${p.id} parts ${ch.join(' ')} boxes ${boxes.map((x) => x.toFixed(1)).join(',')}`);
         }
         const ctx = g.ctx;
@@ -199,6 +221,7 @@ export class InfoLayer {
       }
     }
     this.stats.whole++;
+    if (InfoLayer.debug) console.log(`info ${p.id} whole${full ? ' (full)' : was ? (was.n !== n ? ` (${was.n}→${n} parts)` : alone ? ' (most parts changed)' : ' (a part leans on its neighbours)') : ' (first)'}`);
     if (!full) g.clear(r.x, r.y, r.w, r.h);
     for (let i = 0; i < n; i++) parts[i](g);
   }
@@ -234,7 +257,8 @@ export class InfoLayer {
   /** NOW as two banded parts (p3-yard): its first line, whose timer moves each second, and the
    *  rest (the steps, the main line), which seldom does. */
   private nowParts(v: View, r: Rect): Part[] {
-    return [banded((g) => this.drawNow(g, v, r, 1), r.y, r.y + 26), banded((g) => this.drawNow(g, v, r, 2), r.y + 26, r.y + r.h)];
+    // (the first line's descenders end ~19 px down; the steps' bracket label starts ~24 px down)
+    return [banded((g) => this.drawNow(g, v, r, 1), r.y, r.y + 22), banded((g) => this.drawNow(g, v, r, 2), r.y + 22, r.y + r.h)];
   }
 
   /** `only`: 1 the first line, 2 the rest, 0 all of it. */

@@ -66,7 +66,7 @@ YP.drawInfo = function (this: { info: unknown; gi: unknown }, ctx: Ctx, f: unkno
     differ++;
     const line = `draw ${compared} at ${(t / 1000).toFixed(2)} s: ${n} px differ in [${x0},${y0}..${x1},${y1}]`;
     console.log(line);
-    if (differ <= 6) {
+    if (differ <= 30) {
       if (!firstDiff) firstDiff = line;
       const { mkdirSync, writeFileSync } = require('node:fs');
       mkdirSync('/tmp/yard-pixels', { recursive: true });
@@ -74,7 +74,7 @@ YP.drawInfo = function (this: { info: unknown; gi: unknown }, ctx: Ctx, f: unkno
       writeFileSync(`/tmp/yard-pixels/whole-${differ}.png`, B.toBuffer('image/png'));
     }
     // carry on from the same pixels: B's
-    ctxA.save(); ctxA.resetTransform(); ctxA.clearRect(0, 0, W * SCALE, H * SCALE); ctxA.drawImage(B as never, 0, 0); ctxA.restore();
+    ctxA.putImageData(ctxB.getImageData(0, 0, W * SCALE, H * SCALE), 0, 0);
   }
   return r;
 };
