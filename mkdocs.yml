@@ -1,0 +1,40 @@
+# Switchyard's docs site: https://switchyard.docs.example.com
+# Theme, plugins, markdown extensions and branding come from the shared `exowatt-mkdocs`
+# package (INHERIT below); this file carries only the site's identity and nav. The site is
+# built and published by Roadrunner (see docs/guides/deploying.md, "The docs site").
+INHERIT: !ENV EXOWATT_MKDOCS_BASE
+
+site_name: Switchyard
+site_description: The live control room for a CI/CD fleet. Every commit, pipeline, pull request, deploy and app in one place.
+repo_url: https://github.com/couplet-physical-ai/switchyard
+edit_uri: edit/main/docs/
+
+nav:
+  - Home: index.md
+  - Guides:
+      - Reading Live: guides/live.md
+      - Reading the Factory: guides/factory.md
+      - Reading the Yard: guides/yard.md
+      - Links, search and keys: guides/links.md
+      - Install and update: guides/install.md
+      - Developing: guides/developing.md
+      - Deploying and operating: guides/deploying.md
+      - Releasing the macOS app: guides/releasing.md
+  - Architecture:
+      - Overview: architecture/index.md
+      - Server: architecture/server.md
+      - Client: architecture/client.md
+  - Reference:
+      - Design language: reference/design.md
+      - Wire contract: reference/contract.md
+      - Performance:
+          - How it is measured: reference/performance/index.md
+          - macOS passes: reference/performance/mac-passes.md
+          - Exact patches: reference/performance/exact-patches.md
+          - Hermes gotchas: reference/performance/hermes.md
+          - Numbers per release: reference/performance/releases.md
+      - Changelog: reference/changelog.md
+  - Decisions:
+      - "0001 The Factory is the berth board": decisions/0001-the-factory-is-the-berth-board.md
+  - Reports:
+      - "2026-11-11 macOS out of memory": reports/incidents/2026-11-11-macos-oom.md

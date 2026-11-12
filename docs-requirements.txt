@@ -1,0 +1,1 @@
+exowatt-mkdocs>=0,<1
