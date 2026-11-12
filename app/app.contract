@@ -168,8 +168,10 @@ component App
     every(250, tick)
   task pulseSec when ov.pace == 1 and not tfWaits
     every(1000, tickSec)
+  // (250 ms: frames that keep coming, at 10× or in a burst, are taken in at most 4 times a second,
+  // as the old pulse did; a lone frame shows within a quarter second)
   task fed when feed.wake > 0 key=`${feed.wake}`
-    after(30, tick)
+    after(250, tick)
   task wake1 when ov.pace != 0 and ov.wake == 1 key=ov.wakeKey
     after(1000, tick)
   task wake2 when ov.pace != 0 and ov.wake == 2 key=ov.wakeKey

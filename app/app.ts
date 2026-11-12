@@ -430,7 +430,7 @@ async function connect(server: string, token: string, epoch0: number): Promise<C
 /** The stream's frames, waiting for the clock they arrived at (the mapper has none): taken in
  *  by the next source turn that advances the clock (`advance`). While the pulse is asleep or
  *  slow (ov.pace 1 or 2), the first frame to wait moves the feed's `wake`, and Contract ticks
- *  once for it (app.contract `fed`, 30 ms later): the world, the overview and what shows them
+ *  once for it (app.contract `fed`, 250 ms later, so a burst is one turn): the world, the overview and what shows them
  *  follow the stream's frames, not a clock. Paused, a frame is kept at once (nothing shows it). */
 const inbox: WireFrame[] = [];
 const INBOX_MAX = 4000;
