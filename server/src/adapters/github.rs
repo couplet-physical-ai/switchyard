@@ -46,10 +46,17 @@ const HIST_QUERY: &str = r#"query($org:String!,$n:Int!,$hist:Int!,$after:String)
  organization(login:$org){repositories(first:$n,after:$after,isArchived:false,orderBy:{field:PUSHED_AT,direction:DESC}){
   pageInfo{hasNextPage endCursor}
   nodes{nameWithOwner pushedAt isPrivate defaultBranchRef{name target{... on Commit{
-   history(first:$hist){nodes{oid committedDate messageHeadline author{name user{login}} statusCheckRollup{state contexts(first:40){totalCount nodes{__typename
-    ... on StatusContext{context state createdAt}
-    ... on CheckRun{name status conclusion checkSuite{app{slug} workflowRun{event workflow{name}}}}}}}}}
+   history(first:$hist){nodes{id oid committedDate messageHeadline author{name user{login}} statusCheckRollup{state}}}
   }}}}}}}"#;
+
+/// The rollup contexts of commits GitHub calls red (by node id), to read their own CI
+/// ([`main_line_state`]). Fetching every history commit's contexts in the inventory made
+/// its pages too slow for GitHub (502s, truncated orgs); red ones are a few dozen.
+const RED_QUERY: &str = r#"query($ids:[ID!]!){
+ rateLimit{cost remaining}
+ nodes(ids:$ids){... on Commit{oid statusCheckRollup{state contexts(first:40){totalCount nodes{__typename
+  ... on StatusContext{context state createdAt}
+  ... on CheckRun{name status conclusion checkSuite{app{slug} workflowRun{event workflow{name}}}}}}}}}}"#;
 
 const PR_QUERY: &str = r#"query($q:String!,$n:Int!,$after:String){
  rateLimit{cost remaining}
@@ -962,6 +969,58 @@ impl GithubAdapter {
         Ok(())
     }
 
+    /// The main-line dots GitHub calls red, read again from their own contexts
+    /// ([`main_line_state`]): a CodeQL or Dependabot check, a pull request's run or a push
+    /// run a manual rerun superseded is not the repo's main line failing. On any error the
+    /// dot keeps GitHub's state.
+    async fn refine_red_dots(&self, nodes: &[Value], facts: &mut [Fact]) {
+        let mut ids: Vec<String> = Vec::new();
+        for r in nodes {
+            for c in r
+                .pointer("/defaultBranchRef/target/history/nodes")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if matches!(s(c, "/statusCheckRollup/state"), Some("FAILURE" | "ERROR"))
+                    && let Some(id) = s(c, "/id")
+                {
+                    ids.push(id.to_string());
+                }
+            }
+        }
+        let mut own: HashMap<String, CiState> = HashMap::new();
+        for chunk in ids.chunks(25) {
+            match self.gql(RED_QUERY, json!({ "ids": chunk })).await {
+                Ok(v) => {
+                    for n in v
+                        .pointer("/data/nodes")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let (Some(oid), Some(r)) = (s(n, "/oid"), n.get("statusCheckRollup")) {
+                            own.insert(oid.to_string(), main_line_state(r));
+                        }
+                    }
+                }
+                Err(e) => debug!(error = %e, "github: red dots kept GitHub's state"),
+            }
+        }
+        if own.is_empty() {
+            return;
+        }
+        for f in facts.iter_mut() {
+            if let Fact::MainHist(h) = f {
+                for d in &mut h.dots {
+                    if let Some(st) = own.get(&d.sha) {
+                        d.state = *st;
+                    }
+                }
+            }
+        }
+    }
+
     /// One GraphQL page, retried with a smaller page size (GitHub answers 502
     /// when a deep query takes more than ~10 s).
     async fn page(&self, query: &str, mut vars: Value, sizes: &[u32]) -> anyhow::Result<Value> {
@@ -1009,12 +1068,20 @@ impl GithubAdapter {
                     .pointer("/data/organization/repositories")
                     .cloned()
                     .unwrap_or(Value::Null);
+                if conn.is_null() {
+                    // A page GitHub answered without its data (partial errors): the org's
+                    // list is not whole, so its repo list is not replaced.
+                    warn!(org, "github: inventory page without data");
+                    complete = false;
+                    break;
+                }
                 let nodes = conn
                     .get("nodes")
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default();
-                let (m, facts) = repo_page_facts(&nodes, false, now);
+                let (m, mut facts) = repo_page_facts(&nodes, false, now);
+                self.refine_red_dots(&nodes, &mut facts).await;
                 metas.extend(m);
                 self.send(facts, false).await;
                 if conn
