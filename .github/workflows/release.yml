@@ -58,6 +58,15 @@ jobs:
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then v=${GITHUB_REF_NAME#v}; else v=${{ inputs.version }}; v=${v#v}; fi
           [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]] || { echo "bad version $v"; exit 1; }
           echo "version=$v" >> "$GITHUB_OUTPUT"
+          # A gated release (scripts/release.sh --gate: the tag's message says [gated]) publishes as a
+          # prerelease; it becomes Latest only after the mini's gates pass (scripts/release.sh --promote).
+          gated=false
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            git fetch -q --force origin "+$GITHUB_REF:$GITHUB_REF"
+            [[ "$(git cat-file -t "$GITHUB_REF")" == tag ]] || { echo "::error::$GITHUB_REF is not an annotated tag"; exit 1; }
+            git for-each-ref "$GITHUB_REF" --format='%(contents)' | grep -q '\[gated\]' && gated=true
+          fi
+          echo "gated=$gated" >> "$GITHUB_OUTPUT"; echo "gated: $gated"
           pin=$(cat app/exact.pin 2>/dev/null || cat packaging/exact.pin)
           echo "exact_pin=$pin" >> "$GITHUB_OUTPUT"
           echo "Switchyard $v, mode $MODE, exact $pin"
@@ -151,12 +160,7 @@ jobs:
           cat "$RUNNER_TEMP/notes.md"
           # Prerelease: asked for, or a 0.0.x / x.y.z-suffix version (test builds never become "latest").
           pre=(); [[ "${{ inputs.prerelease }}" == true || "$V" == 0.0.* || "$V" == *-* ]] && pre=(--prerelease)
-          # A gated release (scripts/release.sh --gate: the tag's message says [gated]) publishes as a
-          # prerelease; it becomes Latest only after the mini's gates pass (scripts/release.sh --promote).
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            git fetch -q --force origin "+$GITHUB_REF:$GITHUB_REF" || true
-            if git for-each-ref "$GITHUB_REF" --format='%(contents)' | grep -q '\[gated\]'; then pre=(--prerelease); echo "gated: publishing as a prerelease"; fi
-          fi
+          [[ "${{ steps.v.outputs.gated }}" == true ]] && { pre=(--prerelease); echo "gated: publishing as a prerelease"; }
           if gh release view "v$V" >/dev/null 2>&1; then
             gh release upload "v$V" dist/*.zip dist/*.dmg dist/SHA256SUMS dist/latest.json --clobber
             gh release edit "v$V" --notes-file "$RUNNER_TEMP/notes.md"
