@@ -474,6 +474,8 @@ function needsMore(all: Need[], shown: number): string {
 type Filter = { repo: string; app: string; sha: string };
 export type FeedArgs = [number, string, string, string];
 let memo: { w: World; key: string; v: NowFeed } | null = null;
+/** The last feed shows something running or waiting (its m:ss timers follow the second). */
+export function feedTicking(): boolean { return !!memo && memo.v.ok && (memo.v.running > 0 || memo.v.queued > 0 || memo.v.waiting > 0); }
 
 export function feedAnswer(d: NowDeps, [tick, repo, app, sha]: FeedArgs): NowFeed {
   const w = d.world();

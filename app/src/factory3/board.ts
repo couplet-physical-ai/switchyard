@@ -286,4 +286,6 @@ export class Board3 {
     return this.stats.paints > 0 && !this.transits.length && this.now - Math.max(this.lastPaint, this.lastLive) >= 2000;
   }
   get moving(): boolean { return this.transits.length > 0; }
+  /** Something on the board runs or waits (a timer it shows follows the second): not quiet. */
+  get ticking(): boolean { return this.tuple !== '' && !this.quiet; }
 }

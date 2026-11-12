@@ -15,7 +15,7 @@ import { DEMO_REPLAY, DemoUpstream } from './src/demo.ts';
 import { EngineHistory } from './src/enginehist.ts';
 import { bindInsights } from './src/insights.ts';
 import { search } from './src/project.ts';
-import { nowSources } from './src/now/view.ts';
+import { feedTicking, nowSources } from './src/now/view.ts';
 import { FlowFloor } from './src/flowfloor/floor.ts';
 import { Board3 } from './src/factory3/board.ts';
 import { NO_F3, f3Detail, tidyLog } from './src/factory3/inspect.ts';
@@ -510,7 +510,9 @@ function overview(): Result<'overview'> {
 let visTick = 0, visSig = '', visData = '', visChanged = -1e9;
 function redraw(w: { ver: number }, active: number): { tick: number; pace: number } {
   const replaying = tl.mode === 'replay';
-  const g = replaying ? 250 : active > 0 || tl.mode === 'behind' ? 1000 : 60_000;
+  // (what the view on top shows: the board's own runs, deploys and checks; Live's running and waiting rows)
+  const ticking = active > 0 || (topView === 'factory' && f3.ticking) || (topView === 'now' && feedTicking());
+  const g = replaying ? 250 : ticking || tl.mode === 'behind' ? 1000 : 60_000;
   const data = `${tl.epoch}|${w.ver}|${tl.mode}|${tl.speed}|${stressOn ? 1 : 0}|${yard.hud.on ? 1 : 0}`;
   if (data !== visData) { visData = data; visChanged = clock; }
   const sig = `${topView}|${data}|${Math.floor(tl.playhead / g)}`;
