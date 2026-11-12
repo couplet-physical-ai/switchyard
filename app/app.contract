@@ -65,6 +65,9 @@ component App
   state speed = 1
   state q = ""
   state retries = 0
+  // p5-board: the stream's own generation. A dropped or refused stream opens again with it, the
+  // fleet kept (`retry`); only a failed connect or a reset (a gap) fetches the snapshot again (gen).
+  state fgen = 0
   state palSel = 0
   state picked = ""
   state facWheel = 0
@@ -79,7 +82,7 @@ component App
   // fx-kc: asked again when the token's read fails or recovers (tokBad), not for each status
   derive tokBad = tok.status == "denied" or tok.status == "error"
   resource conn = connect(server, tok.ver, gen) with time.epochAtZero, time.utcOffset, tokBad as shape Conn else empty(ok=false, status="connecting", error="", seq=0, label="", kind="", needsSetup=false, signIn="")
-  resource feed = liveFeed(server, tok.ver, conn.seq, gen, conn.ok) as shape Feed else empty(ok=false, status="idle", wake=0)
+  resource feed = liveFeed(server, tok.ver, conn.seq, gen, conn.ok, fgen) as shape Feed else empty(ok=false, status="idle", wake=0)
   // (asked again by the clock only while busy (ov.pace 0) or at a wake; by the stream's frames
   // through `fed`; by the view on top, and by the older floors being on top (the web's))
   resource ov = overview(ovClock, conn.seq, conn.ok, ovTop) as shape Overview else empty()
@@ -199,9 +202,13 @@ component App
   // a loud floor draws every frame on its own, so the clock stops.
   task facBeat when here == "factory" and not facV2 and not facV3 and ov.facCalm
     every(125, facPulseTick)
-  // A dropped stream reconnects after 2, 4, 8, 16, then every 30 s; a reset (a gap) refetches at once.
+  // A dropped stream, or one the server refused, opens again after 2, 4, 8, 16, then every 30 s,
+  // and never sooner: it resumes after the last frame it brought (`since`), the fleet kept (no
+  // snapshot, no rebuilt rows). A failed connect asks the snapshot again on the same ladder. A
+  // reset (a gap, or a resume the server can no longer serve) refetches the snapshot at once. A
+  // stream live for 20 s starts the ladder over.
   task resync when feed.status == "reset" key=`${retries}`
-    after(250, retry)
+    after(250, refetch)
   task reconnect0 when dropped and retries == 0
     after(2000, retry)
   task reconnect1 when dropped and retries == 1
@@ -249,6 +256,12 @@ component App
   action facPulseTick
     facPulse = facPulse + 1
   action retry
+    retries = retries + 1
+    if conn.ok
+      fgen = fgen + 1
+    else
+      gen = gen + 1
+  action refetch
     retries = retries + 1
     gen = gen + 1
   action steadyAgain

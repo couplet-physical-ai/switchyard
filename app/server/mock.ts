@@ -323,7 +323,10 @@ const server = Bun.serve<WsData>({
   idleTimeout: 120,
   fetch(req, srv) {
     const url = new URL(req.url);
-    const path = url.pathname.replace(/\/+$/, '') || '/';
+    // `/nostream/…`: the same API with its stream refused (404), as a server or an edge that does
+    // not pass the WebSocket would (the reconnect test, p5-board)
+    const refuse = url.pathname.startsWith('/nostream/');
+    const path = url.pathname.replace(/^\/nostream(?=\/)/, '').replace(/\/+$/, '') || '/';
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     if (req.method !== 'GET') return err(req, 405, 'method not allowed');
     if (path === '/api/healthz') return json(req, { ok: true });
@@ -365,6 +368,7 @@ const server = Bun.serve<WsData>({
       // api.rs serves it; without it a client holding a token reconnected forever, p4)
       case 'tstream':
       case 'stream': {
+        if (refuse) return err(req, 404, 'not found');
         if (parts[1] === 'sse') {
           let ctl: ReadableStreamDefaultController<Uint8Array>;
           const stream = new ReadableStream<Uint8Array>({

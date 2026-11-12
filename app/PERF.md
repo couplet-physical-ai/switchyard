@@ -753,3 +753,126 @@ lists replayed by the next display-link tick, `canvas_draw_turn` under
 `exact_fire_native_timer`), or the shim's between-call full collection
 (`js/src/shim.cc:135–145` `collect_if_due`: every `max(256 KiB, live/2)` allocated) moved off
 the call that answers a frame.
+
+## Pass 5, the board (p5-board): no frame waits on a whole board, and a refused stream stops looping (2026-11-12)
+
+Branch `sy/mac-p5board`, base `50768b6`. The board (Factory) at 10× read 32–40 fps with
+0.2–0.8 s stalls on the mini (pre-existing; 60 at 1×). Two causes, both the board's own.
+
+**1. The board never reached the GPU** (`f33ac50`). The macOS host gives a canvas to its GPU
+module only if the first draw with anything in it after a fresh bitmap asks for the next frame
+(PERF.md "Where the native frame went"; the old floor's and the Yard's `gpuClaim`). Board3's two
+layers asked for nothing there (an idle board asks for nothing), so both stayed with Core
+Graphics; and while a transit animates (both layers ask for frames until it lands: at 10× nearly
+always) Core Animation records and replays, on the main thread, every list the canvas kept since
+its last cover, each frame. The board's partial repaints never cover, so that was up to 64 lists
+a frame. Each layer's first paint on a fresh bitmap now asks for one more frame (which draws
+nothing); a fresh bitmap whose draw was skipped while covered (app.ts) is owed its whole paint and
+its claim.
+
+**2. A change in the number of marks repainted the whole board** (`bdfb9f7`, `69b0626`).
+`paint()` compared the scenes index by index and went whole whenever their lengths differed: a run
+arriving, leaving or landing. A whole board is 100–180 KB of list through Exact's recorder (the
+list, base64, JSON); at 10× that came about once a second. Now:
+- `diffOps` walks both lists in order and aligns them again after marks that came or went (the
+  nearest equal pair, 24 marks a side, 6,000 compares at most, else whole). Matched marks keep their
+  order in both lists, so a pixel outside every changed box is painted by the same marks in the
+  same order.
+- The 30 % whole-repaint share is the boxes' union in 16 px tiles, not their sum (the events list
+  moving down one row is ~280 overlapping boxes in one column).
+- Over 24 boxes, the repaint is cleared and clipped as its tiles' runs, and every mark on those
+  tiles is painted again: a few rects, not hundreds.
+- A whole or tiled repaint paints last, grouped by font and colour, every word that no later mark
+  and no other word overlaps (`paintOrder`): each font change sends the face's whole family list
+  (Exact's recorder: a number per character, ~400 B), and the board's words alternate fonts (~120
+  changes, half of a whole board). A whole board: 101.7 → 69.7 KB (the fixtures' board).
+
+**Devbox** (`tools/f3-bench.ts`, new: the board against the live 10× recorded fleet in Bun, a small
+Contract runtime (connect, the stream, the overview at the pulse / `fed` / wakes, `rk`, 60 Hz
+draws), the draws through Exact's own recorder (`--real`), `BUN_JSC_useJIT=0`, 45 s, interleaved,
+load 1.5–2.2):
+
+| Run | Whole paints | Frames > 16 ms | Frame work p99 / max | Largest list |
+|---|---|---|---|---|
+| base 1 | 26 of 84 (every count change) | 31 | 40.3 / 63.0 ms | 158.6 KB |
+| head 1 | 3 of 67 (the mount, layout changes) | 3 | 11.5 / 39.6 ms | 108.1 KB (the mount) |
+| base 2 | 19 of 77 | 24 | 45.7 / 71.4 ms | 177.3 KB |
+| head 2 | 2 of 77 | 6 | 27.1 / 39.7 ms | 107.9 KB (the mount) |
+| head + tile runs (`69b0626`) | 3 of 84 (the mount, the bench's font pass, a layout change) | 6 | 24.3 / 39.7 ms | partials ≤ 60 KB |
+| head + words grouped | 3 of 78 | 6 | 23.0 / 36.1 ms (the mount) | 72.8 KB (the mount) |
+
+**Pixels.** `f3-bench --pixels`: every board list also goes to a canvas that keeps it (Exact's web
+replayer in headless Chromium, `tools/floorpix.ts`), and after each paint a whole repaint of the
+same scene, in the scene's own order, goes to a fresh one. 84 paints at 10× (81 partial, 3 whole):
+**0 pixels differ**; with the words grouped, 78 paints (73 partial): **0 pixels differ**.
+`factory3-shots stills` base vs head (frozen fixtures): the only differences are the running
+timers (the two runs 4 s apart) and the proxy's port in the status line.
+
+**3. A refused stream** (`9648d25`). Against a server that refuses `/api/v1/tstream`, `retry`
+bumped `gen`, the connect's argument, so every rung of the ladder fetched the 2 MB snapshot again
+and loaded a new world (Live rebuilt; and paused, `tl.load` put the module back to live under a
+paused UI, so its 1 Hz timers ticked). The ladder itself was right: 2, 4, 8, 16, then every 30 s
+(the 8–16 s seen were its rungs inside 30 s windows; a test on the base tree reaches 30 s and
+stays). Now:
+- `retry` bumps `fgen`, the stream's own argument; the connect (and the world, and Live's rows)
+  stands. The stream resumes after the newest seq it brought (`since`); a resume the server can
+  no longer serve comes back as a reset, which refetches the snapshot at once (`refetch`).
+- A failed connect still asks the snapshot on the ladder.
+- A reload while paused stays paused.
+- `tests/reconnect.test.contract`: the mock's `/nostream/` (the same API, the stream 404'd);
+  retries at 2, 4, 8, 16, 30, 30, 30 s, never sooner; `gen` stands (one snapshot); Live's rows stand.
+
+**The mini** (2026-11-12 13:22–13:37Z; 1440×900, dev builds, real taps, `EXACT_AGENT=live`,
+`EXACT_CANVAS_STATS=1`, the recorded fleet at 10× on a fresh `switchyard-server --demo --speed 10`
+per run; base `50768b6` and head built side by side, runs interleaved, nothing else on the mini;
+load average logged per run). Window A is 30 s of the busy board, window B 12 s with `sample`.
+
+| Run | Window | Callbacks | FPS | Missed slots | Frame time p99 | Work median / p99 / max (late) | Canvas stats while squares move | CPU (load) |
+|---|---|---|---|---|---|---|---|---|
+| base 1 | A | 180 | 55.58 | 14 of 194 | 48–96 ms | 9.5–10 / 48–96 / 48–96 ms (12) | **0 gpu/s, 44.9 recorded/s** | 11.2 % (1.09 → 1.50) |
+| base 1 | B | 76 | **42.06** | 32 of 108 | **384–768 ms** | 8–8.5 / 48–96 / 48–96 ms (11) | | |
+| head 1 | A | 193 | **59.70** | 1 of 194 | **16.5–17 ms** | 9–9.5 / 24–48 / 24–48 ms (12) | **33.9–49.8 gpu/s, 0 recorded/s** | 11.7 % (1.59 → 1.36) |
+| head 1 | B | 15 | 60.00 | 0 of 15 | 16.5–17 ms | 8.5–9 / 19.5–20 / 19.5–20 ms (3) | | |
+| base 2 | A | 173 | 56.31 | 11 of 184 | 48–96 ms | 9–9.5 / 48–96 / 48–96 ms (11) | 0 gpu/s, 39–40.9 recorded/s | 12.0 % (1.48 → 1.30) |
+| head 2 | A | 198 | **59.39** | 2 of 200 | 24–48 ms | 9–9.5 / 24–48 / 24–48 ms (15) | 40.7–61.7 gpu/s, 0 recorded/s | 12.6 % (1.23 → 1.14) |
+
+(The board asks for frames only while a run's square travels: ~190 of a 30 s window's 1,800 slots.)
+- **Cause 1, proven**: at base the board's canvases are never on the GPU (`0.0 gpu/s`), and while
+  squares move Core Animation records ~40–45 lists a second on the main thread; the 0.4–0.8 s
+  frames follow. At head both are on Vello (`34–62 gpu/s`, `0.0 recorded/s`).
+- Head: 59.4–59.7 fps in window A (1–2 missed slots of ~195), 60 in B. Frame time p99 16.5–17 ms
+  (run 1) and 24–48 ms (run 2: its 2 missed slots). The work's maximum is still 24–48 ms (12–15
+  late records a window): the GPU replays read 5–16 ms each while squares move.
+
+**A refused stream on the mini** (the frozen mock's `/nostream/`, paused Live, 70 s window after
+the pause; both apps on the head clone's mock):
+
+| Tree | Frames in the 70 s | CPU (load) | Snapshot GETs in the run | Stream opens |
+|---|---|---|---|---|
+| base `50768b6` | 68 (three bursts of 21–24: Live's rows entering again) | 1.72 % (1.48 → 1.30) | 7 (the connect's 2, then one a rung) | 6 |
+| head | **0** | **0.08 %** (1.23 → 1.10) | **2** (the connect's) | 6 (2, 4, 8, 16, 30 s) |
+
+**Idle with timers** (the frozen mock, which serves `tstream`: 3 builds running, so the 1 Hz
+timers tick; 58 s windows):
+
+| Tab | Tree | Frames in the windows | CPU (load) |
+|---|---|---|---|
+| Live | head | 0 | 2.14 % (1.22 → 1.68) |
+| Board | head | 0 frame callbacks; 1 GPU replay a second (the timers' repaint, 4.7–7.9 ms each) | 1.93 % (1.08 → 1.17) |
+| Board | base `50768b6` | 0; 0.5–1 bitmap replay a second (Core Graphics, off the main thread) | 1.51 % (1.28 → 1.30) |
+
+The refused stream is fixed outright (0 frames, 0.08 % CPU, one snapshot). The board meets 60 fps
+at 10× with its stalls gone; idle with timers does not meet ≤ 1.5 % on Live (2.14 %) or the board
+(1.93 %), and the board's idle CPU went up from base's 1.51 %: on Vello, the one repaint a second
+(the timers, ~0.1 % of the board) costs a whole GPU replay of the canvas (4.7–7.9 ms), where Core
+Graphics updated the bitmap in place.
+
+**What is left.**
+- The board asks for frames during a transit only to land it (`land`: the square drawn in its
+  berth). If the live layer kept the landed squares until the board's next argument change, the
+  board would never animate: it could stay on Core Graphics (cheap partial repaints, never
+  recorded), and only the live layer would need the GPU claim. That would bring the idle board
+  back to ~1.5 % and take the per-frame board replays (5–16 ms GPU each) out of the busy frames.
+- Live's idle with timers (2.14 %): one 1 Hz tick re-stamps `nowTickData`; the cost is likely the
+  runtime's apply (texts relaid each second), not the module (0.005 ms in Bun). Unmeasured.
+- A layout change still repaints the whole board (~70 KB now, ~1 per 45 s at 10×).

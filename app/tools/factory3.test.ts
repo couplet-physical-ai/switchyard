@@ -11,7 +11,7 @@ import { World } from '../src/world.ts';
 import type { Frame as WireFrame, Pipeline, Snapshot } from '../src/wire.ts';
 import { SlotBook, WINDOWS, boardOf, windowMs } from '../src/factory3/model.ts';
 import { PLACE, ageAt, layoutOf, sceneOf, timer, type SceneOpts } from '../src/factory3/scene.ts';
-import { Board3 } from '../src/factory3/board.ts';
+import { Board3, diffOps } from '../src/factory3/board.ts';
 import { f3Detail, tidyLog } from '../src/factory3/inspect.ts';
 
 let fails = 0;
@@ -92,9 +92,15 @@ const ARGS = { win: '30m', sel: '', mode: 'live', reduced: false, dock: false, h
   const board = new Board3();
   const A = recorder(), B = recorder();
   let more = board.drawBoard(A.ctx, frame(1000, 'mount'), w, t0, ARGS);
-  board.drawLive(B.ctx, frame(1000, 'mount'));
+  const liveClaim = board.drawLive(B.ctx, frame(1000, 'mount'));
   const painted = A.calls.length;
-  ok(painted > 300 && !more, `idle: the first frame paints the board (${painted} calls) and asks for no other frame`);
+  // (p5-board: each layer's first draw on a fresh bitmap asks for ONE more frame, so macOS gives
+  // the canvas to its GPU module: Board3.gpuClaim)
+  ok(painted > 300 && more && liveClaim, `idle: the first frame paints the board (${painted} calls) and both layers ask for one more (the GPU claim)`);
+  more = board.drawBoard(A.ctx, frame(1016), w, t0 + 16, ARGS);
+  const liveNext = board.drawLive(B.ctx, frame(1016));
+  ok(!more && !liveNext && A.calls.length === painted, 'idle: that frame paints nothing and asks for no other');
+  eq(board.stats.claims, 2, 'idle: two claims, one a layer');
   const liveFirst = B.calls.length;
   let asked = false;
   for (let i = 1; i <= 240; i++) {
@@ -106,6 +112,10 @@ const ARGS = { win: '30m', sel: '', mode: 'live', reduced: false, dock: false, h
   eq(B.calls.length, liveFirst, 'idle: the moving layer is never painted');
   ok(!more && !asked, 'idle: no frame is ever asked for');
   eq([board.stats.paints, board.stats.livePaints, board.stats.transits], [1, 0, 0], 'idle: 1 paint, 0 live paints, 0 transits');
+  // a mount skipped while covered (app.ts): the next draw is the fresh bitmap's first, whole and claimed
+  const C = recorder(), b3 = new Board3();
+  b3.skipped('board', frame(500, 'mount'));
+  ok(b3.drawBoard(C.ctx, frame(600), w, t0, ARGS) && C.calls.includes('clear 0,0,1440,840'), 'covered mount: the next draw paints the board whole and asks for one more frame');
   ok(board.stats.builds <= 3, `idle: the scene is not even rebuilt each second (${board.stats.builds} builds in 60 s)`);
   ok(board.still, 'idle: the board reports itself still');
 }
@@ -186,6 +196,33 @@ const ARGS = { win: '30m', sel: '', mode: 'live', reduced: false, dock: false, h
   w2.apply(clone(f));
   b2.drawBoard(C2.ctx, frame(2000), w2, t0 + 2000, { ...ARGS, reduced: true });
   eq(b2.stats.transits, 0, 'move: with reduced motion the run is simply in its new place');
+}
+
+// ───────────────────────── p5-board: marks that came and went repaint only themselves ─────────────────────────
+{
+  const w = new World();
+  w.load(clone(snap));
+  const t0 = minuteOf(snap.at) + 60_000;
+  const ops = sceneOf(boardOf(w, t0, windowMs('30m'), new SlotBook()), L, OPTS).ops;
+  const n = ops.length;
+  // two marks gone from the middle, one new near the end, a timer's digit in between
+  const next = ops.slice();
+  const gone = next.splice(100, 2);
+  next.splice(n - 40, 0, ['r', 5, 5, 7, 7, '#ff0000']);
+  const tt = next.findIndex((op, i) => i > 150 && i < n - 60 && op[0] === 't' && /\d$/.test(op[1]));
+  ok(tt > 0, 'diff: (a word ending in a digit between them)');
+  const old = next[tt] as [string, string, ...unknown[]];
+  next[tt] = [old[0], old[1].slice(0, -1) + (old[1].endsWith('9') ? '0' : '9'), ...old.slice(2)] as never;
+  const out: number[] = [];
+  ok(diffOps(ops, next, 1, out), 'diff: two lists a few marks apart align');
+  eq(out.length / 4, 4, 'diff: one box each for the two marks gone, the mark new, the timer');
+  const same: number[] = [];
+  ok(diffOps(ops, ops.slice(), 1, same) && same.length === 0, 'diff: the same scene, no box');
+  ok(gone.length === 2, 'diff: (the marks taken out)');
+  // a whole scene's other half: too far apart to align within the budget, or boxes over most of it
+  const far: number[] = [];
+  const shifted = ops.map((op) => (op[0] === 'r' ? ['r', op[1] + 3, op[2], op[3], op[4], op[5]] : op)) as typeof ops;
+  ok(!diffOps(ops, shifted, 1, far) || far.length / 4 > n / 3, 'diff: a board whose squares all moved is not small');
 }
 
 // ───────────────────────── a berth is a place ─────────────────────────

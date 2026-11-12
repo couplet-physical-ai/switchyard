@@ -63,6 +63,124 @@ const sameOp = (a: Op, b: Op) => {
 };
 /** Above this share of the board changed, it is simply repainted whole. */
 const DIRTY_MAX = 0.3;
+/** the tiles (CSS px) a repaint's share is counted in, and its marks found by */
+const TILE = 16;
+/** over this many changed boxes, a repaint is cleared and clipped by its tiles (tileRuns) */
+const MANY_BOXES = 24;
+/** p5-board: the order the marks are painted in. Every change of font sends the face's whole
+ *  family list (Exact's recorder: a number per character, ~400 B), and the board's words alternate
+ *  fonts (a bold name, a plain detail): ~120 font changes, half of a whole board's ~100 KB. So a
+ *  word that no later mark and no other word overlaps is painted last, with the others of its
+ *  font (and colour): nothing painted after it covers it, and it covers nothing painted after
+ *  it, so the pixels are the same. The rest keep their places. (Off: the bench's reference.) */
+let groupWords = true;
+/** A mark's ink (CSS px), for the order: a square's own box and a pixel round it; a word's run of
+ *  advances (the face is monospaced) and two pixels each side, an em above its baseline and
+ *  0.35 em under it, a pixel more each way (opBox, the repaints' box, is far looser). */
+function inkBox(op: Op, s: number, out: number[]): void {
+  if (op[0] === 'r') { out.push(op[1] * s - 1, op[2] * s - 1, (op[1] + op[3]) * s + 1, (op[2] + op[4]) * s + 1); return; }
+  const px = op[5], w = op[1].length * advOf(px) * s, x = op[2] * s, y = op[3] * s;
+  const x0 = op[7] === 2 ? x - w : op[7] === 1 ? x - w / 2 : x;
+  out.push(x0 - 2, y - (px + 1) * s, x0 + w + 2, y + (px * 0.35 + 1) * s);
+}
+export function setGroupWords(on: boolean): void { groupWords = on; }
+const ordBox: number[] = [];
+function paintOrder(ops: Op[], s: number, cols: number, rows: number, group: boolean): number[] {
+  const n = ops.length, order: number[] = [];
+  if (!groupWords || !group) { for (let i = 0; i < n; i++) order.push(i); return order; }
+  // each mark's box and the tiles it is on (a list of marks per tile)
+  const B = new Float64Array(n * 4), head = new Int32Array(cols * rows).fill(-1), nxt: number[] = [], itm: number[] = [];
+  for (let i = 0; i < n; i++) {
+    ordBox.length = 0;
+    inkBox(ops[i], s, ordBox);
+    B[i * 4] = ordBox[0]; B[i * 4 + 1] = ordBox[1]; B[i * 4 + 2] = ordBox[2]; B[i * 4 + 3] = ordBox[3];
+    const tx0 = Math.max(0, Math.floor(ordBox[0] / TILE)), tx1 = Math.min(cols - 1, Math.floor(ordBox[2] / TILE));
+    for (let ty = Math.max(0, Math.floor(ordBox[1] / TILE)), ty1 = Math.min(rows - 1, Math.floor(ordBox[3] / TILE)); ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) { const t = ty * cols + tx; itm.push(i); nxt.push(head[t]); head[t] = itm.length - 1; }
+    }
+  }
+  const late: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (ops[i][0] !== 't') { order.push(i); continue; }
+    let free = true;
+    const x0 = B[i * 4], y0 = B[i * 4 + 1], x1 = B[i * 4 + 2], y1 = B[i * 4 + 3];
+    const tx0 = Math.max(0, Math.floor(x0 / TILE)), tx1 = Math.min(cols - 1, Math.floor(x1 / TILE));
+    scan: for (let ty = Math.max(0, Math.floor(y0 / TILE)), ty1 = Math.min(rows - 1, Math.floor(y1 / TILE)); ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        for (let e = head[ty * cols + tx]; e >= 0; e = nxt[e]) {
+          const j = itm[e];
+          if (j === i || (j < i && ops[j][0] === 'r')) continue; // (a square painted before it stays under it)
+          if (B[j * 4] < x1 && B[j * 4 + 2] > x0 && B[j * 4 + 1] < y1 && B[j * 4 + 3] > y0) { free = false; break scan; }
+        }
+      }
+    }
+    if (free) late.push(i); else order.push(i);
+  }
+  // (by font, then colour, each in the scene's order)
+  const key = (i: number) => { const op = ops[i] as ['t', string, number, number, string, number, 0 | 1, 0 | 1 | 2]; return `${op[6]}|${op[5]}|${op[4]}`; };
+  const keys = late.map(key);
+  const idx = late.map((_, k) => k).sort((a, b) => (keys[a] < keys[b] ? -1 : keys[a] > keys[b] ? 1 : a - b));
+  for (const k of idx) order.push(late[k]);
+  return order;
+}
+
+/** The dirty tiles as rects (x0, y0, x1, y1, CSS px): runs along each row of tiles, a run that
+ *  continues the same run of the row above merged into it. */
+function tileRuns(T: Uint8Array, cols: number, rows: number, W: number, H: number): number[] {
+  const out: number[] = [];
+  let open = new Map<number, number>(), was = open;
+  for (let ty = 0; ty < rows; ty++) {
+    was = open; open = new Map();
+    for (let tx = 0; tx < cols; tx++) {
+      if (!T[ty * cols + tx]) continue;
+      const a = tx;
+      while (tx + 1 < cols && T[ty * cols + tx + 1]) tx++;
+      const key = a * 4096 + tx, k = was.get(key);
+      const y1 = Math.min(H, (ty + 1) * TILE);
+      if (k !== undefined) { out[k + 3] = y1; open.set(key, k); }
+      else { open.set(key, out.length); out.push(a * TILE, ty * TILE, Math.min(W, (tx + 1) * TILE), y1); }
+    }
+  }
+  return out;
+}
+
+/** p5-board: where two scenes' marks differ, as boxes (CSS px) pushed to `out`. Both lists are
+ *  walked in order and aligned again after marks that came or went (a scene keeps its marks in
+ *  order: a run that arrives, leaves or lands adds or drops its own), so a change in the number
+ *  of marks repaints the marks that changed, not the board. A whole board is 100-180 KB of list
+ *  (Exact's recorder, base64, JSON: 40-85 ms in Bun without its JIT, a few times that on the
+ *  mini's Hermes); at 10× the count changed about once a second. The marks matched keep their
+ *  order in both lists, so any pixel outside every box is painted by the same marks in the same
+ *  order. A pair that differs in place (a timer's digit) is its characters' box (`charBox`).
+ *  False: the lists are too far apart to align within the budget (paint it all). */
+const ALIGN = 24, ALIGN_BUDGET = 6000;
+export function diffOps(prev: Op[], ops: Op[], s: number, out: number[]): boolean {
+  const n = prev.length, m = ops.length;
+  let i = 0, j = 0, budget = ALIGN_BUDGET;
+  while (i < n && j < m) {
+    if (sameOp(prev[i], ops[j])) { i++; j++; continue; }
+    // the nearest pair that is the same again: x marks of the old list went, y of the new came
+    let a = -1, b = -1;
+    find: for (let d = 1; d <= 2 * ALIGN; d++) {
+      for (let x = Math.max(0, d - ALIGN); x <= Math.min(d, ALIGN); x++) {
+        const y = d - x;
+        if (i + x >= n || j + y >= m) continue;
+        if (--budget < 0) return false;
+        if (sameOp(prev[i + x], ops[j + y])) { a = x; b = y; break find; }
+      }
+    }
+    // (none near: this pair changed; the walk goes on)
+    if (a < 0) { a = 1; b = 1; }
+    const k = Math.min(a, b);
+    for (let q = 0; q < k; q++) if (!charBox(prev[i + q], ops[j + q], s, out)) { opBox(prev[i + q], s, out); opBox(ops[j + q], s, out); }
+    for (let q = k; q < a; q++) opBox(prev[i + q], s, out);
+    for (let q = k; q < b; q++) opBox(ops[j + q], s, out);
+    i += a; j += b;
+  }
+  for (; i < n; i++) opBox(prev[i], s, out);
+  for (; j < m; j++) opBox(ops[j], s, out);
+  return true;
+}
 
 const fonts = new Map<number, string>();
 function fontOf(px: number, bold: boolean): string {
@@ -98,14 +216,51 @@ export class Board3 {
   /** the ops on the bitmap now, and the size and scale they were painted at */
   private shown: Op[] | null = null;
   private shownAt = '';
+  /** the tiles a repaint touches (paint) */
+  private tiles = new Uint8Array(0);
   /** For the tests and the HUD: how often the board was asked, built and painted; what moved. */
-  stats = { asks: 0, builds: 0, paints: 0, livePaints: 0, transits: 0, ops: 0, moving: 0, squares: 0, texts: 0, dirty: 0, redrawn: 0 };
+  stats = { asks: 0, builds: 0, paints: 0, livePaints: 0, transits: 0, ops: 0, moving: 0, squares: 0, texts: 0, dirty: 0, redrawn: 0, claims: 0 };
 
-  /** The board layer. Returns true only while a transit is under way (the next frame may land it). */
+  /** p5-board: the macOS host gives a canvas to its GPU module (Vello, Metal) only if the first
+   *  draw with anything in it after a fresh bitmap (a mount, a new size) asks for the next frame.
+   *  Otherwise Core Graphics keeps it for the bitmap's life, and while it animates (a transit:
+   *  both layers ask for frames until it lands) Core Animation records and replays, on the main
+   *  thread, every list the canvas kept since its last cover, each frame: the board's partial
+   *  repaints never cover, so that is up to 64 lists a frame (PERF.md, "Where the native frame
+   *  went": the factory's same finding; the Yard's `claim`). So each layer's first paint on a fresh
+   *  bitmap asks for one more frame, which draws nothing. Off: the tests' idle counts. */
+  static gpuClaim = true;
+  private claim = { board: false, live: false };
+  /** a fresh bitmap whose draw was skipped (the board covered, app.ts `draw`): the next draw is
+   *  its first, painted whole */
+  private owed = { board: false, live: false };
+  /** A draw of `which` was skipped (covered): a fresh bitmap in it is owed its first paint. */
+  skipped(which: 'board' | 'live', f: Frame): void { if (freshBitmap(f)) this.owed[which] = true; }
+  private freshFor(which: 'board' | 'live', f: Frame): boolean {
+    const fresh = freshBitmap(f) || this.owed[which];
+    this.owed[which] = false;
+    if (fresh) this.claim[which] = Board3.gpuClaim;
+    return fresh;
+  }
+  private claimed(which: 'board' | 'live'): boolean {
+    if (!this.claim[which]) return false;
+    this.claim[which] = false;
+    this.stats.claims++;
+    return true;
+  }
+
+  /** The board layer. Returns true only while a transit is under way (the next frame may land it),
+   *  and once after its first paint on a fresh bitmap (`gpuClaim`). */
   drawBoard(ctx: Ctx2D, f: Frame, w: World, now: number, a: BoardArgs): boolean {
+    const paints = this.stats.paints;
+    const more = this.drawBoard0(ctx, f, w, now, a);
+    // (the claim goes with the draw that painted: a fresh bitmap's first lists decide)
+    return (this.stats.paints !== paints && this.claimed('board')) || more;
+  }
+  private drawBoard0(ctx: Ctx2D, f: Frame, w: World, now: number, a: BoardArgs): boolean {
     this.stats.asks++;
     this.now = f.time;
-    const fresh = freshBitmap(f);
+    const fresh = this.freshFor('board', f);
     this.land(f.time);
     const L = (this.L = layoutOf(f.width, f.height));
     // (a board mounted again, as it is each time the Factory is shown again, keeps what it measured)
@@ -237,16 +392,17 @@ export class Board3 {
     const snap = (v: number) => Math.round(v * s * dp) / dp;
     const ops = scene.ops, prev = this.shown, at = `${f.width}x${f.height}@${dp}|${s}`;
     // the boxes that changed (device-pixel aligned), or null: paint it all
-    let boxes: number[] | null = null;
-    if (!fresh && prev && this.shownAt === at && prev.length === ops.length) {
-      const raw: number[] = [];
-      for (let i = 0; i < ops.length; i++) {
-        if (sameOp(prev[i], ops[i]) || charBox(prev[i], ops[i], s, raw)) continue;
-        opBox(prev[i], s, raw);
-        opBox(ops[i], s, raw);
-      }
+    let boxes: number[] | null = null, exact = true;
+    const raw: number[] = [];
+    // (p5-board: the share is the boxes' union counted in 16 px tiles, not their sum: a list whose
+    // rows all moved down one is many overlapping boxes over one column, not a third of the board)
+    const cols = Math.ceil(f.width / TILE), rows = Math.ceil(f.height / TILE);
+    if (this.tiles.length !== cols * rows) this.tiles = new Uint8Array(cols * rows);
+    const T = this.tiles;
+    if (!fresh && prev && this.shownAt === at && diffOps(prev, ops, s, raw)) {
       boxes = [];
-      let area = 0;
+      T.fill(0);
+      let area = 0, tiles = 0;
       next: for (let i = 0; i < raw.length; i += 4) {
         const x0 = Math.max(0, Math.floor(raw[i] * dp) / dp), y0 = Math.max(0, Math.floor(raw[i + 1] * dp) / dp);
         const x1 = Math.min(f.width, Math.ceil(raw[i + 2] * dp) / dp), y1 = Math.min(f.height, Math.ceil(raw[i + 3] * dp) / dp);
@@ -255,9 +411,18 @@ export class Board3 {
         for (let k = 0; k < boxes.length; k += 4) if (boxes[k] <= x0 && boxes[k + 1] <= y0 && boxes[k + 2] >= x1 && boxes[k + 3] >= y1) continue next;
         boxes.push(x0, y0, x1, y1);
         area += (x1 - x0) * (y1 - y0);
+        for (let ty = Math.floor(y0 / TILE), ty1 = Math.min(rows - 1, Math.floor((y1 - 1e-6) / TILE)); ty <= ty1; ty++) {
+          for (let tx = Math.floor(x0 / TILE), tx1 = Math.min(cols - 1, Math.floor((x1 - 1e-6) / TILE)); tx <= tx1; tx++) if (!T[ty * cols + tx]) { T[ty * cols + tx] = 1; tiles++; }
+        }
       }
-      if (area > f.width * f.height * DIRTY_MAX) boxes = null;
-      else this.stats.dirty = area / (f.width * f.height);
+      if (tiles > cols * rows * DIRTY_MAX) boxes = null;
+      else if (boxes.length > 4 * MANY_BOXES) {
+        // many boxes (a list whose rows all moved): cleared and clipped as their tiles, merged into
+        // runs, a few rects instead of hundreds; every mark on those tiles is painted again
+        boxes = tileRuns(T, cols, rows, f.width, f.height);
+        exact = false;
+        this.stats.dirty = tiles / (cols * rows);
+      } else this.stats.dirty = Math.min(1, area / (f.width * f.height));
     }
     this.shown = ops;
     this.shownAt = at;
@@ -278,13 +443,21 @@ export class Board3 {
     }
     let fill = '', font = '', align = -1, redrawn = 0;
     const box: number[] = [];
-    for (const op of ops) {
+    // (a few small boxes, a second's timers: in the scene's order; a whole or a tiled repaint grouped)
+    for (const oi of paintOrder(ops, s, cols, rows, !only || !exact)) {
+      const op = ops[oi];
       if (only) {
-        // only the marks under a changed box
+        // only the marks under a changed box (its tiles first: most marks are under none)
         box.length = 0;
         opBox(op, s, box);
-        let hit = false;
-        for (let i = 0; i < only.length; i += 4) if (box[0] < only[i + 2] && box[2] > only[i] && box[1] < only[i + 3] && box[3] > only[i + 1]) { hit = true; break; }
+        let near = false;
+        const tx0 = Math.max(0, Math.floor(box[0] / TILE)), tx1 = Math.min(cols - 1, Math.floor(box[2] / TILE));
+        for (let ty = Math.max(0, Math.floor(box[1] / TILE)), ty1 = Math.min(rows - 1, Math.floor(box[3] / TILE)); ty <= ty1 && !near; ty++) {
+          for (let tx = tx0; tx <= tx1; tx++) if (T[ty * cols + tx]) { near = true; break; }
+        }
+        if (!near) continue;
+        let hit = !exact;
+        for (let i = 0; i < only.length && !hit; i += 4) if (box[0] < only[i + 2] && box[2] > only[i] && box[1] < only[i + 3] && box[3] > only[i + 1]) hit = true;
         if (!hit) continue;
       }
       redrawn++;
@@ -308,12 +481,13 @@ export class Board3 {
   /** The live layer: the squares in transit, and nothing else. Asleep (no frame asked) otherwise. */
   drawLive(ctx: Ctx2D, f: Frame): boolean {
     const t = f.time;
-    const fresh = freshBitmap(f);
+    const fresh = this.freshFor('live', f);
     if (!this.transits.length) {
       if (this.liveDirty || fresh) { ctx.resetTransform(); ctx.clearRect(0, 0, f.width, f.height); this.liveDirty = false; }
       this.stats.moving = 0;
-      return false;
+      return fresh && this.claimed('live');
     }
+    if (fresh) this.claimed('live'); // (a transit asks for the frames itself)
     this.stats.livePaints++;
     this.lastLive = t;
     this.liveDirty = true;
