@@ -617,7 +617,7 @@ export const sources: Sources = {
     const v = logOf(up, String(id ?? ''), String(step ?? ''), String(workflow ?? ''), Number(tick) || 0, !!failed);
     return v instanceof Promise ? v.then(tidyLog) : tidyLog(v);
   },
-  f3Stats: () => ({ ok: f3.still, status: f3.statsLine(), work: f3.workLine() }),
+  f3Stats: () => ({ ok: f3.stillAt(clock), status: f3.statsLine(), work: f3.workLine() }), // (the clock: a still board is not drawn on macOS)
   webVersion: () => webVersion(),
   parseLink: ([u, server, token]) => parseLink(u, server, token),
   // SWITCHYARD_TOKEN_FILE (macOS, env only; src/hooks.ts): the token, once, through parseLink.

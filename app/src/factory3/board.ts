@@ -370,8 +370,11 @@ export class Board3 {
     return `board paints ${st.paints} · moving-layer paints ${st.livePaints} · transits ${st.transits} · scene builds ${st.builds} · ${st.ops} marks · last paint ${(st.dirty * 100).toFixed(2)} % of the board, ${st.redrawn} marks`;
   }
   /** "still": no pixel of either canvas has changed for two seconds (and one was painted at all). */
-  get still(): boolean {
-    return this.stats.paints > 0 && !this.transits.length && this.now - Math.max(this.lastPaint, this.lastLive) >= 2000;
+  get still(): boolean { return this.stillAt(this.now); }
+  /** The same at the module clock `t`: a still board is not drawn at all on macOS (its arguments
+   *  unchanged), so the last draw's time stops; the clock goes on. */
+  stillAt(t: number): boolean {
+    return this.stats.paints > 0 && !this.transits.length && Math.max(t, this.now) - Math.max(this.lastPaint, this.lastLive) >= 2000;
   }
   get moving(): boolean { return this.transits.length > 0; }
   /** Something on the board runs or waits (a timer it shows follows the second): not quiet. */
