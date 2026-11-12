@@ -1,7 +1,7 @@
-// Factory 3, "the berth board", at /factory (also /factory?v=3) (FACTORY3.md; views/factory3.contract,
+// The Factory: "the berth board", at /factory (FACTORY3.md; views/factory3.contract,
 // src/factory3/): six stations in flow order, the ledger of events under them, the FAILED bin's
-// window, the inspector docked over the ledger. /factory and /factory?v=1 keep their own floors
-// (tests/factory-v2.test.contract, tests/factory.test.contract).
+// window, the inspector docked over the ledger. /factory?v=<anything> is the board too: the
+// two older floors (?v=1, ?v=2) were retired and their deep links land on it.
 // A press on the board is a real pointer gesture at a point in the canvas (`drag 1 0 from x y`
 // presses, moves one point and lets go: a click). The points are the recorded fleet's
 // (contract/fixtures, frozen) at 1440×900; the app logs them (`factory3: newest failed … x,y`,
@@ -13,13 +13,12 @@
 
 size 1440x900
 
-test "board: v=3 keeps a board behind the setup card"
+test "board: the Factory keeps a board behind the setup card"
   clock data
   type "root" "/factory"
   clock settle
   expect state here == "factory"
   expect state facV3 == true
-  expect state facV2 == false
   expect tree has "factory-floor"
   expect tree has "factory-live"
   expect tree has "factory-moving"
@@ -27,39 +26,21 @@ test "board: v=3 keeps a board behind the setup card"
   expect tree missing "f3-inspector"
   expect text "tab-factory" == "Factory"
 
-test "board: /factory is the board; /factory?v=2 and /factory?v=1 are not" on web
+// the retired floors' deep links land on the board, on every host
+test "board: /factory?v=1, ?v=2 and ?v=3 are the board"
   clock data
-  type "root" "/factory"
-  clock settle
-  expect state facV3 == true
-  expect state facV2 == false
-  expect tree has "factory-moving"
-  type "root" "/factory?v=2"
-  clock settle
-  expect state facV3 == false
-  expect state facV2 == true
-  expect tree missing "factory-moving"
-  type "root" "/factory?v=1"
-  clock settle
-  expect state facV3 == false
-  expect state facV2 == false
-  expect tree missing "factory-moving"
-
-// macOS never mounts the older floors (they animate every frame): ?v=2 and ?v=1 are the board
-test "board (macOS): /factory?v=2 and /factory?v=1 are the board" on macos
-  clock data
-  expect state oldFloors == false
-  type "root" "/factory?v=2"
-  clock settle
-  expect state facV3 == true
-  expect state facV2 == false
-  expect tree has "factory-moving"
   type "root" "/factory?v=1"
   clock settle
   expect state facV3 == true
-  expect state facV2 == false
   expect tree has "factory-moving"
-  expect tree missing "factory-top"
+  type "root" "/factory?v=2"
+  clock settle
+  expect state facV3 == true
+  expect tree has "factory-moving"
+  type "root" "/factory?v=3"
+  clock settle
+  expect state facV3 == true
+  expect tree has "factory-moving"
 
 test "board: the demo fills it; the failed bin's window starts at 30 minutes"
   clock data
@@ -232,3 +213,64 @@ test "board: the tabs leave and come back; a Live deep link leaves the Factory"
   type "root" "/?repo=Northwind-Labs%2Fcicd"
   clock settle
   expect state here == "now"
+
+// The board's own time controls (they share the timeline with the Yard's): its "replay the last
+// hour" button plays the hour at 60× and the footer's go-live comes back; Pause holds, Play
+// resumes; ¼× plays behind live and 1× catches up. The board stays the board throughout.
+test "board: replay the last hour, then back to live"
+  clock data
+  type "root" "/factory"
+  clock settle
+  tap "setup-demo"
+  clock data
+  clock +1000
+  expect state ov.mode == "live"
+  tap "replay"
+  clock data
+  expect state mode == "replay"
+  expect state ov.mode == "replay"
+  expect state ov.speed == 60
+  expect tree has "factory-moving"
+  clock +2000
+  expect state ov.mode == "replay"
+  tap "go-live"
+  clock data
+  expect state ov.mode == "live"
+  expect state ov.speed == 1
+  expect tree missing "go-live"
+  expect state here == "factory"
+
+test "board: pause and play, quarter speed and 1×"
+  clock data
+  type "root" "/factory"
+  clock settle
+  tap "setup-demo"
+  clock data
+  clock +1000
+  expect tree has "timebar"
+  tap "pause"
+  clock data
+  expect state mode == "paused"
+  expect state ov.mode == "paused"
+  expect text "pause" == "Play"
+  expect tree has "go-live"
+  clock +2000
+  tap "pause"
+  clock data
+  expect text "pause" == "Pause"
+  tap "go-live"
+  clock data
+  expect state ov.mode == "live"
+  tap "speed-quarter"
+  clock data
+  expect state speed == 0.25
+  expect state ov.mode == "behind"
+  clock +3000
+  tap "speed-1"
+  clock data
+  expect state speed == 1
+  tap "go-live"
+  clock data
+  expect state ov.mode == "live"
+  expect state here == "factory"
+  expect tree has "factory-moving"

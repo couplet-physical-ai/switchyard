@@ -2,7 +2,7 @@
 // app; this says what it is, where it stands, the steps or commits that explain it, and every
 // link to its source of truth. Links come from the server's own data (a pipeline's `links` and
 // `url`, a step's `url`, a repo's and an app's `links`, `status_url`); no host is written here.
-// The log is flowfloor/inspect.ts' `logOf` (the decisive line, `around=decisive`).
+// The log is log.ts' `logOf` (the decisive line, `around=decisive`).
 
 import type { App, Pipeline, Repo, Step } from '../wire.ts';
 import type { World } from '../world.ts';

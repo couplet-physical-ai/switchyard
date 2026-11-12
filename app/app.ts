@@ -16,20 +16,18 @@ import { EngineHistory } from './src/enginehist.ts';
 import { bindInsights } from './src/insights.ts';
 import { search } from './src/project.ts';
 import { RING, feedTicking, feedUntil, nowSources } from './src/now/view.ts';
-import { FlowFloor } from './src/flowfloor/floor.ts';
 import { Board3 } from './src/factory3/board.ts';
 import { NO_F3, f3Detail, tidyLog } from './src/factory3/inspect.ts';
-import { detailOf, logOf, NO_DETAIL } from './src/flowfloor/inspect.ts';
+import { logOf } from './src/factory3/log.ts';
 import { logHeap, logRoute, noteFrame } from './src/memlog.ts';
 import { probeAsk, probeFlush, probeInside, probeWrap, probing } from './src/heapprobe.ts'; // leak: SWITCHYARD_HEAPLOG=1:<mode> (macOS)
 import { nextChunkMs, replaySizing, Timeline } from './src/timeline.ts';
-import { bindBaselineStore } from './src/factory/agg/baseline.ts';
 import { connectedWith, saveTokenFile, takeTokenFile, tokenFileReport } from './src/hooks.ts';
 import { updateDo, updateState } from './src/update.ts';
 import type { Frame as WireFrame } from './src/wire.ts';
 import { Yard } from './src/yard/draw.ts';
 import { InfoLayer } from './src/yard/info.ts';
-import { Factory } from './src/factory/factory.ts';
+import { totals } from './src/totals.ts';
 import { isRed } from './src/yard/layout.ts';
 import { dotLine, fmtDur } from './src/yard/paint.ts';
 import { buildingIds, queueTruth } from './src/yard/select.ts';
@@ -174,13 +172,8 @@ let demo: DemoUpstream | null = null;
 let seenEpoch = -1;
 /** The yard: scene, LOD, frame budget, packet pool (src/yard/draw.ts). */
 const yard = new Yard(tl);
-/** The factory floor (src/factory/): the default view, the same world. */
-const factory = new Factory(tl);
-/** The Factory redo (ZERO.md "FACTORY REDO", src/flowfloor/): one fixed, fitted line of work. */
-const flow = new FlowFloor();
-/** Factory 3 (FACTORY3.md, src/factory3/): the berth board, at /factory?v=3. */
+/** The Factory (FACTORY3.md, src/factory3/): the berth board, at /factory (any ?v= too). */
 const f3 = new Board3();
-factory.hud = yard.hud;
 /** p6: SWITCHYARD_CANVAS=<gpu|board,info>[,noq] (macOS, a hidden A/B switch: modules/apple/Hooks.swift):
  *  those canvases claim the GPU as in pass 5; noq: the progress rings at their exact fill, not by the
  *  pixel. Asked once, from a data turn (the overview's first), before anything is drawn on top. */
@@ -199,10 +192,10 @@ function canvasAsk(native: Native): void {
     console.log(`canvas: SWITCHYARD_CANVAS=${v}: the board ${Board3.boardGpu ? 'GPU' : 'Core Graphics'}, the Yard's info layer ${InfoLayer.cg ? 'Core Graphics' : 'GPU'}, rings ${Yard.ringPx ? 'by the pixel' : 'exact'}`);
   } catch { /* no module: the defaults */ }
 }
-/** Stress mode (a 10× synthetic fleet for the renderers): one switch for the yard and the floor. */
+/** Stress mode (a 10× synthetic fleet for the Yard's renderer). */
 let stressOn = false;
-function setStress(on: boolean): void { stressOn = on; yard.setStress(on); factory.setStress(on); }
-tl.listener = (e, w) => { yard.pool.onEvent(e, w, clock); factory.onEvent(e, w, clock); };
+function setStress(on: boolean): void { stressOn = on; yard.setStress(on); }
+tl.listener = (e, w) => { yard.pool.onEvent(e, w, clock); };
 /** Engine history feeds the Factory Floor's load indicators and insights. */
 const engineHist = new EngineHistory();
 /** The Factory Floor's data seam (src/insights.ts): v0.5 tables, or approximations on v0.4. */
@@ -254,17 +247,6 @@ function advance(t: number, asking = true): void {
  *  taken when the playhead reaches it. */
 const REPLAY_LOOKAHEAD = 60_000;
 const REPLAY_CEILING = 1536 << 10;
-/** The day: the last 24 h at DAY_SPEED (two minutes), then live again. One constant, to retune. */
-const DAY_SPEED = 720;
-const DAY_MS = 24 * 3_600_000;
-/** The built-in demo has no history: its simulation runs forward as the playhead pulls it (a
- *  call a frame), and a fleet hour costs it more the longer it has run (Bun: 0.3 s of CPU at hour
- *  1, 1.9 s at hour 24). fx-demo measured it at ~4,800 fleet ms per CPU ms without a JIT (Hermes-
- *  like): 720× (12 s of fleet a frame) is 10-75 ms a frame on Hermes, far over budget. So its
- *  "day" is the last 2 h at 120× (2 s of fleet a frame, twice the hour replay's), and the strip
- *  says so: "2 h at 120×". */
-const DEMO_DAY_MS = 2 * 3_600_000;
-const DEMO_DAY_SPEED = 120;
 let chunkMs = 60_000;
 let chunking: Promise<void> | null = null;
 /** A stretch that will not stream at the speed: jump the replay to the fleet at this time. */
@@ -352,8 +334,6 @@ function replayKeeps(base: string): boolean { return (tl.mode === 'replay' || tl
 
 /** Now as the replay controls count it: the demo's wall clock, else the server's. */
 const replayNow = () => (demo ? Math.floor((epochAtZero + clock) / 1000) * 1000 : tl.liveNow());
-/** A day replay is playing (or paused): a seek keeps its speed. */
-const dayReplay = () => (tl.mode === 'replay' || tl.replayPaused) && tl.replaySpeed === (demo ? DEMO_DAY_SPEED : DAY_SPEED);
 
 const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
 
@@ -564,7 +544,7 @@ function overview(): Result<'overview'> {
   // Never builds the scene here (a source turn has 100 ms on Hermes): the first draw does.
   const S = yard.S;
   // One truth for building and queued: the yard, the status line and the QUEUE band agree.
-  const { building, queued, red, up: appsUp, down: appsDown, apps: appsTotal, repos } = factory.coffee.status(w, stressOn, clock); // fx-glance: ONE count (buildingIds, queueTruth) for the status line and the coffee header; stress mode: the 10× fleet's own
+  const { building, queued, red, up: appsUp, down: appsDown, apps: appsTotal, repos } = totals(w, stressOn); // ONE count (buildingIds, queueTruth: src/totals.ts); stress mode: the 10× fleet's
   // (to the minute: no view shows it, and a field that moves each second re-sends every canvas's arguments on the web)
   const behind = tl.mode === 'live' ? '' : `${fmtDur(Math.floor(tl.behindMs() / 60_000) * 60_000)} behind`;
   const sentence = w.loaded
@@ -572,16 +552,14 @@ function overview(): Result<'overview'> {
     : 'waiting for the fleet';
   const summary = w.loaded ? `The delivery yard: ${building} pipelines building, ${queued} queued, ${red} main ${red === 1 ? 'line' : 'lines'} red, ${appsUp} of ${appsTotal} apps up.` : 'The delivery yard, waiting for data.'; // fx-glance
   const k = S?.k ?? 1;
-  if (oldFloorOn()) factory.city.pump(clock); // fab-w5: the city's app histories (H7), a few fetches per data turn, never from a draw (only while the old floor is drawn: it alone shows them)
   const dial = replayDial(); // fx-day: the dial counts a day replay's hours (and logs a replay's streaming when it ends)
   const vis = redraw(w, building + queued);
   lastPace = vis.pace;
   return {
     status: w.loaded ? 'ready' : 'waiting', mode: tl.mode, speed: tl.speed, sentence, summary, layoutKey: `${S?.key ?? ''}|${yard.budget.quality >= 3 ? 'lo' : 'hi'}`, repos: w.repos.size,
-    building, queued, red, appsUp, appsTotal, appsDown, facHead: factory.coffee.glance0.drawn, behind, seq: w.seq, // fx-glance: the coffee header's totals as drawn
+    building, queued, red, appsUp, appsTotal, appsDown, behind, seq: w.seq,
     tick: vis.tick, pace: vis.pace, wake: vis.wake, wakeKey: vis.wakeKey, host: hostLabel(), dial, dialPad: Math.round(((S?.m ?? 16) + 22) * k), dialFont: Math.round(11 * k), dialH: Math.round(34 * k),
-    hud: yard.hud.on, stress: stressOn, quality: yard.budget.quality, facKey: factory.floorKey,
-    facDrawer: factory.selected !== '', facQ: factory.budget.quality, facStress: factory.stress.on, facCalm: factory.calm, facStats: factory.statsLine(), ...factory.counts(),
+    hud: yard.hud.on, stress: stressOn, quality: yard.budget.quality,
   };
 }
 
@@ -592,7 +570,7 @@ function overview(): Result<'overview'> {
  *  the timers tick, Contract adds the second itself: `rk`), a replay's playhead 4 times a
  *  second. Idle, it stands still: no canvas is asked for a frame and no source re-asked
  *  through it. The pace: 0, the 250 ms pulse (the demo, a replay, playing behind, the HUD,
- *  stress, the older floors on top); 1, a shown timer runs: the 1 s
+ *  stress); 1, a shown timer runs: the 1 s
  *  tick moves `rk` and asks nothing else; 2, no pulse. Paces 1 and 2 wake a few times a minute
  *  (`wake`: a ladder of one-shot timers to the playhead's next minute, or 1 s after a change, so
  *  what the change started is seen to tick), and the stream's frames wake the clock (`fed`). */
@@ -612,7 +590,7 @@ function redraw(w: { ver: number }, active: number): { tick: number; pace: numbe
   if (sig !== visSig) { visSig = sig; visTick++; }
   // (no fleet yet, or none to be had: the connect's answer and the reconnect timers ask again; the
   // setup and offline cards are still)
-  const busy = !!demo || replaying || tl.mode === 'behind' || yard.hud.on || stressOn || oldTop;
+  const busy = !!demo || replaying || tl.mode === 'behind' || yard.hud.on || stressOn;
   const pace = busy ? 0 : ticking ? 1 : 2;
   // the next wake: a second after a change (the board and Live count their timers when they
   // draw what it brought), else the largest rung under the playhead's next minute
@@ -629,11 +607,6 @@ function redraw(w: { ver: number }, active: number): { tick: number; pace: numbe
   }
   return { tick: visTick, pace, wake, wakeKey: ++visWakes };
 }
-
-/** The old floor (/factory?v=1, the web's) was drawn in the last 5 s: its histories are fetched
- *  only then (the board, the Yard and Live never show them). */
-let oldFloorAt = -1e9;
-const oldFloorOn = () => clock - oldFloorAt < 5000;
 
 function route(kind: string, id: string): string {
   switch (kind) {
@@ -709,8 +682,6 @@ function tokenVer(t: string): string {
   return (h >>> 0).toString(36).padStart(7, '0');
 }
 
-let baseBound = false, basePending = '';
-
 export const sources: Sources = {
   ...nowSources({
     world: () => tl.world,
@@ -719,14 +690,7 @@ export const sources: Sources = {
     upstream: () => up,
     advance: (t) => advance(t),
   }) as unknown as Pick<Sources, 'nowFeed' | 'nowTick' | 'nowPanel' | 'nowLog'>,
-  // the Factory redo: a press on the floor, the inspector's run, its log (src/flowfloor/)
-  flowPick: ([x, y]) => {
-    const h = flow.pick(Number(x), Number(y));
-    return { kind: h?.kind ?? '', id: h?.id ?? '', label: h?.label ?? '', route: h?.url ?? '' };
-  },
-  flowDetail: ([id]) => safe('flowDetail', NO_DETAIL, () => detailOf(tl.world, String(id ?? ''), tl.playhead)),
-  flowLog: ([id, step, workflow, tick, failed]) => logOf(up, String(id ?? ''), String(step ?? ''), String(workflow ?? ''), Number(tick) || 0, !!failed),
-  // Factory 3: a press on the board, the inspector's detail (its log is flowLog's)
+  // the board: a press on it, the inspector's detail, its log (src/factory3/log.ts)
   f3Pick: ([x, y]) => {
     const h = f3.pick(Number(x), Number(y));
     return { kind: h?.kind ?? '', id: h?.id ?? '', label: h ? `${h.x},${h.y},${h.w},${h.h}` : '', route: h?.url ?? '' };
@@ -794,7 +758,7 @@ export const sources: Sources = {
     return c;
   },
   liveFeed: ([server, _ver, seq, gen, ok]) => liveFeed(server, needsToken(server) ? token : '', seq, ok, Number(gen) || 0), // (and fgen: the stream again, the fleet kept: app.contract `retry`)
-  overview: ([t, _seq, _ok, top], _store, _storage, native) => { const tp = String(top ?? ''); oldTop = tp.endsWith('~old'); topView = oldTop ? tp.slice(0, -4) : tp; if (t > 0) advance(t); safe('heapLog', 0, () => { probeAsk(native); canvasAsk(native); probeFlush(native); logHeap(clock, native, !!up && tl.world.loaded); return 0; }); /* leak: the heap line (src/memlog.ts) */ if (oldFloorOn()) safe('plantHist', 0, () => { factory.plant.pump(clock); return 0; }); return safe('overview', EMPTY_OV, overview); }, // fab-w6: the machine walls' 24 h histories are asked here (a source), never in a draw
+  overview: ([t, _seq, _ok, top], _store, _storage, native) => { topView = String(top ?? ''); if (t > 0) advance(t); safe('heapLog', 0, () => { probeAsk(native); canvasAsk(native); probeFlush(native); logHeap(clock, native, !!up && tl.world.loaded); return 0; }); /* leak: the heap line (src/memlog.ts) */ return safe('overview', EMPTY_OV, overview); },
   timeControl: async ([what, speed]) => {
     if (what === 'pause') tl.pause();
     else if (what === 'play') {
@@ -808,13 +772,6 @@ export const sources: Sources = {
     if (t > 0) advance(t);
     const to = replayNow();
     return startReplayAt(to - (demo ? DEMO_REPLAY : 3_600_000), to, 60, 'the last hour');
-  },
-  // fx-day: the last 24 h at DAY_SPEED (the demo: its last 2 h at 120×), then live
-  replayDay: async ([t]) => {
-    if (t > 0) advance(t);
-    const to = replayNow();
-    // (a minute inside the server's 24 h: its clock is a little ahead of ours)
-    return demo ? startReplayAt(to - DEMO_DAY_MS, to, DEMO_DAY_SPEED, 'the demo day') : startReplayAt(to - DAY_MS + 60_000, to, DAY_SPEED, '24 h');
   },
   // fx-day: Play on a paused replay goes on with it at its speed; else plays at 1× behind live
   replayResume: ([t]) => {
@@ -838,47 +795,6 @@ export const sources: Sources = {
     // (route: where the pointer is, the lens's surface argument: it is redrawn as it moves, not every frame)
     return h ? { kind: h.kind, id: h.id, label: h.label, route: `${Math.round(x)},${Math.round(y)}` } : { kind: '', id: '', label: '', route: '' };
   },
-  facPointer: ([kind, x, y, buttons]) => {
-    // fab-w4: any input skips the coffee check's replay; S replays it, W cycles its window
-    factory.coffee.input(String(kind), clock);
-    const ck = String(kind).startsWith('key:') ? factory.coffee.key(String(kind).slice(4), clock) : null;
-    if (ck) return { kind: ck.kind, id: ck.id, label: ck.label, route: `${factory.cam.key}|${factory.selected}|${factory.coffee.win}` };
-    const h = factory.pointer(String(kind), Number(x), Number(y), Number(buttons) || 0, clock);
-    if (kind === 'up') factory.coffee.click(h, clock); // fab-w4: the "since" chip and its menu
-    // the HUD's buttons are floor hits too
-    if (kind === 'up' && h?.kind === 'stress') setStress(!stressOn);
-    else if (kind === 'up' && h?.kind === 'quality') factory.budget.pinned = factory.budget.pinned >= 4 ? -1 : factory.budget.pinned + 1;
-    else if (kind === 'up' && h?.kind === 'tiles') factory.toggleTiles(); // fab-w7c: the static floor's dirty tiles off/on
-    // a newly picked crate: fetch its journey for the drawer (a source may fetch; a draw never does)
-    const sel = factory.selected;
-    if (sel && factory.journeyFor !== sel && up) {
-      const cm = factory.selCommit();
-      factory.journeyFor = sel;
-      if (cm) void cached(`j:${cm.repo}@${cm.sha}`, () => up!.journey(cm.repo, cm.sha)).then((j) => { if (factory.journeyFor === sel) factory.journey = j; }, () => {});
-    }
-    factory.offsetMin = yard.offsetMin;
-    return { kind: h?.kind ?? '', id: h?.id ?? '', label: h?.label ?? '', route: `${factory.cam.key}|${factory.selected}|${factory.coffee.win}${factory.coffee.menu ? '+' : ''}` };
-  },
-  // fab-lens: the coffee check's last visit per server (src/factory/coffee.ts), kept by Contract
-  coffeeOpen: ([server, visits, _seq, ok]) => ({ ok: !!ok, status: safe('coffeeOpen', '', () => factory.coffee.open(String(server ?? ''), String(visits ?? ''), !!ok, clock)) }),
-  // the hourly baseline ring (agg/baseline.ts): bound once to Contract's persisted facBase; its
-  // saves wait in `basePending` until the next visit mark hands them to Contract
-  baselineBind: ([s]) => {
-    if (!baseBound) { baseBound = true; safe('baselineBind', 0, () => { bindBaselineStore({ load: () => String(s ?? ''), save: (v) => { basePending = v; } }); return 0; }); }
-    return { ok: true, status: '' };
-  },
-  baselineSave: () => { const v = basePending; basePending = ''; return { ok: v !== '', status: v }; },
-  coffeeMark: ([server, visits]) => {
-    const v = safe('coffeeMark', '', () => factory.coffee.mark(String(server ?? ''), String(visits ?? '')));
-    return { ok: v !== '', status: v };
-  },
-  // fab-lens: a time-strip tick replays from that moment at 60×; in a day replay, at its speed (fx-day)
-  replayAt: async ([t, at]) => {
-    if (t > 0) advance(t);
-    const to = replayNow(), day = dayReplay();
-    const from = Math.min(to - 60_000, Math.max(to - DAY_MS + 60_000, Number(at) || to - 3_600_000));
-    return startReplayAt(from, to, day ? tl.replaySpeed : 60, day ? (demo ? 'the demo day, from a tick' : '24 h, from a tick') : 'from a tick');
-  },
   devToggle: ([what, on]) => {
     if (what === 'hud') yard.hud.on = on === 1;
     else if (what === 'stress') setStress(on === 1);
@@ -889,14 +805,12 @@ export const sources: Sources = {
     return safe('search', { hits: [] }, () => ({ hits: search(tl.world, q, tl.playhead).map((h) => ({ kind: h.kind, id: h.id, title: h.title, subtitle: h.subtitle, route: route(h.kind, h.id) })) }));
   },
   viewOnTop: ([here], _store, _storage, native) => { topView = String(here ?? ''); logRoute(topView, native); return { ok: true, status: topView }; },
-  // macOS (the native data module, Hermes): the older floors (?v=1, ?v=2) are never mounted there
-  hostKind: () => ({ ok: NATIVE, status: NATIVE ? 'native' : 'web' }),
 };
 
 const EMPTY_OV: Result<'overview'> = {
   status: 'waiting', mode: 'live', speed: 1, sentence: 'waiting for the fleet', summary: 'The delivery yard, waiting for data.', layoutKey: '', repos: 0,
-  building: 0, queued: 0, red: 0, appsUp: 0, appsTotal: 0, appsDown: 0, facHead: '', behind: '', seq: 0, // fx-glance
-  tick: 0, pace: 0, wake: 0, wakeKey: 0, host: '', dial: '1 hour, sped up', dialPad: 38, dialFont: 11, dialH: 34, hud: false, stress: false, quality: 0, facKey: '', facDrawer: false, facQ: 0, facStress: false, facCalm: true, facStats: '', facCity: 0, facCars: 0, facBays: 0, facLens: 0, facLensTop: '',
+  building: 0, queued: 0, red: 0, appsUp: 0, appsTotal: 0, appsDown: 0, behind: '', seq: 0,
+  tick: 0, pace: 0, wake: 0, wakeKey: 0, host: '', dial: '1 hour, sped up', dialPad: 38, dialFont: 11, dialH: 34, hud: false, stress: false, quality: 0,
 };
 /** A source that throws answers its empty value instead (and says so once in the log): a sparse
  *  or surprising entity costs a view its rows, never the app. */
@@ -910,47 +824,28 @@ function safe<T>(name: string, empty: T, f: () => T): T {
   }
 }
 
-/** The Factory's selected commit journey is cached briefly: it is fetched in a source answer,
- *  never while painting a canvas. */
-const details = new Map<string, { at: number; p: Promise<unknown> }>();
-function cached<T>(key: string, get: () => Promise<T>): Promise<T> {
-  const hit = details.get(key);
-  if (hit && clock - hit.at < 5000) return hit.p as Promise<T>;
-  const p = get();
-  details.set(key, { at: clock, p });
-  p.catch(() => details.delete(key));
-  if (details.size > 16) details.delete(details.keys().next().value as string);
-  return p;
-}
-
 /** The host's entry: one function for every source, as `sources` names them. */
 export const answer: Answer = ((source: keyof Sources, args: unknown, store: Store, storage: unknown, native?: unknown) =>
   (sources[source] as (a: unknown, s: Store, st: unknown, n: unknown) => unknown)(args, store, storage, native)) as Answer;
 
 // ---- canvases ------------------------------------------------------------------------------
 /** Surface → its arity (Contract passes that many arguments). */
-export const surfaces: Record<string, number> = { factoryFloor: 3, factoryLive: 4, factoryTop: 4 /* fab-w7 */, flowFloor: 5, f3Board: 6, f3Live: 1, yardStatic: 2, yardInfo: 2, yardLive: 3, yardTop: 2 };
+export const surfaces: Record<string, number> = { f3Board: 6, f3Live: 1, yardStatic: 2, yardInfo: 2, yardLive: 3, yardTop: 2 };
 
 /** The route on top (`viewOnTop`). The yard stays mounted under every other view; its live
  *  layer animating there cost 3-4× the ops of the view on top. Covered, it is not drawn (the
  *  canvas keeps its last pixels) and asks for no frame; `ov.tick` moves when the view on top
  *  changes, so it is drawn again as it comes back. */
 let topView = '';
-/** The older floors (the web's /factory?v=1 and ?v=2) are on top: they animate, the pulse runs. */
-let oldTop = false;
 
 export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame): boolean {
   if (probing() && !probeInside()) return probeWrap(surface, ctx, frame, () => draw(surface, args, ctx, frame)); // leak: the hidden heap probe (src/heapprobe.ts)
-  // macOS never mounts the older floors (hostKind); were one mounted for a moment, it draws nothing
-  if (NATIVE && (surface === 'flowFloor' || surface === 'factoryFloor' || surface === 'factoryLive' || surface === 'factoryTop')) return false;
   // Covered, the yard sleeps too (no frame asked); `ov.tick` moves when it is on top again.
   if ((surface === 'yardLive' || surface === 'yardInfo' || surface === 'yardTop') && topView !== '' && topView !== 'yard') return false;
-  // Covered, the floor's live layer sleeps; the 250 ms tick (a surface argument) wakes it when
-  // it is on top again.
-  if ((surface === 'factoryLive' || surface === 'factoryTop' /* fab-w7 */) && topView !== '' && topView !== 'factory') return false;
-  if ((surface === 'flowFloor' || surface === 'f3Board' || surface === 'f3Live') && topView !== '' && topView !== 'factory') {
+  // Covered, the board sleeps too.
+  if ((surface === 'f3Board' || surface === 'f3Live') && topView !== '' && topView !== 'factory') {
     // (a fresh bitmap skipped here is owed its first, whole paint and the GPU claim: src/factory3/board.ts)
-    if (surface !== 'flowFloor') f3.skipped(surface === 'f3Board' ? 'board' : 'live', frame);
+    f3.skipped(surface === 'f3Board' ? 'board' : 'live', frame);
     return false;
   }
   try {
@@ -970,29 +865,11 @@ export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
 
 function drawSurface(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame): boolean {
   noteFrame(frame.time); // leak: the heap line's running frame count
-  if (surface === 'flowFloor') {
-    advance(frame.time, false);
-    return flow.draw(ctx, frame, tl.world, tl.playhead, { win: String(args[0] ?? '30m'), sel: String(args[1] ?? ''), mode: String(args[2] ?? 'live'), reduced: !!args[3] });
-  }
   if (surface === 'f3Board') {
     advance(frame.time, false);
     return f3.drawBoard(ctx, frame, tl.world, tl.playhead, { win: String(args[0] ?? '30m'), sel: String(args[1] ?? ''), mode: String(args[2] ?? 'live'), reduced: !!args[3], dock: !!args[4], hov: String(args[5] ?? '') });
   }
   if (surface === 'f3Live') return f3.drawLive(ctx, frame);
-  if (surface === 'factoryFloor') {
-    advance(frame.time, false);
-    oldFloorAt = clock;
-    factory.wheel(Number(args[2]) || 0);
-    const flying = factory.cam.step(frame.time);
-    return factory.drawFloor(ctx, frame, clock) || flying;
-  }
-  if (surface === 'factoryLive') {
-    advance(frame.time, false);
-    oldFloorAt = clock;
-    factory.reduced = args[0] === 'reduced';
-    return factory.drawLive(ctx, frame, clock, Number(args[2]) || 0);
-  }
-  if (surface === 'factoryTop') return factory.drawTop(ctx, frame, clock); // fab-w7: the words and the chrome, as changes (src/factory/cache.ts)
   if (surface === 'yardStatic') {
     advance(frame.time, false);
     yard.drawStatic(ctx, frame, clock);

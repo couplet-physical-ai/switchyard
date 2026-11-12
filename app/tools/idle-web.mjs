@@ -3,7 +3,7 @@
 // and the main thread's script and task time per second (the data module and the host run there).
 // A still view paints 0 frames and spends ~0 ms of script a second.
 // Serves target/web-dist (build first: `bun exact.mjs web-build`). From app/:
-//   EXACT2=… bun tools/idle-web.mjs --server http://127.0.0.1:8331 [--tab factory|yard|now] [--route /factory?v=2] [--ms 10000] [--size 1440x900] [--shot out.png]
+//   EXACT2=… bun tools/idle-web.mjs --server http://127.0.0.1:8331 [--tab factory|yard|now] [--route /factory] [--ms 10000] [--size 1440x900] [--shot out.png]
 //   (a frozen fleet: `bun server/mock.ts --port 8331 --fixtures ../contract/fixtures --frozen`; busy: drop --frozen,
 //   or no --server for the built-in demo)
 import { createRequire } from 'node:module';

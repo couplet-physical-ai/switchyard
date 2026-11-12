@@ -3,7 +3,6 @@
 // every frame. This file is the chrome around them, the views, the controls and the tests' handles.
 
 use NowView from "./views/now.contract"
-use FlowInspector from "./views/flow.contract"
 use F3Inspector from "./views/factory3.contract"
 use UpdatePill from "./views/update.contract"
 use Conn, Tok, Ack, Feed, Overview, Hit, Media, Time, Found, Link from "./views/shapes.contract"
@@ -70,8 +69,6 @@ component App
   state fgen = 0
   state palSel = 0
   state picked = ""
-  state facWheel = 0
-  state facPulse = 0
   // fx-kc: the token is read once, async, through the module: the window and the floor never
   // wait on it (a Keychain prompt from an older build's item waits with the window up). The
   // route's ?keychain=denied is the agent's test hook (one read answers denied); ?keychain=left
@@ -85,7 +82,7 @@ component App
   resource feed = liveFeed(server, tok.ver, conn.seq, gen, conn.ok, fgen) as shape Feed else empty(ok=false, status="idle", wake=0)
   // (asked again by the clock only while busy (ov.pace 0) or at a wake; by the stream's frames
   // through `fed`; by the view on top, and by the older floors being on top (the web's))
-  resource ov = overview(ovClock, conn.seq, conn.ok, ovTop) as shape Overview else empty()
+  resource ov = overview(ovClock, conn.seq, conn.ok, here) as shape Overview else empty()
   // What the canvases and Live redraw on: ov.tick (what they show changed: the fleet, the view,
   // the minute) and, while a shown timer runs (ov.pace 1), the second
   derive rk = ov.pace == 1 ? ov.tick * 1000000 + floor(clockMs / 1000) % 1000000 : ov.tick
@@ -99,7 +96,6 @@ component App
   mutation replayed as shape Ack refreshes ov then afterReplay
   mutation hit as shape Hit refreshes ov then afterHit
   mutation hov as shape Hit
-  mutation fac as shape Hit refreshes ov then afterFac
   mutation saved as shape Ack then afterSave
   derive reduced = media.prefersReducedMotion
   derive here = top(nav).name
@@ -122,38 +118,10 @@ component App
   derive hovering = match hov { case some(h) => h.kind != "", case none => false }
   // the yard's lens: what the pointer is over and where (redrawn as it moves; at rest, still)
   derive hovAt = match hov { case some(h) => (h.kind != "" ? `${h.id}@${h.route}` : ""), case none => "" }
-  // the Factory (FACTORY3.md): the berth board; the square swarm stays at /factory?v=2 and the
-  // old floor at /factory?v=1 for now
-  // macOS never mounts the two older floors (they animate every frame): ?v=1 and ?v=2 are the
-  // board there (`hostKind`: the native data module answers ok; the web keeps both floors)
-  resource host = hostKind() as shape Ack else empty(ok=false, status="")
-  derive oldFloors = not host.ok
-  derive facV2 = here == "factory" and searchParam(top(nav), "v") == "2" and oldFloors
-  derive facV3 = here == "factory" and (searchParam(top(nav), "v") != "1" or not oldFloors) and not facV2
-  derive facNow = match fac { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }
-  // fab-lens: the coffee check (src/factory/coffee.ts). The last visit per server, kept as the
-  // server is: marked once 20 s of looking at the floor count as a visit (fab-w4, §E), every
-  // minute after, and on leaving it.
-  state visits = "" persist
-  state looking = false
-  state visitN = 0
-  state visitTry = 0
-  mutation visit as shape Ack then afterVisit
-  // fab-w2/W4: the hourly baseline ring (src/factory/agg/baseline.ts), ≤ 6 KB, kept like visits:
-  // bound once at launch, saved through the visit mark (every minute while looking)
-  state facBase = "" persist
-  resource baseBind = baselineBind(facBase) as shape Ack else empty(ok=false, status="")
-  mutation baseSave as shape Ack then afterBase
-  derive baseNow = match baseSave { case some(v) => v.status, case none => "" }
-  derive visitNow = match visit { case some(v) => v.status, case none => "" }
-  // fx-glance: the coffee header's totals (as drawn) are the status line's, word for word
-  derive headAgrees = ov.facHead != "" and ov.facHead == `${ov.red} red · ${ov.building} building · ${ov.queued} queued · ${ov.appsDown} down`
-  // (the old floor's alone: asked only while it is on top; elsewhere it fetches nothing)
-  derive facV1 = here == "factory" and not facV2 and not facV3
-  derive ovTop = (facV1 or facV2) ? `${here}~old` : here
-  resource coffee = coffeeOpen(server, visits, conn.seq, conn.ok and facV1, facV1 ? ov.tick : 0) as shape Ack else empty(ok=false, status="")
+  // the Factory (FACTORY3.md): the berth board. /factory?v=<anything> is the board too: the two
+  // older floors (?v=1, ?v=2) were retired, and their deep links land here.
+  derive facV3 = here == "factory"
   members "./views/now.contract"
-  members "./views/flow.contract"
   members "./views/factory3.contract"
   members "./views/webreload.contract"
   members "./views/update.contract"
@@ -197,11 +165,6 @@ component App
     after(1, tokSlowOff)
   task tokRetried when tokRetrying and not pending(tok)
     after(1, tokRetryDone)
-  // The factory floor's calm clock: while it is on top and calm, its live layer (asleep when
-  // nothing travels) is woken 8 times a second for the belts and the beat (src/factory/motion.ts);
-  // a loud floor draws every frame on its own, so the clock stops.
-  task facBeat when here == "factory" and not facV2 and not facV3 and ov.facCalm
-    every(125, facPulseTick)
   // A dropped stream, or one the server refused, opens again after 2, 4, 8, 16, then every 30 s,
   // and never sooner: it resumes after the last frame it brought (`since`), the fleet kept (no
   // snapshot, no rebuilt rows). A failed connect asks the snapshot again on the same ladder. A
@@ -221,15 +184,6 @@ component App
     after(30000, retry)
   task steady when feed.status == "live" and retries > 0
     after(20000, steadyAgain)
-  // fab-lens: the coffee check's last visit (the old floor's, /factory?v=1 on the web: the board
-  // and the Yard never show it, so they mark nothing each minute)
-  task coffeeLook when conn.ok and facV1 and not looking key=server
-    after(20000, startLooking)
-  task coffeeAgain when looking and facV1 and visitTry > 0 key=`${visitTry}`
-    after(60000, markVisit)
-  task coffeeLeave when looking and not facV1
-    after(1, leaveFactory)
-
   action tick
     let t = performanceNow()
     clockMs = t
@@ -253,8 +207,6 @@ component App
   action forgetToken
     draftToken = ""
     send saved = forgetToken()
-  action facPulseTick
-    facPulse = facPulse + 1
   action retry
     retries = retries + 1
     if conn.ok
@@ -266,23 +218,6 @@ component App
     gen = gen + 1
   action steadyAgain
     retries = 0
-  action startLooking
-    looking = true
-    markVisit()
-  action markVisit
-    visitTry = visitTry + 1
-    send visit = coffeeMark(server, visits)
-    send baseSave = baselineSave()
-  action leaveFactory
-    looking = false
-    markVisit()
-  action afterBase
-    if baseNow != ""
-      facBase = baseNow
-  action afterVisit
-    if visitNow != ""
-      visits = visitNow
-      visitN = visitN + 1
   // (a new view on top reads the clock now: the pulse may have been asleep)
   // A switchyard://view/<live|factory|yard> link (the system hands it over as /connect?u=<the URL>)
   // switches the tab right here, in the action: no /connect screen, no resource to wait for, so a
@@ -334,8 +269,6 @@ component App
   action startReplay
     send replayed = replayHour(clockMs)
   // fx-day: the last 24 h in 2 min (DAY_SPEED, app.ts), then live
-  action startDay
-    send replayed = replayDay(clockMs)
   action afterReplay
     if replayOk
       mode = "replay"
@@ -353,31 +286,6 @@ component App
     // (Factory 3's board lets go of what the pointer was over, the same way)
     if f3Over.label != ""
       send f3Hov = f3Pick(-1, -1)
-
-  // The factory floor: drag pans, the wheel zooms, a click picks (a crate lights its journey)
-  action facDown(e: PointerEvent)
-    send fac = facPointer("down", e.offsetX, e.offsetY, e.buttons)
-  action facMove(e: PointerEvent)
-    send fac = facPointer("move", e.offsetX, e.offsetY, e.buttons)
-  action facUp(e: PointerEvent)
-    send fac = facPointer("up", e.offsetX, e.offsetY, e.buttons + (e.shiftKey ? 256 : 0))
-  // fab-lens: Esc / ⌫ walk back up the lens stack, ? shows the key
-  action facKey(k: string)
-    if k == "Escape" or k == "Backspace" or k == "?" or k == "s" or k == "S" or k == "w" or k == "W"
-      preventDefault()
-      send fac = facPointer(`key:${k}`, 0, 0, 0)
-  action facWheeled(e: WheelEvent)
-    facWheel = facWheel + e.deltaY
-    preventDefault()
-  action afterFac
-    if facNow.kind == "replay"
-      startReplay()
-    else if facNow.kind == "replay24"
-      startDay()
-    else if facNow.kind == "replayAt"
-      send replayed = replayAt(clockMs, facNow.id)
-    else if facNow.kind == "live"
-      goLive()
 
   // Developer: the HUD (⌘⇧D) and stress mode (a 10× synthetic fleet for the renderer)
   action toggleHud
@@ -473,45 +381,7 @@ component App
                       text (conn.signIn != "" ? "Use a token…" : "Connect…")
                     button press=useDemo testId="now-setup-demo" class=Quiet
                       text "Watch the demo"
-          if e.name == "factory" and facV2
-            // The Factory (views/flow.contract, src/flowfloor/): one fixed, fitted floor; a press
-            // picks (a crate opens the inspector; a machine, a red main line or a down app its page)
-            column flex=1 min-height=0 position="relative" testId="factory" key=flKey outline="none"
-              column position="absolute" inset=0 testId="factory-floor"
-                canvas surface=flowFloor(flWin, flSel, ov.mode, reduced, reduced ? flTick : 0) position="absolute" left=0 top=0 width="100%" height="100%"
-                  tabindex=0 role="img" aria-label=ov.summary pointerup=flUp touch-action="none" testId="factory-live" outline="none"
-                  :focus-visible
-                    box-shadow="inset 0 0 0 1px #A3A3A3"
-              if flSel != "" and flDetail.ok
-                FlowInspector(d=flDetail, log=flLog, close=flClose)
-              // the replays: the last hour at 60×, the day in two minutes (the demo: its last 2 h)
-              row position="absolute" left=16 bottom=12 gap=6
-                button appearance="none" press=startReplay testId="replay" aria-label="Replay the last hour, sped up" disabled=(ov.mode == "replay" or not conn.ok)
-                  height=18 padding="0 6px" border-radius=3 border="1px dashed sy.chip-edge"
-                  text "replay the last hour" font-size=11 color="#8C8C8E"
-                button appearance="none" press=startDay testId="replay-day" aria-label="Replay the last 24 hours in two minutes" disabled=(ov.mode == "replay" or not conn.ok)
-                  height=18 padding="0 6px" border-radius=3 border="1px dashed sy.chip-edge"
-                  text "replay the day" font-size=11 color="#8C8C8E"
-              // Offline or not set up: a card over the floor (the idle floor, or the last fleet
-              // it showed, dimmed behind it), never a black void.
-              if not conn.ok and conn.status != "connecting" and not tokCard
-                column position="absolute" inset=0 background-color="sy.canvas" opacity=0.7 aria-hidden=true
-              if tokCard
-                TokenCard(status=tokState, detail=tok.detail, retry=tokRetry, enter=tokEnter)
-              if not conn.ok and conn.status != "connecting" and not tokCard
-                column position="absolute" inset=0 align-items="center" justify-content="center" testId="setup"
-                  column align-items="center" gap=14 padding="26px 32px" border-radius=12 border="1px solid sy.edge" background-color="sy.raised" max-width=620
-                    text (conn.needsSetup ? "Connect Switchyard to a server" : "The server is not answering") font-weight=700 font-size=16
-                    text (conn.error != "" ? conn.error : "Its address and a token, or watch the built-in demo fleet.") color="sy.ink3" font-size=13 max-width=560 text-align="center" testId="setup-error"
-                    row gap=10
-                      if conn.signIn != ""
-                        link href=conn.signIn class=Primary testId="setup-signin"
-                          text "Sign in on the web…"
-                      button press=openSettings class=(conn.signIn != "" ? Quiet : Primary) testId="setup-connect"
-                        text (conn.signIn != "" ? "Use a token…" : "Connect…")
-                      button press=useDemo testId="setup-demo" class=Quiet
-                        text "Watch the demo"
-          if e.name == "factory" and facV3
+          if e.name == "factory"
             // Factory 3 (views/factory3.contract, src/factory3/): the berth board. Two canvases:
             // the marks and words (repainted only when they change) and the squares in transit.
             column flex=1 min-height=0 position="relative" testId="factory" key=f3Key outline="none" pointermove=f3Leave
@@ -530,48 +400,6 @@ component App
               button appearance="none" press=startReplay testId="replay" aria-label="Replay the last hour, sped up" disabled=(ov.mode == "replay" or not conn.ok)
                 position="absolute" right=16 top=18 height=18 padding="0 6px" border-radius=3 border="1px solid sy.edge"
                 text "replay the last hour" font-size=11 color="sy.ink3"
-              if not conn.ok and conn.status != "connecting" and not tokCard
-                column position="absolute" inset=0 background-color="sy.canvas" opacity=0.7 aria-hidden=true
-              if tokCard
-                TokenCard(status=tokState, detail=tok.detail, retry=tokRetry, enter=tokEnter)
-              if not conn.ok and conn.status != "connecting" and not tokCard
-                column position="absolute" inset=0 align-items="center" justify-content="center" testId="setup"
-                  column align-items="center" gap=14 padding="26px 32px" border-radius=12 border="1px solid sy.edge" background-color="sy.raised" max-width=620
-                    text (conn.needsSetup ? "Connect Switchyard to a server" : "The server is not answering") font-weight=700 font-size=16
-                    text (conn.error != "" ? conn.error : "Its address and a token, or watch the built-in demo fleet.") color="sy.ink3" font-size=13 max-width=560 text-align="center" testId="setup-error"
-                    row gap=10
-                      if conn.signIn != ""
-                        link href=conn.signIn class=Primary testId="setup-signin"
-                          text "Sign in on the web…"
-                      button press=openSettings class=(conn.signIn != "" ? Quiet : Primary) testId="setup-connect"
-                        text (conn.signIn != "" ? "Use a token…" : "Connect…")
-                      button press=useDemo testId="setup-demo" class=Quiet
-                        text "Watch the demo"
-          if e.name == "factory" and not facV2 and not facV3
-            column flex=1 min-height=0 position="relative" testId="factory" key=facKey outline="none"
-              // fab-lens: the coffee check's glance in words (the canvas draws it)
-              text coffee.status position="absolute" left=0 top=0 width=1 height=1 overflow="hidden" opacity=0 testId="coffee"
-              canvas surface=factoryFloor(ov.facKey, facNow.route, facWheel) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="factory-floor"
-              canvas surface=factoryLive(reduced ? "reduced" : "full", facNow.route, facWheel, facPulse) position="absolute" left=0 top=0 width="100%" height="100%"
-                tabindex=0 role="img" aria-label=ov.summary pointerdown=facDown pointermove=facMove pointerup=facUp wheel=facWheeled key=facKey touch-action="none" testId="factory-live" outline="none"
-                // w2-chrome (REVIEW-iter3 #8): no orange frame after a key press (Esc walks the lens
-                // stack); a keyboard focus is a 1-px inset in ink2 at the canvas's edges
-                :focus-visible
-                  box-shadow="inset 0 0 0 1px #A3A3A3"
-              canvas surface=factoryTop(reduced ? "reduced" : "full", facNow.route, facWheel, facPulse) position="absolute" left=0 top=0 width="100%" height="100%" pointer-events="none" aria-hidden=true testId="factory-top"
-              // The strip's "last hour at 60×" (the canvas draws its words) is this button too: its press
-              // for tests and keyboards, laid over the drawn words (a fully transparent button is
-              // still a target on every host, an opacity 0 one is not on macOS). fx-glance: the strip
-              // starts with it now ("live" is the status line's one control).
-              button appearance="none" press=startReplay testId="replay" aria-label="Replay the last hour, sped up" disabled=(ov.mode == "replay" or not conn.ok)
-                position="absolute" bottom=17 left=18 width=160 height=28 background-color="transparent" padding=0
-                text "last hour" color="#00000000" font-size=1
-              // fx-day: and beside it the day's, "24 h in 2 min" (the demo's: "2 h at 120×", its last 2 h)
-              button appearance="none" press=startDay testId="replay-day" aria-label="Replay the last 24 hours in two minutes" disabled=(ov.mode == "replay" or not conn.ok)
-                position="absolute" bottom=17 left=180 width=130 height=28 background-color="transparent" padding=0
-                text "24 h" color="#00000000" font-size=1
-              // Offline or not set up: a card over the floor (the idle floor, or the last fleet
-              // it showed, dimmed behind it), never a black void.
               if not conn.ok and conn.status != "connecting" and not tokCard
                 column position="absolute" inset=0 background-color="sy.canvas" opacity=0.7 aria-hidden=true
               if tokCard
@@ -633,7 +461,7 @@ component App
                 text (not conn.ok ? (conn.status == "connecting" ? "connecting" : "offline") : ov.mode) font-size=11 color=(not conn.ok ? "sy.red-text" : (ov.mode == "live" ? "sy.green" : "sy.amber-text")) testId="mode-pill"
               button appearance="none" press=openSettings aria-label="Connection" testId="open-settings" padding="2px 6px" border-radius=5
                 text (conn.ok ? ov.host : conn.status) font-size=11 color="sy.ink3" testId="conn-status"
-              // fx-glance: on the factory the coffee header says the numbers (one place); the other views keep this
+              // on the Factory the board's head says the numbers (one place); the Yard keeps this
               text (e.name == "factory" ? "" : ov.sentence) color="sy.ink3" font-size=11 flex=1 min-width=0 white-space="nowrap" overflow="hidden" text-overflow="ellipsis" testId="sentence"
               if ov.mode != "live"
                 button appearance="none" press=goLive testId="go-live" padding="2px 8px" border-radius=5 aria-keyshortcuts="L"
