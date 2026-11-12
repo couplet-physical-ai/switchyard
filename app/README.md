@@ -355,6 +355,20 @@ open -n --env SWITCHYARD_SERVER=https://switchyard.example.com \
 grep -E 'token-file|snapshot' ~/Library/Logs/Switchyard/switchyard.log
 ```
 
+**The heap line (always on, macOS).** Every 30 s the data module writes
+`heap: <live+ext MB> MB · live <MB> · ext <MB> · cap 512 · frames <n>` to switchyard.log
+(`src/memlog.ts`, through the module's `heapLog` op, so it carries the `pid <pid>` prefix). The
+first number is what counts toward Hermes's cap (Hades counts external bytes, ArrayBuffers and big
+strings, with the live heap); `frames` is the canvas frames drawn since launch, a running count.
+The release soak (`scripts/release/soak-mini.sh`) reads it. RSS cannot see this: 0.1.4 died of a
+Hermes OOM with RSS flat. The web logs its own console line (performance.memory) while connected.
+
+**`SWITCHYARD_HEAPLOG=1:<mode>`** (a diagnostic, `src/heapprobe.ts`): the yard's live canvas
+runs a synthetic churn every frame (`a` `+=` strings, `b` ArrayBuffer doubling, `c` JSON, `d` a
+3000-op canvas, `t` text, `r` regexes, `e` nothing, `X,Y` in turn) and logs `probe <mode>: … ext
+… live …` every 10 s; `1:real` draws the app as it is and adds each surface's draws and the
+external bytes its draw turns added.
+
 ## Layout
 
 | Path | What |

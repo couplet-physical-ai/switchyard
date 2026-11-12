@@ -11,8 +11,12 @@
 //   e  nothing (the baseline: an empty draw at 60 fps)
 //   f  base64 of 100 KB into a Uint8Array, then String.fromCharCode per 8 KB chunk + join
 //   t  ~400 fillText runs a frame across 3 fonts (the host's text measure, every run)
+//   r  ~300 regex uses a frame (literal replace, split, a RegExp made from a string)
 //   L  (with others) a ~12 MB live set, 1 % of it replaced each frame (old-generation churn, as
 //      the fleet's world in a live session)
+//   A  as a, to ~400 KB (a big canvas's base64: past the size where Hermes keeps a string outside its heap)
+//   C  as c, with a 400 KB string
+//   X,Y,…  the listed modes in turn, 90 s each (e.g. 1:A,C)
 //   cycle  a, b, c, d, e, f in turn, 2 minutes each, round and round (one launch, every mode)
 //   real  no churn: the app draws as it does, and every 10 s the line adds each surface's draws
 //         and the external bytes its draw turns added (before the collections between calls)
@@ -56,7 +60,12 @@ const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 const B64C = Array.from(B64, (c) => c.charCodeAt(0));
 
 /** The mode this frame runs: the env's, or cycle's phase. */
-const phaseAt = (time: number): string => mode === 'cycle' ? PHASES[Math.floor((time - t0) / PHASE_MS) % PHASES.length] : mode;
+const phaseAt = (time: number): string => {
+  if (mode === 'cycle') return PHASES[Math.floor((time - t0) / PHASE_MS) % PHASES.length];
+  if (!mode.includes(',')) return mode;
+  const list = mode.split(',');
+  return list[Math.floor((time - t0) / 90_000) % list.length];
+};
 
 function stat(time: number): void {
   if (Number.isNaN(t0)) t0 = time;
@@ -120,9 +129,18 @@ function probeDraw(ctx: Ctx2D, frame: Frame): boolean {
     }
     sink = frames;
   }
-  if (m.includes('a')) {
+  if (m.includes('r')) {
+    let n = 0;
+    for (let i = 0; i < 100; i++) {
+      const label = `team-${i % 7} ${frames % 50}`;
+      n += label.replace(/ \d+$/, '').length + `a,b;c,${i}`.split(/[,;]/).length + (new RegExp(`^dock${i % 9}\\d+$`).test(`dock${i % 9}${frames}`) ? 1 : 0);
+    }
+    sink = n;
+  }
+  if (m.includes('a') || m.includes('A')) {
+    const n = m.includes('A') ? 400_000 : 100_000;
     let s = '';
-    while (s.length < 100_000) s += B64[frames & 63] + B64[(frames >> 6) & 63] + B64[sink & 63] + 'x';
+    while (s.length < n) s += B64[frames & 63] + B64[(frames >> 6) & 63] + B64[sink & 63] + 'x';
     sink = s.length;
   }
   if (m.includes('b')) {
@@ -135,8 +153,9 @@ function probeDraw(ctx: Ctx2D, frame: Frame): boolean {
     }
     sink = new Uint8Array(buf, 0, buf.byteLength >> 1).length;
   }
-  if (m.includes('c') && m !== 'cycle') {
-    if (!big) { const parts: string[] = []; for (let i = 0; i < 1000; i++) parts.push('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl'); big = parts.join(''); }
+  if (m.includes('c') || m.includes('C')) {
+    const k = m.includes('C') ? 4000 : 1000;
+    if (big.length !== k * 102) { const parts: string[] = []; for (let i = 0; i < k; i++) parts.push('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl'); big = parts.join(''); }
     sink = JSON.stringify({ lists: [big], frame: true, error: null, notes: [] }).length;
   }
   if (m.includes('d')) {
