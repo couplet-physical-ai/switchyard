@@ -48,7 +48,11 @@ async function shot(dist, route, demoId, file) {
   await ctx.close();
   srv.stop(true);
 }
-const views = [['yard', '/yard', '/yard', 'yard-setup-demo', 'yard-setup-demo'], ['factory', '/', '/factory', 'setup-demo', 'setup-demo']];
+// ROUTES="yard=/yard,live=/,factory=/factory" compares those routes instead, each the same on both
+// builds (a branch that must leave them alone: FACTORY3.md).
+const views = process.env.ROUTES
+  ? process.env.ROUTES.split(',').map((r) => { const [name, route] = r.split('='); const demo = route.startsWith('/yard') ? 'yard-setup-demo' : 'setup-demo'; return [name, route, route, demo, demo]; })
+  : [['yard', '/yard', '/yard', 'yard-setup-demo', 'yard-setup-demo'], ['factory', '/', '/factory', 'setup-demo', 'setup-demo']];
 const lines = [];
 for (const [name, rb, ra, db, da] of views) {
   const b = join(out, `${name}-before.png`), a = join(out, `${name}-after.png`);

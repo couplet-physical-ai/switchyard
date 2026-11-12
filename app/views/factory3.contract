@@ -6,7 +6,7 @@
 // they change, and the squares in transit. A press picks; the inspector docks over the ledger
 // (the stations above it never move), and Escape or "close" puts the ledger back.
 
-use Hit, Ack from "./shapes.contract"
+use Hit from "./shapes.contract"
 use FlLog from "./flow.contract"
 
 shape F3Link
@@ -24,6 +24,14 @@ shape F3Fact
   id: string
   k: string
   v: string
+
+// What the board did: `ok` = neither canvas was painted for two seconds; `status` = how many
+// transits it ever started and how often the moving layer painted; `work` = the same and the
+// board's paints and builds, for the developer HUD.
+shape F3Stat
+  ok: bool
+  status: string
+  work: string
 
 shape F3Detail
   ok: bool
@@ -55,7 +63,7 @@ members App
   resource f3D = f3Detail(f3Kind, f3Sel, (f3On and f3Sel != "") ? f3Sec : 0) as shape F3Detail else empty()
   derive f3Dock = f3Sel != "" and f3D.ok
   // what the board did, for the tests and the HUD (asks, paints, transits)
-  resource f3S = f3Stats(ov.tick) as shape Ack else empty(ok=false, status="")
+  resource f3S = f3Stats(ov.tick) as shape F3Stat else empty(ok=false, status="", work="")
   resource f3L = f3Log(f3D.logId, f3D.logStep, f3D.logWorkflow, f3D.logLive ? floor(clockMs / 10000) : 0, f3D.logFail) as shape FlLog else empty()
   mutation f3Hit as shape Hit then afterF3Hit
   derive f3Now = match f3Hit { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }

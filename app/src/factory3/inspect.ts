@@ -8,7 +8,7 @@ import type { App, Pipeline, Repo, Step } from '../wire.ts';
 import type { World } from '../world.ts';
 import { flowJob } from '../flow/model.ts';
 import { commitUrl, prUrl, runUrl } from '../now/view.ts';
-import { age, ageAt, timer } from './scene.ts';
+import { ageAt, timer } from './scene.ts';
 
 export type F3Link = { id: string; label: string; url: string };
 /** A line of the middle column: a step of the run, or a commit of the main line. */
@@ -30,7 +30,8 @@ const dur = (ms: number): string => {
   const s = Math.max(0, Math.round(ms / 1000));
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
 };
-const ago = (ms: number) => (ms < 60_000 ? 'just now' : `${age(ms)} ago`);
+/** (the board's own ages: minutes of the clock, so the inspector and the board agree) */
+const agoAt = (now: number, at: number) => { const a = ageAt(now, at); return a === 'now' ? 'just now' : `${a} ago`; };
 type Linked = { links?: Record<string, string | undefined>; url?: string; status_url?: string };
 const linksOf = (x: unknown): Record<string, string | undefined> => (x as Linked | undefined)?.links ?? {};
 
@@ -78,11 +79,11 @@ function runDetail(w: World, id: string, now: number, where0?: Map<string, strin
   const where = where0?.get(id) ?? (!m ? '' : m.id === 'm:gha' ? 'github actions' : `${(m.host ?? m.label).toLowerCase()}${m.agent ? ` · ${m.agent}` : ''}`);
   const exp = p.expected_ms ?? r?.p50_build_ms ?? 0;
   const el = now - (p.started ?? p.created);
-  const word = failed ? `failed at ${step || 'a step'} · ${ago(now - (p.finished ?? now))}`
+  const word = failed ? `failed at ${step || 'a step'} · ${agoAt(now, p.finished ?? now)}`
     : running ? `running ${step || '…'} · ${timer(el)}${exp ? ` of ~${timer(exp)}` : ''}`
     : p.state === 'pending' || p.state === 'blocked' ? `waiting ${timer(now - p.created)}`
-    : p.state === 'success' ? `passed in ${dur((p.finished ?? now) - (p.started ?? p.created))} · ${ago(now - (p.finished ?? now))}`
-    : `${p.state} · ${ago(now - (p.finished ?? p.created))}`;
+    : p.state === 'success' ? `passed in ${dur((p.finished ?? now) - (p.started ?? p.created))} · ${agoAt(now, p.finished ?? now)}`
+    : `${p.state} · ${agoAt(now, p.finished ?? p.created)}`;
   const facts: F3Fact[] = [];
   const fact = (k: string, v: string) => { if (v) facts.push({ id: k, k, v }); };
   fact('trigger', `${p.deploy ? 'deploy' : p.event === 'pull_request' ? `pr${p.pr ? ` #${p.pr}` : ''}` : p.event} on ${p.branch}`);
@@ -153,7 +154,7 @@ function repoDetail(w: World, id: string, now: number): F3Detail {
   if (a) { add('app', `app ${a.id ?? ''}`, a.url); add('status', 'status', (a as Linked).status_url); }
   return {
     ok: true, kind: 'repo', id, name: r.name, tag: `main line · ${r.default_branch}`, title: '',
-    state: red ? 'fail' : 'pass', word: red ? `red${since ? ` for ${age(now - since)}` : ''}` : 'green',
+    state: red ? 'fail' : 'pass', word: red ? `red${since ? ` for ${ageAt(now, since)}` : ''}` : 'green',
     facts, listTitle: 'last commits', items, links,
     logId: p && step ? (p.id ?? '') : '', logStep: step, logWorkflow: wfName, logLive: false, logFail: !!p,
   };
@@ -170,12 +171,12 @@ function appDetail(w: World, id: string, now: number): F3Detail {
   if (a.main_sha && a.main_sha !== a.live_sha) fact('main', short(a.main_sha));
   if (a.last_deploy) fact('last deploy', a.last_deploy.state);
   if (a.latency_ms) fact('latency', `${a.latency_ms} ms`);
-  fact('checked', a.checked ? ago(now - a.checked) : '');
+  fact('checked', a.checked ? agoAt(now, a.checked) : '');
   fact('runtime', [a.runtime, a.team].filter(Boolean).join(' · '));
   if (a.note) fact('note', a.note);
   const items: F3Item[] = [];
   const deps = [...w.deploys.values()].filter((d) => d.app === id).sort((x, y) => y.started - x.started);
-  for (const d of deps) items.push({ id: d.id ?? d.sha, state: d.state === 'failure' ? 'fail' : d.state === 'success' ? 'pass' : 'run', name: `${short(d.sha)} via ${d.via.replace('_', ' ')}`, note: ago(now - (d.finished ?? d.started)) });
+  for (const d of deps) items.push({ id: d.id ?? d.sha, state: d.state === 'failure' ? 'fail' : d.state === 'success' ? 'pass' : 'run', name: `${short(d.sha)} via ${d.via.replace('_', ' ')}`, note: agoAt(now, d.finished ?? d.started) });
   const links: F3Link[] = [];
   const add = (lid: string, label: string, url: string | undefined) => { if (url && !links.some((l) => l.url === url)) links.push({ id: lid, label, url }); };
   const al = linksOf(a);
@@ -187,7 +188,7 @@ function appDetail(w: World, id: string, now: number): F3Detail {
   const tone = a.health === 'up' ? 'pass' : a.health === 'down' ? 'fail' : a.health === 'degraded' ? 'run' : 'wait';
   return {
     ok: true, kind: 'app', id, name: id, tag: 'app', title: a.url.replace(/^https?:\/\//, '').replace(/\/$/, ''),
-    state: tone, word: `${a.health}${changed ? ` since ${ago(now - changed.at)}` : ''}`,
+    state: tone, word: `${a.health}${changed ? ` since ${agoAt(now, changed.at)}` : ''}`,
     facts, listTitle: items.length ? 'deploys' : '', items: items.slice(0, 10), links,
     logId: '', logStep: '', logWorkflow: '', logLive: false, logFail: false,
   };
