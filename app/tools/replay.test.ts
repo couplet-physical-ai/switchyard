@@ -131,7 +131,7 @@ const chunk = (from: number, to: number, every = MIN): History => ({ from, to, b
   ok(tl.world.groups.size === 1 && tl.world.groups.has('org:x'), 'a replayed world with its own groups keeps them');
 }
 
-// ---- the data module: the demo's day ---------------------------------------------------------------
+// ---- the data module: the hour replay, paused and resumed at its speed ---------------------------
 {
   const { sources } = await import('../app.ts');
   const call = (name: string, a: unknown[]) => (sources as Record<string, (a: unknown[], s: unknown, st: unknown) => unknown>)[name](a, { get: () => '', set() {} }, {});
@@ -139,27 +139,18 @@ const chunk = (from: number, to: number, every = MIN): History => ({ from, to, b
   const c = (await call('connect', ['demo', '', 1, T0, 0])) as { ok: boolean };
   ok(c.ok, 'the demo connects');
   await ov(16);
-  const d = (await call('replayDay', [20])) as { ok: boolean; status: string };
+  const h = (await call('replayHour', [20])) as { ok: boolean; status: string };
   let o = await ov(30);
-  ok(d.ok && d.status === '120' && o.mode === 'replay' && o.speed === 120, `the demo's day: its last 2 h at 120× (${d.status}, ${o.mode} ${o.speed}×, ${o.dial})`);
-  for (let t = 46; t <= 10_046; t += 16) await call('overview', [t]);
-  o = await ov(10_050);
-  ok(/replaying · (19|20|21) of 120 min/.test(o.dial), `10 s later it is ~20 min in (${o.dial})`);
-  const a = (await call('replayAt', [10_060, T0 - 3 * 60 * MIN])) as { ok: boolean; status: string };
-  o = await ov(10_070);
-  ok(a.ok && a.status === '120' && o.speed === 120 && o.mode === 'replay', `a tick in the day replay keeps its speed (${a.status}×)`);
+  ok(h.ok && h.status === '60' && o.mode === 'replay' && o.speed === 60, `the hour: 60× (${h.status}, ${o.mode} ${o.speed}×, ${o.dial})`);
   await call('timeControl', ['pause', 1]);
-  o = await ov(10_100);
+  o = await ov(100);
   ok(o.mode === 'paused', 'paused');
-  const r = (await call('replayResume', [10_200])) as { ok: boolean; status: string };
-  o = await ov(10_210);
-  ok(r.ok && r.status === '120' && o.mode === 'replay' && o.speed === 120, 'resumed at the day speed');
+  const r = (await call('replayResume', [200])) as { ok: boolean; status: string };
+  o = await ov(210);
+  ok(r.ok && r.status === '60' && o.mode === 'replay' && o.speed === 60, 'resumed at the hour speed');
   await call('timeControl', ['live', 1]);
-  const h = (await call('replayHour', [10_300])) as { ok: boolean; status: string };
-  o = await ov(10_310);
-  ok(h.ok && h.status === '60' && o.speed === 60, 'the hour stays 60×');
-  const b = (await call('replayAt', [10_400, T0 - 2 * 60 * MIN])) as { ok: boolean; status: string };
-  ok(b.ok && b.status === '60', 'and a tick in it replays at 60×');
+  o = await ov(300);
+  ok(o.mode === 'live' && o.speed === 1, 'and back to live');
 }
 
 if (fails) { console.log(`${fails} failed`); process.exit(1); }

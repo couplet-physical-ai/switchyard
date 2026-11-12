@@ -1,4 +1,4 @@
-// Factory 3 (FACTORY3.md), "the berth board", at /factory?v=3: the delivery line as six stations
+// Factory 3 (FACTORY3.md), "the berth board", at /factory (any ?v= too): the delivery line as six stations
 // in flow order (waiting → building → checks → main lines → deploy → apps) and, under them, a
 // ledger of the last events traced through the same stations. Fixed to the window: no scroll,
 // no drag, no zoom. Nothing moves unless a run changes place.
@@ -7,7 +7,18 @@
 // (the stations above it never move), and Escape or "close" puts the ledger back.
 
 use Hit from "./shapes.contract"
-use FlLog from "./flow.contract"
+
+// the inspector's log (src/factory3/log.ts): the decisive line and the lines around it
+shape FlRow
+  id: string
+  n: string
+  text: string
+  hot: bool
+
+shape FlLog
+  ok: bool
+  rows: FlRow[]
+  note: string
 
 shape F3Link
   id: string

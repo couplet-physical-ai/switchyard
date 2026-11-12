@@ -62,9 +62,7 @@ shape Overview
   red: number
   appsUp: number
   appsTotal: number
-  // fx-glance: apps down, and the coffee header's totals as drawn (tests/factory-coffee)
   appsDown: number
-  facHead: string
   behind: string
   seq: number
   // the canvases' redraw key: moves only when what they show changed (app.ts `redraw`)
@@ -83,17 +81,6 @@ shape Overview
   hud: bool
   stress: bool
   quality: number
-  facKey: string
-  facDrawer: bool
-  facQ: number
-  facStress: bool
-  facCalm: bool
-  facStats: string
-  facCity: number
-  facCars: number
-  facBays: number
-  facLens: number
-  facLensTop: string
 
 shape SearchHit
   kind: string

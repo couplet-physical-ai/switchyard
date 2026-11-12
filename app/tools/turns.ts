@@ -4,11 +4,9 @@
 // boot path keeps every turn small: this finds the big ones. A turn ends where the module awaits
 // `scheduler.yield()` or a fetch, and starts when the host calls a source or resumes one.
 //
-//   bun app/tools/turns.ts [demo|fixtures|<server url>] [--max <ms>] [--old-floors]   (default:
-//   demo; --max fails over it; `fixtures` serves contract/fixtures with server/mock.ts for the
-//   run). The shipped views' paths by default: Live's sources, the board (f3Board, f3Live) and the
-//   Yard; --old-floors adds the web's older floors (factoryFloor, factoryLive), which macOS never
-//   mounts.
+//   bun app/tools/turns.ts [demo|fixtures|<server url>] [--max <ms>]   (default: demo; --max
+//   fails over it; `fixtures` serves contract/fixtures with server/mock.ts for the run). The
+//   shipped views' paths: Live's sources, the board (f3Board, f3Live) and the Yard.
 //
 // The budget in Bun's milliseconds: Hermes (an interpreter) runs this code ~10-25x slower than
 // Bun's JIT on the same core, and a slow Mac 2-4x slower again, so a Bun turn of 2 ms is ~80 ms
@@ -17,7 +15,7 @@
 type Turn = { at: string; ms: number };
 
 let runs = 0;
-export async function measure(server: string, size = { w: 1440, h: 900 }, oldFloors = false): Promise<Turn[]> {
+export async function measure(server: string, size = { w: 1440, h: 900 }): Promise<Turn[]> {
   const turns: Turn[] = [];
   // a fresh data module each run (the demo and the world live in it), as a launch has
   let label = 'import';
@@ -66,13 +64,6 @@ export async function measure(server: string, size = { w: 1440, h: 900 }, oldFlo
     paint('f3Board', ['30m', '', 'live', false, false, '', 0], 24);
     paint('f3Board', ['30m', '', 'live', false, false, '', 1], 25);
     for (let f = 0; f < 4; f++) paint('f3Live', [f], 24 + 16 * f);
-    if (oldFloors) {
-      // the web's older floors (/factory?v=1): macOS never mounts them
-      paint('factoryFloor', ['', '', 0], 24);
-      paint('factoryFloor', ['', '', 0], 25);
-      paint('factoryFloor', ['', '', 0], 26);
-      for (let f = 0; f < 4; f++) paint('factoryLive', ['full', '', 0, f], 24 + 16 * f);
-    }
     await call('overview', [28, 0, true, 'yard']);
     for (const s of ['yardStatic', 'yardInfo', 'yardLive', 'yardTop']) paint(s, s === 'yardLive' ? ['full', '', 0] : ['', 0], 32);
     for (let f = 2; f < 6; f++) for (const s of ['yardInfo', 'yardLive', 'yardTop']) paint(s, s === 'yardLive' ? ['full', '', f] : ['', f], 16 * f + 32);
@@ -90,7 +81,6 @@ export async function measure(server: string, size = { w: 1440, h: 900 }, oldFlo
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const max = args.includes('--max') ? Number(args[args.indexOf('--max') + 1]) : Infinity;
-  const oldFloors = args.includes('--old-floors');
   let server = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--max') ?? 'demo';
   let mock: ReturnType<typeof Bun.spawn> | null = null;
   if (server === 'fixtures') {
@@ -106,8 +96,8 @@ if (import.meta.main) {
   // the first run also compiles (Bun's JIT warming up); then the median of three runs, turn by
   // turn (the boot path is deterministic, so turn i is the same work each run), so a GC pause in
   // one run is not taken for the code's cost
-  await measure(server, undefined, oldFloors);
-  const runs3 = [await measure(server, undefined, oldFloors), await measure(server, undefined, oldFloors), await measure(server, undefined, oldFloors)];
+  await measure(server);
+  const runs3 = [await measure(server), await measure(server), await measure(server)];
   const n = Math.min(...runs3.map((r) => r.length));
   const turns = Array.from({ length: n }, (_, i) => {
     const ms = runs3.map((r) => r[i]!.ms).sort((a, b) => a - b)[1]!;
@@ -120,8 +110,7 @@ if (import.meta.main) {
   const IMPORT = 'import → module evaluated';
   // A canvas draw is a turn too (the host's frame callback runs in the data module), held to twice
   // the max: its first paints pay Bun's JIT warm-up (Hermes runs bytecode), and the steady frames
-  // are the perf tools' (factory-bench, perf frames). Until 2026-11-11 every factory draw here threw
-  // at once (the stub frame had no `causes`), so draws measured ~0 ms.
+  // are the perf tools' (f3-bench, yard-bench, perf frames).
   const isDraw = (t: { at: string }) => t.at.startsWith('draw ');
   const worst = Math.max(0, ...turns.filter((t) => t.at !== IMPORT && !isDraw(t)).map((t) => t.ms));
   const worstDraw = Math.max(0, ...turns.filter(isDraw).map((t) => t.ms));
