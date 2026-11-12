@@ -544,8 +544,23 @@ pub async fn run_reducer(
                         continue;
                     }
                 }
-                if warm.is_some() {
-                    // Keep serving the last state until the boot settles.
+                if let Some(w) = warm.as_mut() {
+                    // Keep serving the last state until the boot settles, with what went
+                    // out since (the runs, deploys, engines and queue `warm_passthrough`
+                    // let through), so a fetch of /snapshot agrees with the stream.
+                    let seq = hub.seq();
+                    if seq != w.seq {
+                        w.seq = seq;
+                        w.at = clock();
+                        let at = w.at;
+                        let json = serde_json::to_vec(&w.to_snapshot(PROTOCOL, &hub.epoch))
+                            .unwrap_or_default();
+                        let h = hub.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            h.set_snapshot(Snapshot::new(seq, at, Bytes::from(json)))
+                        })
+                        .await;
+                    }
                     continue;
                 }
                 let key = (store.read().version, hub.seq());

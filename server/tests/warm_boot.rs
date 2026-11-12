@@ -146,7 +146,8 @@ async fn clients_keep_the_last_state_until_the_boot_settles() {
         ids(&snapshot_of(&hub), "repos"),
         vec!["acme/api", "acme/old"]
     );
-    assert!(ids(&snapshot_of(&hub), "pipelines").is_empty());
+    // The run going now is a whole fact: it is in the served state at once.
+    assert_eq!(ids(&snapshot_of(&hub), "pipelines"), vec!["wp:acme/api:7"]);
 
     // The boot settles: one move from the last state to the rebuilt fleet.
     adapters.ok("github", now(), None);
@@ -376,6 +377,19 @@ async fn a_run_that_finishes_during_the_boot_is_finished_at_once() {
         p["state"], "success",
         "finished while the boot runs, shown finished at once"
     );
+    // A client fetching the snapshot now gets it finished too (the served last state
+    // follows what went out); the repos are still the last state's.
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    let snap = snapshot_of(&hub);
+    let p7 = snap["pipelines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "wp:acme/api:7")
+        .cloned()
+        .expect("#7 in the snapshot");
+    assert_eq!(p7["state"], "success");
+    assert_eq!(ids(&snap, "repos"), vec!["acme/api", "acme/old"]);
     assert!(
         client.get(Kind::Pipeline, "wp:acme/api:5").is_none(),
         "the backfill's history waits for the settle"
