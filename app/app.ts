@@ -412,7 +412,14 @@ async function connect(server: string, token: string, epoch0: number): Promise<C
     }
     up = new HttpUpstream(base, token);
     const snap = await up.snapshot();
-    if (!replayKeeps(base)) tl.load(snap, clock); // fx-day: a reconnect mid-replay (a dropped or coalesced stream) leaves the replay playing
+    if (!replayKeeps(base)) {
+      // p5-board: a reload while paused (a reset's) stays paused: Contract's time control says so,
+      // and the timers it would start ticking show nothing new
+      const paused = tl.mode === 'paused' && !tl.replayPaused;
+      tl.load(snap, clock); // fx-day: a reconnect mid-replay (a dropped or coalesced stream) leaves the replay playing
+      if (paused) tl.pause();
+    }
+    loads++;
     yard.sync(clock);
     return { ...none, ok: true, status: 'connected', seq: snap.seq ?? tl.world.seq, label: up.label, kind: 'http' }; // fx-day: the live seq (in a replay the world's is the past's)
   } catch (e) {
@@ -434,6 +441,13 @@ async function connect(server: string, token: string, epoch0: number): Promise<C
  *  follow the stream's frames, not a clock. Paused, a frame is kept at once (nothing shows it). */
 const inbox: WireFrame[] = [];
 const INBOX_MAX = 4000;
+/** p5-board: the stream's place, the newest seq it brought (in the inbox or taken in). A stream
+ *  opened again with the fleet kept (app.contract `fgen`: it dropped, or the server refused it)
+ *  resumes after it; the server answers a resume it can no longer serve with a reset, and only
+ *  then is the snapshot fetched again. A new connect (`loads`: a snapshot taken) starts it at the
+ *  snapshot's seq, its inbox emptied. */
+let streamSeq = 0, streamKey = '', loads = 0;
+const noteSeq = (f: WireFrame) => { const q = (f as { seq?: number }).seq; if (f.t === 'delta' && typeof q === 'number' && q > streamSeq) streamSeq = q; };
 let feedWake = 0, wakeOwed = false;
 /** The pace the last overview answered (app.contract's pulse). */
 let lastPace = 0;
@@ -444,15 +458,18 @@ function drain(): boolean {
   return true;
 }
 
-function liveFeed(server: string, token: string, seq: number, ok: boolean) {
+function liveFeed(server: string, token: string, seq: number, ok: boolean, gen: number) {
   const idle = { ok: false, status: 'idle', wake: feedWake };
-  inbox.length = 0;
-  if (!ok) return idle;
-  if (server === 'demo') return { ok: true, status: 'demo', wake: feedWake };
-  const base = resolveBase(server);
-  if (!base) return idle;
+  const base = !ok || server === 'demo' ? '' : resolveBase(server);
+  if (!base) {
+    inbox.length = 0;
+    streamKey = '';
+    return server === 'demo' && ok ? { ok: true, status: 'demo', wake: feedWake } : idle;
+  }
+  const key = `${base}|${tokenVer(token)}|${gen}|${loads}`;
+  if (streamKey !== key) { streamKey = key; inbox.length = 0; streamSeq = seq; }
   let status = 'connecting';
-  return fetch(wsUrl(base, `/api/v1/stream?since=${seq}`, token), {
+  return fetch(wsUrl(base, `/api/v1/stream?since=${Math.max(seq, streamSeq)}`, token), {
     // A resume's first message can carry many merged frames: allow 4 MiB a message. (An open
     // stream holds twice its ceiling of the native lanes' 64 MiB, beside a history read.)
     exactIndependentHttp: { maxResponseBytes: 4 << 20 },
@@ -464,6 +481,7 @@ function liveFeed(server: string, token: string, seq: number, ok: boolean) {
         if ((ev as { coalesced?: number }).coalesced) status = 'reset';
         else {
           const fs = parseFrames(ev.data);
+          for (const f of fs) noteSeq(f);
           if (tl.mode === 'paused' && !inbox.length) {
             for (const f of fs) if (!tl.ingest(f, clock)) { status = 'reset'; break; }
           } else if (fs.some((f) => f.t === 'reset') && tl.mode !== 'replay') {
@@ -741,7 +759,7 @@ export const sources: Sources = {
     if (t && mine === connects && !(!c.ok && LET_GO.test(c.error || ''))) connectedWith(t, server === 'demo' ? '' : resolveBase(server), c.ok, c.error || c.status);
     return c;
   },
-  liveFeed: ([server, _ver, seq, _gen, ok]) => liveFeed(server, needsToken(server) ? token : '', seq, ok),
+  liveFeed: ([server, _ver, seq, gen, ok]) => liveFeed(server, needsToken(server) ? token : '', seq, ok, Number(gen) || 0), // (and fgen: the stream again, the fleet kept: app.contract `retry`)
   overview: ([t, _seq, _ok, top], _store, _storage, native) => { const tp = String(top ?? ''); oldTop = tp.endsWith('~old'); topView = oldTop ? tp.slice(0, -4) : tp; if (t > 0) advance(t); safe('heapLog', 0, () => { probeAsk(native); probeFlush(native); logHeap(clock, native, !!up && tl.world.loaded); return 0; }); /* leak: the heap line (src/memlog.ts) */ if (oldFloorOn()) safe('plantHist', 0, () => { factory.plant.pump(clock); return 0; }); return safe('overview', EMPTY_OV, overview); }, // fab-w6: the machine walls' 24 h histories are asked here (a source), never in a draw
   timeControl: async ([what, speed]) => {
     if (what === 'pause') tl.pause();

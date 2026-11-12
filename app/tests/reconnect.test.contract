@@ -1,0 +1,67 @@
+// A server that refuses the stream (p5-board). Its API answers, its WebSocket does not open
+// (server/mock.ts serves the same fleet under /nostream/ with the stream 404'd). The app opens the
+// stream again after 2, 4, 8, 16 s, then every 30 s, and never sooner; it does not fetch the
+// snapshot again for it (`gen` stands: the connect is the only fetch of it), so the fleet and
+// Live's rows stand too (nowData is not rebuilt).
+
+test "a refused stream backs off to 30 s and keeps the fleet"
+  clock data
+  tap "now-setup-connect"
+  clock settle
+  type "server-field" "http://127.0.0.1:8097/nostream"
+  tap "settings-save"
+  clock data
+  clock +1000
+  clock data
+  expect state conn.ok == true
+  expect state ov.repos == 394
+  expect state nowData.ok == true
+  expect tree has "now-ev-0"
+  expect state feed.ok == false
+  expect state gen == 1
+  expect state retries == 0
+  clock +1500
+  clock data
+  expect state retries == 1
+  expect state fgen == 1
+  clock +3000
+  clock data
+  expect state retries == 1
+  clock +1000
+  clock data
+  expect state retries == 2
+  clock +7000
+  clock data
+  expect state retries == 2
+  clock +1000
+  clock data
+  expect state retries == 3
+  clock +15000
+  clock data
+  expect state retries == 3
+  clock +1000
+  clock data
+  expect state retries == 4
+  clock +29000
+  clock data
+  expect state retries == 4
+  clock +1000
+  clock data
+  expect state retries == 5
+  clock +29000
+  clock data
+  expect state retries == 5
+  clock +1000
+  clock data
+  expect state retries == 6
+  clock +30000
+  clock data
+  expect state retries == 7
+  expect state fgen == 7
+  // the snapshot was fetched once: the fleet and the rows are the ones it brought
+  expect state gen == 1
+  expect state conn.ok == true
+  expect state ov.repos == 394
+  expect state nowData.ok == true
+  expect tree has "now-ev-0"
+  expect state feed.ok == false
