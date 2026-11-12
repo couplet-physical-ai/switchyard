@@ -1055,8 +1055,35 @@ upstream write-up):
   - a full pass afterwards finds nothing to do;
   - a frame move, a page zoom and a mount each make the index stale.
 
-**Status: not yet measured.** The mini was reserved (sy-ship's 0.1.7 gate, then its soak) for the
-whole of p7's window, so nothing above is proven on macOS yet. Not even the build is.
+**Measured on the mini (sy-client, 18:10–19:03Z, quiet, load 1.1–2.3).** Head = df6e18a + 0005
+(Exact 0001–0005), base = df6e18a (0001–0004), dev builds, interleaved, 56–57 s windows:
+
+| | base | head |
+|---|---|---|
+| Live idle, timers ticking (ABBA ×3) | 1.66, 2.05, 1.88 → **1.86 %** | 1.43, 1.40, 1.48 → **1.44 %** |
+| Board idle, timers | 1.42 % | 1.40 % |
+| Yard idle, timers | 0.89 % | 0.89 % |
+| Live paused (×3) | 0.09, 0.23, 0.37 (0.23) % | 0.21, 0.21, 0.14 (0.19) %; 0 frames both |
+| Live busy 10×, CPU | 16.46 % | 13.90 % |
+| Board busy 10× (×2), main window | 59.38 / 59.39 fps, 12.18 / 12.14 % | 58.81 / 59.38 fps, 11.79 / 11.86 % |
+| Yard busy 10× (×2), main window | 59.30 / 59.22 fps (10 of 768 missed), 23.31 / 23.46 % | 59.45 / 59.36 fps (8 of 752), 23.07 / 22.79 % |
+
+- **Profile** (`sample` 10 s, Live idle): `Presenter.refreshVisibleText` 5 samples → **0**,
+  `TextViewportIndex.init` 2 → 0; main-thread active samples 38 → 20 (process 66 → 41).
+- **Pictures** (window server, the demo on the agent's clock): start, two timer ticks, a scroll,
+  a tick after it: **0 of 1,370,880 px differ** base vs head, base vs base2 and head vs head2
+  at every step. The drive stopped at its next step, a *held* wheel: the agent's terminal on the
+  mini may not post synthetic wheel events (Accessibility), so the held scroll, its release, the
+  resize and the new rows were not pictured. Those paths take the full pass (the moved-geometry
+  counter and the visible-rect check), which `TextTouchedMacTests` covers.
+- **XCTests:** `TextTouchedMacTests` 2/2 pass. Of 23 classes, only `PixelGridMacTests` fails, and
+  it fails the same way on the base copy (17 assertions, a 1.0 backing scale where it expects 2:
+  the mini drives a 1× display), so it is standing, not 0005's.
+- **The macOS suite** on head: 38 passed, 0 failed.
+- **Verdict: 0005 passes.** Live idle with timers 1.86 → 1.44 %, no regression elsewhere,
+  pixel-identical where pictured.
+
+How it was measured:
 - **The kit:** `app/tools/p7/` runs the whole proof as one detached job:
   - `kit.sh` clones head and base, and `p7-all.sh` makes two private Exact copies (0001–0005 and
     0001–0004), builds both, and runs:

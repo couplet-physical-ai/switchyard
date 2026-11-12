@@ -58,6 +58,12 @@ server's pictures at the same agent-clock moments after ticks, a held scroll, a 
 and new rows; and the idle tab's CPU, interleaved. The kit is Switchyard's app/tools/p7/; the
 results are in app/PERF.md, pass 7. The web is untouched.
 
+Measured (Mac mini, Apple silicon, 1× display, dev builds, interleaved): Live idle with its
+timers 1.86 % → 1.44 % CPU (refreshVisibleText 5 → 0 profile samples, main-thread samples
+38 → 20); every other tab's idle, paused and busy numbers unchanged within noise; window-server
+pictures after ticks and a scroll 0 px different; TextTouchedMacTests pass; PixelGridMacTests
+fails identically with and without this patch on a 1× display (it expects a 2× backing scale).
+
 diff --git a/host/apple/Sources/ExactKit/Mac/BlockHostMac.swift b/host/apple/Sources/ExactKit/Mac/BlockHostMac.swift
 index e4835240..2cd32108 100644
 --- a/host/apple/Sources/ExactKit/Mac/BlockHostMac.swift
