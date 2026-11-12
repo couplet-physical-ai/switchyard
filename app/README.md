@@ -37,7 +37,7 @@ and a token (kept in a file only you can read, "Security" below) in the connecti
 ### Exact patches
 
 Our native builds use a patched Exact. `scripts/exact-patches/*.patch` (applied in name order
-to the checkout at `exact.pin`) is the whole set; today there are three:
+to the checkout at `exact.pin`) is the whole set; today there are four:
 
 - `0001-heap-512m.patch`: `exact_js::DEFAULT_MAX_HEAP` (`js/src/lib.rs`) 64 MiB → 512 MiB, the
   Hermes heap ceiling of the data module (app.ts). Exact has no app-level setting for it (only
@@ -48,6 +48,9 @@ to the checkout at `exact.pin`) is the whole set; today there are three:
 - `0003-recorder-font-parse-kept.patch` (after 0002): the same recorder parses each font
   string and quotes each family once, not on every `ctx.font =` and every text's measure.
   The lists are byte-identical (PERF.md, pass 5).
+- `0004-recorder-roundrect-one-radius.patch` (after 0003): the recorder's `roundRect` with one
+  radius and a size that is not negative records the same ops without the ~70 arrays it made
+  per rectangle (byte-identical; less garbage for Hermes to collect).
 
 `scripts/patch-exact.sh <exact dir>` applies them to a checkout's working tree (HEAD stays at
 the pin). `scripts/fetch-exact.sh` calls it after checkout and before setup, into

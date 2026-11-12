@@ -1,0 +1,66 @@
+Switchyard patch 0004 (app/scripts/patch-exact.sh applies it, after 0002 and 0003): the native
+canvas recorder's roundRect with one radius and a size that is not negative (the Yard's packets,
+chips and machines: ~10 a frame) records the same ops by the same arithmetic without
+roundRectSegs + segments, which made ~70 arrays and objects per rectangle (radius copies, the
+side/sum pairs, from/to/control points, one ["C", ...] per corner, an M.apply pair per point).
+The subpath's end that segments moved at every point is not kept: the closePath and moveTo that
+follow replace the subpath before anything reads it. Every other roundRect (radii lists, DOMPoint
+radii, negative sizes, non-numbers) takes the old path. Byte-identical: a 4,000-trial fuzz
+(transforms incl. singular, 0/-0/NaN/Infinity/array/object radii, negative sizes, lineTo/arcTo/
+closePath after) through the 0003 and 0003+0004 seams: 0 differ. Yard at 10x (Bun no JIT):
+yardLive allocates 68 -> 53 KB a frame (-22 %), less for Hermes to collect.
+The web's seam (host/web-js/ts-draw.js) does not use this recorder and is untouched.
+
+--- a/canvas/recorder.js
++++ b/canvas/recorder.js
+@@ -477,6 +477,32 @@
+   return [start, pts];
+ }
+ 
++/** roundRectSegs(x, y, w, h, [{ x: r, y: r }]) for w, h, r >= 0, recorded as the context's
++ *  roundRect records it (moveTo, then segments), the same numbers by the same expressions. The
++ *  subpath's end, which segments moves at every point, is not kept: the caller's closePath and
++ *  moveTo replace the subpath before anything reads it. */
++function roundRectOne(g, m, x, y, w, h, r) {
++  let scale = 1;
++  const sum = r + r;
++  if (sum > 0) { scale = Math.min(scale, w / sum); scale = Math.min(scale, h / sum); scale = Math.min(scale, w / sum); scale = Math.min(scale, h / sum); }
++  const c = scale < 1 ? r * scale : r;
++  const k = 0.5522847498307934, x0 = x, y0 = y, x1 = x0 + w, y1 = y0 + h;
++  const sx = x0 + c, sy = y0;
++  const cubic = (f0, f1, t0, t1, horizontalFirst) => {
++    if (c === 0) { g.lineTo(t0, t1); return; }
++    let a0, a1, b0, b1;
++    if (horizontalFirst) { a0 = f0 + (t0 - f0) * k; a1 = f1; b0 = t0; b1 = t1 - (t1 - f1) * k; }
++    else { a0 = f0; a1 = f1 + (t1 - f1) * k; b0 = t0 - (t0 - f0) * k; b1 = t1; }
++    g.op(OP.CubicTo, [m[0] * a0 + m[2] * a1 + m[4], m[1] * a0 + m[3] * a1 + m[5], m[0] * b0 + m[2] * b1 + m[4], m[1] * b0 + m[3] * b1 + m[5],
++      m[0] * t0 + m[2] * t1 + m[4], m[1] * t0 + m[3] * t1 + m[5]]);
++  };
++  g.moveTo(sx, sy);
++  g.lineTo(x1 - c, y0); cubic(x1 - c, y0, x1, y0 + c, true);
++  g.lineTo(x1, y1 - c); cubic(x1, y1 - c, x1 - c, y1, false);
++  g.lineTo(x0 + c, y1); cubic(x0 + c, y1, x0, y1 - c, true);
++  g.lineTo(x0, y0 + c); cubic(x0, y0 + c, sx, sy, false);
++}
++
+ // --- the list writer (canvas/src/list.rs) ------------------------------------
+ 
+ class Writer {
+@@ -891,6 +917,17 @@
+   }
+   roundRect(x, y, w, h, radii = 0) {
+     const g = this._;
++    // Switchyard patch (app/scripts/exact-patches/0004): one radius and a size that is not
++    // negative, the common case, records the same ops from the same arithmetic as below without
++    // the ~70 arrays and objects roundRectSegs and segments make per rectangle.
++    if (typeof radii === "number" && typeof x === "number" && typeof y === "number" && typeof w === "number" && typeof h === "number"
++      && radii >= 0 && w >= 0 && h >= 0 && finite(x, y, w, h, radii)) {
++      const m = g.state.transform;
++      if (!M.invertible(m)) return;
++      roundRectOne(g, m, x, y, w, h, radii);
++      this.closePath(); g.moveTo(x, y);
++      return;
++    }
+     if (!finite(x, y, w, h)) return;
+     const norm = radiiList(radii);
+     if (!norm || !M.invertible(g.state.transform)) return;
