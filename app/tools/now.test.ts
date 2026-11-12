@@ -4,7 +4,7 @@
 // a live snapshot. Run: bun app/tools/now.test.ts [live-snapshot.json]
 import { existsSync, readFileSync } from 'node:fs';
 import { World } from '../src/world.ts';
-import { BROKEN_CAP, EMPTY_FEED, feedAnswer, panelAnswer, fit, timer, dur, ago, type NowDeps, type NowFeed } from '../src/now/view.ts';
+import { BROKEN_CAP, EMPTY_FEED, buildFeed, feedSync, panelAnswer, fit, timer, dur, ago, type NowDeps, type NowFeed } from '../src/now/view.ts';
 import { pickRows } from '../src/now/log.ts';
 import { NOW_CAP, JUST_CAP, EARLIER_CAP } from '../src/flow/model.ts';
 
@@ -44,7 +44,7 @@ function world(o: { pipelines?: P[]; commits?: P[]; engines?: P[]; deploys?: P[]
   return w;
 }
 const deps = (w: World, now = NOW): NowDeps => ({ world: () => w, now: () => now, offsetMin: () => 0, upstream: () => null });
-const feed = (w: World, now = NOW, f: [string, string, string] = ['', '', '']): NowFeed => feedAnswer(deps(w, now), [Math.floor(now / 1000), ...f]);
+const feed = (w: World, now = NOW, f: [string, string, string] = ['', '', '']): NowFeed => feedSync(deps(w, now), [Math.floor(now / 1000), ...f]);
 const allLinks = (f: NowFeed) => [
   ...f.needs.flatMap((n) => n.links), ...[...f.now, ...f.just, ...f.earlier].flatMap((b) => [...b.links, ...b.jobs.flatMap((j) => j.links)]),
   ...f.machines.map((m) => ({ id: 'machine', label: m.label, url: m.url })).filter((l) => l.url),
@@ -176,10 +176,27 @@ eq(fit('short', 20), 'short', 'fit keeps what fits');
   ok(feed(w, now + 1000) !== f, 'memo: the next second recomputes');
   // cost
   const t0 = performance.now();
-  for (let i = 0; i < 200; i++) feedAnswer(deps(w, now + (i + 2) * 1000), [i, '', '', '']);
+  for (let i = 0; i < 200; i++) feedSync(deps(w, now + (i + 2) * 1000), [i, '', '', '']);
   const per = (performance.now() - t0) / 200;
   ok(per < 4, `fixtures: a feed answer costs ${per.toFixed(2)} ms (< 4 ms)`);
-  eq(feedAnswer(deps(new World()), [0, '', '', '']), EMPTY_FEED, 'an empty world answers the empty feed');
+  eq(feedSync(deps(new World()), [0, '', '', '']), EMPTY_FEED, 'an empty world answers the empty feed');
+  // a clock-only tick re-stamps the last build (its timers and ages), the same as a whole build
+  {
+    const C = (x: unknown) => JSON.stringify(x, (_k, v) => (v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, v[k]])) : v));
+    let same = 0, n = 0;
+    for (let i = 0; i < 120; i += 7) {
+      const t = now + 500_000 + i * 1000;
+      feedSync(deps(w, t), [1, '', '', '']);
+      const a = feedSync(deps(w, t + 3000), [2, '', '', '']);
+      n++; if (C(a) === C(buildFeed(deps(w, t + 3000), [2, '', '', '']))) same++;
+    }
+    eq(same, n, `a re-stamped tick = a whole build (${same}/${n})`);
+    feedSync(deps(w, now + 900_000), [1, '', '', '']);
+    const t1 = performance.now();
+    for (let i = 1; i <= 200; i++) feedSync(deps(w, now + 900_000 + i * 1000), [i, '', '', '']);
+    const tick = (performance.now() - t1) / 200;
+    ok(tick < 0.3, `fixtures: a clock-only tick costs ${tick.toFixed(3)} ms (< 0.3 ms)`);
+  }
   // the commit filter
   const any = f.just[0] ?? f.earlier[0];
   if (any) {

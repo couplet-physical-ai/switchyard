@@ -244,13 +244,17 @@ function stepSt(state: string): string {
 }
 /** A job's chain in the Yard's words: where it runs, its steps (a window around the live one,
  *  the rest folded into "+N done" / "+N"), then how it ended. Queued: waiting → where → ~build. */
+/** A queued job's first chip: how long it has waited (the only chip that follows the clock). */
+function waitChip(j: FlowJob, now: number): Chip {
+  const age = now - j.created;
+  return { id: 'w', text: `waiting ${timer(age)}`, st: age > 3_600_000 ? 'bad' : age > 120_000 ? 'wait' : 'idle', arrow: false, hot: false };
+}
 function chainOf(w: World, j: FlowJob, now: number): Chip[] {
   const out: Chip[] = [];
   const add = (id: string, text: string, st: string, arrow: boolean, hot = false) => out.push({ id, text, st, arrow, hot });
   const ci = j.ci === 'gha' ? 'github actions' : 'roadrunner';
   if (j.state === 'queued' || j.state === 'waiting') {
-    const age = now - j.created;
-    add('w', `waiting ${timer(age)}`, age > 3_600_000 ? 'bad' : age > 120_000 ? 'wait' : 'idle', false);
+    out.push(waitChip(j, now));
     add('ci', j.queuePos ? `${ci} · #${j.queuePos} in line` : ci, 'idle', true);
     add('est', j.expectedMs ? `~${dur(j.expectedMs)} build` : 'then build', 'idle', true);
     return out;
@@ -288,8 +292,7 @@ function chainShort(w: World, j: FlowJob, now: number): Chip[] {
   const out: Chip[] = [];
   const add = (id: string, text: string, st: string, arrow: boolean, hot = false) => out.push({ id, text, st, arrow, hot });
   if (j.state === 'queued' || j.state === 'waiting') {
-    const age = now - j.created;
-    add('w', `waiting ${timer(age)}`, age > 3_600_000 ? 'bad' : age > 120_000 ? 'wait' : 'idle', false);
+    out.push(waitChip(j, now));
     if (j.expectedMs) add('est', `~${dur(j.expectedMs)} build`, 'idle', true);
     return out;
   }
@@ -309,10 +312,17 @@ function chainShort(w: World, j: FlowJob, now: number): Chip[] {
   return out;
 }
 
+/** `^<kind>\b ?·? ?`, compiled once per kind (a job line's name drops its kind). */
+const kindRes = new Map<string, RegExp>();
+function kindRe(kind: string): RegExp {
+  let r = kindRes.get(kind);
+  if (!r) kindRes.set(kind, (r = new RegExp(`^${kind}\\b ?·? ?`)));
+  return r;
+}
 function jobLine(w: World, j: FlowJob, last: boolean, now: number): JobLine {
   const p = w.pipelines.get(j.id);
   const r = j.result, d = r.deploy;
-  const kindName = j.name && j.name !== j.kind ? fit(j.name.replace(new RegExp(`^${j.kind}\\b ?·? ?`), ''), 36) : '';
+  const kindName = j.name && j.name !== j.kind ? fit(j.name.replace(kindRe(j.kind), ''), 36) : '';
   let step = '', pct = 0, hasPct = false, over = false, tmr = '', usual = '', result = '', err = '';
   if (j.state === 'running') {
     const el = now - (j.started ?? j.created);
@@ -392,13 +402,31 @@ function block(w: World, e: FlowEvent, now: number, off: number): EvBlock {
 }
 
 // ---- needs a human ----
-function needs(w: World, v: FlowView, now: number, filter: Filter): Need[] {
-  const out: (Need & { rank: number; at: number })[] = [];
+type Stamp = (now: number) => Partial<Need>;
+/** Per repo, its newest red pipeline on its default branch (the main row's CI link), per world. */
+const redIdx = new WeakMap<World, { key: string; red: Map<string, Pipeline> }>();
+function reds(w: World): Map<string, Pipeline> {
+  const key = `${w.kv.pipeline}|${w.kv.repo}`;
+  const hit = redIdx.get(w);
+  if (hit && hit.key === key) return hit.red;
+  const red = new Map<string, Pipeline>();
+  for (const p of w.pipelines.values()) {
+    if (p.state !== 'failure' && p.state !== 'error') continue;
+    if (p.branch !== w.repos.get(p.repo)?.default_branch) continue;
+    const o = red.get(p.repo);
+    if (!o || (p.finished ?? p.created) > (o.finished ?? o.created)) red.set(p.repo, p);
+  }
+  redIdx.set(w, { key, red });
+  return red;
+}
+/** What needs a human, and per row what re-stamps its clock texts (ages, "red 5m"). */
+function needs(w: World, v: FlowView, now: number, filter: Filter): { list: Need[]; stamps: (Stamp | undefined)[] } {
+  const out: (Need & { rank: number; at: number; t?: Stamp })[] = [];
   const match = (repo: string, app?: string) => (!filter.repo || filter.repo === repo) && (!filter.app || filter.app === app) && (!filter.sha || filter.sha.startsWith(`${repo}@`));
   for (const a of w.apps.values()) {
     if (a.health !== 'down' && a.health !== 'degraded') continue;
     if (!match(a.repo ?? '', a.id)) continue;
-    out.push({ id: `app:${a.id}`, kind: 'app', what: String(a.id ?? ''), word: a.health, detail: fit(a.note ?? (a.url ?? ''), 80), ago: ago(Math.max(0, now - a.checked)), at: a.checked, rank: 0, sha: '', who: '', beads: [],
+    out.push({ id: `app:${a.id}`, kind: 'app', what: String(a.id ?? ''), word: a.health, detail: fit(a.note ?? (a.url ?? ''), 80), ago: ago(Math.max(0, now - a.checked)), at: a.checked, rank: 0, sha: '', who: '', beads: [], t: (n) => ({ ago: ago(Math.max(0, n - a.checked)) }),
       links: [...L('app', 'Open app', a.url), ...L('status', 'Status', statusUrl(w, String(a.id ?? '')))] });
   }
   const lastByApp = new Map<string, { app: string; repo: string; sha: string; state: string; started: number; finished?: number; url?: string; via: string; pipeline?: string }>();
@@ -408,16 +436,16 @@ function needs(w: World, v: FlowView, now: number, filter: Filter): Need[] {
     const a = w.apps.get(d.app) as App | undefined;
     const p = d.pipeline ? w.pipelines.get(d.pipeline) : undefined;
     const at = d.finished ?? d.started;
-    out.push({ id: `deploy:${d.app}`, kind: 'deploy', what: d.app, word: 'deploy failed', detail: repoName(d.repo) === d.app ? 'the last deploy failed' : `from ${repoName(d.repo)}`, ago: ago(Math.max(0, now - at)), at, rank: 1, sha: sha7(d.sha), who: '', beads: [],
+    out.push({ id: `deploy:${d.app}`, kind: 'deploy', what: d.app, word: 'deploy failed', detail: repoName(d.repo) === d.app ? 'the last deploy failed' : `from ${repoName(d.repo)}`, ago: ago(Math.max(0, now - at)), at, rank: 1, sha: sha7(d.sha), who: '', beads: [], t: (n) => ({ ago: ago(Math.max(0, n - at)) }),
       links: [...L('ci', d.via === 'roadrunner' ? 'Roadrunner' : 'GitHub Actions', (d as { links?: { cicd?: string } }).links?.cicd || d.url || (p ? runUrl(w, String(p.id)) : '') || ''), ...L('app', 'Open app', a?.url), ...L('status', 'Status', statusUrl(w, d.app))] });
   }
   for (const e of v.events) {
     if (e.band !== 'now') continue;
     for (const j of e.jobs) {
       if (j.state !== 'running' || !j.expectedMs || !j.started) continue;
-      const el = now - j.started;
+      const el = now - j.started, started = j.started;
       if (el < STUCK_MIN_MS || el < STUCK_X * j.expectedMs) continue;
-      out.push({ id: `stuck:${j.id}`, kind: 'stuck', what: `${repoName(e.repo)} ${j.kind}`, word: 'stuck', detail: `usually ${dur(j.expectedMs)}${j.machine ? ` · ${j.machine.label}${j.machine.slot ? ` slot ${j.machine.slot}` : ''}` : ''}`, ago: ago(el), at: j.started, rank: 2, sha: '', who: '', beads: [],
+      out.push({ id: `stuck:${j.id}`, kind: 'stuck', what: `${repoName(e.repo)} ${j.kind}`, word: 'stuck', detail: `usually ${dur(j.expectedMs)}${j.machine ? ` · ${j.machine.label}${j.machine.slot ? ` slot ${j.machine.slot}` : ''}` : ''}`, ago: ago(el), at: j.started, rank: 2, sha: '', who: '', beads: [], t: (n) => ({ ago: ago(n - started) }),
         links: [...L('ci', ciWord(j.ci), runUrl(w, j.id, j.url)), ...L('machine', j.machine?.label ?? 'Machine', engineUrl(w, j.machine))] });
     }
   }
@@ -430,7 +458,9 @@ function needs(w: World, v: FlowView, now: number, filter: Filter): Need[] {
     }
     for (const e of w.engines.values()) {
       if (e.kind !== 'dagger' || e.online) continue;
-      out.push({ id: `machine:${e.id}`, kind: 'machine', what: e.label ?? e.id, word: 'offline', detail: e.last_seen ? `last seen ${ago(Math.max(0, now - e.last_seen))} ago` : '', ago: e.last_seen ? ago(Math.max(0, now - e.last_seen)) : '', at: e.last_seen ?? now, rank: 4, sha: '', who: '', beads: [],
+      const seen = e.last_seen;
+      out.push({ id: `machine:${e.id}`, kind: 'machine', what: e.label ?? e.id, word: 'offline', detail: seen ? `last seen ${ago(Math.max(0, now - seen))} ago` : '', ago: seen ? ago(Math.max(0, now - seen)) : '', at: seen ?? now, rank: 4, sha: '', who: '', beads: [],
+        t: seen ? (n) => ({ detail: `last seen ${ago(Math.max(0, n - seen))} ago`, ago: ago(Math.max(0, n - seen)) }) : undefined,
         links: L('machine', 'Machine', (e as Engine & { url?: string }).url ?? (rrBase(w) ? `${rrBase(w)}/admin/agents` : '')) });
     }
   }
@@ -440,11 +470,7 @@ function needs(w: World, v: FlowView, now: number, filter: Filter): Need[] {
     if (!match(r.id, r.app)) continue;
     const culprit = r.main.culprit ?? r.main.head;
     const dot = r.main.recent?.find((d) => d.sha === culprit) ?? r.main.recent?.at(-1);
-    let red: Pipeline | undefined;
-    for (const p of w.pipelines.values()) {
-      if (p.repo !== r.id || p.branch !== r.default_branch || (p.state !== 'failure' && p.state !== 'error')) continue;
-      if (!red || (p.finished ?? p.created) > (red.finished ?? red.created)) red = p;
-    }
+    const red = reds(w).get(r.id);
     const since = r.main.since || dot?.at || 0;
     const rec = r.main.recent ?? [];
     let streak = rec.length - 1;
@@ -456,11 +482,12 @@ function needs(w: World, v: FlowView, now: number, filter: Filter): Need[] {
       const bad = st0 === 'failure' || st0 === 'error';
       return { id: `${i}`, st: st0 === 'success' ? 'ok' : bad ? (i >= streak ? 'bad' : 'was') : st0 === 'running' || st0 === 'pending' ? 'run' : 'skip', cul: i === ci };
     });
-    out.push({ id: `main:${r.id}`, kind: 'main', what: repoName(r.id), word: `red ${short(Math.max(0, now - since))}`, detail: fit(dot?.title ?? '', 64), ago: '', at: since, rank: 5, sha: dot ? sha7(dot.sha) : '', who: dot?.author ? fit(dot.author.replace(/\[bot\]$/, ''), 20) : '', beads,
+    out.push({ id: `main:${r.id}`, kind: 'main', what: repoName(r.id), word: `red ${short(Math.max(0, now - since))}`, detail: fit(dot?.title ?? '', 64), ago: '', at: since, rank: 5, t: (n) => ({ word: `red ${short(Math.max(0, n - since))}` }), sha: dot ? sha7(dot.sha) : '', who: dot?.author ? fit(dot.author.replace(/\[bot\]$/, ''), 20) : '', beads,
       links: [...L('commit', 'Commit', commitUrl(w, r.id, culprit)), ...L('ci', red?.lane === 'gha' ? 'GitHub Actions' : 'Roadrunner', red ? runUrl(w, String(red.id)) : (r.links as { cicd?: string } | undefined)?.cicd ?? r.links?.woodpecker ?? '')] });
   }
   out.sort((a, b) => a.rank - b.rank || b.at - a.at);
-  return out.slice(0, BROKEN_CAP).map(({ rank: _r, at: _a, ...n }) => n);
+  const top = out.slice(0, BROKEN_CAP);
+  return { list: top.map(({ rank: _r, at: _a, t: _t, ...n }) => n), stamps: top.map((n) => n.t) };
 }
 function needsMore(all: Need[], shown: number): string {
   if (all.length <= shown) return '';
@@ -473,64 +500,162 @@ function needsMore(all: Need[], shown: number): string {
 // ---- the feed ----
 type Filter = { repo: string; app: string; sha: string };
 export type FeedArgs = [number, string, string, string];
-let memo: { w: World; key: string; v: NowFeed } | null = null;
+/** The last full build and what re-stamps its clock texts. A tick that only moved the clock (the
+ *  same world version, filter and zone, no row crossing a band's edge: FlowView.until, a running
+ *  job turning stuck) keeps every row and re-stamps only its timers and ages: no flowOf, no row
+ *  rebuilt, the answer's shape and order unchanged (mac-perf2: a 1 Hz tick costs ~nothing). */
+type Built = {
+  w: World; skey: string; sec: number; at: number; until: number; off: number;
+  v: NowFeed;
+  /** the events behind v.now / v.just / v.earlier, block by block */
+  evs: [FlowEvent[], FlowEvent[], FlowEvent[]];
+  stamps: (Stamp | undefined)[];
+  mach: (now: number) => Mach[];
+  oldest: number; nWait: number; last?: number;
+};
+let memo: Built | null = null;
 /** The last feed shows something running or waiting (its m:ss timers follow the second). */
 export function feedTicking(): boolean { return !!memo && memo.v.ok && (memo.v.running > 0 || memo.v.queued > 0 || memo.v.waiting > 0); }
 
-export function feedAnswer(d: NowDeps, [tick, repo, app, sha]: FeedArgs): NowFeed {
+/** A job line's clock texts at `now` (its timer, progress, the "over" caption, a queue's wait). */
+function stampJob(w: World, l: JobLine, j: FlowJob, now: number): JobLine {
+  if (j.state === 'running') {
+    const el = now - (j.started ?? j.created);
+    let pct = l.pct, over = l.over;
+    if (j.expectedMs) { pct = Math.min(1, el / j.expectedMs); over = el > j.expectedMs + 1000; }
+    return { ...l, timer: timer(el), pct, over, note: noteOf(w, j, now) };
+  }
+  if (j.state === 'queued' || j.state === 'waiting') {
+    const c = waitChip(j, now);
+    return { ...l, timer: timer(now - j.created), chain: l.chain.map((x) => (x.id === 'w' ? c : x)), chainS: l.chainS.map((x) => (x.id === 'w' ? c : x)) };
+  }
+  return l;
+}
+function stampBlock(w: World, b: EvBlock, e: FlowEvent, now: number): EvBlock {
+  const at = e.band === 'now' ? e.at : e.finished ?? e.at;
+  const a = ago(Math.max(0, now - at));
+  if (e.band !== 'now') return a === b.ago ? b : { ...b, ago: a };
+  return { ...b, ago: a, jobs: b.jobs.map((l, k) => stampJob(w, l, e.jobs[k], now)) };
+}
+/** The feed's own clock texts (the status line's clock, the intake's oldest, the idle line). */
+function clockTexts(m: Pick<Built, 'oldest' | 'nWait' | 'last' | 'off'>, now: number) {
+  return {
+    clock: hhmm(now, m.off), // (hh:mm: a clock's seconds would move every second for nothing)
+    intake: m.nWait ? `${m.nWait} waiting${m.oldest ? ` · oldest ${short(Math.max(0, now - m.oldest))}` : ''}` : 'empty',
+    idleText: `Nothing running right now.${m.last ? ` Last event ${ago(Math.max(0, now - m.last))} ago.` : ''}`,
+  };
+}
+function restamp(m: Built, now: number, tick: number): NowFeed {
+  const w = m.w, v = m.v;
+  return {
+    ...v, tick, ...clockTexts(m, now),
+    machines: m.mach(now),
+    needs: v.needs.map((n, i) => { const t = m.stamps[i]; return t ? { ...n, ...t(now) } : n; }),
+    now: v.now.map((b, i) => stampBlock(w, b, m.evs[0][i], now)),
+    just: v.just.map((b, i) => stampBlock(w, b, m.evs[1][i], now)),
+    earlier: v.earlier.map((b, i) => stampBlock(w, b, m.evs[2][i], now)),
+  };
+}
+
+/** The feed: the last answer, re-stamped on a clock-only tick (synchronous, ~0.05 ms in Bun), or
+ *  rebuilt in two turns (the flow model, then the rows), each well inside the turn budget. */
+export function feedAnswer(d: NowDeps, args: FeedArgs): NowFeed | Promise<NowFeed> {
+  const hit = feedFast(d, args);
+  if (hit) return hit;
+  flowOf(d.world(), d.now(), flowFilter(feedFilter(d.world(), args).fRepo));
+  return yieldTurn().then(() => feedFast(d, args) ?? buildFeed(d, args));
+}
+async function yieldTurn(): Promise<void> {
+  const s = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+  if (s?.yield) await s.yield();
+}
+const flowFilter = (repo: string) => (repo ? { repo } : undefined);
+function feedKey(d: NowDeps, [, repo, app, sha]: FeedArgs) {
+  return `${d.world().ver}|${String(repo ?? '')}|${String(app ?? '')}|${String(sha ?? '')}|${d.offsetMin()}`;
+}
+/** The answer without a build: none yet (EMPTY_FEED), the same second, or a clock-only tick. */
+function feedFast(d: NowDeps, args: FeedArgs): NowFeed | null {
   const w = d.world();
   if (!w.loaded) return EMPTY_FEED;
+  if (!memo || memo.w !== w || memo.skey !== feedKey(d, args)) return null;
   const now = d.now();
-  const off = d.offsetMin();
+  const sec = Math.floor(now / 1000);
+  if (memo.sec === sec) return memo.v;
+  if (now < memo.at || now > memo.until) return null;
+  memo.v = restamp(memo, now, args[0]);
+  memo.sec = sec;
+  return memo.v;
+}
+function feedFilter(w: World, [, repo, app, sha]: FeedArgs) {
   const filter: Filter = { repo: String(repo ?? ''), app: String(app ?? ''), sha: String(sha ?? '') };
-  const key = `${w.ver}|${Math.floor(now / 1000)}|${filter.repo}|${filter.app}|${filter.sha}|${off}`;
-  if (memo && memo.w === w && memo.key === key) return memo.v;
   // an app filter is its repo's events (the app's own needs stay the app's)
   const appRepo = filter.app ? (w.apps.get(filter.app) as App | undefined)?.repo ?? '' : '';
   const shaRepo = filter.sha.includes('@') ? filter.sha.slice(0, filter.sha.indexOf('@')) : '';
-  const fRepo = filter.repo || appRepo || shaRepo;
-  const v = flowOf(w, now, fRepo ? { repo: fRepo } : undefined);
+  return { filter, shaRepo, fRepo: filter.repo || appRepo || shaRepo };
+}
+/** The feed in one turn (the tests'): the last answer or its re-stamp, else a whole build. */
+export function feedSync(d: NowDeps, args: FeedArgs): NowFeed { return feedFast(d, args) ?? buildFeed(d, args); }
+/** The whole feed, now, in one turn (feedAnswer's second turn). */
+export function buildFeed(d: NowDeps, args: FeedArgs): NowFeed {
+  const w = d.world();
+  if (!w.loaded) return EMPTY_FEED;
+  const tick = args[0];
+  const now = d.now();
+  const off = d.offsetMin();
+  const skey = feedKey(d, args);
+  const sec = Math.floor(now / 1000);
+  const { filter, shaRepo, fRepo } = feedFilter(w, args);
+  const v = flowOf(w, now, flowFilter(fRepo));
   const shaOnly = filter.sha.includes('@') ? filter.sha.slice(filter.sha.indexOf('@') + 1) : filter.sha;
   const keep = (e: FlowEvent) => !shaOnly || e.sha.startsWith(shaOnly);
-  const nowEv = v.events.filter((e) => e.band === 'now' && keep(e)).map((e) => block(w, e, now, off));
-  const just = v.events.filter((e) => e.band === 'just' && keep(e)).map((e) => block(w, e, now, off));
-  const earlier = v.events.filter((e) => e.band === 'earlier' && keep(e)).map((e) => block(w, e, now, off));
-  const all = needs(w, v, now, filter);
-  let busy = 0, slots = 0;
+  const evNow = v.events.filter((e) => e.band === 'now' && keep(e));
+  const evJust = v.events.filter((e) => e.band === 'just' && keep(e));
+  const evEarlier = v.events.filter((e) => e.band === 'earlier' && keep(e));
+  const nowEv = evNow.map((e) => block(w, e, now, off));
+  const just = evJust.map((e) => block(w, e, now, off));
+  const earlier = evEarlier.map((e) => block(w, e, now, off));
+  const nd = needs(w, v, now, filter);
+  const all = nd.list;
+  // the rows stay until a row crosses a band's edge (FlowView.until) or a running job turns stuck
+  let until = v.until;
   // each busy slot's ring fills with its job's elapsed / usual (the Yard's progress rings)
-  const pcts = new Map<string, number[]>();
+  const runs = new Map<string, { s: number; x: number }[]>();
   for (const e of v.events) if (e.band === 'now') for (const j of e.jobs) {
-    if (j.state !== 'running' || !j.machine) continue;
-    const a = pcts.get(j.machine.id) ?? [];
-    a.push(j.expectedMs ? Math.min(0.98, Math.max(0.02, (now - (j.started ?? j.created)) / j.expectedMs)) : -1);
-    pcts.set(j.machine.id, a);
+    if (j.state !== 'running') continue;
+    if (j.expectedMs && j.started) { const b = j.started + Math.max(STUCK_MIN_MS, STUCK_X * j.expectedMs) - 1; if (b >= now && b < until) until = b; }
+    if (!j.machine) continue;
+    const a = runs.get(j.machine.id) ?? [];
+    a.push({ s: j.started ?? j.created, x: j.expectedMs ?? 0 });
+    runs.set(j.machine.id, a);
   }
-  const machines: Mach[] = v.machines.map((m) => {
+  let busy = 0, slots = 0;
+  for (const m of v.machines) if (m.id !== 'm:gha') { busy += m.busy ?? 0; slots += m.slots ?? 0; }
+  const ms = v.machines;
+  const urls = ms.map((m) => engineUrl(w, m));
+  const mach = (t: number): Mach[] => ms.map((m, mi) => {
     const b = m.busy ?? 0, s = m.slots ?? 0;
-    if (m.id !== 'm:gha') { busy += b; slots += s; }
-    const pp = pcts.get(m.id) ?? [];
+    const pp = (runs.get(m.id) ?? []).map((r) => (r.x ? Math.min(0.98, Math.max(0.02, (t - r.s) / r.x)) : -1));
     return {
       id: m.id, label: (m.label === 'GitHub runner' ? 'github actions' : m.label).toLowerCase(), text: m.online === false ? 'offline' : s ? `${b}/${s}` : `${b}`,
       cells: s ? Array.from({ length: Math.min(s, 16) }, (_, i) => ({ id: `${m.id}#${i}`, on: i < b, pct: i < b ? Math.max(0, pp[i] ?? -1) : 0, known: i < b && (pp[i] ?? -1) >= 0 })) : [],
-      busy: b, slots: s, offline: m.online === false, url: engineUrl(w, m),
+      busy: b, slots: s, offline: m.online === false, url: urls[mi],
     };
   });
   let oldest = 0;
   for (const e of v.events) if (e.band === 'now') for (const j of e.jobs) if ((j.state === 'queued' || j.state === 'waiting') && (!oldest || j.created < oldest)) oldest = j.created;
   const nWait = v.queued + (v.waiting ?? 0);
-  const intake = nWait ? `${nWait} waiting${oldest ? ` · oldest ${short(Math.max(0, now - oldest))}` : ''}` : 'empty';
-  const last = v.lastEventAt;
   const filterText = filter.sha ? `commit ${sha7(shaOnly)}${shaRepo ? ` in ${repoName(shaRepo)}` : ''}` : filter.app ? `app ${filter.app}` : filter.repo ? `repo ${repoName(filter.repo)}` : '';
+  const texts = { oldest, nWait, last: v.lastEventAt, off };
   const feed: NowFeed = {
-    ok: true, tick, clock: hhmm(now, off), // (hh:mm: a clock's seconds would move every second for nothing)
-    running: v.running, queued: v.queued, waiting: v.waiting ?? 0, busy, slots, machines,
+    ok: true, tick, ...clockTexts(texts, now),
+    running: v.running, queued: v.queued, waiting: v.waiting ?? 0, busy, slots, machines: mach(now),
     needs: all, needsN: all.length, needsMore: needsMore(all, BROKEN_SHOWN),
-    now: nowEv, just, earlier, intake,
-    idle: nowEv.length === 0, idleText: `Nothing running right now.${last ? ` Last event ${ago(Math.max(0, now - last))} ago.` : ''}`,
+    now: nowEv, just, earlier,
+    idle: nowEv.length === 0,
     filtered: filterText !== '', filterText,
     summary: `${v.running} running, ${v.queued} queued, ${all.length} need a human`,
   };
-  memo = { w, key, v: feed };
+  memo = { w, skey, sec, at: now, until, ...texts, v: feed, evs: [evNow, evJust, evEarlier], stamps: nd.stamps, mach };
   return feed;
 }
 
@@ -614,7 +739,10 @@ function logCapable(up: Upstream | null): boolean {
 
 export function nowSources(d: NowDeps) {
   return {
-    nowFeed: (a: FeedArgs) => safe('nowFeed', EMPTY_FEED, () => feedAnswer(d, a)),
+    nowFeed: (a: FeedArgs) => {
+      const r = safe('nowFeed', EMPTY_FEED as NowFeed | Promise<NowFeed>, () => feedAnswer(d, a));
+      return r instanceof Promise ? r.catch((e) => safe('nowFeed', EMPTY_FEED, () => { throw e; })) : r;
+    },
     nowPanel: (a: [string, number]) => safe('nowPanel', EMPTY_PANEL, () => panelAnswer(d, a)),
     nowLog: (a: LogArgs) => safe('nowLog', NO_LOG as Log | Promise<Log>, () => logAnswer(d, a)),
   };

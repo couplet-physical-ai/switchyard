@@ -86,6 +86,10 @@ export interface FlowView {
   lastEventAt?: number;
   /** (extra) `now` rows still waiting for CI (pushed, no pipeline yet). */
   waiting?: number;
+  /** (extra) The view's rows stay as they are while the clock is at most this (the world
+   *  unchanged): the next time a row crosses a band's edge (just → earlier, out of the 2 h,
+   *  a waiting push out of its 5 min). Only texts (timers, ages) move before it. */
+  until: number;
 }
 export interface FlowStepDetail { name: string; state: FlowState; ms?: number; cached?: boolean; errorLine?: string; started?: number }
 export interface FlowWorkflowDetail { name: string; state: FlowState; started?: number; finished?: number; machine?: FlowMachine; steps: FlowStepDetail[] }
@@ -525,8 +529,13 @@ function drafts(w: World): Built {
 }
 
 /** Pushes with no pipeline yet: a commit at stage `pushed`, or a recent `push` event. */
-function waitingDrafts(w: World, now: number, b: Built): Draft[] {
+function waitingDrafts(w: World, now: number, b: Built, lim: { until: number }): Draft[] {
   const out: Draft[] = [];
+  // the list changes when a scanned time leaves the 5 min (or a future one comes within 1 min)
+  const edge = (at: number) => {
+    const t = at > now + 60_000 ? at - 60_001 : at + WAIT_MS;
+    if (t < lim.until) lim.until = t;
+  };
   const seen = new Set<string>();
   const since = now - WAIT_MS;
   const add = (repo: string, sha: string, at: number, c: Commit | undefined) => {
@@ -543,10 +552,12 @@ function waitingDrafts(w: World, now: number, b: Built): Draft[] {
   for (let i = rec.length - 1; i >= 0; i--) {
     const e = rec[i];
     if (e.at < since) break;
+    edge(e.at);
     if (e.k === 'push') add(e.repo, e.sha, e.at, w.commits.get(`${e.repo}@${e.sha}`) ?? ({ repo: e.repo, sha: e.sha, branch: e.branch, title: e.title, author: e.author, bot: e.bot, at: e.at, stage: 'pushed', ci: 'none', pipelines: [] } as Commit));
   }
   for (const c of b.pushed) {
     if (c.at < since) break;
+    edge(c.at);
     add(c.repo, c.sha, c.at, c);
   }
   return out;
@@ -666,12 +677,33 @@ function build(w: World, now: number, filter?: FlowFilter): FlowView {
   const gha = ghaRunning(w);
   const built = drafts(w);
   const all = built.drafts;
-  const waiting = waitingDrafts(w, now, built);
+  const lim = { until: Infinity };
+  const waiting = waitingDrafts(w, now, built, lim);
   const nowEv: FlowEvent[] = [];
-  const just: FlowEvent[] = [];
-  const earlier: FlowEvent[] = [];
+  // finished rows: only those that can be shown (or fold into a shown cron) become events, so a
+  // fleet's 700 finished runs of the last 2 h cost a sort key each, not an event each
+  type Fin = { d: Draft; t: number; ev?: FlowEvent };
+  const justC: Fin[] = [];
+  const earlyC: Fin[] = [];
+  let until = lim.until;
   let running = 0, queued = 0, lastEventAt: number | undefined;
   const horizon = now - EARLIER_MS;
+  const finished = (d: Draft, ev?: FlowEvent) => {
+    let t: number;
+    if (ev) t = ev.finished ?? ev.at;
+    else {
+      // eventOf's own `finished` (the latest job's finish; every job kept, under JOBS_CAP) and `at`
+      let fin: number | undefined;
+      for (const p of d.pipes) if (p.finished != null && (fin == null || p.finished > fin)) fin = p.finished;
+      const c = d.commit;
+      let at = d.t0;
+      const fire = d.kind === 'cron' || d.kind === 'manual' || d.kind === 'deployment';
+      if (!fire && c?.at != null && c.at <= d.t0 && d.t0 - c.at <= RERUN_GAP_MS) at = c.at;
+      t = fin ?? at;
+    }
+    if (t >= now - JUST_MS) { justC.push({ d, t, ev }); if (t + JUST_MS < until) until = t + JUST_MS; }
+    else if (t >= horizon) { earlyC.push({ d, t, ev }); if (t + EARLIER_MS < until) until = t + EARLIER_MS; }
+  };
   const consider = (d: Draft) => {
     if (!matches(w, d, filter)) return;
     // cheap pre-cut: a run whose every pipeline finished before the horizon is gone
@@ -684,6 +716,7 @@ function build(w: World, now: number, filter?: FlowFilter): FlowView {
     }
     if (lastEventAt == null || d.t0 > lastEventAt) lastEventAt = d.t0;
     if (!alive && lastT < horizon) return;
+    if (!alive && d.pipes.length <= JOBS_CAP) { finished(d); return; }
     const ev = eventOf(w, d, idx, gha, now);
     if (ev.band === 'now') {
       nowEv.push(ev);
@@ -696,16 +729,29 @@ function build(w: World, now: number, filter?: FlowFilter): FlowView {
           if (s === 'running') running++; else if (s === 'queued' || s === 'waiting') queued++;
         }
       }
-    } else if (ev.band === 'just') just.push(ev);
-    else if ((ev.finished ?? ev.at) >= horizon) earlier.push(ev);
+    } else finished(d, ev);
   };
   for (const d of all) consider(d);
   for (const d of waiting) consider(d);
-  // now: the newest trigger first; just: the newest finish first; earlier: newest first
+  const byFinish = (a: Fin, b: Fin) => b.t - a.t || cmp(a.d.id, b.d.id);
+  justC.sort(byFinish);
+  earlyC.sort(byFinish);
+  const evOf = (c: Fin) => c.ev ?? eventOf(w, c.d, idx, gha, now);
+  const just = justC.slice(0, JUST_CAP).map(evOf);
+  // earlier: the rows foldCrons keeps under the cap, and every later firing of a cron they head
+  const earlier: FlowEvent[] = [];
+  const heads = new Set<string>();
+  let shown = 0;
+  for (const c of earlyC) {
+    if (c.d.kind === 'cron') {
+      const k = `${c.d.repo}@${c.d.sha}#cron~`;
+      if (!heads.has(k)) { if (shown >= EARLIER_CAP) continue; heads.add(k); shown++; }
+    } else { if (shown >= EARLIER_CAP) continue; shown++; }
+    earlier.push(evOf(c));
+  }
+  // now: the newest trigger first; just and earlier (sorted above, by key) both by the newest
+  // finish: a row sliding from just into earlier keeps its place
   nowEv.sort((a, b) => lastTrigger(b) - lastTrigger(a) || cmp(a.id, b.id));
-  // just and earlier both by the newest finish: a row sliding from just into earlier keeps its place
-  just.sort((a, b) => (b.finished ?? b.at) - (a.finished ?? a.at) || cmp(a.id, b.id));
-  earlier.sort((a, b) => (b.finished ?? b.at) - (a.finished ?? a.at) || cmp(a.id, b.id));
   foldCrons(earlier);
   const events = [
     ...nowEv.slice(0, NOW_CAP),
@@ -714,7 +760,7 @@ function build(w: World, now: number, filter?: FlowFilter): FlowView {
   ];
   const view: FlowView = {
     at: now, running, queued, idle: nowEv.length === 0,
-    machines: machinesOf(idx, gha), events,
+    machines: machinesOf(idx, gha), events, until,
   };
   if (lastEventAt != null) view.lastEventAt = lastEventAt;
   let waitingRows = 0;
