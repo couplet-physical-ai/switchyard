@@ -750,3 +750,15 @@ async fn pipeline_detail_tells_deleted_from_failing() {
         .unwrap_err();
     assert!(e.to_string().contains("HTTP 404"), "{e}");
 }
+
+#[test]
+fn a_repo_the_stream_was_not_subscribed_to_reopens_it() {
+    use std::collections::BTreeSet;
+    use switchyard::adapters::woodpecker::needs_resubscribe;
+    let streamed: BTreeSet<u64> = [1, 2, 3].into();
+    assert!(!needs_resubscribe(&streamed, [1, 3]));
+    // kit-atom activated after the stream connected: its runs never came over it.
+    assert!(needs_resubscribe(&streamed, [2, 421]));
+    // Not connected yet: the connect subscribes to everything.
+    assert!(!needs_resubscribe(&BTreeSet::new(), [421]));
+}

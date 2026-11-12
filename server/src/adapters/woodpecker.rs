@@ -753,6 +753,16 @@ struct Shared {
     agents: BTreeMap<u64, String>,
     /// Last known status per pipeline (repo_id, number) for reconcile diffs.
     known: BTreeMap<(u64, u64), String>,
+    /// The repos the open event stream was subscribed to (Woodpecker fixes a stream's
+    /// topics at connect: a repo activated later sends it nothing).
+    streamed: BTreeSet<u64>,
+    /// Reopens the event stream (a repo it was not subscribed to showed up).
+    resubscribe: Arc<tokio::sync::Notify>,
+}
+
+/// Whether the event stream must reopen to hear from repos it was not subscribed to.
+pub fn needs_resubscribe(streamed: &BTreeSet<u64>, seen: impl IntoIterator<Item = u64>) -> bool {
+    !streamed.is_empty() && seen.into_iter().any(|r| !streamed.contains(&r))
 }
 
 pub struct WpAdapter {
@@ -790,6 +800,8 @@ impl WpAdapter {
             repos: BTreeMap::new(),
             agents: BTreeMap::new(),
             known: BTreeMap::new(),
+            streamed: BTreeSet::new(),
+            resubscribe: Arc::new(tokio::sync::Notify::new()),
         }));
         self.adapters.syncing(NAME);
         // 1. Inventory + agents first (names for everything else).
@@ -818,7 +830,8 @@ impl WpAdapter {
         info!("woodpecker: backfill done");
         // 4. Periodic polls.
         let mut q = tokio::time::interval(Duration::from_secs(5));
-        let mut rec = tokio::time::interval(Duration::from_secs(60));
+        // The fallback for anything the stream misses: at most 30 s late.
+        let mut rec = tokio::time::interval(Duration::from_secs(30));
         let mut inv = tokio::time::interval(Duration::from_secs(600));
         q.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         rec.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -869,6 +882,10 @@ impl WpAdapter {
             let mut g = sh.lock();
             g.repos = repos.iter().map(|r| (r.id, r.full_name.clone())).collect();
             g.agents = agents.iter().map(|a| (a.id, a.name.clone())).collect();
+            if needs_resubscribe(&g.streamed, g.repos.keys().copied()) {
+                info!("woodpecker: new repos, reopening the event stream");
+                g.resubscribe.notify_one();
+            }
         }
         self.send(vec![Fact::Repos(list)], false).await;
         Ok(())
@@ -994,6 +1011,28 @@ impl WpAdapter {
         let mut need: BTreeSet<(u64, u64)> = BTreeSet::new();
         let active_keys: BTreeSet<(u64, u64)> =
             active.iter().map(|p| (p.repo_id, p.number)).collect();
+        // A run of a repo the stream does not hear from (activated after it connected,
+        // kit-atom/kit-titan): learn its name if new, reopen the stream.
+        let unknown = {
+            let g = sh.lock();
+            active
+                .iter()
+                .chain(feed.iter())
+                .any(|p| !g.repos.contains_key(&p.repo_id))
+        };
+        if unknown {
+            self.inventory(sh).await.ok();
+        }
+        {
+            let g = sh.lock();
+            if needs_resubscribe(
+                &g.streamed,
+                active.iter().chain(feed.iter()).map(|p| p.repo_id),
+            ) {
+                info!("woodpecker: runs of repos the stream misses, reopening it");
+                g.resubscribe.notify_one();
+            }
+        }
         {
             let g = sh.lock();
             for p in active.iter().chain(feed.iter()) {
@@ -1082,6 +1121,11 @@ async fn stream_once(
     if !resp.status().is_success() {
         anyhow::bail!("stream HTTP {}", resp.status());
     }
+    let resubscribe = {
+        let mut g = sh.lock();
+        g.streamed = g.repos.keys().copied().collect();
+        g.resubscribe.clone()
+    };
     let _ = reconnected.try_send(());
     info!("woodpecker: event stream connected");
     let mut body = resp.bytes_stream();
@@ -1092,6 +1136,7 @@ async fn stream_once(
         let chunk = tokio::select! {
             c = tokio::time::timeout(Duration::from_secs(75), body.next()) => c,
             _ = tokio::time::sleep_until(deadline) => return Ok(()),
+            _ = resubscribe.notified() => return Ok(()),
         };
         let chunk = match chunk {
             Err(_) => anyhow::bail!("idle 75 s"),
