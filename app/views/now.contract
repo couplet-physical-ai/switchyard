@@ -271,6 +271,9 @@ component NowView
     open: string
     mode: string
     reduced: bool
+    // Live is covered (another view on top) or paused: what breathes forever (the LIVE beat, a
+    // live step's chip) is still, as nothing on screen moves
+    calm: bool
     narrow: bool
     compact: bool
     tight: bool
@@ -285,7 +288,7 @@ component NowView
     settings: action
   view
     column flex=1 min-height=0 background-color="zr.bg" color="zr.ink" font-family="Commit Mono" testId="now" key=key
-      NowStatus(d=d, mode=mode, reduced=reduced, narrow=narrow, sel=sel, select=select, clear=clear)
+      NowStatus(d=d, mode=mode, reduced=(reduced or calm), narrow=narrow, sel=sel, select=select, clear=clear)
       scroll flex=1 min-height=0 testId="now-scroll"
         column padding=(narrow ? "0 12px 40px" : "0 16px 48px") gap=0
           if sel.startsWith("machine:")
@@ -305,15 +308,15 @@ component NowView
           if d.ok and d.idle
             text d.idleText font-size=12 color="zr.ink2" padding=(narrow ? "14px 0" : "10px 0 10px 64px") border-top="1px solid zr.rule" testId="now-idle"
           for b, bi in d.now key=b.id
-            NowBlock(b=b, p=p, log=log, sel=sel, narrow=narrow, compact=compact, tight=tight, reduced=reduced, testKey=`${bi}`, select=select, only=only, close=close)
+            NowBlock(b=b, p=p, log=log, sel=sel, narrow=narrow, compact=compact, tight=tight, reduced=reduced, calm=calm, testKey=`${bi}`, select=select, only=only, close=close)
           if d.just.length > 0
             NowHeading(word="just finished", count="", note="last 15 min", narrow=narrow, testKey="just")
             for b, bi in d.just key=b.id
-              NowDone(b=b, p=p, log=log, sel=sel, open=open, dim=false, narrow=narrow, compact=compact, tight=tight, reduced=reduced, testKey=`just-${bi}`, select=select, expand=expand, only=only, close=close)
+              NowDone(b=b, p=p, log=log, sel=sel, open=open, dim=false, narrow=narrow, compact=compact, tight=tight, reduced=reduced, calm=calm, testKey=`just-${bi}`, select=select, expand=expand, only=only, close=close)
           if d.earlier.length > 0
             NowHeading(word="earlier", count="", note="last 2 h", narrow=narrow, testKey="earlier")
             for b, bi in d.earlier key=b.id
-              NowDone(b=b, p=p, log=log, sel=sel, open=open, dim=true, narrow=narrow, compact=compact, tight=tight, reduced=reduced, testKey=`earlier-${bi}`, select=select, expand=expand, only=only, close=close)
+              NowDone(b=b, p=p, log=log, sel=sel, open=open, dim=true, narrow=narrow, compact=compact, tight=tight, reduced=reduced, calm=calm, testKey=`earlier-${bi}`, select=select, expand=expand, only=only, close=close)
 
 // The status line: LIVE and the clock, what runs and waits, each machine's slots, the filter.
 component NowStatus
@@ -466,6 +469,7 @@ component NowBlock
     compact: bool
     tight: bool
     reduced: bool
+    calm: bool
     testKey: string
     select: action
     only: action
@@ -484,7 +488,7 @@ component NowBlock
             text "○" font-size=11 color="zr.ink3" width=14 text-align="center"
             text "pushed · no CI run has started yet" font-size=11.5 color="zr.ink3"
         for j, ji in b.jobs key=j.id
-          NowJobLine(j=j, narrow=narrow, compact=compact, tight=tight, reduced=reduced, sel=sel, testKey=`${testKey}-${ji}`, select=select)
+          NowJobLine(j=j, narrow=narrow, compact=compact, tight=tight, reduced=reduced, calm=calm, sel=sel, testKey=`${testKey}-${ji}`, select=select)
           if sel == j.sel
             NowDetail(p=p, log=log, narrow=narrow, select=select, close=close)
         if b.more != ""
@@ -521,6 +525,7 @@ component NowJobLine
     compact: bool
     tight: bool
     reduced: bool
+    calm: bool
     sel: string
     testKey: string
     select: action
@@ -547,9 +552,9 @@ component NowJobLine
             button appearance="none" press=select(j.machineSel) testId=`now-where-${testKey}` aria-label=`Runs on ${j.where}. What else runs there.` padding=0 border-radius=3
               :hover
                 background-color="zr.raise"
-              NowChipBox(c=c, reduced=reduced)
+              NowChipBox(c=c, reduced=(reduced or calm))
           else if not (tight and (c.id == "done" or c.id == "more"))
-            NowChipBox(c=c, reduced=reduced)
+            NowChipBox(c=c, reduced=(reduced or calm))
         if j.state == "running" or j.state == "queued" or j.state == "waiting"
           if j.state == "running"
             NowArrow(long=not narrow)
@@ -585,6 +590,7 @@ component NowDone
     compact: bool
     tight: bool
     reduced: bool
+    calm: bool
     testKey: string
     select: action
     expand: action
@@ -622,7 +628,7 @@ component NowDone
         column padding=(narrow ? "0 0 10px 0" : "0 0 8px 64px")
           text b.title font-size=11.5 color="zr.ink2" padding="0 0 4px 0"
           for j, ji in b.jobs key=j.id
-            NowJobLine(j=j, narrow=narrow, compact=compact, tight=tight, reduced=reduced, sel=sel, testKey=`${testKey}-${ji}`, select=select)
+            NowJobLine(j=j, narrow=narrow, compact=compact, tight=tight, reduced=reduced, calm=calm, sel=sel, testKey=`${testKey}-${ji}`, select=select)
             if sel == j.sel
               NowDetail(p=p, log=log, narrow=narrow, select=select, close=close)
 
