@@ -1482,14 +1482,29 @@ impl Store {
         let mut states: Vec<CiState> = Vec::new();
         let mut has_wp = false;
         if let Some(ps) = self.idx.sha_pipelines.get(&sk) {
-            // Latest run per (lane, event, deploy-ness): reruns supersede.
+            // Latest run per (lane, event, deploy-ness): reruns supersede. A manual run
+            // of a commit is a rerun of its push pipeline (the same config on the same
+            // sha), so the newer of the two decides: a passing manual rerun clears an
+            // older failed push run, and a failing one turns a green push red.
             let mut latest: BTreeMap<(u8, u8, bool), (u64, CiState)> = BTreeMap::new();
             for id in ps {
                 if let Some(p) = self.pipelines.get(id) {
                     if p.lane == LaneKind::Roadrunner {
                         has_wp = true;
                     }
-                    let key = (p.lane as u8, p.event as u8, p.deploy);
+                    // A manual run carries no deploy flag (only push runs deploy), so its
+                    // deploy-ness is whether it runs a deploy workflow, as a push run's is.
+                    let (event, deploy) = match p.event {
+                        PipelineEvent::Manual => (
+                            PipelineEvent::Push,
+                            p.deploy
+                                || p.workflows
+                                    .iter()
+                                    .any(|w| w.name.to_ascii_lowercase().contains("deploy")),
+                        ),
+                        e => (e, p.deploy),
+                    };
+                    let key = (p.lane as u8, event as u8, deploy);
                     let e = latest.entry(key).or_insert((p.number, p.state));
                     if p.number >= e.0 {
                         *e = (p.number, p.state);
@@ -1499,14 +1514,33 @@ impl Store {
             states.extend(latest.values().map(|(_, s)| *s));
         }
         if let Some(ss) = self.idx.sha_statuses.get(&sk) {
+            // Without its pipelines (older than the fetch window) a Roadrunner commit
+            // reads from its statuses, one per event and workflow
+            // (ci/woodpecker/<event>/<workflow>): the same rule, the newer of a push
+            // and a manual run's status for one workflow counts.
+            let mut wp: BTreeMap<&str, (Ms, CiState)> = BTreeMap::new();
             for k in ss {
                 if let Some(s) = self.statuses.get(k) {
-                    if has_wp && s.context.starts_with("ci/woodpecker") {
-                        continue;
+                    if s.context.starts_with("ci/woodpecker") {
+                        if has_wp {
+                            continue;
+                        }
+                        let wf = s
+                            .context
+                            .strip_prefix("ci/woodpecker/push/")
+                            .or_else(|| s.context.strip_prefix("ci/woodpecker/manual/"));
+                        if let Some(wf) = wf {
+                            let e = wp.entry(wf).or_insert((s.at, s.state));
+                            if s.at >= e.0 {
+                                *e = (s.at, s.state);
+                            }
+                            continue;
+                        }
                     }
                     states.push(s.state);
                 }
             }
+            states.extend(wp.values().map(|(_, s)| *s));
         }
         combine_states(states)
     }
