@@ -63,6 +63,8 @@ export const SIZES = [10, 10.5, 11, 11.5, 12, 19];
 const ADV = new Map<number, number>();
 export function setAdvance(px: number, a: number): void { if (a > px * 0.3 && a < px) ADV.set(px, a); }
 const adv = (px: number) => ADV.get(px) ?? px * 0.6;
+/** A glyph's advance at a size (logical units): board.ts boxes the words it repaints by it. */
+export const advOf = adv;
 const tw = (s: string, px: number) => s.length * adv(px);
 function fit(s: string, px: number, maxW: number): string {
   const n = Math.floor(maxW / adv(px));

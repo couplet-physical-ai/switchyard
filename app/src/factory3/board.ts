@@ -13,7 +13,7 @@ import type { Ctx2D, Frame } from '../../app.contract.d.ts';
 import type { World } from '../world.ts';
 import { FACE, easeInOut } from '../yard/theme.ts';
 import { SlotBook, boardOf, windowMs } from './model.ts';
-import { LINE_Y, PLACE, layoutOf, sceneOf, setAdvance, SIZES, type Anchor, type Hit, type Layout, type Scene } from './scene.ts';
+import { LINE_Y, PLACE, advOf, layoutOf, sceneOf, setAdvance, SIZES, type Anchor, type Hit, type Layout, type Op, type Scene } from './scene.ts';
 
 export type BoardArgs = { win: string; sel: string; mode: string; reduced: boolean; dock: boolean; hov: string };
 /** A square on its way from one place to another: along `pts` (CSS px, the square's centre),
@@ -32,6 +32,37 @@ function freshBitmap(f: Frame): boolean {
   const has = (k: string) => (f.causes.length ? f.causes.includes(k as never) : f.cause === k);
   return has('mount') || has('size') || has('font') || has('style');
 }
+
+/** An op's box on the board (CSS px; a text's generously: the face is monospaced, so its width is
+ *  its length in advances, padded for antialiasing and a wider fallback glyph). */
+function opBox(op: Op, s: number, out: number[]): void {
+  if (op[0] === 'r') { out.push(op[1] * s - 1, op[2] * s - 1, (op[1] + op[3]) * s + 1, (op[2] + op[4]) * s + 1); return; }
+  const px = op[5], w = (op[1].length * advOf(px) * 1.1 + 2) * s, x = op[2] * s, y = op[3] * s;
+  const x0 = op[7] === 2 ? x - w : op[7] === 1 ? x - w / 2 : x;
+  out.push(x0 - 2, y - (px * 1.1 + 2) * s, x0 + w + 2, y + (px * 0.4 + 2) * s);
+}
+/** Where two texts that differ only in some characters differ: the face is monospaced, so a
+ *  timer's "3:43" → "3:44" is one glyph's box (padded), not the whole line's. Else false. */
+function charBox(a: Op, b: Op, s: number, out: number[]): boolean {
+  if (a[0] !== 't' || b[0] !== 't' || a[1].length !== b[1].length) return false;
+  for (let k = 2; k < 8; k++) if (a[k] !== b[k]) return false;
+  const t0 = a[1], t1 = b[1], n = t0.length;
+  let i = 0, j = n - 1;
+  while (i < n && t0.charCodeAt(i) === t1.charCodeAt(i)) i++;
+  while (j > i && t0.charCodeAt(j) === t1.charCodeAt(j)) j--;
+  if (i >= n) return true;
+  const px = a[5], ad = advOf(px), x = a[2], y = a[3];
+  const x0 = a[7] === 2 ? x - n * ad : a[7] === 1 ? x - (n * ad) / 2 : x;
+  out.push((x0 + i * ad) * s - 3, y * s - (px * 1.1 + 2) * s, (x0 + (j + 1) * ad) * s + 3, y * s + (px * 0.4 + 2) * s);
+  return true;
+}
+const sameOp = (a: Op, b: Op) => {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+};
+/** Above this share of the board changed, it is simply repainted whole. */
+const DIRTY_MAX = 0.3;
 
 const fonts = new Map<number, string>();
 function fontOf(px: number, bold: boolean): string {
@@ -64,8 +95,11 @@ export class Board3 {
   private lastPaint = 0;
   private lastLive = 0;
   private now = 0;
+  /** the ops on the bitmap now, and the size and scale they were painted at */
+  private shown: Op[] | null = null;
+  private shownAt = '';
   /** For the tests and the HUD: how often the board was asked, built and painted; what moved. */
-  stats = { asks: 0, builds: 0, paints: 0, livePaints: 0, transits: 0, ops: 0, moving: 0, squares: 0, texts: 0 };
+  stats = { asks: 0, builds: 0, paints: 0, livePaints: 0, transits: 0, ops: 0, moving: 0, squares: 0, texts: 0, dirty: 0, redrawn: 0 };
 
   /** The board layer. Returns true only while a transit is under way (the next frame may land it). */
   drawBoard(ctx: Ctx2D, f: Frame, w: World, now: number, a: BoardArgs): boolean {
@@ -115,7 +149,7 @@ export class Board3 {
     const paintKey = `${f.width}x${f.height}@${f.scale}|${scene.key}`;
     if (paintKey !== this.painted || fresh) {
       this.painted = paintKey;
-      this.paint(ctx, f, scene, L);
+      this.paint(ctx, f, scene, L, fresh);
     }
     return this.transits.length > 0;
   }
@@ -182,7 +216,11 @@ export class Board3 {
     return !!p && now - (p.started ?? p.created) < FRESH_MS && now - p.created < FRESH_MS * 4;
   }
 
-  private paint(ctx: Ctx2D, f: Frame, scene: Scene, L: Layout): void {
+  /** Paints the scene. Over the scene already on the bitmap (the same size, as many marks), only
+   *  the boxes of the marks that changed are cleared and painted again, every mark under them in
+   *  order and clipped to them: a clock's second repaints its timers and filling crates (well
+   *  under 1 % of the board), not the board's ~600 marks. The pixels are the whole paint's. */
+  private paint(ctx: Ctx2D, f: Frame, scene: Scene, L: Layout, fresh: boolean): void {
     this.stats.paints++;
     this.lastPaint = f.time;
     this.stats.ops = scene.ops.length;
@@ -190,11 +228,59 @@ export class Board3 {
     this.stats.texts = scene.counts.texts;
     const s = L.s, dp = Math.max(1, f.scale || 1);
     const snap = (v: number) => Math.round(v * s * dp) / dp;
+    const ops = scene.ops, prev = this.shown, at = `${f.width}x${f.height}@${dp}|${s}`;
+    // the boxes that changed (device-pixel aligned), or null: paint it all
+    let boxes: number[] | null = null;
+    if (!fresh && prev && this.shownAt === at && prev.length === ops.length) {
+      const raw: number[] = [];
+      for (let i = 0; i < ops.length; i++) {
+        if (sameOp(prev[i], ops[i]) || charBox(prev[i], ops[i], s, raw)) continue;
+        opBox(prev[i], s, raw);
+        opBox(ops[i], s, raw);
+      }
+      boxes = [];
+      let area = 0;
+      next: for (let i = 0; i < raw.length; i += 4) {
+        const x0 = Math.max(0, Math.floor(raw[i] * dp) / dp), y0 = Math.max(0, Math.floor(raw[i + 1] * dp) / dp);
+        const x1 = Math.min(f.width, Math.ceil(raw[i + 2] * dp) / dp), y1 = Math.min(f.height, Math.ceil(raw[i + 3] * dp) / dp);
+        if (x1 <= x0 || y1 <= y0) continue;
+        // (a mark that changed colour or size in place: its old box is its new one)
+        for (let k = 0; k < boxes.length; k += 4) if (boxes[k] <= x0 && boxes[k + 1] <= y0 && boxes[k + 2] >= x1 && boxes[k + 3] >= y1) continue next;
+        boxes.push(x0, y0, x1, y1);
+        area += (x1 - x0) * (y1 - y0);
+      }
+      if (area > f.width * f.height * DIRTY_MAX) boxes = null;
+      else this.stats.dirty = area / (f.width * f.height);
+    }
+    this.shown = ops;
+    this.shownAt = at;
     ctx.resetTransform();
     ctx.globalAlpha = 1;
-    ctx.clearRect(0, 0, f.width, f.height);
-    let fill = '', font = '', align = -1;
-    for (const op of scene.ops) {
+    let only: number[] | null = null;
+    if (boxes) {
+      if (!boxes.length) { this.stats.redrawn = 0; return; }
+      for (let i = 0; i < boxes.length; i += 4) ctx.clearRect(boxes[i], boxes[i + 1], boxes[i + 2] - boxes[i], boxes[i + 3] - boxes[i + 1]);
+      ctx.save();
+      ctx.beginPath();
+      for (let i = 0; i < boxes.length; i += 4) ctx.rect(boxes[i], boxes[i + 1], boxes[i + 2] - boxes[i], boxes[i + 3] - boxes[i + 1]);
+      ctx.clip();
+      only = boxes;
+    } else {
+      this.stats.dirty = 1;
+      ctx.clearRect(0, 0, f.width, f.height);
+    }
+    let fill = '', font = '', align = -1, redrawn = 0;
+    const box: number[] = [];
+    for (const op of ops) {
+      if (only) {
+        // only the marks under a changed box
+        box.length = 0;
+        opBox(op, s, box);
+        let hit = false;
+        for (let i = 0; i < only.length; i += 4) if (box[0] < only[i + 2] && box[2] > only[i] && box[1] < only[i + 3] && box[3] > only[i + 1]) { hit = true; break; }
+        if (!hit) continue;
+      }
+      redrawn++;
       if (op[0] === 'r') {
         const x = snap(op[1]), y = snap(op[2]);
         const w = Math.max(1 / dp, snap(op[1] + op[3]) - x), h = Math.max(1 / dp, snap(op[2] + op[4]) - y);
@@ -208,6 +294,8 @@ export class Board3 {
         ctx.fillText(op[1], snap(op[2]), snap(op[3]));
       }
     }
+    if (only) ctx.restore();
+    this.stats.redrawn = redrawn;
   }
 
   /** The live layer: the squares in transit, and nothing else. Asleep (no frame asked) otherwise. */
@@ -279,7 +367,7 @@ export class Board3 {
   /** For the HUD and the perf tools: asked, built, painted. */
   workLine(): string {
     const st = this.stats;
-    return `board paints ${st.paints} · moving-layer paints ${st.livePaints} · transits ${st.transits} · scene builds ${st.builds} · ${st.ops} marks`;
+    return `board paints ${st.paints} · moving-layer paints ${st.livePaints} · transits ${st.transits} · scene builds ${st.builds} · ${st.ops} marks · last paint ${(st.dirty * 100).toFixed(2)} % of the board, ${st.redrawn} marks`;
   }
   /** "still": no pixel of either canvas has changed for two seconds (and one was painted at all). */
   get still(): boolean {

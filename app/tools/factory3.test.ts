@@ -50,6 +50,8 @@ function recorder() {
   const ctx = {
     fillStyle: '', font: '', textAlign: 'left', globalAlpha: 1,
     resetTransform() { /* identity */ },
+    save() { calls.push('save'); }, restore() { calls.push('restore'); }, beginPath() { /* a path */ },
+    rect(x: number, y: number, w: number, h: number) { calls.push(`clip-rect ${x},${y},${w},${h}`); }, clip() { calls.push('clip'); },
     clearRect(x: number, y: number, w: number, h: number) { calls.push(`clear ${x},${y},${w},${h}`); },
     fillRect(x: number, y: number, w: number, h: number) { calls.push(`rect ${this.fillStyle} ${x},${y},${w},${h}`); },
     fillText(s: string, x: number, y: number) { calls.push(`text ${this.fillStyle} ${this.font} ${this.textAlign} ${s} ${x},${y}`); },
@@ -143,8 +145,12 @@ const ARGS = { win: '30m', sel: '', mode: 'live', reduced: false, dock: false, h
   board.drawLive(B.ctx, frame(1000, 'mount'));
   eq(board.stats.transits, 0, 'move: opening the board on running work starts no transit');
   // one second later, nothing new: still no transit
+  const before = A.calls.length;
   board.drawBoard(A.ctx, frame(2000), w, t0 + 1000, ARGS);
   eq(board.stats.transits, 0, 'move: a tick of the clock starts no transit');
+  // the tick repaints its timers and crates only: cleared and clipped boxes, not the whole board
+  const tickCalls = A.calls.slice(before);
+  ok(board.stats.dirty > 0 && board.stats.dirty <= 0.01 && !tickCalls.includes('clear 0,0,1440,840') && tickCalls.includes('clip'), `tick: a second repaints ${(board.stats.dirty * 100).toFixed(2)} % of the board (≤ 1 %), ${board.stats.redrawn} of ${board.stats.ops} marks`);
   // a running run finishes (a real frame from the server)
   const eng = [...w.engines.values()].find((e) => e.running.some((id) => w.pipelines.get(id)?.state === 'running'))!;
   const run = w.pipelines.get(eng.running[0])!;
