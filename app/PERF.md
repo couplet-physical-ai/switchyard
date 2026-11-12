@@ -589,8 +589,9 @@ Mac mini, recorded fleet at 10× (`switchyard-server --demo --speed 10`, fresh p
 
 **It is not the GPU path.** `EXACT_CANVAS_STATS=1` (read from the drive's `app:` lines: `log show`
 and `log stream` catch nothing, NSLog from a child of the agent does not reach the unified log)
-reads, every second of the busy Yard at base `368b10d`: `5–14 gpu/s (2.5–4.0 ms each), 0.0
-recorded/s, 0.0 bitmap/s`. All four layers replay on Vello; nothing is recorded by Core Animation.
+reads, every second of the busy Yard at base `368b10d` (5 runs): `3–66 gpu/s (2.2–4.0 ms each),
+0.0 recorded/s, 0.0 bitmap/s` (~62 while packets move, 3–8 while only the panels change). All four
+layers replay on Vello; nothing is recorded by Core Animation.
 
 **Where the main thread goes** (`sample <pid> 22` inside a 30 s window, 12,517 samples a thread):
 
@@ -611,44 +612,52 @@ So a late frame is the main thread waiting: the 250 ms tick (`fed`, the overview
 the main thread delivers synchronously, and its commit draws `yardInfo` (and `yardLive`) on the
 owner. A display-link callback that comes during that turn waits for it. The frame report agrees:
 the late frames' callbacks run 15–28 ms from the frame's timestamp with 1–3 ms of apply, and their
-neighbours have a `callback gap`. Also: on this Mac the callback itself arrives ~8.7 ms after the
-frame's timestamp (target offset 7.9–8.5 ms on every record), so a frame's work can't read under
-~9 ms and the real budget after the callback is ~8 ms, of which the GPU replay takes 2.5–4.
+neighbours have a `callback gap`. Also: on this Mac the callback itself arrives 4.5–8.7 ms after
+the frame's timestamp (target offset 7.9–12.2 ms, steady within a run), so a frame's work can't
+read under that, and the budget after the callback is 8–12 ms, of which the GPU replay takes 2.2–4.
 
-**The fix (app side): the info layer draws in slices** (`InfoLayer.sliceOps`, `src/yard/info.ts`).
-A draw asks its dirty panels in order until the calls it has hashed (each panel's last count of
-recorded ops) would pass 700, and leaves the rest dirty and asks for the next frame. A tick asks a
-panel or two; the others follow 1–3 frames later. A full repaint (mount, resize, a moved panel) is
-never sliced. Bun without JIT (Hermes' proportions), `yard-bench --hermes`, 10×:
+**Tried, measured, reverted: the info layer in slices.** A draw asked its dirty panels until their
+last hashed ops would pass 700 and left the rest to the next 1–3 frames (`853ba6e`). On the
+devbox it cut the info draw (Bun without JIT, `yard-bench --hermes`, 10×) from p50 10.1 / p90 24.5
+/ p99 54.9 ms to 2.1 / 5.8 / 21.9. On the mini it bought nothing: the slices moved the same owner
+work into the frames that followed, where the display-link callback waits for it in
+`Runtime.tick`. Busy Yard, 10×, 30 s windows, interleaved, sy-client's soak app beside:
 
-| | info draws | ms p50 | p90 | p99 | max |
-|---|---|---|---|---|---|
-| before (`sliceOps 0`) | 31 | 10.1 | 24.5 | 54.9 | 54.9 |
-| after | 101 (70 left panels waiting) | 2.1 | 5.8 | 21.9 | 51.7 (a full repaint) |
+| Run | Tree | Callbacks | FPS | Late | Work median | Work p99 | CPU | Load |
+|---|---|---|---|---|---|---|---|---|
+| base 3 | `368b10d` | 824 | 58.97 | 32 (3.9 %) | 9.0–9.5 | 22.0–22.5 | 30.1 % | 1.86 → 2.13 |
+| head 3 | `853ba6e` (slices) | 836 | 59.22 | 41 (4.9 %) | 9.0–9.5 | 23.5–24.0 | 26.2 % | 2.10 → 2.11 |
+| base 4 | `368b10d` | 779 | 59.09 | 31 (4.0 %) | 9.0–9.5 | 24–48 | 27.6 % | 1.95 → 1.99 |
+| head 4 | `853ba6e` (slices) | 836 | 59.08 | 52 (6.2 %) | 9.0–9.5 | 22.5–23.0 | 30.5 % | 1.64 → 1.88 |
 
-The panels' hashed ops (10×): mains 2,360 (5–6 ms), queue 630 (3.2 ms), heat 420, sources 300,
-apps 257, now 160, the rest ≤ 80. Mains is now alone in its slice; it is the next thing to cut
-(a per-row key so unchanged rows are not hashed: 12 of 20 asks found the same calls).
+The recorded fleet is busy in bursts: the canvas stats alternate ~62 gpu/s (packets moving) with
+3–8 gpu/s (only the panels), so a 30 s window has ~800 callbacks, not 1,800. The panels' hashed
+ops (10×) for whoever cuts the info layer next: mains 2,360 (5–6 ms in Bun without JIT), queue 630
+(3.2 ms), heat 420, sources 300, apps 257, now 160, the rest ≤ 80; 12 of 20 asks of mains found
+the same calls (a per-row key would skip them).
 
-**Pixels.** `bun tools/yard-pixels.ts <10× server> --slices --scale 2` compares the sliced layer
-with a twin that draws every dirty panel at once (both gated), after each draw that left nothing
-waiting: 7 of 61 differ, all in mains' rows, by time alone (`red 55s` against `red 56s`: the same
-panel drawn a frame apart, so its `every: 400` gate falls on other ticks). Without `--slices`
-(gate against whole, as p3-yard ran it) the 10× server at scale 2 shows 15 of 41 draws differing
-in a 12 px strip of the intake panel ([237,237..305,249]) with slicing OFF too: that predates this
-pass.
+**What is left, then, is not the canvases' drawing but the owner's turns the main thread waits
+on**: the tick's commit (overview, the args draws), the frame tick, the stream's pump, and a full
+Hermes collection between calls (Exact's `collect_if_due`, `js/src/shim.cc`: one whenever the
+allocation since the last one passes half the live heap, ~10 MB at the Yard's ~20 MB). Each holds
+whichever display-link callback falls inside it. The ways out are in Exact (deliver a timer
+without the main thread waiting on its turn; collect off the frame path) or fewer, smaller owner
+turns in the app; neither fit this pass.
 
-**Paused, Live asked frames** (sy-client's 368b10d run: 44 callbacks a paused 30 s window). Two causes:
+**Paused, Live asked frames** (sy-client's 368b10d run: 44 callbacks a paused 30 s window). The
+cause was the test mock: it answered `/api/v1/tstream` (the device-token WebSocket path, which the
+real server's `api.rs` serves) with 404, so the app, holding a token, reconnected every 8–16 s,
+refetched the 2 MB snapshot and re-mounted Live's rows (their `nowIn` entrance: ~22 frames each
+time). The mock now serves `tstream` as `stream` (`853ba6e`). Against the real server the app never
+saw this; it still reconnects that way against any server that refuses the stream.
 
-1. `redraw()`'s wake ladder: paused, the playhead stands, `left` never shrinks and the same rung
-   came back forever (Live's `feedUntil` could pin it to 1 s). Paused, one wake every 32 s is left,
-   for the heap line (`fc37169`).
-2. The test mock answered `/api/v1/tstream` (the device-token WebSocket path, served by the real
-   server's `api.rs`) with 404, so a client holding a token reconnected every 8–16 s, refetching the
-   2 MB snapshot and re-mounting Live's rows (their `nowIn` animation: ~22 frames each time). The
-   mock now serves `tstream` as `stream`.
+Mini, paused Live, 30 s, frozen mock (load 1.4–1.8):
 
-Mini, paused Live 30 s, frozen mock: base `368b10d` with the old mock 44 callbacks, 1.69 % CPU
-(load 1.4) · head `a5712a9` (fc37169 + 92144f8) with the fixed mock **0 callbacks, 0.12 % CPU**
-(load 1.8). How much of it each cause was is not measured (the base run with the fixed mock
-failed: its build went stale).
+| Tree | Mock | Callbacks | CPU |
+|---|---|---|---|
+| base `368b10d` | 404 on `tstream` | 44 | 1.69 % |
+| base `368b10d` | serves `tstream` | **0** | **0.11 %** |
+| head `a5712a9` (+ `fc37169`) | serves `tstream` | 0 | 0.12 % |
+
+`fc37169` (paused: one wake every 32 s instead of a ladder rung that never shrank, since the
+playhead stands) stays: fewer wakes, no frames either way.

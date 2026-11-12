@@ -80,21 +80,8 @@ export class InfoLayer {
   static gate = true;
   gate = InfoLayer.gate;
   static debug = false;
-  /** p4: the most a draw hashes (the calls of the panels it asks, in recorded ops) before it
-   *  leaves the dirty panels after it to the next frame. On macOS a draw runs on the data
-   *  module's thread inside the commit that changed its args (the 250 ms tick), and the main
-   *  thread waits on that turn: one draw that asked every panel (mains, queue, heat, apps…) held
-   *  a display-link callback 20–30 ms. Sliced, a tick asks a panel or two, and the rest follow
-   *  in the next frames (each panel whole, in order; a full repaint is never sliced). 0: off. */
-  static sliceOps = 700;
-  sliceOps = InfoLayer.sliceOps;
-  private spent = 0;
-  /** Dirty panels left to the next frame by the last draw (the bench and the pixel tool read it). */
-  waiting = false;
-  /** Each panel's last hashed ops: what asking it again is likely to cost. */
-  private costs = new Map<string, number>();
 
-  /** Draws the dirty panels; returns true while a crossfade wants more frames, or panels wait. */
+  /** Draws the dirty panels; returns true while a crossfade wants more frames. */
   draw(g: Gfx, v: View, full: boolean): boolean {
     const S = v.S;
     const panels = this.panels(v);
@@ -112,16 +99,12 @@ export class InfoLayer {
       for (const p of panels) this.rects.set(p.id, `${p.rect.x},${p.rect.y},${p.rect.w},${p.rect.h}`);
     }
     const fading = v.lod.animating(v.t);
-    let waiting = false;
-    this.spent = 0;
-    this.waiting = false;
     for (const p of panels) {
       const old = this.keys.get(p.id);
       const fadeKey = fading ? (v.t | 0) : 0;
       const key = h(p.key, fadeKey);
       if (old === key) continue;
       if (!full && p.every && old !== undefined && v.t - (this.drawnAt.get(p.id) ?? -1e9) < p.every) continue;
-      if (!full && this.sliceOps > 0 && this.spent > 0 && this.spent + (this.costs.get(p.id) ?? 0) > this.sliceOps) { waiting = true; continue; }
       this.keys.set(p.id, key);
       this.drawnAt.set(p.id, v.t);
       const r = p.rect;
@@ -132,8 +115,7 @@ export class InfoLayer {
       }
       this.paint(g, v, p, full);
     }
-    this.waiting = waiting;
-    return fading || waiting;
+    return fading;
   }
 
   /** One panel whose key moved: its calls hashed first (nothing sent); the same calls as last
@@ -163,8 +145,6 @@ export class InfoLayer {
       else { now.box[i * 4] = hc.x0; now.box[i * 4 + 1] = hc.y0; now.box[i * 4 + 2] = hc.x1; now.box[i * 4 + 3] = hc.y1; }
     }
     hc.measurer = null;
-    this.spent += gh.ops;
-    this.costs.set(p.id, gh.ops);
     const was = full ? undefined : this.drawn.get(p.id);
     this.drawn.set(p.id, now);
     if (was && was.n === n) {
