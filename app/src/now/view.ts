@@ -69,6 +69,39 @@ export function dur(ms: number | undefined): string {
   const h = Math.floor(m / 60);
   return `${h}h ${m % 60 < 10 ? '0' : ''}${m % 60}m`;
 }
+/** p6: kept rows. The macOS data module writes each answer as JSON with a function called for
+ *  every value (Exact's js/src/binary.js keptReply: a string test and more per value); an array's
+ *  item that is frozen plain data is written once and its text kept by identity. Live's second
+ *  re-stamps a few words of a feed whose chips, links, finished jobs and machines stand: those are
+ *  frozen when made and the same objects are answered again, so a second's answer writes only what
+ *  moved. Nothing here writes to them after (stamps copy: stampJob, stampBlock, restamp). */
+function deepFreeze<T>(v: T): T {
+  if (v === null || typeof v !== 'object' || Object.isFrozen(v)) return v;
+  for (const k of Object.keys(v as object)) deepFreeze((v as Record<string, unknown>)[k]);
+  return Object.freeze(v);
+}
+function keptBlock(b: EvBlock, whole: boolean): void {
+  for (const c of b.chain) deepFreeze(c);
+  for (const l of b.links) deepFreeze(l);
+  if (whole) { for (const j of b.jobs) deepFreeze(j); return; }
+  for (const j of b.jobs) {
+    if (j.state !== 'running' && j.state !== 'queued' && j.state !== 'waiting') { deepFreeze(j); continue; }
+    for (const c of j.chain) deepFreeze(c);
+    for (const c of j.chainS) deepFreeze(c);
+    for (const l of j.links) deepFreeze(l);
+  }
+}
+/** A machine as it was last answered, when it reads the same (its words and rings): the same frozen object. */
+const machKept = new Map<string, { sig: string; v: Mach }>();
+function keptMach(v: Mach): Mach {
+  let sig = `${v.label}|${v.text}|${v.busy}|${v.slots}|${v.offline}|${v.url}`;
+  for (const c of v.cells) sig += `|${c.on ? 1 : 0}${c.known ? 1 : 0}${c.pct}`;
+  const k = machKept.get(v.id);
+  if (k && k.sig === sig) return k.v;
+  if (machKept.size > 64) machKept.clear();
+  machKept.set(v.id, { sig, v: deepFreeze(v) });
+  return v;
+}
 /** p6: a machine ring's fill, in whole device pixels of its arc (now.contract: a dash of
  *  pct × 40.84 user units at 2×, half a unit a pixel): the arc ends within half a pixel of the
  *  exact fill, and its svg changes when a pixel does (every few seconds for a 5-minute run), not
@@ -677,11 +710,12 @@ export function buildFeed(d: NowDeps, args: FeedArgs): NowFeed {
   const mach = (t: number): Mach[] => ms.map((m, mi) => {
     const b = m.busy ?? 0, s = m.slots ?? 0;
     const pp = (runs.get(m.id) ?? []).map((r) => (r.x ? ringPct(Math.min(0.98, Math.max(0.02, (t - r.s) / r.x))) : -1));
-    return {
+    const v: Mach = {
       id: m.id, label: (m.label === 'GitHub runner' ? 'github actions' : m.label).toLowerCase(), text: m.online === false ? 'offline' : s ? `${b}/${s}` : `${b}`,
       cells: s ? Array.from({ length: Math.min(s, 16) }, (_, i) => ({ id: `${m.id}#${i}`, on: i < b, pct: i < b ? Math.max(0, pp[i] ?? -1) : 0, known: i < b && (pp[i] ?? -1) >= 0 })) : [],
       busy: b, slots: s, offline: m.online === false, url: urls[mi],
     };
+    return keptMach(v);
   });
   let oldest = 0;
   for (const e of v.events) if (e.band === 'now') for (const j of e.jobs) if ((j.state === 'queued' || j.state === 'waiting') && (!oldest || j.created < oldest)) oldest = j.created;
@@ -697,6 +731,8 @@ export function buildFeed(d: NowDeps, args: FeedArgs): NowFeed {
     filtered: filterText !== '', filterText,
     summary: `${v.running} running, ${v.queued} queued, ${all.length} need a human`,
   };
+  // (p6: what a re-stamp keeps as it is, frozen: kept rows, see `kept`)
+  for (const band of [feed.now, feed.just, feed.earlier]) for (const b of band) keptBlock(b, b.band !== 'now');
   memo = { w, skey, sec, at: now, until, ...texts, v: feed, evs: [evNow, evJust, evEarlier], stamps: nd.stamps, mach };
   // (once: the launch probe times the first feed with rows from the process's start)
   if (!firstRows && nowEv.length + just.length + earlier.length) { firstRows = true; console.log(`live: first rows (${nowEv.length} now, ${just.length} just, ${earlier.length} earlier)`); }

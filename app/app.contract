@@ -442,7 +442,7 @@ component App
           TopBar(here=e.name, goTo=goTo, openPalette=openPalette)
           if e.name == "now"
             column flex=1 min-height=0 position="relative"
-              NowView(d=nowData, p=nowPanelData, log=nowLogData, sel=nowSel, open=nowOpen, mode=ov.mode, reduced=reduced, calm=(here != "now" or ov.mode == "paused"), t=nowTickData, narrow=nowNarrow, compact=nowCompact, tight=nowTight, more=nowMore, select=nowSelect, expand=nowExpand, close=nowClose, only=nowFilter, clear=nowClear, key=nowKey, toggleMore=nowToggleMore, settings=openSettings)
+              NowView(d=nowData, p=nowPanelData, log=nowLogData, sel=nowSel, open=nowOpen, mode=ov.mode, reduced=reduced, calm=(here != "now" or ov.mode == "paused"), t=nowTickData, narrow=nowNarrow, compact=nowCompact, tight=nowTight, more=nowMore, rows=nowRows, select=nowSelect, expand=nowExpand, close=nowClose, only=nowFilter, clear=nowClear, key=nowKey, toggleMore=nowToggleMore, settings=openSettings)
               if tokCard
                 TokenCard(status=tokState, detail=tok.detail, retry=tokRetry, enter=tokEnter)
               if not conn.ok and conn.status != "connecting" and not tokCard

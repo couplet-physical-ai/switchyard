@@ -226,6 +226,19 @@ members App
   state nowOpen = ""
   // "Needs a human" shows its first five; this shows them all.
   state nowMore = false
+  // p6: the "earlier" band (below the fold) shows its first rows with the rest of Live, then four
+  // more every 40 ms until all show: the first feed was one commit of ~1,400 views (a 96-192 ms
+  // frame on the mini right after the connect), ~900 of them these 30 rows
+  state nowFed = 0
+  task nowFedTake when here == "now" key=`${nowData.tick}`
+    after(1, nowFedSet)
+  action nowFedSet
+    nowFed = nowData.tick
+  state nowRows = 4
+  task nowGrow when nowData.ok and nowRows < nowData.earlier.length key=`${nowRows}`
+    after(40, nowGrowRows)
+  action nowGrowRows
+    nowRows = nowRows + 4
   resource nowVp = exactViewport() as shape NowVp else empty(width=1440)
   derive nowNarrow = nowVp.width > 0 and nowVp.width < 760
   // under ~1300 px a whole chain wraps: the short one (where · N done · the live step · +N)
@@ -238,7 +251,12 @@ members App
   // asked again when what they show changed (ov.tick: the fleet, the view, the minute's wakes),
   // never each second: the timers' second re-stamps only nowTickData (rk), a small answer
   resource nowData = nowFeed(here == "now" ? ov.tick : 0, nowRepo, nowApp, nowSha) as shape NowFeed else empty()
-  resource nowTickData = nowTick(here == "now" ? rk : 0, nowData.tick, here == "now" ? tickMs : 0) as shape NowTick else empty()
+  // (p6: its arguments read only states, so the runner keeps no copy of each second's answer: a
+  // resource whose arguments read a resource that read device state (tok, conn, ov, nowData: all of
+  // them) is a store reader, and every answer of one is written to disk for the next launch's first
+  // frame, a file, a rename and a full sync a second. The second is the clock's (the 1 s tick moves
+  // `clockMs`); a new feed is `nowFed`, taken by a task as it lands.)
+  resource nowTickData = nowTick(here == "now" ? floor(clockMs / 1000) : 0, nowFed, here == "now" ? clockMs : 0) as shape NowTick else empty()
   resource nowPanelData = nowPanel(nowSel, (here == "now" and nowSel != "") ? rk : 0, (here == "now" and nowSel != "") ? tickMs : 0) as shape NowPanel else empty()
   // The log tail: only with the server's capability; every 10 s while its step runs; dropped
   // (an empty selection) when the detail closes.
@@ -292,6 +310,7 @@ component NowView
     compact: bool
     tight: bool
     more: bool
+    rows: number
     select: action
     expand: action
     close: action
@@ -330,7 +349,8 @@ component NowView
           if d.earlier.length > 0
             NowHeading(word="earlier", count="", note="last 2 h", narrow=narrow, testKey="earlier")
             for b, bi in d.earlier key=b.id
-              NowDone(b=b, p=p, log=log, sel=sel, open=open, dim=true, narrow=narrow, compact=compact, tight=tight, reduced=reduced, calm=calm, testKey=`earlier-${bi}`, select=select, expand=expand, only=only, close=close)
+              if bi < rows
+                NowDone(b=b, p=p, log=log, sel=sel, open=open, dim=true, narrow=narrow, compact=compact, tight=tight, reduced=reduced, calm=calm, testKey=`earlier-${bi}`, select=select, expand=expand, only=only, close=close)
 
 // The status line: LIVE and the clock, what runs and waits, each machine's slots, the filter.
 component NowStatus

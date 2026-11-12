@@ -4,7 +4,7 @@
 // a live snapshot. Run: bun app/tools/now.test.ts [live-snapshot.json]
 import { existsSync, readFileSync } from 'node:fs';
 import { World } from '../src/world.ts';
-import { BROKEN_CAP, EMPTY_FEED, buildFeed, feedSync, feedUntil, tickAnswer, panelAnswer, fit, timer, dur, ago, type NowDeps, type NowFeed } from '../src/now/view.ts';
+import { BROKEN_CAP, EMPTY_FEED, RING, ringPct, buildFeed, feedSync, feedUntil, tickAnswer, panelAnswer, fit, timer, dur, ago, type NowDeps, type NowFeed } from '../src/now/view.ts';
 import { pickRows } from '../src/now/log.ts';
 import { NOW_CAP, JUST_CAP, EARLIER_CAP } from '../src/flow/model.ts';
 
@@ -246,6 +246,20 @@ eq(fit('short', 20), 'short', 'fit keeps what fits');
     ok(links.every((l) => /^https:\/\//.test(l.url)), `live: ${links.length} links, all https`);
     console.log(`live: now ${f.now.length} · just ${f.just.length} · earlier ${f.earlier.length} · needs ${f.needsN} · machines ${f.machines.map((m) => `${m.label} ${m.text}`).join(', ')}`);
   }
+}
+
+// p6: a machine ring fills by whole device pixels of its arc (40.84 user units at 2x): within half
+// a pixel of the exact fill, and its value moves only when a pixel does
+{
+  let worst = 0, moves = 0, last = -1;
+  for (let sec = 0; sec <= 300; sec++) {
+    const exact = Math.min(0.98, Math.max(0.02, sec / 300)), q = ringPct(exact);
+    worst = Math.max(worst, Math.abs(q - exact) * 40.84 * 2);
+    if (q !== last) { moves++; last = q; }
+  }
+  ok(worst <= 0.5 + 1e-9, `ring: within half a device pixel of the exact fill (${worst.toFixed(3)} px)`);
+  ok(moves < 100, `ring: a 5-minute run's ring moves ${moves} times, not 300`);
+  const px = RING.px; RING.px = 0; eq(ringPct(0.4321), 0.4321, 'ring: RING.px 0 is the exact fill'); RING.px = px;
 }
 
 console.log(fails ? `${fails} FAILED` : 'all passed');
