@@ -27,7 +27,7 @@ import { BOARDS, TITLE_Z, frontOf } from './front.ts'; // fx-front: the title ro
 import { ago, stackH } from './floor.ts';
 import { insights } from '../insights.ts';
 import { LANE_U, LANE_V0, PLAN, VIA_WORDS, WALL_Z } from './layout.ts';
-import { MONO, SMALL, TITLE, dur, runningStep } from './prims.ts';
+import { MONO, SMALL, TITLE, dur, runningStep, thousands } from './prims.ts';
 import type { Bay, Block, HitBox, Label, Layer, LiveFrame } from './types.ts';
 
 const {
@@ -116,7 +116,7 @@ export class Labels implements Layer {
    *  number ('02'), its title ('pr yard') or its hit id. */
   stageHover(id: string): string[] {
     const n = STAGES.find((s) => s.n === id || s.title === id)?.n ?? Object.entries(STAGE_AT).find(([, a]) => a.fly === id)?.[0] ?? '';
-    const f = this.f, c = f.census, w = f.world, fl = c.flow, num = (x: number) => x.toLocaleString('en-US');
+    const f = this.f, c = f.census, w = f.world, fl = c.flow, num = thousands; // leak: no Intl in a draw
     const lanes = floorGroups().lanes(), cnt = f.floor.data.last;
     const worst = (pick: (id: string) => number): [string, number] => {
       let best = '', k = 0;

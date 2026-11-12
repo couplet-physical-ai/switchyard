@@ -28,7 +28,8 @@ final class Updater: ExactModule {
         case "tokenFile": return SYHooks.shared.takeToken()
         case "tokenFileResult": return SYHooks.shared.report(request)
         case "scrub": return SYHooks.shared.scrub(request)
-        default: throw ExactNativeRefusal("the module answers state, tokenFile, tokenFileResult and scrub")
+        case "heapLog": return SYHooks.shared.heapLog(request) // leak: the data module's heap line (src/memlog.ts)
+        default: throw ExactNativeRefusal("the module answers state, tokenFile, tokenFileResult, scrub and heapLog")
         }
     }
 

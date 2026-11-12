@@ -47,7 +47,7 @@ import { floorGroups } from './groups.ts';
 import { LV, UY, VY } from './iso.ts';
 import { PLAN } from './layout.ts';
 import { breathe } from './motion.ts';
-import { F, box, poly } from './prims.ts';
+import { F, box, poly, thousands } from './prims.ts';
 import { failuresOf, threshold, trendOfLane } from './trendmarks.ts';
 import type { FloorPass, HitBox, Layer, LiveFrame } from './types.ts';
 
@@ -724,7 +724,7 @@ export class Front implements Layer {
       const [k, id, label] = k0 ? [k0, id0, label0] : ['roadx', L.id, L.name];
       const over = L.fail.filter((x) => x > L.thr).length;
       const vmax = Math.max(0, ...L.vol.map((x) => x ?? 0));
-      const roadLines = [`${L.name} · ${L.volWhat} an hour, 24 h`, `${Math.round(sum(L.vol)).toLocaleString('en-US')} ${L.volWhat} · busiest hour ${Math.round(vmax)}`, over ? `${over} h of failures over ${L.thrWhy} (red tips)` : `failures stayed under ${L.thrWhy}`];
+      const roadLines = [`${L.name} · ${L.volWhat} an hour, 24 h`, `${thousands(Math.round(sum(L.vol)))} ${L.volWhat} · busiest hour ${Math.round(vmax)}`, over ? `${over} h of failures over ${L.thrWhy} (red tips)` : `failures stayed under ${L.thrWhy}`];
       const [p1, p2] = [L.road[1]!, L.road[2]!];
       for (let j = 0; j < 8; j++) {
         const a = j / 8, bb = (j + 1) / 8;
@@ -760,7 +760,7 @@ export class Front implements Layer {
   /** A board's hover lines (≤ 3). */
   private boardLines(d: BoardData): string[] {
     const sum = (a: Series | null | undefined) => (a ?? []).reduce<number>((x, y) => x + (y ?? 0), 0);
-    const num = (x: number) => Math.round(x).toLocaleString('en-US');
+    const num = (x: number) => thousands(Math.round(x)); // leak: no Intl in a draw
     const intake = d.b.id === 'intake';
     const why = d.ghost ? (intake ? 'yesterday, same hours (dashed)' : `yesterday ${num(sum(d.ghost))} (dashed)`) : d.flat !== null ? `typical ${intake ? `${Math.round(d.flat * 10) / 10} s` : `${num(d.flat)}/h`} (dashed)` : 'no yesterday on record yet';
     const now = (s: Series) => num(s[23] ?? 0);
