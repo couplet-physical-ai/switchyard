@@ -242,6 +242,32 @@ pub struct ReducerCfg {
     pub rollups: Option<std::path::PathBuf>,
     /// Refresh the Factory Floor tables at most this often (they scan the fleet).
     pub insights_every_ms: Ms,
+    /// Warm boot: the fleet as it was before the restart (the last state in history).
+    /// With `settle_on`, clients are served this while the store rebuilds (its entity
+    /// changes are held; events still flow), then move to the settled fleet in one
+    /// delta: they never see the half-empty fleet of a cold boot.
+    pub warm: Option<serde_json::Value>,
+}
+
+/// Ops (JSON values, as `state_diff` makes them) as the inside of JSON arrays, each
+/// under the stream's message cap.
+fn encode_values_chunked(ops: &[serde_json::Value]) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut cur: Vec<u8> = Vec::new();
+    for op in ops {
+        let one = serde_json::to_vec(op).unwrap_or_default();
+        if !cur.is_empty() && cur.len() + 1 + one.len() > crate::hub::MAX_MESSAGE - 128 {
+            out.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push(b',');
+        }
+        cur.extend_from_slice(&one);
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
 }
 
 /// Load the persisted rollups (dropping those older than the keep window) and rewrite
@@ -295,6 +321,7 @@ impl Default for ReducerCfg {
             settle_max_ms: 600_000,
             rollups: None,
             insights_every_ms: 1_000,
+            warm: None,
         }
     }
 }
@@ -333,13 +360,31 @@ pub async fn run_reducer(
         hub.begin_settle();
     }
     let seq = hub.publish_reset(at);
-    {
-        let s = store.read();
-        hub.set_snapshot(Snapshot::new(
-            seq,
-            at,
-            build_snapshot(&s, seq, at, &hub.epoch),
-        ));
+    // Warm boot (see `ReducerCfg::warm`): only while the boot settles.
+    let mut warm: Option<crate::wire::WireState> = cfg
+        .warm
+        .as_ref()
+        .filter(|_| cfg.settle_on.is_some())
+        .map(crate::wire::WireState::from_snapshot);
+    match warm.as_mut() {
+        Some(w) => {
+            w.seq = seq;
+            w.at = at;
+            let json = serde_json::to_vec(&w.to_snapshot(PROTOCOL, &hub.epoch)).unwrap_or_default();
+            hub.set_snapshot(Snapshot::new(seq, at, Bytes::from(json)));
+            tracing::info!(
+                seq,
+                "warm boot: serving the last state while the store rebuilds"
+            );
+        }
+        None => {
+            let s = store.read();
+            hub.set_snapshot(Snapshot::new(
+                seq,
+                at,
+                build_snapshot(&s, seq, at, &hub.epoch),
+            ));
+        }
     }
     loop {
         tokio::select! {
@@ -361,9 +406,14 @@ pub async fn run_reducer(
                 let mut s = store.write();
                 let ins = now - last_insights >= cfg.insights_every_ms;
                 if s.has_dirty_core() || (ins && s.has_dirty()) {
-                    let ops = s.flush_with(now, ins);
+                    let mut ops = s.flush_with(now, ins);
                     if ins {
                         last_insights = now;
+                    }
+                    if warm.is_some() {
+                        // Rebuilding under a warm boot: the entities are held (clients
+                        // keep the last state); live events still go out.
+                        ops.retain(|o| matches!(o, crate::store::OpOut::Event(_)));
                     }
                     // A big flush (a boot backfill) goes out as several frames.
                     for chunk in encode_ops_chunked(&ops) {
@@ -403,6 +453,19 @@ pub async fn run_reducer(
                     {
                         let (seq, json) = {
                             let s = store.read();
+                            if let Some(w) = warm.take() {
+                                // The last state → the settled fleet, in one go.
+                                let json = build_snapshot(&s, hub.seq(), now, &hub.epoch);
+                                let next = serde_json::from_slice::<serde_json::Value>(&json)
+                                    .map(|v| crate::wire::WireState::from_snapshot(&v))
+                                    .unwrap_or_default();
+                                let ops = crate::wire::state_diff(&w, &next, true);
+                                let frames = encode_values_chunked(&ops);
+                                tracing::info!(ops = ops.len(), frames = frames.len(), "warm boot: settled fleet published");
+                                for chunk in frames {
+                                    hub.publish(&chunk, now);
+                                }
+                            }
                             let seq = hub.seq();
                             (seq, build_snapshot(&s, seq, now, &hub.epoch))
                         };
@@ -415,6 +478,10 @@ pub async fn run_reducer(
                         snap_key = (store.read().version, seq);
                         continue;
                     }
+                }
+                if warm.is_some() {
+                    // Keep serving the last state until the boot settles.
+                    continue;
                 }
                 let key = (store.read().version, hub.seq());
                 if key != snap_key {

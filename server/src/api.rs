@@ -282,6 +282,12 @@ async fn meta(State(st): State<Arc<AppState>>) -> Response {
         "links": crate::links::bases(),
         "now": (st.clock)(),
     });
+    let mut body = body;
+    if st.hub.is_settling() {
+        // Rebuilding after a restart: the fleet shown is the last state before it (warm
+        // boot) and moves to the rebuilt fleet in one delta when this clears.
+        body["booting"] = true.into();
+    }
     (StatusCode::OK, axum::Json(body)).into_response()
 }
 

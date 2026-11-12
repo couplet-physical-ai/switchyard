@@ -253,6 +253,18 @@ async fn serve(cli: Cli) -> Result<()> {
         let last = hist.last_seq();
         let hub = Hub::new(epoch, 4096, 8192, hist);
         hub.set_seq(last);
+        // Warm boot: the fleet as it was before this restart, served while the store
+        // rebuilds (a restart within the last 2 h; older history boots cold).
+        let warm = {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            hub.history
+                .last_state(now, 2 * 3_600_000, switchyard::model::PROTOCOL, &hub.epoch)
+                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        };
+        tracing::info!(warm = warm.is_some(), "last state for a warm boot");
         // The 7-day log behind /changes and /app (loaded before the stream is observed).
         let n = hub.ledger.attach(
             &cli.data_dir.join("ledger.jsonl"),
@@ -283,6 +295,7 @@ async fn serve(cli: Cli) -> Result<()> {
             ReducerCfg {
                 settle_on: Some(adapters.clone()),
                 rollups: Some(cli.data_dir.join("rollups.jsonl")),
+                warm,
                 ..ReducerCfg::default()
             },
         ));

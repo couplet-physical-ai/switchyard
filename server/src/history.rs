@@ -92,6 +92,25 @@ impl History {
         }
     }
 
+    /// The fleet as last recorded (the last checkpoint plus every frame after it), when
+    /// its newest entry is at most `max_age` old: what a warm boot serves while the
+    /// store rebuilds. None without history or when it is older.
+    pub fn last_state(&self, now: Ms, max_age: Ms, protocol: &str, epoch: &str) -> Option<Bytes> {
+        let h = self.query(now, now)?;
+        let newest = h
+            .frames
+            .iter()
+            .filter_map(|f| parse_num(f, b"\"at\":"))
+            .map(|a| a as Ms)
+            .max()
+            .unwrap_or(0)
+            .max(h.base_at);
+        if newest <= 0 || now - newest > max_age {
+            return None;
+        }
+        Some(h.fold_to(now, true, protocol, epoch).1.base)
+    }
+
     /// Last seq recorded (so a restart continues numbering).
     pub fn last_seq(&self) -> u64 {
         match self {

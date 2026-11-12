@@ -81,11 +81,17 @@ Then `curl -s localhost:8080/api/v1/meta | jq` or open `ws://localhost:8080/api/
   every other entity, so the order-independence properties cover it.
 - **Restart settling** (`Hub::begin_settle` / `end_settle`, `Adapters::settled`): a new
   process starts empty and backfills the whole fleet (GitHub's inventory and PR pages take
-  ~4 min). While it does, frames still reach live clients, but history records nothing;
-  once every adapter is synced, done with its boot backfill and quiet for 5 s (at most
-  10 min), history records one restart entry with the settled fleet. A deploy therefore
-  costs `/history` ~0.2 MB instead of a megabytes-large refill. `readyz` turns ready
-  earlier (heads + open PRs, ~1 min); `meta.adapters[].backfilling` shows the rest.
+  ~4-6 min). History records nothing while it does; once every adapter is synced, done
+  with its boot backfill and quiet for 5 s (at most 10 min), history records one restart
+  entry with the settled fleet. A deploy therefore costs `/history` ~0.2 MB instead of a
+  megabytes-large refill. `readyz` turns ready earlier (heads + open PRs, ~1 min);
+  `meta.adapters[].backfilling` shows the rest.
+- **Warm boot** (`ReducerCfg::warm`, `History::last_state`): when history holds a state
+  from the last 2 h (any restart, any deploy), clients are served that fleet while the
+  store rebuilds: the snapshot is the last state, entity changes are held (live events
+  still go out) and `meta.booting` is true; at settle one delta moves them to the rebuilt
+  fleet. Without it, every restart showed a half-empty fleet for ~5 min (live: 376 repos,
+  13 red, 129 blank main lines, against 387 / 27 settled).
 - **Auth** (`src/auth.rs`, `src/google.rs`): see [Tokens](#tokens) below.
 
 ## Tokens
