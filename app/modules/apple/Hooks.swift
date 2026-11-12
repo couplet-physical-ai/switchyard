@@ -9,6 +9,11 @@
 //                                  (`native.call({op:"tokenFileResult"})`).
 //   SWITCHYARD_SNAPSHOT=<png>[:s]  the main window drawn to a PNG s seconds (default 8) after
 //                                  launch, the way the agent's `screenshot` draws it.
+//   SWITCHYARD_HEAPLOG=1:<mode>    a hidden probe of the JS heap's external bytes (src/heapprobe.ts):
+//                                  the yard's live canvas churns every frame, a line every 10 s.
+//
+// Always, every 30 s: the data module's `heap: <MB> MB · live · ext · cap · frames <n>` line
+// (src/memlog.ts, the `heapLog` op), which the release soak reads.
 //
 // Lines go to stderr and ~/Library/Logs/Switchyard/switchyard.log (SYHookLog). The pure parts
 // are HooksCore.swift (tested by tools/updater-tests.sh); this file is the module side.
@@ -94,6 +99,18 @@ final class SYHooks {
             tokenFile = "taken"
             return ["has": true, "server": p.server, "token": p.token, "state": "ready"]
         }
+    }
+
+    // MARK: the heap line
+
+    /// `native.call({op: "heapLog"})` from the data module (src/memlog.ts): with `line`, writes
+    /// it to switchyard.log (the `heap: … · frames <n>` line every 30 s that the release soak reads:
+    /// RSS cannot see the Hermes heap). Answers `{probe}`: the `<mode>` of
+    /// SWITCHYARD_HEAPLOG=1:<mode>, a hidden diagnostic (src/heapprobe.ts), else "".
+    func heapLog(_ request: [String: Any]) -> [String: Any] {
+        if let line = request["line"] as? String, !line.isEmpty { SYHookLog.line(String(line.prefix(400))) }
+        let env = ProcessInfo.processInfo.environment["SWITCHYARD_HEAPLOG"] ?? ""
+        return ["probe": env.hasPrefix("1:") ? String(env.dropFirst(2).prefix(32)) : ""]
     }
 
     /// What the data module says of the connect it made with the token (never the token).

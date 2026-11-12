@@ -20,7 +20,8 @@ import { FlowFloor } from './src/flowfloor/floor.ts';
 import { Board3 } from './src/factory3/board.ts';
 import { NO_F3, f3Detail, tidyLog } from './src/factory3/inspect.ts';
 import { detailOf, logOf, NO_DETAIL } from './src/flowfloor/inspect.ts';
-import { logHeap } from './src/memlog.ts';
+import { logHeap, noteFrame } from './src/memlog.ts';
+import { probeAsk, probeFlush, probeInside, probeWrap, probing } from './src/heapprobe.ts'; // leak: SWITCHYARD_HEAPLOG=1:<mode> (macOS)
 import { nextChunkMs, replaySizing, Timeline } from './src/timeline.ts';
 import { bindBaselineStore } from './src/factory/agg/baseline.ts';
 import { connectedWith, saveTokenFile, takeTokenFile, tokenFileReport } from './src/hooks.ts';
@@ -473,7 +474,6 @@ function hostLabel(): string {
 
 function overview(): Result<'overview'> {
   const w = tl.world;
-  if (up && w.loaded) logHeap(clock);
   // Never builds the scene here (a source turn has 100 ms on Hermes): the first draw does.
   const S = yard.S;
   // One truth for building and queued: the yard, the status line and the QUEUE band agree.
@@ -644,7 +644,7 @@ export const sources: Sources = {
     return c;
   },
   liveFeed: ([server, _ver, seq, _gen, ok]) => liveFeed(server, needsToken(server) ? token : '', seq, ok),
-  overview: ([t]) => { if (t > 0) advance(t); safe('plantHist', 0, () => { factory.plant.pump(clock); return 0; }); return safe('overview', EMPTY_OV, overview); }, // fab-w6: the machine walls' 24 h histories are asked here (a source), never in a draw
+  overview: ([t], _store, _storage, native) => { if (t > 0) advance(t); safe('heapLog', 0, () => { probeAsk(native); probeFlush(native); logHeap(clock, native, !!up && tl.world.loaded); return 0; }); /* leak: the heap line (src/memlog.ts) */ safe('plantHist', 0, () => { factory.plant.pump(clock); return 0; }); return safe('overview', EMPTY_OV, overview); }, // fab-w6: the machine walls' 24 h histories are asked here (a source), never in a draw
   timeControl: async ([what, speed]) => {
     if (what === 'pause') tl.pause();
     else if (what === 'play') {
@@ -784,6 +784,7 @@ export const surfaces: Record<string, number> = { factoryFloor: 3, factoryLive: 
 let topView = '';
 
 export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame): boolean {
+  if (probing() && !probeInside()) return probeWrap(surface, ctx, frame, () => draw(surface, args, ctx, frame)); // leak: the hidden heap probe (src/heapprobe.ts)
   if ((surface === 'yardLive' || surface === 'yardInfo' || surface === 'yardTop') && topView !== '' && topView !== 'yard') return true;
   // Covered, the floor's live layer sleeps; the 250 ms tick (a surface argument) wakes it when
   // it is on top again.
@@ -805,6 +806,7 @@ export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
 }
 
 function drawSurface(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame): boolean {
+  noteFrame(frame.time); // leak: the heap line's running frame count
   if (surface === 'flowFloor') {
     advance(frame.time, false);
     return flow.draw(ctx, frame, tl.world, tl.playhead, { win: String(args[0] ?? '30m'), sel: String(args[1] ?? ''), mode: String(args[2] ?? 'live'), reduced: !!args[3] });
