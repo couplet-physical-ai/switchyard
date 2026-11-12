@@ -25,7 +25,7 @@ test "the fixture fleet connects on Live and remains available in Factory and Ya
   expect tree has "factory-floor"
   expect tree has "factory-live"
   expect tree has "timebar"
-  expect state ov.facCity == 240
+  expect state flWin == "30m"
 
   tap "tab-yard"
   clock settle

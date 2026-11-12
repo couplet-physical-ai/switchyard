@@ -12,7 +12,7 @@ size 1440x900
 
 test "the Factory route keeps an idle floor behind the setup card"
   clock data
-  type "root" "/factory"
+  type "root" "/factory?v=1"
   clock settle
   expect state here == "factory"
   expect tree has "factory-floor"
@@ -23,7 +23,7 @@ test "the Factory route keeps an idle floor behind the setup card"
 
 test "the demo fills the floor"
   clock data
-  type "root" "/factory"
+  type "root" "/factory?v=1"
   clock settle
   tap "setup-demo"
   clock data
@@ -37,7 +37,7 @@ test "the demo fills the floor"
 
 test "the recorded real fleet fills the floor"
   clock data
-  type "root" "/factory"
+  type "root" "/factory?v=1"
   clock settle
   tap "setup-connect"
   clock settle
@@ -57,7 +57,7 @@ test "the recorded real fleet fills the floor"
 
 test "the tabs reach Yard and Factory; a Live deep link leaves the Factory"
   clock data
-  type "root" "/factory"
+  type "root" "/factory?v=1"
   clock settle
   tap "setup-demo"
   clock data
@@ -71,7 +71,8 @@ test "the tabs reach Yard and Factory; a Live deep link leaves the Factory"
   clock +1000 real
   expect state here == "factory"
   expect tree has "factory-live"
-  expect state ov.facCity == 64
+  // the tab opens the Factory itself (the square swarm); this floor stays at ?v=1
+  expect state facV2 == true
   type "root" "/?repo=Northwind-Labs%2Fcicd"
   clock settle
   expect state here == "now"
@@ -82,7 +83,7 @@ test "the tabs reach Yard and Factory; a Live deep link leaves the Factory"
 
 test "a press on a busy bay opens its lens, Escape walks back"
   clock data
-  type "root" "/factory"
+  type "root" "/factory?v=1"
   clock settle
   tap "setup-connect"
   clock settle
@@ -103,7 +104,7 @@ test "a press on a busy bay opens its lens, Escape walks back"
 
 test "a press on a car on a main line opens its lens, Backspace walks back"
   clock data
-  type "root" "/factory"
+  type "root" "/factory?v=1"
   clock settle
   tap "setup-connect"
   clock settle
@@ -125,7 +126,7 @@ test "a press on a car on a main line opens its lens, Backspace walks back"
 
 test "stress mode puts a 10x fleet on the floor and takes it off"
   clock data
-  type "root" "/factory"
+  type "root" "/factory?v=1"
   clock settle
   tap "setup-demo"
   clock data
@@ -155,7 +156,7 @@ test "stress mode puts a 10x fleet on the floor and takes it off"
 
 test "the developer HUD turns on over the floor"
   clock data
-  type "root" "/factory"
+  type "root" "/factory?v=1"
   clock settle
   tap "setup-demo"
   clock data

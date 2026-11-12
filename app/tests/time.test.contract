@@ -59,7 +59,7 @@ test "the hour replay plays history at 60× and comes back live"
 // playhead and Play resumes at the day's speed.
 test "the 24 h replay plays the day at its speed, pauses and resumes at it, and comes back live"
   clock data
-  type "root" "/factory"
+  type "root" "/factory?v=1"
   clock settle
   tap "setup-demo"
   clock data
@@ -96,7 +96,7 @@ test "the 24 h replay plays the day at its speed, pauses and resumes at it, and 
 
 test "the 24 h replay of a server plays at the day's speed, 720×"
   clock data
-  type "root" "/factory"
+  type "root" "/factory?v=1"
   clock settle
   tap "setup-connect"
   clock settle

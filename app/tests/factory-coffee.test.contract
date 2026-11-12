@@ -7,7 +7,7 @@
 
 test "a visit counts after 20 s of looking, then every minute"
   clock data
-  type "root" "/factory"
+  type "root" "/factory?v=1"
   clock settle
   tap "setup-demo"
   clock data
@@ -28,7 +28,7 @@ test "a visit counts after 20 s of looking, then every minute"
 
 test "leaving the floor marks the visit"
   clock data
-  type "root" "/factory"
+  type "root" "/factory?v=1"
   clock settle
   tap "setup-demo"
   clock data
@@ -45,7 +45,7 @@ test "leaving the floor marks the visit"
 
 test "W cycles the window: since the visit, last hour, 24 h, 7 d"
   clock data
-  type "root" "/factory"
+  type "root" "/factory?v=1"
   clock settle
   tap "setup-demo"
   clock data
@@ -66,7 +66,7 @@ test "W cycles the window: since the visit, last hour, 24 h, 7 d"
 
 test "S replays the window"
   clock data
-  type "root" "/factory"
+  type "root" "/factory?v=1"
   clock settle
   tap "setup-demo"
   clock data
@@ -83,7 +83,7 @@ test "S replays the window"
 // the census, which stress multiplies, while the status line counted the real fleet).
 test "the coffee header's totals are the status line's, live"
   clock data
-  type "root" "/factory"
+  type "root" "/factory?v=1"
   clock settle
   tap "setup-demo"
   clock data
@@ -99,7 +99,7 @@ test "the coffee header's totals are the status line's, live"
 
 test "the coffee header's totals are the status line's, in a replay"
   clock data
-  type "root" "/factory"
+  type "root" "/factory?v=1"
   clock settle
   tap "setup-demo"
   clock data
@@ -121,7 +121,7 @@ test "the coffee header's totals are the status line's, in a replay"
 // the intro and held, as the hour's
 test "the coffee header's totals are the status line's, in the day replay"
   clock data
-  type "root" "/factory"
+  type "root" "/factory?v=1"
   clock settle
   tap "setup-demo"
   clock data
@@ -150,7 +150,7 @@ test "the coffee header's totals are the status line's, in the day replay"
 
 test "the coffee header's totals are the status line's, in stress mode"
   clock data
-  type "root" "/factory"
+  type "root" "/factory?v=1"
   clock settle
   tap "setup-demo"
   clock data

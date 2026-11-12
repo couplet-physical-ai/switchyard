@@ -1,4 +1,4 @@
-// The Factory redo at /factory?v=2 (ZERO.md "FACTORY REDO"; views/flow.contract, src/flowfloor/): one fixed floor
+// The Factory (the square swarm) at /factory; the old floor at /factory?v=1 (ZERO.md "FACTORY REDO"; views/flow.contract, src/flowfloor/): one fixed floor
 // that fits the window, the work flowing left to right, the FAILED bin, the inspector. A press
 // on the floor is a real pointer gesture at a point in the canvas (`drag 1 0 from x y` presses,
 // moves one point and lets go: a click). The point is the recorded fleet's (contract/fixtures,
@@ -6,9 +6,9 @@
 
 size 1440x900
 
-test "v2: the Factory route keeps a floor behind the setup card"
+test "swarm: the Factory route keeps a floor behind the setup card"
   clock data
-  type "root" "/factory?v=2"
+  type "root" "/factory"
   clock settle
   expect state here == "factory"
   expect tree has "factory-floor"
@@ -17,9 +17,9 @@ test "v2: the Factory route keeps a floor behind the setup card"
   expect tree missing "fl-inspector"
   expect text "tab-factory" == "Factory"
 
-test "v2: the demo fills the floor; the failed bin's window starts at 30 minutes"
+test "swarm: the demo fills the floor; the failed bin's window starts at 30 minutes"
   clock data
-  type "root" "/factory?v=2"
+  type "root" "/factory"
   clock settle
   tap "setup-demo"
   clock data
@@ -33,9 +33,9 @@ test "v2: the demo fills the floor; the failed bin's window starts at 30 minutes
   expect tree has "replay"
   expect tree has "replay-day"
 
-test "v2: the recorded real fleet fills the floor"
+test "swarm: the recorded real fleet fills the floor"
   clock data
-  type "root" "/factory?v=2"
+  type "root" "/factory"
   clock settle
   tap "setup-connect"
   clock settle
@@ -48,9 +48,9 @@ test "v2: the recorded real fleet fills the floor"
   expect state ov.repos == 394
   expect tree missing "fl-inspector"
 
-test "v2: the tabs reach Yard and Factory; a Live deep link leaves the Factory"
+test "swarm: the tabs reach Yard and Factory; a Live deep link leaves the Factory"
   clock data
-  type "root" "/factory?v=2"
+  type "root" "/factory"
   clock settle
   tap "setup-demo"
   clock data

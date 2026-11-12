@@ -7,7 +7,7 @@
 
 test "a car's journey walks back by key, and zoomed in, a press on the glance band opens nothing" on web
   clock data
-  type "root" "/factory"
+  type "root" "/factory?v=1"
   clock settle
   tap "setup-connect"
   clock settle
