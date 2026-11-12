@@ -92,9 +92,15 @@ const ARGS = { win: '30m', sel: '', mode: 'live', reduced: false, dock: false, h
   const board = new Board3();
   const A = recorder(), B = recorder();
   let more = board.drawBoard(A.ctx, frame(1000, 'mount'), w, t0, ARGS);
-  board.drawLive(B.ctx, frame(1000, 'mount'));
+  const liveClaim = board.drawLive(B.ctx, frame(1000, 'mount'));
   const painted = A.calls.length;
-  ok(painted > 300 && !more, `idle: the first frame paints the board (${painted} calls) and asks for no other frame`);
+  // (p5-board: each layer's first draw on a fresh bitmap asks for ONE more frame, so macOS gives
+  // the canvas to its GPU module: Board3.gpuClaim)
+  ok(painted > 300 && more && liveClaim, `idle: the first frame paints the board (${painted} calls) and both layers ask for one more (the GPU claim)`);
+  more = board.drawBoard(A.ctx, frame(1016), w, t0 + 16, ARGS);
+  const liveNext = board.drawLive(B.ctx, frame(1016));
+  ok(!more && !liveNext && A.calls.length === painted, 'idle: that frame paints nothing and asks for no other');
+  eq(board.stats.claims, 2, 'idle: two claims, one a layer');
   const liveFirst = B.calls.length;
   let asked = false;
   for (let i = 1; i <= 240; i++) {
@@ -106,6 +112,10 @@ const ARGS = { win: '30m', sel: '', mode: 'live', reduced: false, dock: false, h
   eq(B.calls.length, liveFirst, 'idle: the moving layer is never painted');
   ok(!more && !asked, 'idle: no frame is ever asked for');
   eq([board.stats.paints, board.stats.livePaints, board.stats.transits], [1, 0, 0], 'idle: 1 paint, 0 live paints, 0 transits');
+  // a mount skipped while covered (app.ts): the next draw is the fresh bitmap's first, whole and claimed
+  const C = recorder(), b3 = new Board3();
+  b3.skipped('board', frame(500, 'mount'));
+  ok(b3.drawBoard(C.ctx, frame(600), w, t0, ARGS) && C.calls.includes('clear 0,0,1440,840'), 'covered mount: the next draw paints the board whole and asks for one more frame');
   ok(board.stats.builds <= 3, `idle: the scene is not even rebuilt each second (${board.stats.builds} builds in 60 s)`);
   ok(board.still, 'idle: the board reports itself still');
 }

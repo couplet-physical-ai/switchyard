@@ -99,13 +99,48 @@ export class Board3 {
   private shown: Op[] | null = null;
   private shownAt = '';
   /** For the tests and the HUD: how often the board was asked, built and painted; what moved. */
-  stats = { asks: 0, builds: 0, paints: 0, livePaints: 0, transits: 0, ops: 0, moving: 0, squares: 0, texts: 0, dirty: 0, redrawn: 0 };
+  stats = { asks: 0, builds: 0, paints: 0, livePaints: 0, transits: 0, ops: 0, moving: 0, squares: 0, texts: 0, dirty: 0, redrawn: 0, claims: 0 };
 
-  /** The board layer. Returns true only while a transit is under way (the next frame may land it). */
+  /** p5-board: the macOS host gives a canvas to its GPU module (Vello, Metal) only if the first
+   *  draw with anything in it after a fresh bitmap (a mount, a new size) asks for the next frame.
+   *  Otherwise Core Graphics keeps it for the bitmap's life, and while it animates (a transit:
+   *  both layers ask for frames until it lands) Core Animation records and replays, on the main
+   *  thread, every list the canvas kept since its last cover, each frame: the board's partial
+   *  repaints never cover, so that is up to 64 lists a frame (PERF.md, "Where the native frame
+   *  went": the factory's same finding; the Yard's `claim`). So each layer's first paint on a fresh
+   *  bitmap asks for one more frame, which draws nothing. Off: the tests' idle counts. */
+  static gpuClaim = true;
+  private claim = { board: false, live: false };
+  /** a fresh bitmap whose draw was skipped (the board covered, app.ts `draw`): the next draw is
+   *  its first, painted whole */
+  private owed = { board: false, live: false };
+  /** A draw of `which` was skipped (covered): a fresh bitmap in it is owed its first paint. */
+  skipped(which: 'board' | 'live', f: Frame): void { if (freshBitmap(f)) this.owed[which] = true; }
+  private freshFor(which: 'board' | 'live', f: Frame): boolean {
+    const fresh = freshBitmap(f) || this.owed[which];
+    this.owed[which] = false;
+    if (fresh) this.claim[which] = Board3.gpuClaim;
+    return fresh;
+  }
+  private claimed(which: 'board' | 'live'): boolean {
+    if (!this.claim[which]) return false;
+    this.claim[which] = false;
+    this.stats.claims++;
+    return true;
+  }
+
+  /** The board layer. Returns true only while a transit is under way (the next frame may land it),
+   *  and once after its first paint on a fresh bitmap (`gpuClaim`). */
   drawBoard(ctx: Ctx2D, f: Frame, w: World, now: number, a: BoardArgs): boolean {
+    const paints = this.stats.paints;
+    const more = this.drawBoard0(ctx, f, w, now, a);
+    // (the claim goes with the draw that painted: a fresh bitmap's first lists decide)
+    return (this.stats.paints !== paints && this.claimed('board')) || more;
+  }
+  private drawBoard0(ctx: Ctx2D, f: Frame, w: World, now: number, a: BoardArgs): boolean {
     this.stats.asks++;
     this.now = f.time;
-    const fresh = freshBitmap(f);
+    const fresh = this.freshFor('board', f);
     this.land(f.time);
     const L = (this.L = layoutOf(f.width, f.height));
     // (a board mounted again, as it is each time the Factory is shown again, keeps what it measured)
@@ -308,12 +343,13 @@ export class Board3 {
   /** The live layer: the squares in transit, and nothing else. Asleep (no frame asked) otherwise. */
   drawLive(ctx: Ctx2D, f: Frame): boolean {
     const t = f.time;
-    const fresh = freshBitmap(f);
+    const fresh = this.freshFor('live', f);
     if (!this.transits.length) {
       if (this.liveDirty || fresh) { ctx.resetTransform(); ctx.clearRect(0, 0, f.width, f.height); this.liveDirty = false; }
       this.stats.moving = 0;
-      return false;
+      return fresh && this.claimed('live');
     }
+    if (fresh) this.claimed('live'); // (a transit asks for the frames itself)
     this.stats.livePaints++;
     this.lastLive = t;
     this.liveDirty = true;

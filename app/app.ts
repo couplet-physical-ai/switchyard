@@ -896,7 +896,11 @@ export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
   // Covered, the floor's live layer sleeps; the 250 ms tick (a surface argument) wakes it when
   // it is on top again.
   if ((surface === 'factoryLive' || surface === 'factoryTop' /* fab-w7 */) && topView !== '' && topView !== 'factory') return false;
-  if ((surface === 'flowFloor' || surface === 'f3Board' || surface === 'f3Live') && topView !== '' && topView !== 'factory') return false;
+  if ((surface === 'flowFloor' || surface === 'f3Board' || surface === 'f3Live') && topView !== '' && topView !== 'factory') {
+    // (a fresh bitmap skipped here is owed its first, whole paint and the GPU claim: src/factory3/board.ts)
+    if (surface !== 'flowFloor') f3.skipped(surface === 'f3Board' ? 'board' : 'live', frame);
+    return false;
+  }
   try {
     return drawSurface(surface, args, ctx, frame);
   } catch (e) {
