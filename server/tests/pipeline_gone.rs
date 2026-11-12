@@ -87,3 +87,89 @@ fn gone_for_an_unknown_pipeline_is_a_no_op() {
     );
     assert_eq!(s.table(Kind::Pipeline), &before);
 }
+
+/// Woodpecker reuses a deleted pipeline's number (help-agent #65: a phantom, then a
+/// pull request's run). The real run replaces the phantom whole, in the store and in a
+/// connected client: no state, created time, event, PR link or workflow of the phantom
+/// survives, whatever the two lifecycles; a late fact of the phantom changes nothing.
+#[test]
+fn a_reused_number_replaces_the_old_run_whole() {
+    let id = ids::wp_pipeline(REPO, 65);
+    let run = |sha: &str, event: &str, status: &str, created: i64, extra: Value| {
+        let mut v = json!({
+            "number": 65, "event": event, "status": status, "branch": "main",
+            "commit": sha, "created": created, "started": created + 5,
+            "workflows": [{"id": 1, "name": "phantom-ci", "state": status, "started": created + 5}]
+        });
+        if let (Some(o), Some(x)) = (v.as_object_mut(), extra.as_object()) {
+            o.extend(x.clone());
+        }
+        let raw: WpPipeline = serde_json::from_value(v).unwrap();
+        let m = switchyard::adapters::woodpecker::Mapper {
+            public_url: "https://ci.example".into(),
+            agents: Default::default(),
+        };
+        m.facts(REPO, 7, &raw).remove(0)
+    };
+    let t0 = NOW / 1000 - 3_600;
+    // The phantom: a running pull-request run (lifecycle ahead of the new run's pending).
+    let phantom = run(
+        "1111111111111111111111111111111111111111",
+        "pull_request",
+        "running",
+        t0,
+        json!({"ref": "refs/pull/41/head", "pull_request_title": "old"}),
+    );
+    let mut s = Store::new(StoreConfig::default());
+    let mut w = WireState::default();
+    s.apply(phantom.clone(), true);
+    wire(&s.flush(NOW), &mut w);
+    let before = w.get(Kind::Pipeline, &id).cloned().unwrap();
+    assert_eq!(before["event"], "pull_request");
+    assert_eq!(before["pr"], 41);
+
+    // The real run on the reused number: a push, pending, another commit, later.
+    let real = run(
+        "2222222222222222222222222222222222222222",
+        "push",
+        "pending",
+        t0 + 1_800,
+        json!({"workflows": [{"id": 1, "name": "ci", "state": "pending"}], "started": 0}),
+    );
+    s.apply(real, true);
+    wire(&s.flush(NOW + 1_000), &mut w);
+    let p = s.pipeline(&id).expect("the real run");
+    assert_eq!(
+        p.state,
+        CiState::Pending,
+        "the real run, not the phantom's running"
+    );
+    assert_eq!(p.sha, "2222222222222222222222222222222222222222");
+    assert_eq!(p.event, PipelineEvent::Push);
+    assert_eq!(p.pr, None);
+    assert_eq!(p.created, (t0 + 1_800) * 1000);
+    assert_eq!(p.started, None);
+    // The client holds exactly the store's entity: nothing of the phantom merged in.
+    let store_json: Value = serde_json::from_str(&s.table(Kind::Pipeline)[&id]).unwrap();
+    let client = w.get(Kind::Pipeline, &id).unwrap();
+    assert_eq!(client, &store_json);
+    for k in ["pr", "started", "git_ref"] {
+        assert!(
+            client.get(k).is_none(),
+            "{k} of the phantom survived: {client}"
+        );
+    }
+    assert_eq!(client["workflows"][0]["name"], "ci");
+    assert!(
+        !s.table(Kind::Commit)
+            .get(&format!("{REPO}@1111111111111111111111111111111111111111"))
+            .is_some_and(|c| c.contains(&id)),
+        "the phantom's commit no longer lists the run"
+    );
+
+    // A late fact of the phantom (a reconcile, a replay) is old news.
+    s.apply(phantom, true);
+    wire(&s.flush(NOW + 2_000), &mut w);
+    assert_eq!(s.pipeline(&id).unwrap().state, CiState::Pending);
+    assert_eq!(w.get(Kind::Pipeline, &id).unwrap()["event"], "push");
+}

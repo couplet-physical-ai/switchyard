@@ -560,16 +560,28 @@ impl Store {
     fn apply_pipeline(&mut self, p: Pipeline, live: bool) {
         let id = p.id.clone();
         let old = self.pipelines.get(&id);
-        if let Some(o) = old
-            && pipeline_version(o) >= pipeline_version(&p)
-        {
-            return;
+        // Woodpecker reuses the number of a pipeline it deleted (help-agent #65: a
+        // phantom, then a pull request's run): the id is the same, the run is another one.
+        // The newer run replaces the old one whole, whatever their lifecycles; a fact of
+        // the older run is old news. Same run: the later lifecycle wins.
+        let reused = old.is_some_and(|o| {
+            o.lane == LaneKind::Roadrunner && (o.sha != p.sha || o.created != p.created)
+        });
+        if let Some(o) = old {
+            let stale = if reused && o.created != p.created {
+                p.created < o.created
+            } else {
+                pipeline_version(o) >= pipeline_version(&p)
+            };
+            if stale {
+                return;
+            }
         }
         // Old news (a reconcile catching up on a finished run) does not animate.
         let fresh = self.now == 0
             || p.finished.or(p.started).unwrap_or(p.created) >= self.now - 10 * 60_000;
         if live && fresh {
-            pipeline_events(old, &p, &mut self.events);
+            pipeline_events(if reused { None } else { old }, &p, &mut self.events);
         }
         let key = sha_key(&p.repo, &p.sha);
         // The pipeline also tells us about its commit; that view is derived
@@ -1543,9 +1555,24 @@ impl Store {
             // sha), so the newer of the two decides: a passing manual rerun clears an
             // older failed push run, and a failing one turns a green push red.
             let mut latest: BTreeMap<(u8, u8, bool), (u64, CiState)> = BTreeMap::new();
+            // A GitHub Actions deploy run that failed is no main-line failure once the
+            // commit's deploy succeeded (a redeploy by hand: PixelView's "First Deploy App"
+            // after the push's "Deploy App" failed; the deploy recheck finds it).
+            let mut deployed: Option<bool> = None;
             for id in ps {
                 if let Some(p) = self.pipelines.get(id) {
                     if main && p.event == PipelineEvent::PullRequest {
+                        continue;
+                    }
+                    if main
+                        && p.lane == LaneKind::Gha
+                        && p.deploy
+                        && p.state.is_red()
+                        && *deployed.get_or_insert_with(|| {
+                            self.combined_deploy(repo, sha)
+                                .is_some_and(|d| d.state == DeployState::Success)
+                        })
+                    {
                         continue;
                     }
                     if p.lane == LaneKind::Roadrunner {
