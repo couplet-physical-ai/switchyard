@@ -4,13 +4,11 @@ This page lists tagged releases newest first, from `v0.1.8` back to `v0.0.1`. Da
 
 ## v0.1.8
 
-<!-- PENDING: confirm the 0.1.8 tag date once the gated release is promoted -->
-
 **Date:** 2026-11-12
 
 *Theme: The last performance pass: one Factory, a quieter Live, and no stale runs.*
 
-This is the final planned performance release of the macOS app. What remains on the Yard's
+Published as a pre-release, then promoted to Latest after a 45-minute gated soak (15 minutes on each tab) and an update test from 0.1.7. This is the final planned performance release of the macOS app. What remains on the Yard's
 busy frames is in Exact's runtime, not the app ([why](performance/releases.md#why-the-yard-is-not-a-steady-17-ms-p99)).
 
 **Views**
