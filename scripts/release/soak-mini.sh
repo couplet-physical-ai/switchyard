@@ -67,6 +67,13 @@ v=\$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "\$A/Content
 quit_
 LOG=~/Library/Logs/Switchyard/switchyard.log; mkdir -p ~/Library/Logs/Switchyard; touch \$LOG
 M=\$(mktemp); trap 'rm -f \$M' EXIT
+# switchyard:// links must reach /Applications' copy: unregister every other Switchyard.app
+LSR=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+\$LSR -dump 2>/dev/null | sed -nE 's/^path: +(.*Switchyard[^/]*\\.app)( \\(0x.*)?\$/\\1/p' | sort -u | { grep -v '^/Applications/' || true; } \\
+  | while IFS= read -r p; do \$LSR -u "\$p" 2>/dev/null || true; done
+\$LSR -f "\$A"
+others=\$(pgrep -fl 'Switchyard.app/Contents/MacOS/Switchyard' | grep -v ' /Applications/' || true)
+[[ -z "\$others" ]] || { echo "FAIL: other Switchyard apps are running on the mini (the soak needs it to itself): \$others" >&2; exit 1; }
 gui open --env SWITCHYARD_TOKEN_FILE=$TOK_REMOTE "\$A"
 pid=""; for i in \$(seq 1 40); do pid=\$(pgrep -f "\$P" | head -1 || true); [[ -n "\$pid" ]] && break; sleep 0.25; done
 [[ -n "\$pid" ]] || { echo "FAIL: $V did not start" >&2; exit 1; }
@@ -79,6 +86,11 @@ for seg in ${CYCLE//,/ }; do sched="\$sched \$at:\${seg%%:*}"; at=\$(( at + \${s
 view=default
 route_() {  # switch the running app to view \$1 and require its route line
   local want=/\$1; [[ \$1 == live ]] && want=/
+  # already there (Live is the launch view): no link — a link right after connecting raced the
+  # token-file connect once and left the app on /connect (0.1.7 rerun 1)
+  if [[ "\$(grep "pid \$pid route:" \$LOG | tail -1 | sed 's/.*route: //')" == "\$want" ]]; then
+    echo "view: \$1 (route: \$want, already) at minute \$m"; return 0
+  fi
   local L0=\$(wc -l < \$LOG)
   gui open "switchyard://view/\$1"
   for i in \$(seq 1 30); do tail -n +\$((L0+1)) \$LOG | grep -q "pid \$pid route: \$want\$" && break
