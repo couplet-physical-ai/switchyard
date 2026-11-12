@@ -251,6 +251,70 @@ pub struct ReducerCfg {
 
 /// Ops (JSON values, as `state_diff` makes them) as the inside of JSON arrays, each
 /// under the stream's message cap.
+/// Under a warm boot, the ops clients get while the store rebuilds: events, and changes
+/// that are whole facts rather than a half-built fleet's churn: a run (pipeline) the last
+/// state holds or one that is going now (a run finishing during the boot must not stay
+/// "running" until it settles, minutes later), a deploy the last state holds as going, the
+/// engines and the queue. Removes only for runs the last state holds (a pipeline Woodpecker
+/// deleted). Repos, commits and the derived views stay held. A patch is sent as the whole
+/// entity (clients hold the last state's version, not the store's). Every op sent is
+/// applied to `w`, so the settle diff starts from what clients hold.
+pub fn warm_passthrough(
+    s: &Store,
+    w: &mut crate::wire::WireState,
+    ops: Vec<crate::store::OpOut>,
+) -> Vec<crate::store::OpOut> {
+    use crate::store::OpOut;
+    let going = |v: &serde_json::Value| {
+        matches!(
+            v.get("state").and_then(serde_json::Value::as_str),
+            Some("running" | "pending" | "blocked")
+        )
+    };
+    let mut out = Vec::new();
+    for o in ops {
+        match o {
+            OpOut::Event(_) => out.push(o),
+            OpOut::Upsert { kind, ref id, .. } | OpOut::Patch { kind, ref id, .. } => {
+                let Some(json) = s.table(kind).get(id).cloned() else {
+                    continue;
+                };
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) else {
+                    continue;
+                };
+                let held = w.get(kind, id);
+                let pass = match kind {
+                    Kind::Pipeline => held.is_some() || going(&v),
+                    Kind::Deploy => held.is_some_and(going) || (held.is_none() && going(&v)),
+                    Kind::Engine | Kind::Queue => true,
+                    _ => false,
+                };
+                if !pass {
+                    continue;
+                }
+                w.apply_op(
+                    &serde_json::json!({"op": "upsert", "kind": kind.as_str(), "id": id, "v": v}),
+                );
+                out.push(OpOut::Upsert {
+                    kind,
+                    id: id.clone(),
+                    json,
+                });
+            }
+            OpOut::Remove { kind, ref id } => {
+                if kind == Kind::Pipeline && w.get(kind, id).is_some() {
+                    w.apply_op(
+                        &serde_json::json!({"op": "remove", "kind": kind.as_str(), "id": id}),
+                    );
+                    out.push(o);
+                }
+            }
+            OpOut::Dot { .. } => {}
+        }
+    }
+    out
+}
+
 fn encode_values_chunked(ops: &[serde_json::Value]) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let mut cur: Vec<u8> = Vec::new();
@@ -410,10 +474,11 @@ pub async fn run_reducer(
                     if ins {
                         last_insights = now;
                     }
-                    if warm.is_some() {
-                        // Rebuilding under a warm boot: the entities are held (clients
-                        // keep the last state); live events still go out.
-                        ops.retain(|o| matches!(o, crate::store::OpOut::Event(_)));
+                    if let Some(w) = warm.as_mut() {
+                        // Rebuilding under a warm boot: clients keep the last state, the
+                        // half-built fleet's churn is held; events and what moves a run
+                        // go out (see `warm_passthrough`).
+                        ops = warm_passthrough(&s, w, ops);
                     }
                     // A big flush (a boot backfill) goes out as several frames.
                     for chunk in encode_ops_chunked(&ops) {

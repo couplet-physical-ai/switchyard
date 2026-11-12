@@ -36,19 +36,23 @@ fn last_state() -> Value {
 }
 
 fn pipeline(at: Ms) -> Fact {
+    run(7, CiState::Running, at)
+}
+
+fn run(n: u64, state: CiState, at: Ms) -> Fact {
     Fact::Pipeline(Pipeline {
-        id: "wp:acme/api:7".into(),
+        id: format!("wp:acme/api:{n}"),
         lane: LaneKind::Roadrunner,
         repo: "acme/api".into(),
-        number: 7,
+        number: n,
         sha: "abc".into(),
         branch: "main".into(),
         git_ref: None,
         event: PipelineEvent::Push,
-        state: CiState::Running,
+        state,
         created: at - 1_000,
         started: Some(at - 500),
-        finished: None,
+        finished: state.is_done().then_some(at),
         queue_pos: None,
         expected_ms: None,
         engine: None,
@@ -126,10 +130,16 @@ async fn clients_keep_the_last_state_until_the_boot_settles() {
     .await
     .unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut client = WireState::from_snapshot(&s);
     while let Ok(f) = rx.try_recv() {
         let v: Value = serde_json::from_slice(&f.json).unwrap();
+        client.apply_frame(&v);
         for op in v["ops"].as_array().into_iter().flatten() {
-            assert_eq!(op["op"], "event", "only events while rebuilding: {op}");
+            // Events, and the run going now (a whole fact); never the half-built repos.
+            assert!(
+                op["op"] == "event" || (op["op"] == "upsert" && op["kind"] == "pipeline"),
+                "only events and runs while rebuilding: {op}"
+            );
         }
     }
     assert_eq!(
@@ -141,7 +151,6 @@ async fn clients_keep_the_last_state_until_the_boot_settles() {
     // The boot settles: one move from the last state to the rebuilt fleet.
     adapters.ok("github", now(), None);
     adapters.backfilling("github", false);
-    let mut client = WireState::from_snapshot(&s);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while hub.is_settling() {
         assert!(
@@ -303,4 +312,89 @@ fn pipes(w: &WireState) -> Vec<String> {
         .filter(|(k, _)| k.starts_with("pipeline"))
         .flat_map(|(_, t)| t.keys().cloned())
         .collect()
+}
+
+/// A run the last state shows running that finishes while the store rebuilds reaches
+/// clients finished at once (not when the boot settles, minutes later); a historic run the
+/// backfill brings in waits for the settle.
+#[tokio::test]
+async fn a_run_that_finishes_during_the_boot_is_finished_at_once() {
+    let hub = Hub::new(
+        "new".into(),
+        1024,
+        1024,
+        History::Mem(MemHistory::new(3_600_000)),
+    );
+    let mut rx = hub.tx.subscribe();
+    let adapters = Arc::new(Adapters::default());
+    adapters.register("github", true, None);
+    adapters.backfilling("github", true);
+    let store = Arc::new(parking_lot::RwLock::new(Store::new(StoreConfig::default())));
+    let (tx, ingest) = tokio::sync::mpsc::channel(16);
+    let clock: Clock = Arc::new(now);
+    let mut last = last_state();
+    // The last state: wp:acme/api:7 running (as the old process last saw it).
+    let t = now();
+    let Fact::Pipeline(p7) = run(7, CiState::Running, t) else {
+        unreachable!()
+    };
+    last["pipelines"] = json!([serde_json::to_value(&p7).unwrap()]);
+    let mut client = WireState::from_snapshot(&last);
+    tokio::spawn(run_reducer(
+        store,
+        hub.clone(),
+        ingest,
+        clock,
+        ReducerCfg {
+            frame_ms: 10,
+            snapshot_ms: 20,
+            settle_on: Some(adapters.clone()),
+            settle_quiet_ms: 50,
+            warm: Some(last),
+            ..ReducerCfg::default()
+        },
+    ));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    while rx.try_recv().is_ok() {}
+    // During the boot: #7 finished, #5 (an old finished run) comes in with the backfill.
+    tx.send(Ingest {
+        facts: vec![
+            run(7, CiState::Success, now()),
+            run(5, CiState::Success, now() - 3_600_000),
+        ],
+        live: true,
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(hub.is_settling(), "still booting");
+    while let Ok(f) = rx.try_recv() {
+        client.apply_frame(&serde_json::from_slice(&f.json).unwrap());
+    }
+    let p = client.get(Kind::Pipeline, "wp:acme/api:7").expect("#7");
+    assert_eq!(
+        p["state"], "success",
+        "finished while the boot runs, shown finished at once"
+    );
+    assert!(
+        client.get(Kind::Pipeline, "wp:acme/api:5").is_none(),
+        "the backfill's history waits for the settle"
+    );
+    // The settle brings the rest; the client ends on the settled fleet.
+    adapters.ok("github", now(), None);
+    adapters.backfilling("github", false);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while hub.is_settling() {
+        assert!(tokio::time::Instant::now() < deadline, "never settled");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    while let Ok(f) = rx.try_recv() {
+        client.apply_frame(&serde_json::from_slice(&f.json).unwrap());
+    }
+    assert_eq!(pipes(&client), vec!["wp:acme/api:5", "wp:acme/api:7"]);
+    assert_eq!(
+        client.entities(),
+        WireState::from_snapshot(&snapshot_of(&hub)).entities()
+    );
 }
