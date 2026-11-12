@@ -11,8 +11,23 @@ const NOW: Ms = 1_794_340_000_000;
 const REPO: &str = "acme/api";
 const SHA: &str = "1111111111111111111111111111111111111111";
 
+/// A Roadrunner run as the Woodpecker adapter maps it: a `ci` workflow, a `deploy` one
+/// when `deploy`, and the pipeline's deploy flag only on a push run.
 fn run(n: u64, event: PipelineEvent, state: CiState, deploy: bool) -> Fact {
     let finished = NOW - 60_000 * (100 - n as i64);
+    let wf = |name: &str| Workflow {
+        name: name.into(),
+        state,
+        started: Some(finished - 25_000),
+        finished: Some(finished),
+        engine: None,
+        steps: vec![],
+        url: None,
+    };
+    let mut workflows = vec![wf("ci")];
+    if deploy {
+        workflows.push(wf("deploy"));
+    }
     Fact::Pipeline(Pipeline {
         id: ids::wp_pipeline(REPO, n),
         lane: LaneKind::Roadrunner,
@@ -32,9 +47,9 @@ fn run(n: u64, event: PipelineEvent, state: CiState, deploy: bool) -> Fact {
         title: Some("change".into()),
         author: Some("dev".into()),
         pr: None,
-        deploy,
+        deploy: deploy && event == PipelineEvent::Push,
         flaky: false,
-        workflows: vec![],
+        workflows,
         url: "https://ci.example/x".into(),
         links: Default::default(),
     })
@@ -66,6 +81,14 @@ fn a_passing_manual_rerun_clears_an_older_failed_push_run() {
     let s = store(vec![
         run(10, Push, Failure, true),
         run(11, Manual, Success, true),
+    ]);
+    assert_eq!(s.commit_ci(REPO, SHA), Success);
+    assert_eq!(main_state(&s), "success");
+    // edge-smoke 4d2fddb: push #6 failed at deploy, manual #7 too, manual #8 passed.
+    let s = store(vec![
+        run(6, Push, Failure, true),
+        run(7, Manual, Failure, true),
+        run(8, Manual, Success, true),
     ]);
     assert_eq!(s.commit_ci(REPO, SHA), Success);
     assert_eq!(main_state(&s), "success");

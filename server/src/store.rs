@@ -1492,11 +1492,19 @@ impl Store {
                     if p.lane == LaneKind::Roadrunner {
                         has_wp = true;
                     }
-                    let event = match p.event {
-                        PipelineEvent::Manual => PipelineEvent::Push,
-                        e => e,
+                    // A manual run carries no deploy flag (only push runs deploy), so its
+                    // deploy-ness is whether it runs a deploy workflow, as a push run's is.
+                    let (event, deploy) = match p.event {
+                        PipelineEvent::Manual => (
+                            PipelineEvent::Push,
+                            p.deploy
+                                || p.workflows
+                                    .iter()
+                                    .any(|w| w.name.to_ascii_lowercase().contains("deploy")),
+                        ),
+                        e => (e, p.deploy),
                     };
-                    let key = (p.lane as u8, event as u8, p.deploy);
+                    let key = (p.lane as u8, event as u8, deploy);
                     let e = latest.entry(key).or_insert((p.number, p.state));
                     if p.number >= e.0 {
                         *e = (p.number, p.state);
