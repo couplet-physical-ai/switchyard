@@ -361,6 +361,9 @@ const server = Bun.serve<WsData>({
         if (since === undefined || !Number.isFinite(since) || (until !== undefined && !Number.isFinite(until))) return err(req, 400, 'use /api/v1/changes?since=<ms>[&until=<ms>]');
         return json(req, src.changes(since, until));
       }
+      // (`tstream`: the query-token path a device token's WebSocket takes, as the server's
+      // api.rs serves it; without it a client holding a token reconnected forever, p4)
+      case 'tstream':
       case 'stream': {
         if (parts[1] === 'sse') {
           let ctl: ReadableStreamDefaultController<Uint8Array>;

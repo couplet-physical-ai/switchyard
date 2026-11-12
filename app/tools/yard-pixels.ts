@@ -36,9 +36,11 @@ type Ctx = CanvasRenderingContext2D;
 const A = napi.createCanvas(W * SCALE, H * SCALE), B = napi.createCanvas(W * SCALE, H * SCALE);
 const ctxA = A.getContext('2d') as unknown as Ctx, ctxB = B.getContext('2d') as unknown as Ctx;
 const twin = new InfoLayer(); twin.gate = false;
+// --slices (p4): the twin keeps the gate and draws every dirty panel at once: checks the slicing alone
+if (args.includes('--slices')) { twin.gate = true; twin.sliceOps = 0; }
 if (args.includes('--debug')) (InfoLayer as unknown as { debug: boolean }).debug = true;
 const twinG = new Gfx();
-let compared = 0, differ = 0, firstDiff = '';
+let compared = 0, differ = 0, firstDiff = '', sliced = 0;
 const YP = Yard.prototype as unknown as { drawInfo: (ctx: Ctx, f: unknown, t: number) => boolean };
 const draw0 = YP.drawInfo;
 let yardRef: { info: unknown; gi: unknown; stats?: unknown } | null = null;
@@ -53,6 +55,8 @@ YP.drawInfo = function (this: { info: unknown; gi: unknown }, ctx: Ctx, f: unkno
   const clipB = args.includes('--clipB');
   if (clipB) { ctxB.save(); ctxB.resetTransform(); ctxB.beginPath(); ctxB.rect(0, 0, W * SCALE, H * SCALE); ctxB.clip(); }
   try { draw0.call(this, ctxB, f, t); } finally { this.info = info; this.gi = gi; if (clipB) ctxB.restore(); }
+  // p4: a sliced draw left dirty panels to the next frames: compare once it has drawn them
+  if ((info as { waiting?: boolean }).waiting) { sliced++; return r; }
   const a = ctxA.getImageData(0, 0, W * SCALE, H * SCALE).data, b = ctxB.getImageData(0, 0, W * SCALE, H * SCALE).data;
   let n = 0, x0 = 1e9, y0 = 1e9, x1 = -1, y1 = -1;
   for (let i = 0; i < a.length; i += 4) {
@@ -106,5 +110,5 @@ while (now() < end) {
   draw('yardLive', ['full', '', ov.tick], liveCtx, frame(t, 'frame'));
 }
 const st = (yardRef as unknown as { info: { stats: unknown } } | null)?.info.stats;
-console.log(`yard-pixels: ${compared} info draws compared over ${SECS} s at ${W}x${H}@${SCALE}: ${differ} differ · gate ${JSON.stringify(st)}`);
+console.log(`yard-pixels: ${compared} info draws compared over ${SECS} s at ${W}x${H}@${SCALE}: ${differ} differ · ${sliced} sliced draws (panels left to the next frame) not compared · gate ${JSON.stringify(st)}`);
 process.exit(differ ? 1 : 0);
