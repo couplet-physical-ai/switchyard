@@ -1076,7 +1076,9 @@ function queueParts(v: View, r: Rect): Part[] {
   if (items.length) {
     const cap = Math.max(1, Math.min(items.length, nRows - 2 > 3 ? Math.min(nRows - 2, 6) : nRows));
     const show = items.slice(0, cap - (items.length > cap ? 1 : 0));
-    show.forEach((p, i) => out.push(banded((g) => {
+    // p5-yard: each row keyed by its pipeline (copy on write), its place and the words that
+    // follow the clock (its wait, stuck or long), so a queue that did not move is not hashed
+    show.forEach((p, i) => out.push(keyed(banded((g) => {
       const y = r.y + 38 + i * rowH;
       const name = w.repos.get(p.repo)?.name ?? p.repo.split('/')[1] ?? p.repo;
       g.runs([[pnum(p), C.ink2, false, 9], [name, C.ink3, false, 8, true]], x0, y + 4, T.label, 180);
@@ -1096,7 +1098,7 @@ function queueParts(v: View, r: Rect): Part[] {
         x += chip(g, chips[j][0], x, y, chips[j][1], T.chip);
         if (j < chips.length - 1 && x + 22 < lim) { arrow(g, x + 3, x + 18, y, C.ink4); x += 21; }
       }
-    }, ...rowBand(r.y + 38 + i * rowH))));
+    }, ...rowBand(r.y + 38 + i * rowH)), waitKey(v, p, r), p)));
     used = show.length;
     if (items.length > show.length) {
       const y = r.y + 38 + show.length * rowH;
@@ -1118,7 +1120,7 @@ function queueParts(v: View, r: Rect): Part[] {
   const cols = r.w > 700 ? 2 : 1;
   const colW = (r.w - 8) / cols;
   const done = Array.from(w.pipelines.values()).filter((p) => p.finished && now - p.finished < 3_600_000).sort((a, b) => (b.finished ?? 0) - (a.finished ?? 0)).slice(0, Math.max(0, left * cols));
-  done.forEach((p, i) => out.push(banded((g) => {
+  done.forEach((p, i) => out.push(keyed(banded((g) => {
     const c = Math.floor(i / left), k = i % left;
     const y = yTop + k * rowH;
     const cx0 = x0 + c * colW;
@@ -1129,8 +1131,18 @@ function queueParts(v: View, r: Rect): Part[] {
     let cx = cx0 + nameW;
     cx += chip(g, ok ? 'passed' : p.state, cx, y, ok ? 'ok' : p.state === 'failure' || p.state === 'error' ? 'bad' : 'skip', T.chip) + 8;
     g.runs([[fmtDur((p.finished ?? 0) - (p.started ?? p.created)), C.ink3], [` · ${fmtShort(now - (p.finished ?? now))} ago`, C.ink3]], cx, y + 4, T.caption, cx0 + colW - cx - 8);
-  }, ...rowBand(yTop + (i % left) * rowH))));
+  }, ...rowBand(yTop + (i % left) * rowH)), h(h(hs(h(Math.floor(i / left), shortKey(now - (p.finished ?? now))), w.repos.get(p.repo)?.name ?? p.repo), r.x), r.w + cols * 4096), p)));
   return out;
+}
+
+/** What a waiting row draws besides its pipeline (by identity) and its band: its repo's name,
+ *  its wait's words and tone, the typical build's words, the panel's x and width. */
+function waitKey(v: View, p: Pipeline, r: Rect): number {
+  const { w, now } = v;
+  const age = now - p.created;
+  const est = p.expected_ms ?? w.repos.get(p.repo)?.p50_build_ms ?? w.stats.p50_build_ms ?? 0;
+  const k = h(h(durKey(age), age > STUCK_MS ? 2 : age > 120_000 ? 1 : 0), est ? durKey(est) : -2);
+  return h(h(hs(k, w.repos.get(p.repo)?.name ?? p.repo), r.x), r.w);
 }
 
 // ---- PULSE: the last hour ---------------------------------------------------------------------

@@ -9,6 +9,13 @@
 import type { App, Pipeline, Repo } from '../wire.ts';
 import { BOTS, type World } from '../world.ts';
 
+/** p5-yard: `a.localeCompare(b)` is `new Intl.Collator().compare(a, b)` (ECMA-402), and Hermes
+ *  builds that collator on every call (the mini's sample: Collator::create under the repos'
+ *  sort, a fifth of a timer turn's draw). One collator, made once: the same order, by spec. */
+export const COLL = new Intl.Collator();
+/** `a.localeCompare(b, 'en', { numeric: true })`, made once. */
+export const COLL_NUM = new Intl.Collator('en', { numeric: true });
+
 export function isRed(r: Repo | undefined): boolean {
   const s = r?.main?.state;
   return s === 'failure' || s === 'error';
@@ -188,12 +195,35 @@ export function busiest(w: World, now: number, n: number): Busy[] {
     if (p.state === 'failure' || p.state === 'error') b.red++;
     if (p.state === 'running') b.running++;
   }
-  const v = Array.from(by.values()).sort((a, b) => b.n - a.n || b.red - a.red || a.name.localeCompare(b.name)).slice(0, n);
+  const v = Array.from(by.values()).sort((a, b) => b.n - a.n || b.red - a.red || COLL.compare(a.name, b.name)).slice(0, n);
   busyCache = { key, v };
   return v;
 }
 
 // ---- repos and apps: sliced passes -----------------------------------------------------------
+
+/** The repos in a stable order (org in fleet order, then org, then name), kept: at 10× a repo
+ *  changes with nearly every stream frame (its main line's dots), and each change re-ran the
+ *  sort, ~3,500 comparisons of two strings each. While the same ids have the same org and name,
+ *  the order is the kept one (the sort's order is total: no two repos share an org and name). */
+let order: { ids: string[]; org: string[]; name: string[] } | null = null;
+function repoOrder(w: World): Repo[] {
+  const o = order;
+  if (o && o.ids.length === w.repos.size) {
+    const list: Repo[] = new Array(o.ids.length);
+    let same = true;
+    for (let i = 0; i < o.ids.length; i++) {
+      const r = w.repos.get(o.ids[i]);
+      if (!r || r.org !== o.org[i] || r.name !== o.name[i]) { same = false; break; }
+      list[i] = r;
+    }
+    if (same) return list;
+  }
+  const list = Array.from(w.repos.values()).sort((a, b) => orgRank(a.org) - orgRank(b.org) || COLL.compare(a.org, b.org) || COLL.compare(a.name, b.name));
+  // (a repo whose id is not its key cannot be found again by it: no order kept then)
+  order = list.every((r) => w.repos.get(r.id) === r) ? { ids: list.map((r) => r.id), org: list.map((r) => r.org), name: list.map((r) => r.name) } : null;
+  return list;
+}
 
 /** A main line's state class for the heatmap and the tiers. */
 export const S_NONE = 0, S_GREEN = 1, S_RED = 2, S_RUN = 3, S_PEND = 4, S_STALE = 5;
@@ -290,7 +320,7 @@ export class Aggregates {
     return {
       step: (n) => {
         if (!list) {
-          list = Array.from(w.repos.values()).sort((a, b) => orgRank(a.org) - orgRank(b.org) || a.org.localeCompare(b.org) || a.name.localeCompare(b.name));
+          list = repoOrder(w);
           state = new Uint8Array(list.length);
         }
         const end = Math.min(list.length, i + n);
@@ -331,7 +361,7 @@ export class Aggregates {
           if (sc >= 5e6) fresh++;
           if (sc >= 2e6) hot++;
         }
-        const ranked = list.slice().sort((a, b) => scores.get(b.id)! - scores.get(a.id)! || a.id.localeCompare(b.id)).map((r) => r.id);
+        const ranked = list.slice().sort((a, b) => scores.get(b.id)! - scores.get(a.id)! || COLL.compare(a.id, b.id)).map((r) => r.id);
         let sig = list.length;
         for (let k = 0; k < state.length; k++) sig = (Math.imul(sig, 31) + state[k] * (k + 1)) | 0;
         this.repos = { ids, state, orgs, ranked, red, green, oldestRed, ver, fresh, hot, sig };
@@ -347,7 +377,7 @@ export class Aggregates {
         if (done) return true;
         const rank = (a: App) => (a.health === 'down' ? 0 : a.health === 'degraded' ? 1 : a.health === 'unknown' ? 2 : (a.behind ?? 0) > 0 ? 3 : 4);
         const deployedAt = (a: App) => (a.last_deploy ? w.deploys.get(a.last_deploy.id)?.started ?? 0 : 0);
-        const list = Array.from(w.apps.values()).sort((a, b) => rank(a) - rank(b) || deployedAt(b) - deployedAt(a) || String(a.id).localeCompare(String(b.id)));
+        const list = Array.from(w.apps.values()).sort((a, b) => rank(a) - rank(b) || deployedAt(b) - deployedAt(a) || COLL.compare(String(a.id), String(b.id)));
         const health = new Uint8Array(list.length);
         let up = 0;
         const problems: string[] = [];

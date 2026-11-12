@@ -14,7 +14,7 @@
 import type { Engine } from '../wire.ts';
 import { BOTS, type World } from '../world.ts';
 import { effective, type Level, type LodBook, type Thresholds } from './lod.ts';
-import { type AppAgg, type RepoAgg, isRed, ORG_ORDER, orgLabel, orgRank } from './select.ts';
+import { type AppAgg, type RepoAgg, COLL, COLL_NUM, isRed, ORG_ORDER, orgLabel, orgRank } from './select.ts';
 import type { StressFleet, VirtualLane } from './stress.ts';
 import { clamp } from './theme.ts';
 
@@ -80,7 +80,7 @@ export type Census = {
 };
 
 export function census(w: World, ra: RepoAgg, aa: AppAgg, st: StressFleet | null): Census {
-  const orgs = Array.from(w.orgs.keys()).sort((a, b) => orgRank(a) - orgRank(b) || (w.orgs.get(b)?.repos ?? 0) - (w.orgs.get(a)?.repos ?? 0) || a.localeCompare(b));
+  const orgs = Array.from(w.orgs.keys()).sort((a, b) => orgRank(a) - orgRank(b) || (w.orgs.get(b)?.repos ?? 0) - (w.orgs.get(a)?.repos ?? 0) || COLL.compare(a, b));
   const realOrgs = [...orgs.slice(0, 7), BOTS];
   const realLanes: LaneSpec[] = engineGroups(w).map((g) => ({
     id: g.id, title: g.title, sub: g.sub, kind: g.kind, slots: g.engines.reduce((n, e) => n + Math.max(1, e.slots), 0),
@@ -549,18 +549,18 @@ export function engineGroups(w: World): EngineGroup[] {
     else loose.push(a);
   }
   const usedDagger = new Set<string>();
-  for (const h of Array.from(hosts.keys()).sort((a, b) => hostRank(a) - hostRank(b) || a.localeCompare(b, 'en', { numeric: true }))) {
-    const list = hosts.get(h)!.sort((a, b) => a.id.localeCompare(b.id, 'en', { numeric: true }));
+  for (const h of Array.from(hosts.keys()).sort((a, b) => hostRank(a) - hostRank(b) || COLL_NUM.compare(a, b))) {
+    const list = hosts.get(h)!.sort((a, b) => COLL_NUM.compare(a.id, b.id));
     const dg = daggers.filter((d) => d.host === h || d.label === h || d.id === `dagger:${h}`);
     for (const d of dg) usedDagger.add(d.id);
     const plat = list[0]?.platform?.startsWith('darwin') ? 'macos' : dg.length ? 'dagger' : 'linux';
     groups.push({ id: `host:${h}`, kind: 'wp_agent', title: h.toLowerCase(), sub: plat, engines: list, stats: dg.map((d) => d.id) });
   }
-  for (const d of daggers.filter((d) => !usedDagger.has(d.id)).sort((a, b) => a.id.localeCompare(b.id, 'en', { numeric: true }))) {
+  for (const d of daggers.filter((d) => !usedDagger.has(d.id)).sort((a, b) => COLL_NUM.compare(a.id, b.id))) {
     groups.push({ id: d.id, kind: 'dagger', title: (d.label ?? d.id).toLowerCase(), sub: 'dagger', engines: [d], stats: [d.id] });
   }
-  if (loose.length) groups.push({ id: 'agents', kind: 'wp_agent', title: 'agents', sub: 'woodpecker', engines: loose.sort((a, b) => a.id.localeCompare(b.id)), stats: [] });
-  const runners = all.filter((e) => e.kind === 'gha_runner').sort((a, b) => a.id.localeCompare(b.id));
+  if (loose.length) groups.push({ id: 'agents', kind: 'wp_agent', title: 'agents', sub: 'woodpecker', engines: loose.sort((a, b) => COLL.compare(a.id, b.id)), stats: [] });
+  const runners = all.filter((e) => e.kind === 'gha_runner').sort((a, b) => COLL.compare(a.id, b.id));
   if (runners.length) groups.push({ id: 'runners', kind: 'gha_runner', title: 'github actions', sub: runners.length === 1 && runners[0].id === GHA ? 'hosted' : 'runners', engines: runners, stats: [] });
   return groups;
 }

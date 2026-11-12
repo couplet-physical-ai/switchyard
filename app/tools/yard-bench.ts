@@ -18,6 +18,9 @@ const WARM = Number(opt('--warm', '8'));
 const [W, H] = opt('--size', '1440x868').split('x').map(Number);
 const SCALE = Number(opt('--scale', '1'));
 if (flag('--hermes')) (globalThis as { HermesInternal?: unknown }).HermesInternal = {};
+// --hermes: Hermes builds an Intl.Collator for every localeCompare (the mini's sample of a timer
+// turn: Collator::create under Array.prototype.sort); so does this, to price it as the Mac would
+if (flag('--hermes')) String.prototype.localeCompare = function (this: string, that: string, locales?: string | string[], options?: Intl.CollatorOptions) { return new Intl.Collator(locales, options).compare(String(this), String(that)); };
 (globalThis as { scheduler?: unknown }).scheduler = { yield: () => new Promise<void>((r) => setTimeout(r, 0)) };
 
 // Exact's stream, over a Bun WebSocket
@@ -97,6 +100,25 @@ if (flag('--panels')) {
 const allocKB: Record<string, number[]> = {};
 const jsc = flag('--alloc') ? await import('bun:jsc') : null;
 const heapNow = () => (jsc ? jsc.heapStats().heapCapacity + jsc.memoryUsage().current : 0);
+// --alloc-fns: with --alloc, the bytes each of these allocates per call (nested calls count in both)
+if (jsc && flag('--alloc-fns')) {
+  const { InfoLayer } = await import('../src/yard/info.ts');
+  const { Yard } = await import('../src/yard/draw.ts');
+  const { Pool } = await import('../src/yard/pool.ts');
+  const { Aggregates } = await import('../src/yard/select.ts');
+  const wrap = (C: { prototype: unknown }, cls: string, names: string[]) => {
+    const P = C.prototype as Record<string, (...a: unknown[]) => unknown>;
+    for (const name of names) {
+      const f0 = P[name];
+      if (typeof f0 !== 'function') continue;
+      P[name] = function (this: unknown, ...a: unknown[]) { const m0 = heapNow(); const r = f0.apply(this, a); (allocKB[`${cls}.${name}`] ??= []).push((heapNow() - m0) / 1024); return r; };
+    }
+  };
+  wrap(InfoLayer, 'info', ['draw', 'paint', 'panels']);
+  wrap(Yard, 'yard', ['ensure', 'drawInfo', 'drawLive', 'rings', 'packets', 'effects', 'dial', 'labels', 'pickFocus']);
+  wrap(Pool, 'pool', ['update']);
+  wrap(Aggregates, 'agg', ['update', 'pump']);
+}
 const { sources, draw } = mod as unknown as { sources: Record<string, (a: unknown[], s?: unknown, st?: unknown) => unknown>; draw: (s: string, a: unknown[], c: unknown, f: unknown) => boolean };
 const store = { get: () => '', set() {} };
 const now = () => performance.now() - T0 + 1000;
@@ -134,9 +156,10 @@ function ops(b64: string, st: Stat | null): number {
 function drawOne(c: string, a: unknown[], time: number, cause: string, measure: boolean): boolean {
   const m0 = jsc && measure ? heapNow() : 0;
   const t0 = performance.now();
-  const out = JSON.parse(seam.draw({ canvas: ids[c], generation: gen[c], surface: c, args: a, frame: frame(time, cause) }, measureHost)) as { lists: string[]; frame: boolean; error: string | null };
-  const ms = performance.now() - t0;
+  const raw = seam.draw({ canvas: ids[c], generation: gen[c], surface: c, args: a, frame: frame(time, cause) }, measureHost) as string;
   if (jsc && measure) (allocKB[c] ??= []).push((heapNow() - m0) / 1024);
+  const out = JSON.parse(raw) as { lists: string[]; frame: boolean; error: string | null };
+  const ms = performance.now() - t0;
   if (out.error) console.log(`${c}: ${out.error}`);
   if (measure) {
     const st = S[c];
