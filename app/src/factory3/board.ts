@@ -63,6 +63,46 @@ const sameOp = (a: Op, b: Op) => {
 };
 /** Above this share of the board changed, it is simply repainted whole. */
 const DIRTY_MAX = 0.3;
+/** the tiles (CSS px) a repaint's share is counted in, and its marks found by */
+const TILE = 16;
+
+/** p5-board: where two scenes' marks differ, as boxes (CSS px) pushed to `out`. Both lists are
+ *  walked in order and aligned again after marks that came or went (a scene keeps its marks in
+ *  order: a run that arrives, leaves or lands adds or drops its own), so a change in the number
+ *  of marks repaints the marks that changed, not the board. A whole board is 100-180 KB of list
+ *  (Exact's recorder, base64, JSON: 40-85 ms in Bun without its JIT, a few times that on the
+ *  mini's Hermes); at 10× the count changed about once a second. The marks matched keep their
+ *  order in both lists, so any pixel outside every box is painted by the same marks in the same
+ *  order. A pair that differs in place (a timer's digit) is its characters' box (`charBox`).
+ *  False: the lists are too far apart to align within the budget (paint it all). */
+const ALIGN = 24, ALIGN_BUDGET = 6000;
+export function diffOps(prev: Op[], ops: Op[], s: number, out: number[]): boolean {
+  const n = prev.length, m = ops.length;
+  let i = 0, j = 0, budget = ALIGN_BUDGET;
+  while (i < n && j < m) {
+    if (sameOp(prev[i], ops[j])) { i++; j++; continue; }
+    // the nearest pair that is the same again: x marks of the old list went, y of the new came
+    let a = -1, b = -1;
+    find: for (let d = 1; d <= 2 * ALIGN; d++) {
+      for (let x = Math.max(0, d - ALIGN); x <= Math.min(d, ALIGN); x++) {
+        const y = d - x;
+        if (i + x >= n || j + y >= m) continue;
+        if (--budget < 0) return false;
+        if (sameOp(prev[i + x], ops[j + y])) { a = x; b = y; break find; }
+      }
+    }
+    // (none near: this pair changed; the walk goes on)
+    if (a < 0) { a = 1; b = 1; }
+    const k = Math.min(a, b);
+    for (let q = 0; q < k; q++) if (!charBox(prev[i + q], ops[j + q], s, out)) { opBox(prev[i + q], s, out); opBox(ops[j + q], s, out); }
+    for (let q = k; q < a; q++) opBox(prev[i + q], s, out);
+    for (let q = k; q < b; q++) opBox(ops[j + q], s, out);
+    i += a; j += b;
+  }
+  for (; i < n; i++) opBox(prev[i], s, out);
+  for (; j < m; j++) opBox(ops[j], s, out);
+  return true;
+}
 
 const fonts = new Map<number, string>();
 function fontOf(px: number, bold: boolean): string {
@@ -98,6 +138,8 @@ export class Board3 {
   /** the ops on the bitmap now, and the size and scale they were painted at */
   private shown: Op[] | null = null;
   private shownAt = '';
+  /** the tiles a repaint touches (paint) */
+  private tiles = new Uint8Array(0);
   /** For the tests and the HUD: how often the board was asked, built and painted; what moved. */
   stats = { asks: 0, builds: 0, paints: 0, livePaints: 0, transits: 0, ops: 0, moving: 0, squares: 0, texts: 0, dirty: 0, redrawn: 0, claims: 0 };
 
@@ -273,15 +315,16 @@ export class Board3 {
     const ops = scene.ops, prev = this.shown, at = `${f.width}x${f.height}@${dp}|${s}`;
     // the boxes that changed (device-pixel aligned), or null: paint it all
     let boxes: number[] | null = null;
-    if (!fresh && prev && this.shownAt === at && prev.length === ops.length) {
-      const raw: number[] = [];
-      for (let i = 0; i < ops.length; i++) {
-        if (sameOp(prev[i], ops[i]) || charBox(prev[i], ops[i], s, raw)) continue;
-        opBox(prev[i], s, raw);
-        opBox(ops[i], s, raw);
-      }
+    const raw: number[] = [];
+    // (p5-board: the share is the boxes' union counted in 16 px tiles, not their sum: a list whose
+    // rows all moved down one is many overlapping boxes over one column, not a third of the board)
+    const cols = Math.ceil(f.width / TILE), rows = Math.ceil(f.height / TILE);
+    if (this.tiles.length !== cols * rows) this.tiles = new Uint8Array(cols * rows);
+    const T = this.tiles;
+    if (!fresh && prev && this.shownAt === at && diffOps(prev, ops, s, raw)) {
       boxes = [];
-      let area = 0;
+      T.fill(0);
+      let area = 0, tiles = 0;
       next: for (let i = 0; i < raw.length; i += 4) {
         const x0 = Math.max(0, Math.floor(raw[i] * dp) / dp), y0 = Math.max(0, Math.floor(raw[i + 1] * dp) / dp);
         const x1 = Math.min(f.width, Math.ceil(raw[i + 2] * dp) / dp), y1 = Math.min(f.height, Math.ceil(raw[i + 3] * dp) / dp);
@@ -290,9 +333,12 @@ export class Board3 {
         for (let k = 0; k < boxes.length; k += 4) if (boxes[k] <= x0 && boxes[k + 1] <= y0 && boxes[k + 2] >= x1 && boxes[k + 3] >= y1) continue next;
         boxes.push(x0, y0, x1, y1);
         area += (x1 - x0) * (y1 - y0);
+        for (let ty = Math.floor(y0 / TILE), ty1 = Math.min(rows - 1, Math.floor((y1 - 1e-6) / TILE)); ty <= ty1; ty++) {
+          for (let tx = Math.floor(x0 / TILE), tx1 = Math.min(cols - 1, Math.floor((x1 - 1e-6) / TILE)); tx <= tx1; tx++) if (!T[ty * cols + tx]) { T[ty * cols + tx] = 1; tiles++; }
+        }
       }
-      if (area > f.width * f.height * DIRTY_MAX) boxes = null;
-      else this.stats.dirty = area / (f.width * f.height);
+      if (tiles > cols * rows * DIRTY_MAX) boxes = null;
+      else this.stats.dirty = Math.min(1, area / (f.width * f.height));
     }
     this.shown = ops;
     this.shownAt = at;
@@ -315,9 +361,15 @@ export class Board3 {
     const box: number[] = [];
     for (const op of ops) {
       if (only) {
-        // only the marks under a changed box
+        // only the marks under a changed box (its tiles first: most marks are under none)
         box.length = 0;
         opBox(op, s, box);
+        let near = false;
+        const tx0 = Math.max(0, Math.floor(box[0] / TILE)), tx1 = Math.min(cols - 1, Math.floor(box[2] / TILE));
+        for (let ty = Math.max(0, Math.floor(box[1] / TILE)), ty1 = Math.min(rows - 1, Math.floor(box[3] / TILE)); ty <= ty1 && !near; ty++) {
+          for (let tx = tx0; tx <= tx1; tx++) if (T[ty * cols + tx]) { near = true; break; }
+        }
+        if (!near) continue;
         let hit = false;
         for (let i = 0; i < only.length; i += 4) if (box[0] < only[i + 2] && box[2] > only[i] && box[1] < only[i + 3] && box[3] > only[i + 1]) { hit = true; break; }
         if (!hit) continue;

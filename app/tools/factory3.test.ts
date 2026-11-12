@@ -11,7 +11,7 @@ import { World } from '../src/world.ts';
 import type { Frame as WireFrame, Pipeline, Snapshot } from '../src/wire.ts';
 import { SlotBook, WINDOWS, boardOf, windowMs } from '../src/factory3/model.ts';
 import { PLACE, ageAt, layoutOf, sceneOf, timer, type SceneOpts } from '../src/factory3/scene.ts';
-import { Board3 } from '../src/factory3/board.ts';
+import { Board3, diffOps } from '../src/factory3/board.ts';
 import { f3Detail, tidyLog } from '../src/factory3/inspect.ts';
 
 let fails = 0;
@@ -196,6 +196,33 @@ const ARGS = { win: '30m', sel: '', mode: 'live', reduced: false, dock: false, h
   w2.apply(clone(f));
   b2.drawBoard(C2.ctx, frame(2000), w2, t0 + 2000, { ...ARGS, reduced: true });
   eq(b2.stats.transits, 0, 'move: with reduced motion the run is simply in its new place');
+}
+
+// ───────────────────────── p5-board: marks that came and went repaint only themselves ─────────────────────────
+{
+  const w = new World();
+  w.load(clone(snap));
+  const t0 = minuteOf(snap.at) + 60_000;
+  const ops = sceneOf(boardOf(w, t0, windowMs('30m'), new SlotBook()), L, OPTS).ops;
+  const n = ops.length;
+  // two marks gone from the middle, one new near the end, a timer's digit in between
+  const next = ops.slice();
+  const gone = next.splice(100, 2);
+  next.splice(n - 40, 0, ['r', 5, 5, 7, 7, '#ff0000']);
+  const tt = next.findIndex((op, i) => i > 150 && i < n - 60 && op[0] === 't' && /\d$/.test(op[1]));
+  ok(tt > 0, 'diff: (a word ending in a digit between them)');
+  const old = next[tt] as [string, string, ...unknown[]];
+  next[tt] = [old[0], old[1].slice(0, -1) + (old[1].endsWith('9') ? '0' : '9'), ...old.slice(2)] as never;
+  const out: number[] = [];
+  ok(diffOps(ops, next, 1, out), 'diff: two lists a few marks apart align');
+  eq(out.length / 4, 4, 'diff: one box each for the two marks gone, the mark new, the timer');
+  const same: number[] = [];
+  ok(diffOps(ops, ops.slice(), 1, same) && same.length === 0, 'diff: the same scene, no box');
+  ok(gone.length === 2, 'diff: (the marks taken out)');
+  // a whole scene's other half: too far apart to align within the budget, or boxes over most of it
+  const far: number[] = [];
+  const shifted = ops.map((op) => (op[0] === 'r' ? ['r', op[1] + 3, op[2], op[3], op[4], op[5]] : op)) as typeof ops;
+  ok(!diffOps(ops, shifted, 1, far) || far.length / 4 > n / 3, 'diff: a board whose squares all moved is not small');
 }
 
 // ───────────────────────── a berth is a place ─────────────────────────

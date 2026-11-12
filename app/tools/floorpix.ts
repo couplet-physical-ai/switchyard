@@ -124,6 +124,11 @@ export async function openPix(mode: string, W: number, H: number, scale: number,
       mkdirSync(join(path, '..'), { recursive: true });
       writeFileSync(path, Buffer.from(url.slice(url.indexOf(',') + 1), 'base64'));
     },
+    /** The page's advance (px a character) of each CSS font, from ten zeros (the bench's text
+     *  measure, so a monospaced face's words are where the replayer draws them; p5-board). */
+    async advances(fonts: string[]): Promise<number[]> {
+      return page.evaluate((fs) => { const c = document.createElement('canvas').getContext('2d')!; return fs.map((f) => { c.font = f; return c.measureText('0000000000').width / 10; }); }, fonts);
+    },
     async close() { await browser.close(); },
   };
 }
