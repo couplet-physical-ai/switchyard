@@ -28,9 +28,9 @@ const RIDE = 9;
 const FRESH_MS = 30_000;
 const MAX_TRANSITS = 48;
 
+const causeIs = (f: Frame, k: string) => (f.causes.length ? f.causes.includes(k as never) : f.cause === k);
 function freshBitmap(f: Frame): boolean {
-  const has = (k: string) => (f.causes.length ? f.causes.includes(k as never) : f.cause === k);
-  return has('mount') || has('size') || has('font') || has('style');
+  return causeIs(f, 'mount') || causeIs(f, 'size') || causeIs(f, 'font') || causeIs(f, 'style');
 }
 
 /** An op's box on the board (CSS px; a text's generously: the face is monospaced, so its width is
@@ -108,7 +108,8 @@ export class Board3 {
     const fresh = freshBitmap(f);
     this.land(f.time);
     const L = (this.L = layoutOf(f.width, f.height));
-    if (fresh || this.measured !== L.s) {
+    // (a board mounted again, as it is each time the Factory is shown again, keeps what it measured)
+    if (this.measured !== L.s || causeIs(f, 'font') || causeIs(f, 'style')) {
       // the face's advance at each size (the scene fits words by it); again when the font arrives
       this.measured = L.s;
       this.ratio = '';
@@ -121,7 +122,11 @@ export class Board3 {
     }
     // (a quiet board is the same until the world or the minute changes: it is not even rebuilt)
     const tuple = `${this.ratio}|${w.ver}|${Math.floor(now / (this.quiet ? 60_000 : 1000))}|${f.width}x${f.height}@${f.scale}|${a.win}|${a.sel}|${a.mode}|${a.dock ? 1 : 0}|${a.hov}|${this.hiddenVer}`;
-    if (tuple === this.tuple && !fresh && this.world === w) return this.transits.length > 0;
+    if (tuple === this.tuple && this.world === w) {
+      // the board shown again with nothing changed since: the scene it showed, painted (not built)
+      if (fresh && this.scene && this.L) { this.painted = `${f.width}x${f.height}@${f.scale}|${this.scene.key}`; this.paint(ctx, f, this.scene, L, true); }
+      return this.transits.length > 0;
+    }
     this.tuple = tuple;
     const opts = { win: a.win, sel: a.sel, mode: a.mode, dock: a.dock, hidden: this.hidden, hov: a.hov };
     const b = boardOf(w, now, windowMs(a.win), this.book);
@@ -132,7 +137,9 @@ export class Board3 {
     this.stats.builds++;
     // ---- motion: what changed place since the scene before, on a new version of this world
     const layoutFor = `${f.width}x${f.height}|${a.win}|${a.dock ? 1 : 0}`;
-    const moved = this.prev && this.world === w && this.prevFor === layoutFor && w.ver !== this.prevVer && !a.reduced
+    // (on a new bitmap, the board shown again, what moved while it was away is simply where it is:
+    // it moved unseen, and a transit would replay it and build the scene twice in that frame)
+    const moved = this.prev && this.world === w && this.prevFor === layoutFor && w.ver !== this.prevVer && !a.reduced && !fresh
       ? this.depart(this.prev, scene.anchors, L.s, f.time, now, a.mode === 'replay') : 0;
     if (moved) { scene = sceneOf(b, L, opts); this.stats.builds++; }
     this.prev = scene.anchors; this.prevFor = layoutFor; this.prevVer = w.ver; this.world = w;
