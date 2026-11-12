@@ -46,3 +46,27 @@ test "a switchyard://view link switches the tab and asks nothing"
   clock settle
   expect tree has "connect"
   expect state link.ok == false
+
+// A view link that lands while the fleet connects or loads, or on the view already on top, never
+// leaves the app on /connect (sy-ship's 0.1.7 soak: view/live 1 s after connect stayed there).
+test "a view link during the connect, or to the view on top, switches and never stays on /connect"
+  tap "now-setup-demo"
+  type "root" "/connect?u=switchyard%3A%2F%2Fview%2Flive"
+  expect state here == "now"
+  type "root" "/connect?u=switchyard%3A%2F%2Fview%2Fyard"
+  expect state here == "yard"
+  clock data
+  type "root" "/connect?u=switchyard%3A%2F%2Fview%2Fyard"
+  expect state here == "yard"
+  type "root" "/connect?u=switchyard%3A%2F%2Fview%2Ffactory%2F"
+  expect state here == "factory"
+  type "root" "/connect?u=switchyard%3A%2F%2Fview%2Flive"
+  clock settle
+  expect state here == "now"
+  expect tree missing "connect"
+
+test "a view link before anything connected switches too"
+  type "root" "/connect?u=switchyard%3A%2F%2Fview%2Ffactory"
+  expect state here == "factory"
+  clock settle
+  expect state here == "factory"

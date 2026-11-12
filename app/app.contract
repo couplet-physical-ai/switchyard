@@ -187,9 +187,9 @@ component App
     after(16000, tick)
   task wake32 when ov.pace != 0 and ov.wake == 32 key=ov.wakeKey
     after(32000, tick)
-  // switchyard://view/<live|factory|yard> switches the tab with no confirm (the release soak's
-  // tab cycle drives the installed app with `open`); its connect screen is left at once.
-  task linkView when here == "connect" and link.view != "" key=link.view
+  // (a view link that still reaches /connect, e.g. one typed by hand on the web: left at once;
+  // keyed by the visit, so the same view twice is followed twice)
+  task linkView when here == "connect" and link.view != "" key=`${top(nav).id}|${link.view}`
     after(1, openLinkView)
   task tokWait when tokLoading and not tokSlow
     after(400, tokWaited)
@@ -284,9 +284,25 @@ component App
       visits = visitNow
       visitN = visitN + 1
   // (a new view on top reads the clock now: the pulse may have been asleep)
+  // A switchyard://view/<live|factory|yard> link (the system hands it over as /connect?u=<the URL>)
+  // switches the tab right here, in the action: no /connect screen, no resource to wait for, so a
+  // link that lands while the fleet connects or loads (or on the view already on top) is never
+  // left on /connect (sy-ship's 0.1.7 soak: a link 1 s after connect stayed there). Anything else
+  // (a connect link, another location) goes as before.
   action follow(url: string)
     tick()
-    nav = go(nav, url)
+    let u = url.startsWith("/connect?") ? searchParam(top(push(nav, url)), "u") : ""
+    let t = u.startsWith("switchyard://view/") ? u.slice(18) : ""
+    let t2 = t.indexOf("?") >= 0 ? t.slice(0, t.indexOf("?")) : t
+    let v = t2.indexOf("/") >= 0 ? t2.slice(0, t2.indexOf("/")) : t2
+    if v == "live" or v == "now"
+      nav = go(nav, "/")
+    else if v == "factory"
+      nav = go(nav, "/factory")
+    else if v == "yard"
+      nav = go(nav, "/yard")
+    else
+      nav = go(nav, url)
   action back
     tick()
     nav = back(nav)
