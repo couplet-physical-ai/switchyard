@@ -1,0 +1,44 @@
+Switchyard patch 0003 (app/scripts/patch-exact.sh applies it, after 0002): the native canvas
+recorder stops re-parsing the same font strings. `ctx.font = s` ran parseFont(s) on every
+assignment (a tokenizer with a regex per character, a fresh object), and every fillText's
+measure serialised the font again, quoting each family with a regex per character. An app sets
+the same handful of fonts thousands of times a second; both are pure functions of their strings,
+so each string is parsed and each family quoted once (bounded maps, 256 entries), and the state
+gets a fresh copy of the parsed font (fontVariantCaps/fontStretch change it in place). The lists
+are byte-identical (Switchyard's yard-bench: the same bytes per canvas per draw with and without
+it). Bun without JIT, the Yard's info layer at 10x: draw p50 2.38 -> 1.97 ms, sum -14 %.
+The web's seam (host/web-js/ts-draw.js) does not use this recorder and is untouched.
+
+--- a/canvas/recorder.js
++++ b/canvas/recorder.js
+@@ -330,7 +330,20 @@
+   f.families = fam;
+   return f;
+ }
+-const quoteFamily = (f) => (f && !/^[0-9]/.test(f) && [...f].every((c) => /[A-Za-z0-9_-]/.test(c) || c.charCodeAt(0) > 127) ? f : `"${f.replace(/"/g, '\\"')}"`);
++const quoteFamily0 = (f) => (f && !/^[0-9]/.test(f) && [...f].every((c) => /[A-Za-z0-9_-]/.test(c) || c.charCodeAt(0) > 127) ? f : `"${f.replace(/"/g, '\\"')}"`);
++// Switchyard patch (app/scripts/exact-patches/0003): a family's quoting and a font string's parse
++// are pure functions of their strings; an app sets the same few fonts thousands of times a
++// second (every fillText measures through serializeFont), so each is worked out once.
++const quoted = new Map();
++const quoteFamily = (f) => { let q = quoted.get(f); if (q === undefined) { q = quoteFamily0(f); if (quoted.size < 256) quoted.set(f, q); } return q; };
++const parsedFonts = new Map();
++/** parseFont, kept per string: a fresh copy each time (the state's font is changed in place). */
++function parseFontKept(input) {
++  const k = String(input);
++  let f = parsedFonts.get(k);
++  if (f === undefined) { f = parseFont(k); if (parsedFonts.size < 256) parsedFonts.set(k, f); }
++  return f && { ...f, families: f.families.slice() };
++}
+ /** Chrome's serialisation of a canvas font. */
+ export function serializeFont(f) {
+   let s = "";
+@@ -1007,7 +1020,7 @@
+   set imageSmoothingQuality(v) { const k = ["low", "medium", "high"].indexOf(v); if (k >= 0) this._smoothing([this._.state.smoothing[0], k]); }
+   // Text
+   get font() { return serializeFont(this._.state.text.font); }
+-  set font(v) { const f = parseFont(v); if (f) this._.state.text.font = f; }
++  set font(v) { const f = parseFontKept(v); if (f) this._.state.text.font = f; }
+   get textAlign() { return ALIGN[this._.state.text.align]; }
+   set textAlign(v) { const k = ALIGN.indexOf(v); if (k >= 0) this._.state.text.align = k; }
+   get textBaseline() { return BASELINE[this._.state.text.baseline]; }

@@ -37,12 +37,17 @@ and a token (kept in a file only you can read, "Security" below) in the connecti
 ### Exact patches
 
 Our native builds use a patched Exact. `scripts/exact-patches/*.patch` (applied in name order
-to the checkout at `exact.pin`) is the whole set; today it is one:
+to the checkout at `exact.pin`) is the whole set; today there are three:
 
 - `0001-heap-512m.patch`: `exact_js::DEFAULT_MAX_HEAP` (`js/src/lib.rs`) 64 MiB → 512 MiB, the
   Hermes heap ceiling of the data module (app.ts). Exact has no app-level setting for it (only
   a host crate's `Module::set_max_heap`, and ours is generated), and Hermes's out-of-memory
   is fatal (`hermes_fatal`), so the 0.1.3/0.1.4 macOS app died at 64 MiB.
+- `0002-recorder-no-per-frame-buffers.patch`: the native canvas seam (`canvas/recorder.js`)
+  reuses each canvas's list buffer and base64s into one reused buffer (no per-frame garbage).
+- `0003-recorder-font-parse-kept.patch` (after 0002): the same recorder parses each font
+  string and quotes each family once, not on every `ctx.font =` and every text's measure.
+  The lists are byte-identical (PERF.md, pass 5).
 
 `scripts/patch-exact.sh <exact dir>` applies them to a checkout's working tree (HEAD stays at
 the pin). `scripts/fetch-exact.sh` calls it after checkout and before setup, into
