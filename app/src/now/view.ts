@@ -514,6 +514,7 @@ type Built = {
   oldest: number; nWait: number; last?: number;
 };
 let memo: Built | null = null;
+let firstRows = false;
 /** The last feed shows something running or waiting (its m:ss timers follow the second). */
 export function feedTicking(): boolean { return !!memo && memo.v.ok && (memo.v.running > 0 || memo.v.queued > 0 || memo.v.waiting > 0); }
 
@@ -656,6 +657,8 @@ export function buildFeed(d: NowDeps, args: FeedArgs): NowFeed {
     summary: `${v.running} running, ${v.queued} queued, ${all.length} need a human`,
   };
   memo = { w, skey, sec, at: now, until, ...texts, v: feed, evs: [evNow, evJust, evEarlier], stamps: nd.stamps, mach };
+  // (once: the launch probe times the first feed with rows from the process's start)
+  if (!firstRows && nowEv.length + just.length + earlier.length) { firstRows = true; console.log(`live: first rows (${nowEv.length} now, ${just.length} just, ${earlier.length} earlier)`); }
   return feed;
 }
 

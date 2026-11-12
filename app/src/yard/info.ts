@@ -30,6 +30,24 @@ export type View = {
 type Panel = { id: string; rect: Rect; key: number; every?: number; draw: (g: Gfx, v: View, r: Rect) => void };
 
 const h = (a: number, b: number) => (Math.imul(a ^ 0x5bd1e995, 31) + b) | 0;
+const hs = (a: number, s: string) => { for (let i = 0; i < s.length; i++) a = h(a, s.charCodeAt(i)); return h(a, s.length); };
+/** What the engines panel prints that follows the clock: each running job's age ("42s", then
+ *  "3m") and its slowness, an offline machine's "last seen". Its key, in place of the second: the
+ *  panel is redrawn when one of those words changes, not every second for a word that did not. */
+function enginesClock(v: View): number {
+  const { w, now } = v;
+  let k = 0;
+  for (const e of w.engines.values()) {
+    if (e.last_seen && e.online === false) k = hs(k, fmtDur(now - e.last_seen));
+    for (const pid of e.running) {
+      const p = w.pipelines.get(pid);
+      const el = p?.started ? now - p.started : 0;
+      const exp = p?.expected_ms ?? w.repos.get(p?.repo ?? '')?.p50_build_ms ?? 0;
+      k = h(hs(k, fmtShort(el)), exp > 0 && el > exp * 1.5 ? 1 : 0);
+    }
+  }
+  return k;
+}
 
 export class InfoLayer {
   private keys = new Map<string, number>();
@@ -67,11 +85,15 @@ export class InfoLayer {
     const fade = (id: string) => (v.lod.fade(id, t).a < 1 ? (t | 0) : 0);
     const L = S.L, top = S.top;
     const stressT = v.stress.on ? Math.floor(t / 3000) : 0;
+    // live, the header's clock is hh:mm and its hour's counts are by the minute (lastHour); its
+    // other words follow the data (the queue's and engines' too). Replay, behind and paused show
+    // seconds (the playhead, "behind live").
+    const headClock = v.tl.mode === 'live' ? h(h(min, 7), h(kv.queue, kv.engine)) : h(sec, Math.floor(t / 1000));
     return [
-      { id: 'header', rect: { x: 0, y: 0, w: S.dial.labelX - 150, h: S.header.h }, key: h(h(h(sec, Math.floor(t / 1000)), h(w.repos.size, v.tl.mode.length)), h((v.q << 4) | (v.stress.on ? 1 : 0) | (v.tl.speed === 1 ? 2 : 0), kv.app)) + kv.pipeline + kv.repo, draw: drawHeader },
+      { id: 'header', rect: { x: 0, y: 0, w: S.dial.labelX - 150, h: S.header.h }, key: h(h(headClock, h(w.repos.size, v.tl.mode.length)), h((v.q << 4) | (v.stress.on ? 1 : 0) | (v.tl.speed === 1 ? 2 : 0), kv.app)) + kv.pipeline + kv.repo, draw: drawHeader },
       { id: 'sources', rect: { x: 0, y: top.y0 - 4, w: S.intake.x - 6, h: S.divY - 6 - (top.y0 - 4) }, key: h(h(kv.commit, min), h(S.sources.lod, fade('sources'))), draw: drawSources },
       { id: 'intake', rect: { x: S.intake.x - 6, y: top.y0 - 4, w: S.engines.x - S.intake.x, h: S.divY - 6 - (top.y0 - 4) }, key: h(h(kv.queue, kv.pipeline), Math.floor(now / 10000)), draw: drawIntake },
-      { id: 'engines', rect: { x: S.engines.x - 4, y: top.y0 - 4, w: S.engines.w + 8, h: S.divY - 6 - (top.y0 - 4) }, key: h(h(h(kv.engine, kv.pipeline), sec), h(S.engines.lod, fade('lanes')) + stressT), draw: drawEngines },
+      { id: 'engines', rect: { x: S.engines.x - 4, y: top.y0 - 4, w: S.engines.w + 8, h: S.divY - 6 - (top.y0 - 4) }, key: h(h(h(kv.engine, kv.pipeline), enginesClock(v)), h(S.engines.lod, fade('lanes')) + stressT), draw: drawEngines },
       { id: 'gates', rect: { x: S.gates.x - 6, y: top.y0 - 4, w: S.bus.x - S.gates.x + 4, h: S.divY - 6 - (top.y0 - 4) }, key: h(h(kv.stats, kv.pr), min), draw: drawGates },
       { id: 'mains', rect: { x: S.mains.x0 - 4, y: top.y0 - 4, w: S.mains.x1 - S.mains.x0 + 8 + S.m - 4, h: S.mains.heat.y - 4 - (top.y0 - 4) }, key: h(h(kv.repo, min), h(kv.pipeline, fade('rows'))), every: v.stress.on ? 1000 : 400, draw: drawMains },
       { id: 'heat', rect: { x: S.mains.x0 - 4, y: S.mains.heat.y - 4, w: S.mains.x1 - S.mains.x0 + 8, h: S.mains.heat.h + 6 }, key: h(v.agg.repos.sig, v.stress.on ? 1 : 0), every: 1000, draw: drawHeat },
