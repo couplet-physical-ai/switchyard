@@ -30,8 +30,11 @@ export type View = {
 /** `every`: the least time between two redraws of the panel (ms); a change sooner waits for the
  *  next draw after it (the 250 ms tick), so a busy fleet cannot redraw a big panel every frame. */
 type Panel = { id: string; rect: Rect; key: number; every?: number; draw: (g: Gfx, v: View, r: Rect) => void; parts?: (v: View, r: Rect) => Part[] };
-/** A piece of a panel drawn on its own (a main line's row): it sets every state it uses. */
-type Part = ((g: Gfx) => void) & { band?: readonly [number, number] };
+/** A piece of a panel drawn on its own (a main line's row): it sets every state it uses.
+ *  p5-yard: a part may carry a key (a number, and up to two objects compared by identity) that
+ *  stands for everything it draws; a part whose key, objects and band are the ones it had last
+ *  time is not run at all (not even hashed): its last hash and box stand. NaN: no key. */
+type Part = ((g: Gfx) => void) & { band?: readonly [number, number]; key?: number; of?: unknown; of2?: unknown };
 /** A part drawn only inside a horizontal band of its panel, the whole width (a main line's row):
  *  its box is the band, so a repaint clips at the bands' edges, where no ink crosses (a clip
  *  through a shape antialiases it a little differently: Skia does). */
@@ -40,8 +43,14 @@ function banded(f: (g: Gfx) => void, y0: number, y1: number): Part {
   p.band = [y0, y1];
   return p;
 }
-/** What a panel (or each of its parts) painted last: its calls' hash and the box they ink. */
-type Drawn = { h1: Int32Array; h2: Int32Array; box: Float64Array; n: number; banded?: boolean };
+/** What a panel (or each of its parts) painted last: its calls' hash and the box they ink;
+ *  p5-yard: each part's key and objects (NaN: none) and whether it leaned on its neighbours. */
+type Drawn = { h1: Int32Array; h2: Int32Array; box: Float64Array; n: number; banded?: boolean; keys: Float64Array; objs: unknown[]; inh: Uint8Array };
+/** A part keyed (p5-yard): `f` with its band, key and the objects it draws (compared by identity). */
+function keyed(p: Part, key: number, of: unknown, of2?: unknown): Part {
+  p.key = key; p.of = of; p.of2 = of2;
+  return p;
+}
 
 const h = (a: number, b: number) => (Math.imul(a ^ 0x5bd1e995, 31) + b) | 0;
 const hs = (a: number, s: string) => { for (let i = 0; i < s.length; i++) a = h(a, s.charCodeAt(i)); return h(a, s.length); };
@@ -75,7 +84,9 @@ export class InfoLayer {
   private gh = new Gfx();
   private hc = new HashCtx();
   /** For the bench and the tests: panels asked, skipped as unchanged, repainted in parts, whole. */
-  stats = { asked: 0, same: 0, parts: 0, whole: 0, partsDrawn: 0 };
+  stats = { asked: 0, same: 0, parts: 0, whole: 0, partsDrawn: 0, partsKept: 0, partsHashed: 0 };
+  /** Off: every part is hashed, keyed or not, as before p5-yard (tests compare). */
+  static keys = true;
   /** Off: every panel whose key moved is repainted whole, as before p3-yard (tests compare). */
   static gate = true;
   gate = InfoLayer.gate;
@@ -132,15 +143,29 @@ export class InfoLayer {
     gh.shareAdvances(g);
     hc.measurer = g.ctx;
     gh.begin(hc as unknown as Ctx2D, g.px);
-    const now: Drawn = { h1: new Int32Array(n), h2: new Int32Array(n), box: new Float64Array(n * 4), n };
+    const now: Drawn = { h1: new Int32Array(n), h2: new Int32Array(n), box: new Float64Array(n * 4), n, keys: new Float64Array(n), objs: new Array<unknown>(n * 2), inh: new Uint8Array(n) };
+    // p5-yard: a keyed part with the key, objects and band it had at this index last time is
+    // not run: its last hash and box stand (only after a part that left the baseline state, so
+    // the next part is hashed from where it would have been)
+    const old = full || !InfoLayer.keys ? undefined : this.drawn.get(p.id);
+    const prev = old && old.n === n ? old : undefined;
     let alone = true;
     for (let i = 0; i < n; i++) {
+      const part = parts[i], k = part.key ?? NaN, band = part.band;
+      now.keys[i] = k; now.objs[i * 2] = part.of; now.objs[i * 2 + 1] = part.of2;
+      if (prev && prev.keys[i] === k && prev.objs[i * 2] === part.of && prev.objs[i * 2 + 1] === part.of2 && !prev.inh[i] && hc.baseline()
+        && (!band || (prev.box[i * 4 + 1] === band[0] && prev.box[i * 4 + 3] === band[1]))) {
+        now.h1[i] = prev.h1[i]; now.h2[i] = prev.h2[i];
+        for (let j = i * 4; j < i * 4 + 4; j++) now.box[j] = prev.box[j];
+        this.stats.partsKept++;
+        continue;
+      }
+      this.stats.partsHashed++;
       hc.reset();
-      parts[i](gh);
+      part(gh);
       hc.end();
-      if (hc.inherits) alone = false;
+      if (hc.inherits) { alone = false; now.inh[i] = 1; }
       now.h1[i] = hc.h1; now.h2[i] = hc.h2;
-      const band = parts[i].band;
       if (band) { now.box[i * 4] = r.x; now.box[i * 4 + 1] = band[0]; now.box[i * 4 + 2] = r.x + r.w; now.box[i * 4 + 3] = band[1]; }
       else { now.box[i * 4] = hc.x0; now.box[i * 4 + 1] = hc.y0; now.box[i * 4 + 2] = hc.x1; now.box[i * 4 + 3] = hc.y1; }
     }
@@ -758,7 +783,9 @@ function mainsParts(v: View, r?: Rect): Part[] {
     if (!repo) continue;
     const y0 = top0(row), y1 = y0 + row.h;
     if (fd.a < 1 && row.lod !== fd.from) out.push(banded((g) => { g.alpha(1 - fd.a); mainRow(g, v, repo, row, fd.from); g.alpha(fd.a); mainRow(g, v, repo, row, row.lod); g.alpha(1); }, y0, y1));
-    else out.push(banded((g) => mainRow(g, v, repo, row, row.lod), y0, y1));
+    // p5-yard: keyed by the repo (copy on write: a change is a new object), the row and the
+    // words that follow the clock, so an unchanged row is not even hashed
+    else out.push(keyed(banded((g) => mainRow(g, v, repo, row, row.lod), y0, y1), mainRowKey(v, repo, row.lod), repo, row));
   }
   return out;
 }
@@ -773,6 +800,45 @@ function addBox(boxes: number[], x0: number, y0: number, x1: number, y1: number)
     return;
   }
   boxes.push(x0, y0, x1, y1);
+}
+
+/** fmtShort(ms)'s words as a number: the same number exactly when the same words. */
+export function shortKey(ms: number): number {
+  if (!isFinite(ms) || ms < 0) return -1;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s;
+  const m = Math.floor(s / 60);
+  if (m < 60) return 1000 + m;
+  const hh = Math.floor(m / 60);
+  return hh < 48 ? 2000 + hh : 3000 + Math.round(hh / 24);
+}
+
+/** fmtDur(ms)'s words as a number: the same number exactly when the same words. */
+export function durKey(ms: number): number {
+  if (!isFinite(ms) || ms < 0) return -1;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s;
+  const m = Math.floor(s / 60);
+  // ("4m 5s" keys its seconds, never a multiple of 60; "4m" its minutes times 60)
+  if (m < 60) return 1000 + (s % 60 && m < 10 ? s : m * 60);
+  const hh = Math.floor(m / 60);
+  if (hh >= 48) return 1e7 + Math.round(hh / 24);
+  return 1e6 + (m % 60 && hh < 10 ? m : hh * 60);
+}
+
+/** What a main line's row draws besides its repo and its row (both keyed by identity): its
+ *  level, the dots' shape (square from q3), and the words that follow the clock (a red line's
+ *  age, whether it is red today, the shown commit's age). NaN at LOD2: its bars follow the clock. */
+function mainRowKey(v: View, repo: Repo, lod: Level): number {
+  if (lod > 1) return NaN;
+  const now = v.now;
+  let k = h(lod + 1, v.q >= 3 ? 1 : 0);
+  const red = isRed(repo);
+  if (red) k = h(h(k, shortKey(now - repo.main.since)), now - repo.main.since < 86_400_000 ? 1 : 0);
+  const rec = repo.main.recent;
+  let c = rec[rec.length - 1];
+  if (red && repo.main.culprit) { c = undefined as unknown as typeof c; for (let i = 0; i < rec.length; i++) if (rec[i].sha === repo.main.culprit) { c = rec[i]; break; } }
+  return c ? h(h(k, 7), shortKey(now - c.at)) : k;
 }
 
 function mainRow(g: Gfx, v: View, repo: Repo, row: MainRow, lod: Level): void {

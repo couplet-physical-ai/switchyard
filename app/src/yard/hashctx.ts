@@ -52,6 +52,12 @@ export class HashCtx {
     this.set = 0;
   }
 
+  /** On the baseline a part must end on to be redrawn alone (alpha 1, no dash, no letter
+   *  spacing): a part skipped as unchanged (its key, info.ts) would have left the state so. */
+  baseline(): boolean {
+    return this._globalAlpha === 1 && !this.dashed && (this._letterSpacing === '0px' || this._letterSpacing === '');
+  }
+
   /** The part ended: off the baseline means it cannot be redrawn alone. */
   end(): void {
     if (this._globalAlpha !== 1 || this.dashed || (this._letterSpacing !== '0px' && this._letterSpacing !== '')) this.inherits = true;

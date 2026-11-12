@@ -22,6 +22,10 @@ if (flag('--hermes')) (globalThis as { HermesInternal?: unknown }).HermesInterna
 
 // Exact's stream, over a Bun WebSocket
 let streamN = 0, streamLast = '';
+// --fed: the overview is asked as the app's `fed` task asks it (app.contract: 250 ms after a
+// stream message, at most 4 times a second), besides the pulse; T0 is set before any message
+let fedAt = -1;
+const T0 = performance.now();
 const streamMs: number[] = [];
 const realFetch = globalThis.fetch;
 globalThis.fetch = ((url: string, init?: { exactStream?: (ev: Record<string, unknown>) => unknown }) => {
@@ -30,7 +34,7 @@ globalThis.fetch = ((url: string, init?: { exactStream?: (ev: Record<string, unk
   return new Promise((resolve) => {
     const ws = new WebSocket(String(url).replace(/^http/, 'ws'));
     ws.onopen = () => cb({ type: 'open' });
-    ws.onmessage = (m) => { const a = performance.now(); const r = cb({ type: 'message', data: String(m.data) }) as { status: string }; streamN++; streamLast = r?.status ?? ''; streamMs.push(performance.now() - a); };
+    ws.onmessage = (m) => { const a = performance.now(); const r = cb({ type: 'message', data: String(m.data) }) as { status: string }; streamN++; streamLast = r?.status ?? ''; streamMs.push(performance.now() - a); if (fedAt < 0) fedAt = performance.now() - T0 + 1000 + 250; };
     ws.onerror = () => cb({ type: 'error', kind: 'Network', message: 'ws error' });
     ws.onclose = () => { cb({ type: 'close' }); resolve(new Response('')); };
   });
@@ -66,6 +70,15 @@ if (flag('--phases')) {
     };
   }
 }
+// --paint: each info panel's paint (its hash pass, and its repaint when one is needed), timed
+const paintMs: Record<string, number[]> = {};
+if (flag('--paint')) {
+  const { InfoLayer } = await import('../src/yard/info.ts');
+  const P = InfoLayer.prototype as unknown as { paint: (g: unknown, v: unknown, p: { id: string }, full: boolean) => void; panels: (v: unknown) => unknown };
+  const pa = P.paint, pn = P.panels;
+  P.paint = function (this: unknown, g: unknown, v: unknown, p: { id: string }, full: boolean) { const a = performance.now(); pa.call(this, g, v, p, full); (paintMs[p.id] ??= []).push(performance.now() - a); };
+  P.panels = function (this: unknown, v: unknown) { const a = performance.now(); const r = pn.call(this, v); (paintMs['(panels)'] ??= []).push(performance.now() - a); return r; };
+}
 // --panels: which info panels each info draw repainted, and their ops
 const panelLog: string[] = [];
 if (flag('--panels')) {
@@ -78,9 +91,14 @@ if (flag('--panels')) {
     return ps;
   };
 }
+// --alloc: bytes allocated per call (run with the collector held off: BUN_JSC_largeHeapSize=8000000000
+// BUN_JSC_smallHeapSize=8000000000), as the growth of JSC's heap blocks plus mimalloc's (strings,
+// buffers) across each overview and each canvas draw: what Hermes would have to collect
+const allocKB: Record<string, number[]> = {};
+const jsc = flag('--alloc') ? await import('bun:jsc') : null;
+const heapNow = () => (jsc ? jsc.heapStats().heapCapacity + jsc.memoryUsage().current : 0);
 const { sources, draw } = mod as unknown as { sources: Record<string, (a: unknown[], s?: unknown, st?: unknown) => unknown>; draw: (s: string, a: unknown[], c: unknown, f: unknown) => boolean };
 const store = { get: () => '', set() {} };
-const T0 = performance.now();
 const now = () => performance.now() - T0 + 1000;
 const epoch0 = Date.now() - now();
 const conn = (await sources.connect([server, '', 1, epoch0, 0], store, {})) as { ok: boolean; status: string; seq: number; error?: string };
@@ -114,9 +132,11 @@ function ops(b64: string, st: Stat | null): number {
 }
 
 function drawOne(c: string, a: unknown[], time: number, cause: string, measure: boolean): boolean {
+  const m0 = jsc && measure ? heapNow() : 0;
   const t0 = performance.now();
   const out = JSON.parse(seam.draw({ canvas: ids[c], generation: gen[c], surface: c, args: a, frame: frame(time, cause) }, measureHost)) as { lists: string[]; frame: boolean; error: string | null };
   const ms = performance.now() - t0;
+  if (jsc && measure) (allocKB[c] ??= []).push((heapNow() - m0) / 1024);
   if (out.error) console.log(`${c}: ${out.error}`);
   if (measure) {
     const st = S[c];
@@ -147,7 +167,9 @@ async function run(n: number, measure: boolean): Promise<void> {
     const wait = next - now();
     if (wait > 0) await Bun.sleep(wait); else await Bun.sleep(0);
     const t = now();
-    if (t - lastOv >= (ov.pace ? 1000 : 250)) { const o0 = performance.now(); ov = sources.overview([t], store, {}) as Ov; lastOv = t; if (measure) ovMs.push(performance.now() - o0); }
+    const fed = flag('--fed') && fedAt >= 0 && t >= fedAt;
+    if (fed) fedAt = -1;
+    if (fed || t - lastOv >= (ov.pace ? 1000 : 250)) { const m0 = jsc && measure ? heapNow() : 0; const o0 = performance.now(); ov = sources.overview([t], store, {}) as Ov; lastOv = t; if (measure) ovMs.push(performance.now() - o0); if (jsc && measure) (allocKB.overview ??= []).push((heapNow() - m0) / 1024); }
     const argv: Record<string, unknown[]> = {
       yardStatic: [ov.layoutKey, ov.stress], yardInfo: [ov.layoutKey, ov.tick], yardLive: ['full', '', ov.tick], yardTop: [ov.hud, ''],
     };
@@ -176,7 +198,9 @@ console.log(`stream: ${streamN} messages, last ${streamLast} · overview ${ovMs.
 console.log(`stream messages: ms ${streamMs.map((x) => x.toFixed(1)).join(' ')}`);
 console.log(`frames with work ${frameMs.length}/${FRAMES} · work ms p50 ${q(frameMs, 0.5).toFixed(2)} p90 ${q(frameMs, 0.9).toFixed(2)} p99 ${q(frameMs, 0.99).toFixed(2)} max ${q(frameMs, 1).toFixed(2)}`);
 if (flag('--phases')) console.log(`yardLive bytes a frame by phase: ${Object.entries(phaseB).map(([k, v]) => `${k} ${(v / Math.max(1, phaseFrames) / 1024).toFixed(2)}K`).join(' · ')}`);
+if (jsc) { const all = heapNow(); void all; for (const [k, xs] of Object.entries(allocKB)) console.log(`  alloc ${k}: ${xs.length} calls · KB a call p50 ${q(xs, 0.5).toFixed(1)} mean ${(sum(xs) / xs.length).toFixed(1)} max ${q(xs, 1).toFixed(1)} · ${(sum(xs) / 1024 / (FRAMES / 60)).toFixed(2)} MB/s`); }
 if (infoLayer) console.log(`info panels: ${JSON.stringify((infoLayer as { stats: unknown }).stats)}`);
+if (flag('--paint')) for (const [id, xs] of Object.entries(paintMs).sort((a, b) => sum(b[1]) - sum(a[1]))) console.log(`  paint ${id}: ${xs.length}× · ms p50 ${q(xs, 0.5).toFixed(2)} p90 ${q(xs, 0.9).toFixed(2)} max ${q(xs, 1).toFixed(2)} sum ${sum(xs).toFixed(1)}`);
 for (const c of CAN) {
   const st = S[c];
   if (!st.draws) { console.log(`  ${c}: 0 draws`); continue; }
