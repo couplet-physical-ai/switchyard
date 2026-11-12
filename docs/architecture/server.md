@@ -35,7 +35,7 @@ Protocol 0.6 has these entity kinds: `org`, `repo`, `commit`, `pipeline`, `pr`, 
 
 The reducer in [`server/src/runtime.rs`](https://github.com/couplet-physical-ai/switchyard/blob/main/server/src/runtime.rs) applies each fact batch, derives changed entities, then publishes the resulting frame. Event operations follow the state operations in their frame, so a client handling an event sees the world that event produced. Backfills and late reconciliations update state without replaying old motion events.
 
-For a pull request, the server replaces a matching Roadrunner workflow status from GitHub's potentially lagging check rollup with the workflow state from the highest-numbered Roadrunner pipeline for that head. An active Roadrunner run takes precedence over the settled rollup. This is the “newest run wins” rule in [`server/src/store.rs`](https://github.com/couplet-physical-ai/switchyard/blob/main/server/src/store.rs#L1951).
+For a pull request, the server replaces a matching Roadrunner workflow status from GitHub's potentially lagging check rollup with the workflow state from the highest-numbered Roadrunner pipeline for that head. An active Roadrunner run takes precedence over the settled rollup. This is the “newest run wins” rule in [`server/src/store.rs`](https://github.com/couplet-physical-ai/switchyard/blob/main/server/src/store.rs).
 
 ## Snapshot, stream, and sequence
 

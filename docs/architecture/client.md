@@ -21,7 +21,7 @@ The current client has three main views:
 | `/factory` | Factory | The berth board: six stations from waiting through apps, with a ledger of events and an inspector for a selected run. |
 | `/yard` | Yard | The fleet schematic, with repositories, engines, CI work, deployments, and apps. |
 
-The earlier Factory implementations in `app/src/factory/` and `app/src/flowfloor/` are being retired. The current `/factory` view is Factory 3, implemented in [`app/src/factory3/`](https://github.com/couplet-physical-ai/switchyard/tree/main/app/src/factory3).
+The two earlier Factory floors (`app/src/factory/`, the isometric floor, and `app/src/flowfloor/`, the square swarm) were retired in `c1626f0`; every `/factory?v=…` link opens the board. The `/factory` view is Factory 3, implemented in [`app/src/factory3/`](https://github.com/couplet-physical-ai/switchyard/tree/main/app/src/factory3).
 
 The data module's main pieces are:
 
@@ -46,7 +46,7 @@ The overview's `ov.tick` is the redraw key. It advances only when data or a disp
 - `1`: a one-second tick when a visible timer needs to advance; it does not ask for an unrelated overview redraw.
 - `2`: no pulse. The client schedules one-shot wakes at the next relevant time boundary, and incoming stream frames wake the views that depend on them.
 
-When the view is paused and no data changes, the playhead and canvases stand still. Covered canvas layers also sleep until their view is shown again. The implementation is in [`app/app.ts`](https://github.com/couplet-physical-ai/switchyard/blob/main/app/app.ts#L551) and the task declarations are in [`app/app.contract`](https://github.com/couplet-physical-ai/switchyard/blob/main/app/app.contract#L132).
+When the view is paused and no data changes, the playhead and canvases stand still. Covered canvas layers also sleep until their view is shown again. The implementation is in [`app/app.ts`](https://github.com/couplet-physical-ai/switchyard/blob/main/app/app.ts) and the task declarations are in [`app/app.contract`](https://github.com/couplet-physical-ai/switchyard/blob/main/app/app.contract).
 
 ## Device token and test hooks
 
