@@ -1482,14 +1482,21 @@ impl Store {
         let mut states: Vec<CiState> = Vec::new();
         let mut has_wp = false;
         if let Some(ps) = self.idx.sha_pipelines.get(&sk) {
-            // Latest run per (lane, event, deploy-ness): reruns supersede.
+            // Latest run per (lane, event, deploy-ness): reruns supersede. A manual run
+            // of a commit is a rerun of its push pipeline (the same config on the same
+            // sha), so the newer of the two decides: a passing manual rerun clears an
+            // older failed push run, and a failing one turns a green push red.
             let mut latest: BTreeMap<(u8, u8, bool), (u64, CiState)> = BTreeMap::new();
             for id in ps {
                 if let Some(p) = self.pipelines.get(id) {
                     if p.lane == LaneKind::Roadrunner {
                         has_wp = true;
                     }
-                    let key = (p.lane as u8, p.event as u8, p.deploy);
+                    let event = match p.event {
+                        PipelineEvent::Manual => PipelineEvent::Push,
+                        e => e,
+                    };
+                    let key = (p.lane as u8, event as u8, p.deploy);
                     let e = latest.entry(key).or_insert((p.number, p.state));
                     if p.number >= e.0 {
                         *e = (p.number, p.state);

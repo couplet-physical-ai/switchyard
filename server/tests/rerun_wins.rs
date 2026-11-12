@@ -1,0 +1,121 @@
+//! A manual run of a commit reruns its push pipeline: the newer of the two decides the
+//! commit's CI state and so its repo's main line. A passing manual rerun clears an older
+//! failed push run (the repo is green, not red until that run ages out of the window).
+
+use serde_json::Value;
+use switchyard::facts::*;
+use switchyard::model::*;
+use switchyard::store::{Store, StoreConfig};
+
+const NOW: Ms = 1_794_340_000_000;
+const REPO: &str = "acme/api";
+const SHA: &str = "1111111111111111111111111111111111111111";
+
+fn run(n: u64, event: PipelineEvent, state: CiState, deploy: bool) -> Fact {
+    let finished = NOW - 60_000 * (100 - n as i64);
+    Fact::Pipeline(Pipeline {
+        id: ids::wp_pipeline(REPO, n),
+        lane: LaneKind::Roadrunner,
+        repo: REPO.into(),
+        number: n,
+        sha: SHA.into(),
+        branch: "main".into(),
+        git_ref: None,
+        event,
+        state,
+        created: finished - 30_000,
+        started: Some(finished - 25_000),
+        finished: Some(finished),
+        queue_pos: None,
+        expected_ms: None,
+        engine: None,
+        title: Some("change".into()),
+        author: Some("dev".into()),
+        pr: None,
+        deploy,
+        flaky: false,
+        workflows: vec![],
+        url: "https://ci.example/x".into(),
+        links: Default::default(),
+    })
+}
+
+fn store(facts: Vec<Fact>) -> Store {
+    let mut s = Store::new(StoreConfig {
+        orgs: vec!["acme".into()],
+        ..Default::default()
+    });
+    for f in facts {
+        s.apply(f, false);
+    }
+    s.flush(NOW);
+    s
+}
+
+fn main_state(s: &Store) -> String {
+    let r: Value = serde_json::from_str(&s.table(Kind::Repo)[REPO]).unwrap();
+    r["main"]["state"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn a_passing_manual_rerun_clears_an_older_failed_push_run() {
+    use CiState::*;
+    use PipelineEvent::*;
+    // net-control-plane on Nov 11: push #10 (ci + deploy) failed at deploy, the manual
+    // run #11 of the same sha passed everything.
+    let s = store(vec![
+        run(10, Push, Failure, true),
+        run(11, Manual, Success, true),
+    ]);
+    assert_eq!(s.commit_ci(REPO, SHA), Success);
+    assert_eq!(main_state(&s), "success");
+    // Error (an infra blip) the same way.
+    let s = store(vec![
+        run(10, Push, Error, false),
+        run(11, Manual, Success, false),
+    ]);
+    assert_eq!(s.commit_ci(REPO, SHA), Success);
+}
+
+#[test]
+fn the_newer_run_decides_either_way() {
+    use CiState::*;
+    use PipelineEvent::*;
+    // A failing manual rerun turns a green push red.
+    let s = store(vec![
+        run(10, Push, Success, false),
+        run(11, Manual, Failure, false),
+    ]);
+    assert_eq!(s.commit_ci(REPO, SHA), Failure);
+    assert_eq!(main_state(&s), "failure");
+    // An older manual pass does not clear a newer failed push.
+    let s = store(vec![
+        run(10, Manual, Success, false),
+        run(11, Push, Failure, false),
+    ]);
+    assert_eq!(s.commit_ci(REPO, SHA), Failure);
+    // Order of arrival does not matter, only the run number.
+    let s = store(vec![
+        run(11, Manual, Success, false),
+        run(10, Push, Failure, false),
+    ]);
+    assert_eq!(s.commit_ci(REPO, SHA), Success);
+}
+
+#[test]
+fn other_events_and_deploy_runs_still_count_on_their_own() {
+    use CiState::*;
+    use PipelineEvent::*;
+    // A pull request's failed run is its own line: a later push pass does not clear it.
+    let s = store(vec![
+        run(10, PullRequest, Failure, false),
+        run(11, Push, Success, false),
+    ]);
+    assert_eq!(s.commit_ci(REPO, SHA), Failure);
+    // A manual CI-only pass does not clear a failed deploy run.
+    let s = store(vec![
+        run(10, Push, Failure, true),
+        run(11, Manual, Success, false),
+    ]);
+    assert_eq!(s.commit_ci(REPO, SHA), Failure);
+}
