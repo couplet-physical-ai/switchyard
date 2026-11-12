@@ -71,8 +71,8 @@ test "the tabs reach Yard and Factory; a Live deep link leaves the Factory"
   clock +1000 real
   expect state here == "factory"
   expect tree has "factory-live"
-  // the tab opens the Factory itself (the square swarm); this floor stays at ?v=1
-  expect state facV2 == true
+  // the tab opens the Factory itself (the berth board); this floor stays at ?v=1
+  expect state facV3 == true
   type "root" "/?repo=Northwind-Labs%2Fcicd"
   clock settle
   expect state here == "now"

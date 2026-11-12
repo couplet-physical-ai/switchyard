@@ -1,4 +1,4 @@
-// Factory 3, "the berth board", at /factory?v=3 (FACTORY3.md; views/factory3.contract,
+// Factory 3, "the berth board", at /factory (also /factory?v=3) (FACTORY3.md; views/factory3.contract,
 // src/factory3/): six stations in flow order, the ledger of events under them, the FAILED bin's
 // window, the inspector docked over the ledger. /factory and /factory?v=1 keep their own floors
 // (tests/factory-v2.test.contract, tests/factory.test.contract).
@@ -15,7 +15,7 @@ size 1440x900
 
 test "board: v=3 keeps a board behind the setup card"
   clock data
-  type "root" "/factory?v=3"
+  type "root" "/factory"
   clock settle
   expect state here == "factory"
   expect state facV3 == true
@@ -27,9 +27,14 @@ test "board: v=3 keeps a board behind the setup card"
   expect tree missing "f3-inspector"
   expect text "tab-factory" == "Factory"
 
-test "board: /factory and /factory?v=1 are not the board"
+test "board: /factory is the board; /factory?v=2 and /factory?v=1 are not"
   clock data
   type "root" "/factory"
+  clock settle
+  expect state facV3 == true
+  expect state facV2 == false
+  expect tree has "factory-moving"
+  type "root" "/factory?v=2"
   clock settle
   expect state facV3 == false
   expect state facV2 == true
@@ -42,7 +47,7 @@ test "board: /factory and /factory?v=1 are not the board"
 
 test "board: the demo fills it; the failed bin's window starts at 30 minutes"
   clock data
-  type "root" "/factory?v=3"
+  type "root" "/factory"
   clock settle
   tap "setup-demo"
   clock data
@@ -57,7 +62,7 @@ test "board: the demo fills it; the failed bin's window starts at 30 minutes"
 
 test "board: on a fleet where nothing changes, nothing ever travels"
   clock data
-  type "root" "/factory?v=3"
+  type "root" "/factory"
   clock settle
   tap "setup-connect"
   clock settle
@@ -75,7 +80,7 @@ test "board: on a fleet where nothing changes, nothing ever travels"
 
 test "board: paused, no pixel changes"
   clock data
-  type "root" "/factory?v=3"
+  type "root" "/factory"
   clock settle
   tap "setup-connect"
   clock settle
@@ -94,7 +99,7 @@ test "board: paused, no pixel changes"
 
 test "board: a press on the bin's newest failure opens the inspector; Escape closes it"
   clock data
-  type "root" "/factory?v=3"
+  type "root" "/factory"
   clock settle
   tap "setup-connect"
   clock settle
@@ -121,7 +126,7 @@ test "board: a press on the bin's newest failure opens the inspector; Escape clo
 
 test "board: the same press again closes; close closes"
   clock data
-  type "root" "/factory?v=3"
+  type "root" "/factory"
   clock settle
   tap "setup-connect"
   clock settle
@@ -149,7 +154,7 @@ test "board: the same press again closes; close closes"
 
 test "board: a window chip sets the failed bin's window"
   clock data
-  type "root" "/factory?v=3"
+  type "root" "/factory"
   clock settle
   tap "setup-connect"
   clock settle
@@ -167,7 +172,7 @@ test "board: a window chip sets the failed bin's window"
 
 test "board: a red main line opens as a main line, with its links"
   clock data
-  type "root" "/factory?v=3"
+  type "root" "/factory"
   clock settle
   tap "setup-connect"
   clock settle
@@ -187,7 +192,7 @@ test "board: a red main line opens as a main line, with its links"
 
 test "board: the tabs leave and come back; a Live deep link leaves the Factory"
   clock data
-  type "root" "/factory?v=3"
+  type "root" "/factory"
   clock settle
   tap "setup-demo"
   clock data
@@ -195,7 +200,7 @@ test "board: the tabs leave and come back; a Live deep link leaves the Factory"
   clock settle
   expect state here == "yard"
   expect tree has "yard-live"
-  type "root" "/factory?v=3"
+  type "root" "/factory"
   clock settle
   clock +500
   clock +1000 real
