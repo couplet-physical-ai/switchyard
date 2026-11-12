@@ -365,14 +365,22 @@ impl Mapper {
             ),
             links: Default::default(),
         };
-        if event == PipelineEvent::Push {
+        // A push deploys; so does a manual run whose deploy workflow runs (a redeploy, the
+        // rerun of a failed push deploy): the newer of the two is the commit's deploy.
+        if matches!(event, PipelineEvent::Push | PipelineEvent::Manual) {
             for w in deploy_wfs {
                 let st = map_state(&w.state);
-                let ds = match st {
-                    CiState::Pending | CiState::Blocked | CiState::None => DeployState::Pending,
-                    CiState::Running => DeployState::Running,
-                    CiState::Success => DeployState::Success,
-                    CiState::Failure | CiState::Error | CiState::Canceled => DeployState::Failure,
+                let (ds, canceled) = match st {
+                    CiState::Pending | CiState::Blocked | CiState::None => {
+                        (DeployState::Pending, false)
+                    }
+                    CiState::Running => (DeployState::Running, false),
+                    CiState::Success => (DeployState::Success, false),
+                    CiState::Failure | CiState::Error => (DeployState::Failure, false),
+                    // Killed (superseded by a newer push, cancelled by hand): it neither
+                    // deployed nor failed; the fact ends the run's running report.
+                    CiState::Canceled => (DeployState::Failure, true),
+                    // Its `when` did not match: no deploy at all.
                     CiState::Skipped => continue,
                 };
                 out.push(Fact::Deploy(DeployFact {
@@ -386,6 +394,7 @@ impl Mapper {
                     pipeline: Some(pid.clone()),
                     url: Some(pipeline.url.clone()),
                     source: "wp".into(),
+                    canceled,
                 }));
             }
         }

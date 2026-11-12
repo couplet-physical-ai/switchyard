@@ -265,6 +265,7 @@ fn deploy() -> impl Strategy<Value = Fact> {
                 pipeline: None,
                 url: None,
                 source: source.into(),
+                canceled: false,
             })
         })
 }

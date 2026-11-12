@@ -140,6 +140,7 @@ pub fn facts_from_mode(m: &ModeOut, now: Ms) -> Vec<Fact> {
                 pipeline: None,
                 url: None,
                 source: "cicd".into(),
+                canceled: false,
             }));
         }
     }
