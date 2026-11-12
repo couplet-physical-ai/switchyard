@@ -11,6 +11,9 @@
 //                                  launch, the way the agent's `screenshot` draws it.
 //   SWITCHYARD_HEAPLOG=1:<mode>    a hidden probe of the JS heap's external bytes (src/heapprobe.ts):
 //                                  the yard's live canvas churns every frame, a line every 10 s.
+//   SWITCHYARD_CANVAS=<gpu|board,info> a hidden A/B switch (p6): those canvases claim the GPU as
+//                                  in pass 5 (the board, the Yard's info layer); unset, both stay
+//                                  with Core Graphics (app.ts canvasAsk).
 //
 // Always, every 30 s: the data module's `heap: <MB> MB · live · ext · cap · frames <n>` line
 // (src/memlog.ts, the `heapLog` op), which the release soak reads.
@@ -110,7 +113,8 @@ final class SYHooks {
     func heapLog(_ request: [String: Any]) -> [String: Any] {
         if let line = request["line"] as? String, !line.isEmpty { SYHookLog.line(String(line.prefix(400))) }
         let env = ProcessInfo.processInfo.environment["SWITCHYARD_HEAPLOG"] ?? ""
-        return ["probe": env.hasPrefix("1:") ? String(env.dropFirst(2).prefix(32)) : ""]
+        let canvas = ProcessInfo.processInfo.environment["SWITCHYARD_CANVAS"] ?? ""
+        return ["probe": env.hasPrefix("1:") ? String(env.dropFirst(2).prefix(32)) : "", "canvas": String(canvas.prefix(32))]
     }
 
     /// What the data module says of the connect it made with the token (never the token).

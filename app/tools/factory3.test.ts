@@ -9,7 +9,7 @@
 import { readFileSync } from 'node:fs';
 import { World } from '../src/world.ts';
 import type { Frame as WireFrame, Pipeline, Snapshot } from '../src/wire.ts';
-import { SlotBook, WINDOWS, boardOf, windowMs } from '../src/factory3/model.ts';
+import { SlotBook, WINDOWS, boardAt, boardOf, windowMs } from '../src/factory3/model.ts';
 import { PLACE, ageAt, layoutOf, sceneOf, timer, type SceneOpts } from '../src/factory3/scene.ts';
 import { Board3, diffOps } from '../src/factory3/board.ts';
 import { f3Detail, tidyLog } from '../src/factory3/inspect.ts';
@@ -94,13 +94,17 @@ const ARGS = { win: '30m', sel: '', mode: 'live', reduced: false, dock: false, h
   let more = board.drawBoard(A.ctx, frame(1000, 'mount'), w, t0, ARGS);
   const liveClaim = board.drawLive(B.ctx, frame(1000, 'mount'));
   const painted = A.calls.length;
-  // (p5-board: each layer's first draw on a fresh bitmap asks for ONE more frame, so macOS gives
-  // the canvas to its GPU module: Board3.gpuClaim)
-  ok(painted > 300 && more && liveClaim, `idle: the first frame paints the board (${painted} calls) and both layers ask for one more (the GPU claim)`);
+  // (p5-board: the live layer's first draw on a fresh bitmap asks for ONE more frame, so macOS
+  // gives the canvas to its GPU module: Board3.gpuClaim. p6: the board asks for none, so Core
+  // Graphics keeps it: its second's repaint is a few boxes into the bitmap, not a GPU replay)
+  ok(painted > 300 && !more && liveClaim, `idle: the first frame paints the board (${painted} calls); the moving layer asks for one more (the GPU claim), the board for none`);
+  const firstPaint = A.calls.findIndex((c) => c.startsWith('clear') || c.startsWith('rect') || c.startsWith('text'));
+  ok(firstPaint > 0 && A.calls[firstPaint] === 'clear 0,0,1440,840' && A.calls.slice(0, firstPaint).join('|') === 'save|clip-rect 0,0,1440,840|clip' && A.calls[firstPaint + 1] === 'restore',
+    'p6: the whole paint\'s clear is clipped to the canvas (the host never takes the board\'s list for a cover: Core Animation never records it)');
   more = board.drawBoard(A.ctx, frame(1016), w, t0 + 16, ARGS);
   const liveNext = board.drawLive(B.ctx, frame(1016));
   ok(!more && !liveNext && A.calls.length === painted, 'idle: that frame paints nothing and asks for no other');
-  eq(board.stats.claims, 2, 'idle: two claims, one a layer');
+  eq(board.stats.claims, 1, 'idle: one claim, the moving layer\'s');
   const liveFirst = B.calls.length;
   let asked = false;
   for (let i = 1; i <= 240; i++) {
@@ -112,10 +116,15 @@ const ARGS = { win: '30m', sel: '', mode: 'live', reduced: false, dock: false, h
   eq(B.calls.length, liveFirst, 'idle: the moving layer is never painted');
   ok(!more && !asked, 'idle: no frame is ever asked for');
   eq([board.stats.paints, board.stats.livePaints, board.stats.transits], [1, 0, 0], 'idle: 1 paint, 0 live paints, 0 transits');
-  // a mount skipped while covered (app.ts): the next draw is the fresh bitmap's first, whole and claimed
+  // a mount skipped while covered (app.ts): the next draw is the fresh bitmap's first, whole (p6: and asks for no frame)
   const C = recorder(), b3 = new Board3();
   b3.skipped('board', frame(500, 'mount'));
-  ok(b3.drawBoard(C.ctx, frame(600), w, t0, ARGS) && C.calls.includes('clear 0,0,1440,840'), 'covered mount: the next draw paints the board whole and asks for one more frame');
+  ok(!b3.drawBoard(C.ctx, frame(600), w, t0, ARGS) && C.calls.includes('clear 0,0,1440,840'), 'covered mount: the next draw paints the board whole and asks for no frame');
+  // the A/B switch (SWITCHYARD_CANVAS=board): the board claims the GPU and clears unclipped, as in pass 5
+  Board3.boardGpu = true;
+  const G = recorder(), b4 = new Board3(), G2 = recorder();
+  ok(b4.drawBoard(G.ctx, frame(700, 'mount'), w, t0, ARGS) && b4.drawLive(G2.ctx, frame(700, 'mount')) && !G.calls.includes('clip') && b4.stats.claims === 2, 'SWITCHYARD_CANVAS=board: both layers claim the GPU, the clear unclipped (pass 5)');
+  Board3.boardGpu = false;
   ok(board.stats.builds <= 3, `idle: the scene is not even rebuilt each second (${board.stats.builds} builds in 60 s)`);
   ok(board.still, 'idle: the board reports itself still');
 }
@@ -189,6 +198,20 @@ const ARGS = { win: '30m', sel: '', mode: 'live', reduced: false, dock: false, h
   eq(B.calls.length, n, 'move: after it lands the moving layer is not painted again');
   eq(board.stats.transits, 1, 'move: and no other transit starts');
   ok(board.stats.paints - paints <= 3, 'move: the board repaints only as its timers tick (once a second)');
+  // p6: a fresh bitmap (a new size, the board shown again) while a square travels: it lands at
+  // once, the board's first paint asks for no frame (Core Graphics keeps it), the moving layer clears
+  {
+    const w3 = new World(); w3.load(clone(snap));
+    const b3 = new Board3(), D = recorder(), E = recorder();
+    b3.drawBoard(D.ctx, frame(1000, 'mount'), w3, t0, ARGS); b3.drawLive(E.ctx, frame(1000, 'mount'));
+    w3.apply(clone(f));
+    ok(b3.drawBoard(D.ctx, frame(3000), w3, t0 + 2000, ARGS) && b3.drawLive(E.ctx, frame(3016)) && b3.moving, 'p6 fresh: a square travels');
+    const more3 = b3.drawBoard(D.ctx, frame(3100, 'size'), w3, t0 + 2100, ARGS);
+    ok(!more3 && !b3.moving, 'p6 fresh: a new bitmap lands it at once, and its first paint asks for no frame');
+    const n3 = E.calls.length;
+    b3.drawLive(E.ctx, frame(3116, 'size'));
+    ok(E.calls.slice(n3).some((c) => c.startsWith('clear')) && !E.calls.slice(n3).some((c) => c.startsWith('rect')), 'p6 fresh: the moving layer is cleared');
+  }
   // reduced motion: the same change, no transit
   const w2 = new World(); w2.load(clone(snap));
   const b2 = new Board3(); const C2 = recorder();
@@ -196,6 +219,35 @@ const ARGS = { win: '30m', sel: '', mode: 'live', reduced: false, dock: false, h
   w2.apply(clone(f));
   b2.drawBoard(C2.ctx, frame(2000), w2, t0 + 2000, { ...ARGS, reduced: true });
   eq(b2.stats.transits, 0, 'move: with reduced motion the run is simply in its new place');
+}
+
+// ───────────────────────── p6: a second on, only the second's parts of the model ─────────────────────────
+{
+  const w = new World();
+  w.load(clone(snap));
+  const t0 = minuteOf(snap.at) + 60_000;
+  const book = new SlotBook();
+  const b0 = boardOf(w, t0 + 137, windowMs('30m'), book);
+  let same = 0;
+  for (let sec = 1; sec < 60; sec++) {
+    const now = t0 + sec * 1000 + 137;
+    const fresh = sceneOf(boardOf(w, now, windowMs('30m'), book), L, OPTS), kept = sceneOf(boardAt(b0, w, now), L, OPTS);
+    if (JSON.stringify(fresh.ops) === JSON.stringify(kept.ops) && JSON.stringify([...fresh.anchors]) === JSON.stringify([...kept.anchors]) && JSON.stringify(fresh.hits) === JSON.stringify(kept.hits)) same++;
+  }
+  eq(same, 59, 'p6: 59 seconds of boardAt (the minute\'s model, the second\'s parts) draw what boardOf draws');
+  // a deploy that landed a moment ago leaves "landed" after half a minute, second by second
+  const d = [...w.deploys.values()].find((x) => x.state === 'success' && x.finished);
+  if (d) {
+    const was = d.finished;
+    d.finished = t0 + 5_000;
+    const at = (s: number) => boardAt(b0, w, t0 + s * 1000).deploy.landed.some((x) => x.app === d.app);
+    ok(at(10) && at(34) && !at(35), 'p6: a deploy is "landed" for 30 s, to the second, in boardAt as in boardOf');
+    d.finished = was;
+  }
+  // the board: one model a minute while the world stands
+  const board = new Board3(), A = recorder();
+  for (let i = 0; i < 30; i++) board.drawBoard(A.ctx, frame(1000 + i * 1000, i ? 'args' : 'mount'), w, t0 + i * 1000 + 137, ARGS);
+  ok(board.stats.builds === 30 && board.stats.paints >= 29, `p6: 30 seconds, 30 scenes, ${board.stats.paints} paints (the timers)`);
 }
 
 // ───────────────────────── p5-board: marks that came and went repaint only themselves ─────────────────────────

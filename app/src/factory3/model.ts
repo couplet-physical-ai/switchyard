@@ -7,7 +7,7 @@
 // timers): a finished thing's age is said in whole minutes by the scene, so an idle fleet's
 // model is the same from one second to the next.
 
-import type { App, Engine, Pipeline, Repo } from '../wire.ts';
+import type { App, Deploy, Engine, Pipeline, Repo } from '../wire.ts';
 import type { World } from '../world.ts';
 import { buildingIds, isRed, queueTruth } from '../yard/select.ts';
 import { flowOf, hostOfName, type FlowEvent, type FlowJob } from '../flow/model.ts';
@@ -344,11 +344,7 @@ export function boardOf(w: World, now: number, win: number, book: SlotBook): Boa
   let today = 0;
   for (const d of w.deploys.values()) {
     if (d.started >= now - 86_400_000) today++;
-    const p = d.pipeline ? w.pipelines.get(d.pipeline) : undefined;
-    const dep: Dep = {
-      id: d.id ?? `${d.repo}@${d.sha}`, app: d.app, repo: d.repo, sha: d.sha, via: d.via, state: d.state === 'failure' ? 'fail' : d.state === 'success' ? 'pass' : 'run',
-      started: d.started, finished: d.finished ?? 0, pipeline: p?.id ?? '', expectedMs: p?.expected_ms ?? 0,
-    };
+    const dep = depOf(w, d);
     if (dep.state === 'run') running.push(dep);
     else if (dep.state === 'pass' && dep.finished && now - dep.finished < 30_000) landed.push(dep);
     const was = lastByApp.get(d.app);
@@ -380,6 +376,28 @@ export function boardOf(w: World, now: number, win: number, book: SlotBook): Boa
     apps: { cells, total: cells.length, up, bad },
     ledger,
   };
+}
+
+function depOf(w: World, d: Deploy): Dep {
+  const p = d.pipeline ? w.pipelines.get(d.pipeline) : undefined;
+  return {
+    id: d.id ?? `${d.repo}@${d.sha}`, app: d.app, repo: d.repo, sha: d.sha, via: d.via, state: d.state === 'failure' ? 'fail' : d.state === 'success' ? 'pass' : 'run',
+    started: d.started, finished: d.finished ?? 0, pipeline: p?.id ?? '', expectedMs: p?.expected_ms ?? 0,
+  };
+}
+
+/** p6: the board one second on, with nothing else changed (the same world at the same version,
+ *  the same minute, window and berths): only what follows the second is asked again (the
+ *  deploys that landed in the last half minute, the day's count); the rest is the minute's
+ *  (boardOf's comment: nothing else here depends on wall time). The same board boardOf makes. */
+export function boardAt(b: Board, w: World, now: number): Board {
+  const landed: Dep[] = [];
+  let today = 0;
+  for (const d of w.deploys.values()) {
+    if (d.started >= now - 86_400_000) today++;
+    if (d.state === 'success' && d.finished && now - d.finished < 30_000) landed.push(depOf(w, d));
+  }
+  return { ...b, at: now, deploy: { ...b.deploy, landed, today } };
 }
 
 function redLine(r: Repo): RedLine {

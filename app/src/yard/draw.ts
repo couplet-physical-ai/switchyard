@@ -262,6 +262,9 @@ export class Yard {
     return isNew;
   }
   private claim(which: string): boolean {
+    // (p6: the info layer stays with Core Graphics: a second's timers repaint a panel's few boxes
+    // into the bitmap it keeps, where the GPU replays the whole canvas each time; InfoLayer.cg)
+    if (which === 'info' && InfoLayer.cg) return false;
     if (!this.claims[which] || !Yard.gpuClaim) return false;
     this.claims[which] = false;
     return true;

@@ -28,6 +28,7 @@ import { connectedWith, saveTokenFile, takeTokenFile, tokenFileReport } from './
 import { updateDo, updateState } from './src/update.ts';
 import type { Frame as WireFrame } from './src/wire.ts';
 import { Yard } from './src/yard/draw.ts';
+import { InfoLayer } from './src/yard/info.ts';
 import { Factory } from './src/factory/factory.ts';
 import { isRed } from './src/yard/layout.ts';
 import { dotLine, fmtDur } from './src/yard/paint.ts';
@@ -180,6 +181,23 @@ const flow = new FlowFloor();
 /** Factory 3 (FACTORY3.md, src/factory3/): the berth board, at /factory?v=3. */
 const f3 = new Board3();
 factory.hud = yard.hud;
+/** p6: SWITCHYARD_CANVAS=<gpu|board,info> (macOS, a hidden A/B switch: modules/apple/Hooks.swift):
+ *  those canvases claim the GPU as in pass 5. Asked once, from a data turn (the overview's first),
+ *  before the board or the Yard's info layer is drawn on top. */
+let canvasAsked = false;
+function canvasAsk(native: Native): void {
+  if (canvasAsked) return;
+  canvasAsked = true;
+  try {
+    const r = native?.available ? native.call({ op: 'heapLog' }) : null;
+    const v = typeof r?.canvas === 'string' ? r.canvas : '';
+    if (!v) return;
+    const on = (k: string) => v === 'gpu' || v.split(',').includes(k);
+    Board3.boardGpu = on('board');
+    InfoLayer.cg = !on('info');
+    console.log(`canvas: SWITCHYARD_CANVAS=${v}: the board ${Board3.boardGpu ? 'GPU' : 'Core Graphics'}, the Yard's info layer ${InfoLayer.cg ? 'Core Graphics' : 'GPU'}`);
+  } catch { /* no module: the defaults */ }
+}
 /** Stress mode (a 10× synthetic fleet for the renderers): one switch for the yard and the floor. */
 let stressOn = false;
 function setStress(on: boolean): void { stressOn = on; yard.setStress(on); factory.setStress(on); }
@@ -760,7 +778,7 @@ export const sources: Sources = {
     return c;
   },
   liveFeed: ([server, _ver, seq, gen, ok]) => liveFeed(server, needsToken(server) ? token : '', seq, ok, Number(gen) || 0), // (and fgen: the stream again, the fleet kept: app.contract `retry`)
-  overview: ([t, _seq, _ok, top], _store, _storage, native) => { const tp = String(top ?? ''); oldTop = tp.endsWith('~old'); topView = oldTop ? tp.slice(0, -4) : tp; if (t > 0) advance(t); safe('heapLog', 0, () => { probeAsk(native); probeFlush(native); logHeap(clock, native, !!up && tl.world.loaded); return 0; }); /* leak: the heap line (src/memlog.ts) */ if (oldFloorOn()) safe('plantHist', 0, () => { factory.plant.pump(clock); return 0; }); return safe('overview', EMPTY_OV, overview); }, // fab-w6: the machine walls' 24 h histories are asked here (a source), never in a draw
+  overview: ([t, _seq, _ok, top], _store, _storage, native) => { const tp = String(top ?? ''); oldTop = tp.endsWith('~old'); topView = oldTop ? tp.slice(0, -4) : tp; if (t > 0) advance(t); safe('heapLog', 0, () => { probeAsk(native); canvasAsk(native); probeFlush(native); logHeap(clock, native, !!up && tl.world.loaded); return 0; }); /* leak: the heap line (src/memlog.ts) */ if (oldFloorOn()) safe('plantHist', 0, () => { factory.plant.pump(clock); return 0; }); return safe('overview', EMPTY_OV, overview); }, // fab-w6: the machine walls' 24 h histories are asked here (a source), never in a draw
   timeControl: async ([what, speed]) => {
     if (what === 'pause') tl.pause();
     else if (what === 'play') {

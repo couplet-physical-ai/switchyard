@@ -91,6 +91,10 @@ export class InfoLayer {
   static gate = true;
   gate = InfoLayer.gate;
   static debug = false;
+  /** p6: the info layer stays with Core Graphics (Yard.claim asks no frame for it on a fresh
+   *  bitmap, and its whole clears never cover it). Off: on the GPU as in pass 5 (the A/B switch,
+   *  SWITCHYARD_CANVAS=info). */
+  static cg = true;
 
   /** Draws the dirty panels; returns true while a crossfade wants more frames. */
   draw(g: Gfx, v: View, full: boolean): boolean {
@@ -106,7 +110,12 @@ export class InfoLayer {
       else this.keys.clear();
     }
     if (full) {
-      g.clear(0, 0, S.W, S.H); this.keys.clear(); this.drawn.clear();
+      // (p6: the whole clear clipped to the canvas, the same pixels: the host never takes a list of
+      // this layer for a cover, so Core Graphics keeps it and Core Animation never records it while
+      // a crossfade animates: InfoLayer.cg)
+      if (InfoLayer.cg) { const c = g.ctx; c.save(); c.beginPath(); c.rect(0, 0, S.W, S.H); c.clip(); g.clear(0, 0, S.W, S.H); c.restore(); }
+      else g.clear(0, 0, S.W, S.H);
+      this.keys.clear(); this.drawn.clear();
       for (const p of panels) this.rects.set(p.id, `${p.rect.x},${p.rect.y},${p.rect.w},${p.rect.h}`);
     }
     const fading = v.lod.animating(v.t);

@@ -12,7 +12,7 @@
 import type { Ctx2D, Frame } from '../../app.contract.d.ts';
 import type { World } from '../world.ts';
 import { FACE, easeInOut } from '../yard/theme.ts';
-import { SlotBook, boardOf, windowMs } from './model.ts';
+import { SlotBook, boardAt, boardOf, windowMs, type Board } from './model.ts';
 import { LINE_Y, PLACE, advOf, layoutOf, sceneOf, setAdvance, SIZES, type Anchor, type Hit, type Layout, type Op, type Scene } from './scene.ts';
 
 export type BoardArgs = { win: string; sel: string; mode: string; reduced: boolean; dock: boolean; hov: string };
@@ -218,6 +218,11 @@ export class Board3 {
   private shownAt = '';
   /** the tiles a repaint touches (paint) */
   private tiles = new Uint8Array(0);
+  /** p6: the last model, and what it was made of (the world, its version, the minute, the window):
+   *  a second later with nothing else changed, only what follows the second is asked again */
+  private model: Board | null = null;
+  private modelOf: World | null = null;
+  private modelKey = '';
   /** For the tests and the HUD: how often the board was asked, built and painted; what moved. */
   stats = { asks: 0, builds: 0, paints: 0, livePaints: 0, transits: 0, ops: 0, moving: 0, squares: 0, texts: 0, dirty: 0, redrawn: 0, claims: 0 };
 
@@ -227,9 +232,20 @@ export class Board3 {
    *  both layers ask for frames until it lands) Core Animation records and replays, on the main
    *  thread, every list the canvas kept since its last cover, each frame: the board's partial
    *  repaints never cover, so that is up to 64 lists a frame (PERF.md, "Where the native frame
-   *  went": the factory's same finding; the Yard's `claim`). So each layer's first paint on a fresh
-   *  bitmap asks for one more frame, which draws nothing. Off: the tests' idle counts. */
+   *  went": the factory's same finding; the Yard's `claim`). So the live layer's first paint on a
+   *  fresh bitmap asks for one more frame, which draws nothing. Off: the tests' idle counts.
+   *
+   *  p6: the board itself stays with Core Graphics (`boardGpu` off). On the GPU every repaint is
+   *  a replay of the whole canvas (the module copies the last surface, then draws the list: 4.7-7.9
+   *  ms on the mini for a second's timers, ~0.1 % of the board), where Core Graphics paints the
+   *  list into the bitmap it keeps. Core Animation records a canvas only while it animates, from a
+   *  list that covers it: the board's first paint on a fresh bitmap asks for no frame (a transit
+   *  then in flight lands at once), and its whole repaints are clipped to the canvas, so no list of
+   *  the board ever covers it; its partial repaints never do. While a run's square travels the
+   *  board still asks for frames (to land it), drawn into the kept bitmap off the main thread. */
   static gpuClaim = true;
+  /** p6: the board claims the GPU too, as in pass 5 (a hidden switch for the A/B: SWITCHYARD_CANVAS=gpu) */
+  static boardGpu = false;
   private claim = { board: false, live: false };
   /** a fresh bitmap whose draw was skipped (the board covered, app.ts `draw`): the next draw is
    *  its first, painted whole */
@@ -239,7 +255,7 @@ export class Board3 {
   private freshFor(which: 'board' | 'live', f: Frame): boolean {
     const fresh = freshBitmap(f) || this.owed[which];
     this.owed[which] = false;
-    if (fresh) this.claim[which] = Board3.gpuClaim;
+    if (fresh) this.claim[which] = Board3.gpuClaim && (which === 'live' || Board3.boardGpu);
     return fresh;
   }
   private claimed(which: 'board' | 'live'): boolean {
@@ -249,8 +265,8 @@ export class Board3 {
     return true;
   }
 
-  /** The board layer. Returns true only while a transit is under way (the next frame may land it),
-   *  and once after its first paint on a fresh bitmap (`gpuClaim`). */
+  /** The board layer. Returns true only while a transit is under way (the next frame may land it);
+   *  never on a fresh bitmap's first paint (p6: the board stays with Core Graphics). */
   drawBoard(ctx: Ctx2D, f: Frame, w: World, now: number, a: BoardArgs): boolean {
     const paints = this.stats.paints;
     const more = this.drawBoard0(ctx, f, w, now, a);
@@ -261,6 +277,14 @@ export class Board3 {
     this.stats.asks++;
     this.now = f.time;
     const fresh = this.freshFor('board', f);
+    // p6: a fresh bitmap's first paint asks for no frame (so Core Graphics keeps the board): what
+    // was travelling is simply where it is (the board shown again, or a new size)
+    if (fresh && !Board3.boardGpu && this.transits.length) {
+      this.transits = [];
+      this.hidden = new Set();
+      this.hiddenVer++;
+      this.liveDirty = true;
+    }
     this.land(f.time);
     const L = (this.L = layoutOf(f.width, f.height));
     // (a board mounted again, as it is each time the Factory is shown again, keeps what it measured)
@@ -284,7 +308,10 @@ export class Board3 {
     }
     this.tuple = tuple;
     const opts = { win: a.win, sel: a.sel, mode: a.mode, dock: a.dock, hidden: this.hidden, hov: a.hov };
-    const b = boardOf(w, now, windowMs(a.win), this.book);
+    // (p6: the same world, version, minute and window as the last model: the second's parts only)
+    const mk = `${w.ver}|${Math.floor(now / 60_000)}|${a.win}`;
+    const b = this.model && this.modelOf === w && this.modelKey === mk ? boardAt(this.model, w, now) : boardOf(w, now, windowMs(a.win), this.book);
+    this.model = b; this.modelOf = w; this.modelKey = mk;
     this.appIds = b.apps.cells.map((c) => c.id);
     this.where = b.where;
     this.quiet = b.quiet;
@@ -439,7 +466,10 @@ export class Board3 {
       only = boxes;
     } else {
       this.stats.dirty = 1;
-      ctx.clearRect(0, 0, f.width, f.height);
+      // (p6: the clear clipped to the canvas, the same pixels: the host never takes a list of the
+      // board for a cover, so Core Animation never records it while a transit animates; boardGpu)
+      if (Board3.boardGpu) ctx.clearRect(0, 0, f.width, f.height);
+      else { ctx.save(); ctx.beginPath(); ctx.rect(0, 0, f.width, f.height); ctx.clip(); ctx.clearRect(0, 0, f.width, f.height); ctx.restore(); }
     }
     let fill = '', font = '', align = -1, redrawn = 0;
     const box: number[] = [];
