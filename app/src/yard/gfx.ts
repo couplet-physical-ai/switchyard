@@ -47,6 +47,11 @@ export class Gfx {
     this.adv.clear();
   }
 
+  /** Measure through `other`'s advances (one book for a layer's real and hashing passes). */
+  shareAdvances(other: Gfx): void {
+    this.adv = other.adv;
+  }
+
   /** The advance of one glyph at `px` (monospace). */
   advance(px: number, bold = false): number {
     const key = bold ? -px : px;

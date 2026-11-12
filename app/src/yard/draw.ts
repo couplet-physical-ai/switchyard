@@ -16,6 +16,7 @@ import type { World } from '../world.ts';
 import type { Timeline } from '../timeline.ts';
 import { Budget, type Quality } from './budget.ts';
 import { Gfx, machine, port, times } from './gfx.ts';
+import { HashCtx, TapeCtx } from './hashctx.ts';
 import { Hud } from './hud.ts';
 import { InfoLayer, type View, fmtDur, fmtShort, mainLine } from './info.ts';
 import { type Leg, type Scene, census, engineGroups, enginesOf, layout, scaleFor } from './layout.ts';
@@ -187,12 +188,30 @@ export class Yard {
     const g = this.gs;
     g.begin(ctx, f.scale * S.k);
     if (f.cause === 'font') g.resetFonts();
+    // p3-yard: a new layout key whose wires and machines are the same calls (the main lines'
+    // rows picked again: the same rows, other repos) leaves the kept bitmap as it is
+    const hc = this.hcS, gh = this.ghS;
+    hc.reset();
+    gh.begin(hc as unknown as Ctx2D, f.scale * S.k);
+    drawStatic(gh, S, this.budget.quality >= 3);
+    const sig = `${f.width}x${f.height}@${f.scale}|${S.k}|${hc.h1}|${hc.h2}`;
+    const fresh = f.causes?.length ? f.causes.some((c) => c === 'mount' || c === 'size' || c === 'font' || c === 'style') : f.cause !== 'args' && f.cause !== 'frame';
+    if (sig === this.staticSig && !fresh && Yard.gateStatic) { this.staticQ = this.budget.quality; this.staticSkips++; return; }
+    this.staticSig = sig;
     ctx.resetTransform();
     ctx.clearRect(0, 0, f.width, f.height);
     if (S.k !== 1) ctx.setTransform(S.k, 0, 0, S.k, 0, 0);
     this.staticQ = this.budget.quality;
     drawStatic(g, S, this.budget.quality >= 3);
   }
+
+  private hcS = new HashCtx();
+  private ghS = new Gfx();
+  private staticSig = '';
+  /** For the bench and the tests: static draws that found the same calls and sent nothing. */
+  staticSkips = 0;
+  /** Off: the static layer repaints on every new layout key, as before p3-yard. */
+  static gateStatic = true;
 
   drawInfo(ctx: Ctx2D, f: Frame, t: number): boolean {
     const S = this.ensure(f.width, f.height, f.scale, t);
@@ -201,14 +220,41 @@ export class Yard {
     if (f.cause === 'font') g.resetFonts();
     if (S.k !== 1) ctx.setTransform(S.k, 0, 0, S.k, 0, 0); else ctx.resetTransform();
     this.pickFocus(this.world, this.tl.playhead, t);
-    const full = f.cause === 'mount' || f.cause === 'size' || f.cause === 'font' || f.cause === 'style';
+    // (a bitmap of another size is a new one, though its draw's cause may not say so: resized
+    // while another view covered the yard, whose draws then drew nothing)
+    const fresh = this.fresh('info', f);
+    const full = fresh || f.cause === 'mount' || f.cause === 'size' || f.cause === 'font' || f.cause === 'style';
     const more = this.info.draw(g, this.view(t), full);
     const sec = Math.floor(t / 1000);
     if (sec !== this.infoSec) { this.infoRate = this.infoCount; this.infoCount = 0; this.infoSec = sec; }
     this.infoCount++;
     this.lastInfoCost = this.budget.estimate(g.ops, g.arcs, g.texts, 0);
-    return more;
+    return this.claim('info') || more;
   }
+
+  /** p3-yard: the macOS host gives a canvas to its GPU module (Vello, Metal) only if the first
+   *  draw with anything in it after a fresh bitmap asks for the next frame; otherwise Core
+   *  Graphics keeps it for the bitmap's life, and an animating canvas is then recorded and
+   *  replayed by Core Animation on the main thread every frame (the factory's finding: PERF.md,
+   *  "Where the native frame went"). The yard is mounted under the view on top at launch, before
+   *  the fleet: its first draws asked for nothing. So each layer's first draw on a new bitmap
+   *  asks for one more frame (that one draws nothing unless it has to). */
+  private bitmaps: Record<string, string> = {};
+  private claims: Record<string, boolean> = {};
+  private fresh(which: string, f: Frame): boolean {
+    const sig = `${f.width}x${f.height}@${f.scale}`;
+    const causes = f.causes?.length ? f.causes : [f.cause];
+    const isNew = this.bitmaps[which] !== sig || causes.some((c) => c === 'mount' || c === 'size' || c === 'style');
+    if (isNew) { this.bitmaps[which] = sig; this.claims[which] = true; }
+    return isNew;
+  }
+  private claim(which: string): boolean {
+    if (!this.claims[which] || !Yard.gpuClaim) return false;
+    this.claims[which] = false;
+    return true;
+  }
+  /** Off: no layer asks for the frame after a fresh bitmap (the tests' stills compare). */
+  static gpuClaim = true;
   private lastInfoCost = 0;
   /** The last info-layer redraw's estimated cost (ms), for the HUD. */
   infoMs = 0;
@@ -218,11 +264,19 @@ export class Yard {
     return this.staticQ >= 0 && (this.staticQ >= 3) !== (this.budget.quality >= 3);
   }
 
-  drawLive(ctx: Ctx2D, f: Frame, t: number): boolean {
+  drawLive(real: Ctx2D, f: Frame, t: number): boolean {
     const interval = this.budget.tick(t);
     const S = this.ensure(f.width, f.height, f.scale, t);
     const w = this.world;
     const g = this.gl;
+    const fresh = this.fresh('live', f);
+    // p3-yard: a still layer redrawn for a surface argument (the 1 s clock, the data's version)
+    // is drawn onto a tape first; the same calls as the picture shown send nothing (idle = still)
+    const causes = f.causes?.length ? f.causes : [f.cause];
+    const taped = Yard.gateLive && !fresh && this.liveStill && !causes.includes('frame') && !causes.includes('font');
+    const tape = this.tape;
+    if (taped) { tape.reset(); tape.clearTape(); tape.measurer = real; }
+    const ctx = taped ? (tape as unknown as Ctx2D) : real;
     g.begin(ctx, f.scale * S.k);
     if (f.cause === 'font') g.resetFonts();
     ctx.resetTransform();
@@ -254,8 +308,25 @@ export class Yard {
     // 250 ms tick (a surface argument) redraws it, enough for the slow progress rings. The HUD
     // keeps frames coming, since it measures them.
     // (a resting pointer is not motion: the lens is the top layer's, redrawn as the pointer moves)
-    return this.hud.on || this.tl.mode === 'replay' || this.tl.mode === 'behind' || p.busy(t);
+    const more = this.claim('live') || this.hud.on || this.tl.mode === 'replay' || this.tl.mode === 'behind' || p.busy(t);
+    if (taped) {
+      tape.measurer = null;
+      if (tape.h1 !== this.liveH1 || tape.h2 !== this.liveH2 || !this.liveKnown) { tape.play(real); this.liveH1 = tape.h1; this.liveH2 = tape.h2; this.liveKnown = true; }
+      else this.liveSkips++;
+      tape.clearTape();
+    } else this.liveKnown = false;
+    this.liveStill = !more;
+    return more;
   }
+  private tape = new TapeCtx();
+  private liveStill = false;
+  private liveKnown = false;
+  private liveH1 = 0;
+  private liveH2 = 0;
+  /** For the bench and the tests: still live redraws that sent nothing. */
+  liveSkips = 0;
+  /** Off: the live layer draws every redraw, as before p3-yard. */
+  static gateLive = true;
   private lastTopCost = 0;
 
   /** The overlay over the info layer: the hover lens (an element promoted to LOD0) and the
@@ -266,6 +337,7 @@ export class Yard {
     const g = this.gt;
     g.begin(ctx, f.scale * S.k);
     if (f.cause === 'font') g.resetFonts();
+    this.fresh('top', f);
     ctx.resetTransform();
     ctx.clearRect(0, 0, f.width, f.height);
     if (S.k !== 1) ctx.setTransform(S.k, 0, 0, S.k, 0, 0);
@@ -276,7 +348,7 @@ export class Yard {
       infoDraws: this.infoRate, infoMs: this.infoMs, stress: this.stress.on, host: this.budget.host, scale: S.k, sceneW: S.W, sceneH: S.H,
     });
     this.lastTopCost = this.budget.estimate(g.ops, g.arcs, g.texts, 0);
-    return lensOn || this.hud.on;
+    return this.claim('top') || lensOn || this.hud.on;
   }
 
   /** The estimate at quality qq, from this frame's at q: packets are most of the difference. */
@@ -325,11 +397,8 @@ export class Yard {
       for (let k = 0; k < nUnknown; k += 2) g.circle(unknown[k], unknown[k + 1], 7.5);
       g.dash(true, 2, 2.5); g.stroke(withAlpha(C.packet, 0.7), 1.2); g.dash(false);
     }
-    if (q <= 1 && anyTrack) {
-      g.begin_();
-      for (const lane of S.engines.lanes) for (const s of lane.slots) if (!lane.offline) g.circle(s.x, s.y, s.r + 2.5);
-      g.stroke(withAlpha(C.packet, 0.1), 1);
-    }
+    // (the slots' faint full tracks under these are the info layer's: info.ts drawTracks)
+    void q;
   }
 
   // ---- live: packets --------------------------------------------------------------------------------
