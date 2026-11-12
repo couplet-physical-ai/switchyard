@@ -65,6 +65,27 @@ const sameOp = (a: Op, b: Op) => {
 const DIRTY_MAX = 0.3;
 /** the tiles (CSS px) a repaint's share is counted in, and its marks found by */
 const TILE = 16;
+/** over this many changed boxes, a repaint is cleared and clipped by its tiles (tileRuns) */
+const MANY_BOXES = 24;
+/** The dirty tiles as rects (x0, y0, x1, y1, CSS px): runs along each row of tiles, a run that
+ *  continues the same run of the row above merged into it. */
+function tileRuns(T: Uint8Array, cols: number, rows: number, W: number, H: number): number[] {
+  const out: number[] = [];
+  let open = new Map<number, number>(), was = open;
+  for (let ty = 0; ty < rows; ty++) {
+    was = open; open = new Map();
+    for (let tx = 0; tx < cols; tx++) {
+      if (!T[ty * cols + tx]) continue;
+      const a = tx;
+      while (tx + 1 < cols && T[ty * cols + tx + 1]) tx++;
+      const key = a * 4096 + tx, k = was.get(key);
+      const y1 = Math.min(H, (ty + 1) * TILE);
+      if (k !== undefined) { out[k + 3] = y1; open.set(key, k); }
+      else { open.set(key, out.length); out.push(a * TILE, ty * TILE, Math.min(W, (tx + 1) * TILE), y1); }
+    }
+  }
+  return out;
+}
 
 /** p5-board: where two scenes' marks differ, as boxes (CSS px) pushed to `out`. Both lists are
  *  walked in order and aligned again after marks that came or went (a scene keeps its marks in
@@ -314,7 +335,7 @@ export class Board3 {
     const snap = (v: number) => Math.round(v * s * dp) / dp;
     const ops = scene.ops, prev = this.shown, at = `${f.width}x${f.height}@${dp}|${s}`;
     // the boxes that changed (device-pixel aligned), or null: paint it all
-    let boxes: number[] | null = null;
+    let boxes: number[] | null = null, exact = true;
     const raw: number[] = [];
     // (p5-board: the share is the boxes' union counted in 16 px tiles, not their sum: a list whose
     // rows all moved down one is many overlapping boxes over one column, not a third of the board)
@@ -338,7 +359,13 @@ export class Board3 {
         }
       }
       if (tiles > cols * rows * DIRTY_MAX) boxes = null;
-      else this.stats.dirty = Math.min(1, area / (f.width * f.height));
+      else if (boxes.length > 4 * MANY_BOXES) {
+        // many boxes (a list whose rows all moved): cleared and clipped as their tiles, merged into
+        // runs, a few rects instead of hundreds; every mark on those tiles is painted again
+        boxes = tileRuns(T, cols, rows, f.width, f.height);
+        exact = false;
+        this.stats.dirty = tiles / (cols * rows);
+      } else this.stats.dirty = Math.min(1, area / (f.width * f.height));
     }
     this.shown = ops;
     this.shownAt = at;
@@ -370,8 +397,8 @@ export class Board3 {
           for (let tx = tx0; tx <= tx1; tx++) if (T[ty * cols + tx]) { near = true; break; }
         }
         if (!near) continue;
-        let hit = false;
-        for (let i = 0; i < only.length; i += 4) if (box[0] < only[i + 2] && box[2] > only[i] && box[1] < only[i + 3] && box[3] > only[i + 1]) { hit = true; break; }
+        let hit = !exact;
+        for (let i = 0; i < only.length && !hit; i += 4) if (box[0] < only[i + 2] && box[2] > only[i] && box[1] < only[i + 3] && box[3] > only[i + 1]) hit = true;
         if (!hit) continue;
       }
       redrawn++;
