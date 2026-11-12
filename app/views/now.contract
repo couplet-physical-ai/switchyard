@@ -153,6 +153,17 @@ shape NowFeed
   filterText: string
   summary: string
 
+// What of Live moves each second (src/now/view.ts `tickAnswer`): the "now" band, the machines'
+// rings, the status line's clock, intake and idle line; the rest of the feed stands
+shape NowTick
+  ok: bool
+  tick: number
+  clock: string
+  machines: NowMach[]
+  now: NowEvent[]
+  intake: string
+  idleText: string
+
 shape NowStep
   id: string
   glyph: string
@@ -224,9 +235,10 @@ members App
   derive nowRepo = searchParam(top(nav), "repo")
   derive nowApp = searchParam(top(nav), "app")
   derive nowSha = searchParam(top(nav), "sha")
-  // asked again when what they show changed (rk: the fleet, or the clock where a shown
-  // timer or age follows it), never 4 times a second
-  resource nowData = nowFeed(here == "now" ? rk : 0, nowRepo, nowApp, nowSha, here == "now" ? tickMs : 0) as shape NowFeed else empty()
+  // asked again when what they show changed (ov.tick: the fleet, the view, the minute's wakes),
+  // never each second: the timers' second re-stamps only nowTickData (rk), a small answer
+  resource nowData = nowFeed(here == "now" ? ov.tick : 0, nowRepo, nowApp, nowSha) as shape NowFeed else empty()
+  resource nowTickData = nowTick(here == "now" ? rk : 0, nowData.tick, here == "now" ? tickMs : 0) as shape NowTick else empty()
   resource nowPanelData = nowPanel(nowSel, (here == "now" and nowSel != "") ? rk : 0, (here == "now" and nowSel != "") ? tickMs : 0) as shape NowPanel else empty()
   // The log tail: only with the server's capability; every 10 s while its step runs; dropped
   // (an empty selection) when the detail closes.
@@ -274,6 +286,8 @@ component NowView
     // Live is covered (another view on top) or paused: what breathes forever (the LIVE beat, a
     // live step's chip) is still, as nothing on screen moves
     calm: bool
+    // the "now" band, the machines and the clock texts, re-stamped each second (nowTickData)
+    t: NowTick
     narrow: bool
     compact: bool
     tight: bool
@@ -288,7 +302,7 @@ component NowView
     settings: action
   view
     column flex=1 min-height=0 background-color="zr.bg" color="zr.ink" font-family="Commit Mono" testId="now" key=key
-      NowStatus(d=d, mode=mode, reduced=(reduced or calm), narrow=narrow, sel=sel, select=select, clear=clear)
+      NowStatus(d=d, t=t, mode=mode, reduced=(reduced or calm), narrow=narrow, sel=sel, select=select, clear=clear)
       scroll flex=1 min-height=0 testId="now-scroll"
         column padding=(narrow ? "0 12px 40px" : "0 16px 48px") gap=0
           if sel.startsWith("machine:")
@@ -304,10 +318,10 @@ component NowView
               button appearance="none" press=toggleMore testId="now-needs-more" text-align="start" padding=(narrow ? "8px 0" : "6px 0 6px 64px") border-top="1px solid zr.rule"
                 text (more ? "show fewer" : d.needsMore) font-size=11.5 color="zr.ink2"
           if d.ok
-            NowHeading(word="now", count=(d.idle ? "" : `${d.running} building`), note=(d.idle ? "nothing building" : `${d.queued} waiting · ${d.now.length} ${d.now.length == 1 ? "event" : "events"}`), narrow=narrow, testKey="now")
+            NowHeading(word="now", count=(d.idle ? "" : `${d.running} building`), note=(d.idle ? "nothing building" : `${d.queued} waiting · ${t.now.length} ${t.now.length == 1 ? "event" : "events"}`), narrow=narrow, testKey="now")
           if d.ok and d.idle
-            text d.idleText font-size=12 color="zr.ink2" padding=(narrow ? "14px 0" : "10px 0 10px 64px") border-top="1px solid zr.rule" testId="now-idle"
-          for b, bi in d.now key=b.id
+            text t.idleText font-size=12 color="zr.ink2" padding=(narrow ? "14px 0" : "10px 0 10px 64px") border-top="1px solid zr.rule" testId="now-idle"
+          for b, bi in t.now key=b.id
             NowBlock(b=b, p=p, log=log, sel=sel, narrow=narrow, compact=compact, tight=tight, reduced=reduced, calm=calm, testKey=`${bi}`, select=select, only=only, close=close)
           if d.just.length > 0
             NowHeading(word="just finished", count="", note="last 15 min", narrow=narrow, testKey="just")
@@ -322,6 +336,7 @@ component NowView
 component NowStatus
   props
     d: NowFeed
+    t: NowTick
     mode: string
     reduced: bool
     narrow: bool
@@ -340,7 +355,7 @@ component NowStatus
         text `${d.queued}` font-size=19 font-weight=700 color="zr.ink" testId="now-queued"
         text "waiting" font-size=19 font-weight=700 color="zr.ink"
       if not narrow
-        text `${d.clock} · ${d.needsN} need a human` font-size=11.5 color="zr.ink3" white-space="nowrap" testId="now-clock"
+        text `${t.clock} · ${d.needsN} need a human` font-size=11.5 color="zr.ink3" white-space="nowrap" testId="now-clock"
       row flex=1
       if d.filtered
         row gap=8 align-items="baseline" testId="now-filter"
@@ -352,9 +367,9 @@ component NowStatus
     row flex-shrink=0 flex-wrap="wrap" align-items="center" column-gap=22 row-gap=4 padding=(narrow ? "0 12px 10px" : "0 16px 12px") border-bottom="1px solid zr.rule" testId="now-machines"
       row gap=8 align-items="baseline" testId="now-intake"
         text "intake" font-size=11.5 font-weight=700 color="zr.ink"
-        text d.intake font-size=11.5 color=(d.intake == "empty" ? "zr.ink3" : "sy.amber-text") white-space="nowrap"
+        text t.intake font-size=11.5 color=(t.intake == "empty" ? "zr.ink3" : "sy.amber-text") white-space="nowrap"
       text "engines · slots" font-size=11 color="zr.ink3"
-      for m, mi in d.machines key=m.id
+      for m, mi in t.machines key=m.id
         button appearance="none" press=select(`machine:${m.id}`) testId=`now-mach-${mi}` aria-label=`${m.label}: ${m.text} busy. What runs there.` aria-expanded=(sel == `machine:${m.id}`)
           padding="2px 4px" border-radius=3 background-color=(sel == `machine:${m.id}` ? "zr.raise" : "transparent")
           :hover

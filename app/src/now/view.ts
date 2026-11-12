@@ -521,6 +521,32 @@ let memo: Built | null = null;
 let firstRows = false;
 /** The last feed shows something running or waiting (its m:ss timers follow the second). */
 export function feedTicking(): boolean { return !!memo && memo.v.ok && (memo.v.running > 0 || memo.v.queued > 0 || memo.v.waiting > 0); }
+/** When the last feed's rows stop being right (a row crosses a band's edge, a running job turns
+ *  stuck): the overview wakes then, and the feed is built again (its second ticks only `nowTick`). */
+export function feedUntil(): number { return memo?.until ?? Infinity; }
+
+/** What of Live moves each second, apart from the rows (mac-perf3): the "now" band (its timers,
+ *  chips, rings), the machines' rings, the status line's clock, intake and idle line. Re-stamped
+ *  from the last feed each second while a shown timer runs; the whole feed (~120 KB of answer on
+ *  the recorded fleet: every finished event, every need) is asked again only when what it shows
+ *  changed (the world, the view, the minute's wakes). */
+export type NowTick = { ok: boolean; tick: number; clock: string; machines: Mach[]; now: EvBlock[]; intake: string; idleText: string };
+export const EMPTY_TICK: NowTick = { ok: false, tick: 0, clock: '', machines: [], now: [], intake: '', idleText: '' };
+let tickMemo: { m: Built; sec: number; v: NowTick } | null = null;
+export function tickAnswer(d: NowDeps, key: number): NowTick {
+  const m = memo, w = d.world();
+  if (!m || !w.loaded || m.w !== w || !m.v.ok) return EMPTY_TICK;
+  const now = d.now(), sec = Math.floor(now / 1000);
+  if (tickMemo && tickMemo.m === m && tickMemo.sec === sec) return tickMemo.v;
+  const v = m.v;
+  // (past `until` the rows wait for their rebuild, which the overview's wake asks: as they were)
+  const live = now >= m.at && now <= m.until;
+  const t: NowTick = live
+    ? { ok: true, tick: key, ...clockTexts(m, now), machines: m.mach(now), now: v.now.map((b, i) => stampBlock(w, b, m.evs[0][i], now)) }
+    : { ok: true, tick: key, clock: v.clock, machines: v.machines, now: v.now, intake: v.intake, idleText: v.idleText };
+  tickMemo = { m, sec, v: t };
+  return t;
+}
 
 /** A job line's clock texts at `now` (its timer, progress, the "over" caption, a queue's wait). */
 function stampJob(w: World, l: JobLine, j: FlowJob, now: number): JobLine {
@@ -550,10 +576,12 @@ function clockTexts(m: Pick<Built, 'oldest' | 'nWait' | 'last' | 'off'>, now: nu
     idleText: `Nothing running right now.${m.last ? ` Last event ${ago(Math.max(0, now - m.last))} ago.` : ''}`,
   };
 }
-function restamp(m: Built, now: number, tick: number): NowFeed {
+/** Each new feed answer's `tick` (a build or a re-stamp): what `nowTick` follows (nowData.tick). */
+let feedSeq = 0;
+function restamp(m: Built, now: number): NowFeed {
   const w = m.w, v = m.v;
   return {
-    ...v, tick, ...clockTexts(m, now),
+    ...v, tick: ++feedSeq, ...clockTexts(m, now),
     machines: m.mach(now),
     needs: v.needs.map((n, i) => { const t = m.stamps[i]; return t ? { ...n, ...t(now) } : n; }),
     now: v.now.map((b, i) => stampBlock(w, b, m.evs[0][i], now)),
@@ -587,7 +615,7 @@ function feedFast(d: NowDeps, args: FeedArgs): NowFeed | null {
   const sec = Math.floor(now / 1000);
   if (memo.sec === sec) return memo.v;
   if (now < memo.at || now > memo.until) return null;
-  memo.v = restamp(memo, now, args[0]);
+  memo.v = restamp(memo, now);
   memo.sec = sec;
   return memo.v;
 }
@@ -604,7 +632,6 @@ export function feedSync(d: NowDeps, args: FeedArgs): NowFeed { return feedFast(
 export function buildFeed(d: NowDeps, args: FeedArgs): NowFeed {
   const w = d.world();
   if (!w.loaded) return EMPTY_FEED;
-  const tick = args[0];
   const now = d.now();
   const off = d.offsetMin();
   const skey = feedKey(d, args);
@@ -652,7 +679,7 @@ export function buildFeed(d: NowDeps, args: FeedArgs): NowFeed {
   const filterText = filter.sha ? `commit ${sha7(shaOnly)}${shaRepo ? ` in ${repoName(shaRepo)}` : ''}` : filter.app ? `app ${filter.app}` : filter.repo ? `repo ${repoName(filter.repo)}` : '';
   const texts = { oldest, nWait, last: v.lastEventAt, off };
   const feed: NowFeed = {
-    ok: true, tick, ...clockTexts(texts, now),
+    ok: true, tick: ++feedSeq, ...clockTexts(texts, now),
     running: v.running, queued: v.queued, waiting: v.waiting ?? 0, busy, slots, machines: mach(now),
     needs: all, needsN: all.length, needsMore: needsMore(all, BROKEN_SHOWN),
     now: nowEv, just, earlier,
@@ -752,6 +779,11 @@ export function nowSources(d: NowDeps) {
       const a = args.slice(0, 4) as FeedArgs;
       const r = safe('nowFeed', EMPTY_FEED as NowFeed | Promise<NowFeed>, () => feedAnswer(d, a));
       return r instanceof Promise ? r.catch((e) => safe('nowFeed', EMPTY_FEED, () => { throw e; })) : r;
+    },
+    nowTick: (a: [number, number, number]) => {
+      const t = Number(a[2]) || 0;
+      if (t > 0) d.advance?.(t);
+      return safe('nowTick', EMPTY_TICK, () => tickAnswer(d, Number(a[0]) || 0));
     },
     nowPanel: (a: [string, number, number?]) => {
       const t = Number(a[2]) || 0;

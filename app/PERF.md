@@ -516,8 +516,13 @@ Branch `sy/mac-p3shell`, base `f6019ae` (pass 2 merged). What a quiet second cos
   - A ladder of one-shot wakes reaches the playhead's next minute (32/16/8/4/2/1 s: about six a
     minute) for ages, hh:mm and the heap line; one more a second after any change.
 - **A shown timer runs** (`ov.pace` 1): the 1 s tick moves only `clockMs`.
-  - `rk` (ov.tick plus the second) redraws the canvases; Live's feed and panel and the board's
-    inspector re-stamp at `tickMs`.
+  - `rk` (ov.tick plus the second) redraws the canvases; Live's moving parts, its panel and the
+    board's inspector re-stamp at `tickMs`.
+  - Live's second is `nowTick`: the "now" band, the machines' rings, the clock, intake and idle
+    line. The whole feed (`nowFeed`: every finished event and every need) is asked when what it
+    shows changed (the world, the view, the minute's wakes, a row's band edge).
+  - The recorded fleet: the per-second answer is 8.7 KB, where the whole feed was 122 KB each
+    second; the re-stamp takes 0.005 ms in Bun.
   - The overview is not asked, and neither is `f3Stats` (now per board change; per second only
     with the HUD).
 - **Busy** (the demo, a replay, playing behind, the HUD, stress, the web's older floors): the 250 ms

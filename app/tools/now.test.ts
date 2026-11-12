@@ -4,7 +4,7 @@
 // a live snapshot. Run: bun app/tools/now.test.ts [live-snapshot.json]
 import { existsSync, readFileSync } from 'node:fs';
 import { World } from '../src/world.ts';
-import { BROKEN_CAP, EMPTY_FEED, buildFeed, feedSync, panelAnswer, fit, timer, dur, ago, type NowDeps, type NowFeed } from '../src/now/view.ts';
+import { BROKEN_CAP, EMPTY_FEED, buildFeed, feedSync, feedUntil, tickAnswer, panelAnswer, fit, timer, dur, ago, type NowDeps, type NowFeed } from '../src/now/view.ts';
 import { pickRows } from '../src/now/log.ts';
 import { NOW_CAP, JUST_CAP, EARLIER_CAP } from '../src/flow/model.ts';
 
@@ -182,7 +182,8 @@ eq(fit('short', 20), 'short', 'fit keeps what fits');
   eq(feedSync(deps(new World()), [0, '', '', '']), EMPTY_FEED, 'an empty world answers the empty feed');
   // a clock-only tick re-stamps the last build (its timers and ages), the same as a whole build
   {
-    const C = (x: unknown) => JSON.stringify(x, (_k, v) => (v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, v[k]])) : v));
+    // (`tick` is each answer's serial: what nowTick follows)
+    const C = (x: unknown) => JSON.stringify(x, (k, v) => (k === 'tick' ? undefined : v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, v[k]])) : v));
     let same = 0, n = 0;
     for (let i = 0; i < 120; i += 7) {
       const t = now + 500_000 + i * 1000;
@@ -191,6 +192,19 @@ eq(fit('short', 20), 'short', 'fit keeps what fits');
       n++; if (C(a) === C(buildFeed(deps(w, t + 3000), [2, '', '', '']))) same++;
     }
     eq(same, n, `a re-stamped tick = a whole build (${same}/${n})`);
+    // the second's small answer (nowTick) = the whole build's moving parts, at that second
+    let sameT = 0, nT = 0;
+    for (let i = 0; i < 120; i += 7) {
+      const t = now + 500_000 + i * 1000;
+      feedSync(deps(w, t), [1, '', '', '']);
+      // (past the rows' edge the rows wait for their rebuild, which the overview's wake asks)
+      if (t + 3000 > feedUntil()) continue;
+      const a = tickAnswer(deps(w, t + 3000), 5);
+      const b = buildFeed(deps(w, t + 3000), [2, '', '', '']);
+      nT++; if (C({ clock: a.clock, machines: a.machines, now: a.now, intake: a.intake, idleText: a.idleText }) === C({ clock: b.clock, machines: b.machines, now: b.now, intake: b.intake, idleText: b.idleText })) sameT++;
+      feedSync(deps(w, t), [1, '', '', '']); // (buildFeed replaced the memo: back to the build at t)
+    }
+    eq(sameT, nT, `the second's re-stamp (nowTick) = a whole build's moving parts (${sameT}/${nT})`);
     feedSync(deps(w, now + 900_000), [1, '', '', '']);
     const t1 = performance.now();
     for (let i = 1; i <= 200; i++) feedSync(deps(w, now + 900_000 + i * 1000), [i, '', '', '']);

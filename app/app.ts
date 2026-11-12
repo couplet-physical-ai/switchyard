@@ -15,7 +15,7 @@ import { DEMO_REPLAY, DemoUpstream } from './src/demo.ts';
 import { EngineHistory } from './src/enginehist.ts';
 import { bindInsights } from './src/insights.ts';
 import { search } from './src/project.ts';
-import { feedTicking, nowSources } from './src/now/view.ts';
+import { feedTicking, feedUntil, nowSources } from './src/now/view.ts';
 import { FlowFloor } from './src/flowfloor/floor.ts';
 import { Board3 } from './src/factory3/board.ts';
 import { NO_F3, f3Detail, tidyLog } from './src/factory3/inspect.ts';
@@ -566,7 +566,9 @@ function redraw(w: { ver: number }, active: number): { tick: number; pace: numbe
   // draw what it brought), else the largest rung under the playhead's next minute
   let wake = 0;
   if (pace) {
-    const left = 60_000 - (((tl.playhead % 60_000) + 60_000) % 60_000);
+    let left = 60_000 - (((tl.playhead % 60_000) + 60_000) % 60_000);
+    // (Live: also when its rows stop being right, a row crossing a band's edge: its feed is built again then)
+    if (topView === 'now') left = Math.min(left, Math.max(0, feedUntil() - tl.playhead) + 1);
     wake = clock - visChanged < 1000 ? 1 : LADDER.find((s) => s * 1000 <= left) ?? 1;
   }
   return { tick: visTick, pace, wake, wakeKey: ++visWakes };
@@ -651,7 +653,7 @@ export const sources: Sources = {
     offsetMin: () => yard.offsetMin,
     upstream: () => up,
     advance: (t) => advance(t),
-  }) as unknown as Pick<Sources, 'nowFeed' | 'nowPanel' | 'nowLog'>,
+  }) as unknown as Pick<Sources, 'nowFeed' | 'nowTick' | 'nowPanel' | 'nowLog'>,
   // the Factory redo: a press on the floor, the inspector's run, its log (src/flowfloor/)
   flowPick: ([x, y]) => {
     const h = flow.pick(Number(x), Number(y));
