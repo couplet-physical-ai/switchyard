@@ -1543,9 +1543,24 @@ impl Store {
             // sha), so the newer of the two decides: a passing manual rerun clears an
             // older failed push run, and a failing one turns a green push red.
             let mut latest: BTreeMap<(u8, u8, bool), (u64, CiState)> = BTreeMap::new();
+            // A GitHub Actions deploy run that failed is no main-line failure once the
+            // commit's deploy succeeded (a redeploy by hand: PixelView's "First Deploy App"
+            // after the push's "Deploy App" failed; the deploy recheck finds it).
+            let mut deployed: Option<bool> = None;
             for id in ps {
                 if let Some(p) = self.pipelines.get(id) {
                     if main && p.event == PipelineEvent::PullRequest {
+                        continue;
+                    }
+                    if main
+                        && p.lane == LaneKind::Gha
+                        && p.deploy
+                        && p.state.is_red()
+                        && *deployed.get_or_insert_with(|| {
+                            self.combined_deploy(repo, sha)
+                                .is_some_and(|d| d.state == DeployState::Success)
+                        })
+                    {
                         continue;
                     }
                     if p.lane == LaneKind::Roadrunner {

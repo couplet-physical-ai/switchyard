@@ -464,3 +464,76 @@ fn a_github_run_no_poll_reports_any_more_is_closed_from_rest() {
     let v = get(&s, Kind::Pipeline, &p.id).unwrap();
     assert_eq!(v["state"], "success");
 }
+
+#[test]
+fn a_github_deploy_run_that_failed_is_no_red_main_once_the_commit_deployed() {
+    // PixelView 9c8f667: the push's "Deploy App" run failed (a GHA pipeline, deploy-named),
+    // "First Deploy App" (workflow_dispatch) deployed the commit a minute later.
+    let run = |n: u64, title: &str, state: CiState| {
+        Fact::Pipeline(Pipeline {
+            id: ids::gha_pipeline(n),
+            lane: LaneKind::Gha,
+            repo: REPO.into(),
+            number: n,
+            sha: SHA.into(),
+            branch: "main".into(),
+            git_ref: None,
+            event: PipelineEvent::Push,
+            state,
+            created: NOW - 600_000,
+            started: Some(NOW - 590_000),
+            finished: Some(NOW - 500_000),
+            queue_pos: None,
+            expected_ms: None,
+            engine: None,
+            title: Some(title.into()),
+            author: None,
+            pr: None,
+            deploy: title.to_ascii_lowercase().contains("deploy"),
+            flaky: false,
+            workflows: vec![],
+            url: "https://github.com/acme/api/actions/runs/1".into(),
+            links: Default::default(),
+        })
+    };
+    let deploy = |n: u64, state: DeployState, at: Ms| {
+        Fact::Deploy(DeployFact {
+            app: String::new(),
+            repo: REPO.into(),
+            sha: SHA.into(),
+            via: DeployVia::Gha,
+            state,
+            started: at,
+            finished: Some(at + 10_000),
+            pipeline: Some(ids::gha_pipeline(n)),
+            url: None,
+            source: "gha".into(),
+            canceled: false,
+        })
+    };
+    let base = vec![
+        repos(None),
+        commit("dev", NOW - 600_000),
+        run(1, "ci", CiState::Success),
+        run(2, "Deploy App", CiState::Failure),
+        deploy(2, DeployState::Failure, NOW - 590_000),
+    ];
+    let s = store(base.clone());
+    assert_eq!(
+        get(&s, Kind::Repo, REPO).unwrap()["main"]["state"],
+        "failure"
+    );
+    let mut f = base;
+    f.push(deploy(3, DeployState::Success, NOW - 400_000));
+    let s = store(f);
+    assert_eq!(
+        s.combined_deploy(REPO, SHA).unwrap().state,
+        DeployState::Success
+    );
+    assert_eq!(
+        get(&s, Kind::Repo, REPO).unwrap()["main"]["state"],
+        "success"
+    );
+    // The commit itself still lists the failed run (its own CI view is unchanged).
+    assert_eq!(s.commit_ci(REPO, SHA), CiState::Failure);
+}
