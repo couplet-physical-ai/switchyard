@@ -9,12 +9,14 @@ import type { Pipeline, Repo, Step } from '../wire.ts';
 import type { World } from '../world.ts';
 import type { Timeline } from '../timeline.ts';
 import type { Quality } from './budget.ts';
-import { type Gfx, arrow, chip, times } from './gfx.ts';
+import type { Ctx2D } from '../../app.contract.d.ts';
+import { Gfx, arrow, chip, times } from './gfx.ts';
+import { HashCtx } from './hashctx.ts';
 import { CELL_H, type Lane, type MainRow, type Rect, type Scene, enginesOf } from './layout.ts';
 import { type Level, type LodBook } from './lod.ts';
 import { type Aggregates, type Run, S_GREEN, S_NONE, S_PEND, S_RED, S_RUN, S_STALE, STUCK_MS, busiest, buildingIds, isRed, lastHour, mainStory, orgSpark, queueTruth, thousands } from './select.ts';
 import type { StressFleet } from './stress.ts';
-import { C, T, TAU, clamp } from './theme.ts';
+import { C, T, TAU, clamp, withAlpha } from './theme.ts';
 
 export type View = {
   w: World; S: Scene; tl: Timeline; agg: Aggregates; lod: LodBook; stress: StressFleet;
@@ -27,7 +29,19 @@ export type View = {
 
 /** `every`: the least time between two redraws of the panel (ms); a change sooner waits for the
  *  next draw after it (the 250 ms tick), so a busy fleet cannot redraw a big panel every frame. */
-type Panel = { id: string; rect: Rect; key: number; every?: number; draw: (g: Gfx, v: View, r: Rect) => void };
+type Panel = { id: string; rect: Rect; key: number; every?: number; draw: (g: Gfx, v: View, r: Rect) => void; parts?: (v: View, r: Rect) => Part[] };
+/** A piece of a panel drawn on its own (a main line's row): it sets every state it uses. */
+type Part = ((g: Gfx) => void) & { band?: readonly [number, number] };
+/** A part drawn only inside a horizontal band of its panel, the whole width (a main line's row):
+ *  its box is the band, so a repaint clips at the bands' edges, where no ink crosses (a clip
+ *  through a shape antialiases it a little differently: Skia does). */
+function banded(f: (g: Gfx) => void, y0: number, y1: number): Part {
+  const p = f as Part;
+  p.band = [y0, y1];
+  return p;
+}
+/** What a panel (or each of its parts) painted last: its calls' hash and the box they ink. */
+type Drawn = { h1: Int32Array; h2: Int32Array; box: Float64Array; n: number };
 
 const h = (a: number, b: number) => (Math.imul(a ^ 0x5bd1e995, 31) + b) | 0;
 const hs = (a: number, s: string) => { for (let i = 0; i < s.length; i++) a = h(a, s.charCodeAt(i)); return h(a, s.length); };
@@ -55,13 +69,35 @@ export class InfoLayer {
   private sceneKey = '';
   /** Where NOW's running step chip is (the live layer bobs a packet over it). */
   activeChip = { x: -1, y: 0 };
+  // p3-yard: what each panel painted last (its calls' hash, per part), and where its rect was
+  private drawn = new Map<string, Drawn>();
+  private rects = new Map<string, string>();
+  private gh = new Gfx();
+  private hc = new HashCtx();
+  /** For the bench and the tests: panels asked, skipped as unchanged, repainted in parts, whole. */
+  stats = { asked: 0, same: 0, parts: 0, whole: 0, partsDrawn: 0 };
+  /** Off: every panel whose key moved is repainted whole, as before p3-yard (tests compare). */
+  static gate = true;
+  gate = InfoLayer.gate;
+  static debug = false;
 
   /** Draws the dirty panels; returns true while a crossfade wants more frames. */
   draw(g: Gfx, v: View, full: boolean): boolean {
     const S = v.S;
-    if (S.key !== this.sceneKey) { full = true; this.sceneKey = S.key; }
-    if (full) { g.clear(0, 0, S.W, S.H); this.keys.clear(); }
     const panels = this.panels(v);
+    if (S.key !== this.sceneKey) {
+      this.sceneKey = S.key;
+      // A new scene with every panel where it was (the main lines' rows picked again, say):
+      // each panel is asked again and repaints only what changed. Moved panels: all of it.
+      let moved = false;
+      for (const p of panels) { const rk = `${p.rect.x},${p.rect.y},${p.rect.w},${p.rect.h}`; if (this.rects.get(p.id) !== rk) { moved = true; if (InfoLayer.debug) console.log(`info: ${p.id} moved ${this.rects.get(p.id)} -> ${rk}`); } this.rects.set(p.id, rk); }
+      if (moved || !this.gate) full = true;
+      else this.keys.clear();
+    }
+    if (full) {
+      g.clear(0, 0, S.W, S.H); this.keys.clear(); this.drawn.clear();
+      for (const p of panels) this.rects.set(p.id, `${p.rect.x},${p.rect.y},${p.rect.w},${p.rect.h}`);
+    }
     const fading = v.lod.animating(v.t);
     for (const p of panels) {
       const old = this.keys.get(p.id);
@@ -72,10 +108,99 @@ export class InfoLayer {
       this.keys.set(p.id, key);
       this.drawnAt.set(p.id, v.t);
       const r = p.rect;
-      if (!full) g.clear(r.x, r.y, r.w, r.h);
-      p.draw(g, v, r);
+      if (!this.gate) {
+        if (!full) g.clear(r.x, r.y, r.w, r.h);
+        p.draw(g, v, r);
+        continue;
+      }
+      this.paint(g, v, p, full);
     }
     return fading;
+  }
+
+  /** One panel whose key moved: its calls hashed first (nothing sent); the same calls as last
+   *  time paint nothing; in parts, only the boxes of the parts that changed are cleared and
+   *  painted again, clipped, with every part that inks in them, in order: the same pixels as a
+   *  whole repaint. A part that leans on its neighbours' state, a new list of parts, or most of
+   *  them changed: the panel is repainted whole. */
+  private paint(g: Gfx, v: View, p: Panel, full: boolean): void {
+    const r = p.rect;
+    this.stats.asked++;
+    const parts: Part[] = p.parts ? p.parts(v, r) : [(gg: Gfx) => p.draw(gg, v, r)];
+    const n = parts.length;
+    const gh = this.gh, hc = this.hc;
+    gh.shareAdvances(g);
+    hc.measurer = g.ctx;
+    gh.begin(hc as unknown as Ctx2D, g.px);
+    const now: Drawn = { h1: new Int32Array(n), h2: new Int32Array(n), box: new Float64Array(n * 4), n };
+    let alone = true;
+    for (let i = 0; i < n; i++) {
+      hc.reset();
+      parts[i](gh);
+      hc.end();
+      if (hc.inherits) alone = false;
+      now.h1[i] = hc.h1; now.h2[i] = hc.h2;
+      const band = parts[i].band;
+      if (band) { now.box[i * 4] = r.x; now.box[i * 4 + 1] = band[0]; now.box[i * 4 + 2] = r.x + r.w; now.box[i * 4 + 3] = band[1]; }
+      else { now.box[i * 4] = hc.x0; now.box[i * 4 + 1] = hc.y0; now.box[i * 4 + 2] = hc.x1; now.box[i * 4 + 3] = hc.y1; }
+    }
+    hc.measurer = null;
+    const was = full ? undefined : this.drawn.get(p.id);
+    this.drawn.set(p.id, now);
+    if (was && was.n === n) {
+      let same = true;
+      for (let i = 0; i < n && same; i++) same = was.h1[i] === now.h1[i] && was.h2[i] === now.h2[i];
+      if (same) { this.stats.same++; return; }
+    }
+    if (was && was.n === n && n > 1 && alone) {
+      // the changed parts' boxes, before and after, out to whole device pixels
+      const px = g.px;
+      const boxes: number[] = [];
+      let changed = 0;
+      for (let i = 0; i < n; i++) {
+        if (was.h1[i] === now.h1[i] && was.h2[i] === now.h2[i]) continue;
+        changed++;
+        for (const b of [was.box, now.box]) {
+          // clamped to the panel (a whole repaint clears no more), out to whole device pixels
+          const x0 = Math.max(r.x, b[i * 4]), y0 = Math.max(r.y, b[i * 4 + 1]), x1 = Math.min(r.x + r.w, b[i * 4 + 2]), y1 = Math.min(r.y + r.h, b[i * 4 + 3]);
+          if (!(x1 > x0) || !(y1 > y0)) continue;
+          addBox(boxes, Math.floor(x0 * px) / px, Math.floor(y0 * px) / px, Math.ceil(x1 * px) / px, Math.ceil(y1 * px) / px);
+        }
+      }
+      if (changed * 2 <= n) {
+        this.stats.parts++;
+        if (InfoLayer.debug) {
+          const ch: string[] = [];
+          for (let i = 0; i < n; i++) if (was.h1[i] !== now.h1[i] || was.h2[i] !== now.h2[i]) ch.push(`${i}:[${[...was.box.slice(i * 4, i * 4 + 4)].map((x) => x.toFixed(1))}]->[${[...now.box.slice(i * 4, i * 4 + 4)].map((x) => x.toFixed(1))}]`);
+          console.log(`info ${p.id} parts ${ch.join(' ')} boxes ${boxes.map((x) => x.toFixed(1)).join(',')}`);
+        }
+        const ctx = g.ctx;
+        for (let b = 0; b < boxes.length; b += 4) {
+          const bx0 = boxes[b], by0 = boxes[b + 1], bx1 = boxes[b + 2], by1 = boxes[b + 3];
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(bx0, by0, bx1 - bx0, by1 - by0);
+          ctx.clip();
+          ctx.clearRect(bx0, by0, bx1 - bx0, by1 - by0);
+          ctx.globalAlpha = 1;
+          ctx.setLineDash([]);
+          ctx.letterSpacing = '0px';
+          g.ops += 8;
+          for (let i = 0; i < n; i++) {
+            const x0 = now.box[i * 4], y0 = now.box[i * 4 + 1], x1 = now.box[i * 4 + 2], y1 = now.box[i * 4 + 3];
+            if (x1 <= bx0 || x0 >= bx1 || y1 <= by0 || y0 >= by1) continue;
+            parts[i](g);
+            this.stats.partsDrawn++;
+          }
+          ctx.restore();
+          g.ops++;
+        }
+        return;
+      }
+    }
+    this.stats.whole++;
+    if (!full) g.clear(r.x, r.y, r.w, r.h);
+    for (let i = 0; i < n; i++) parts[i](g);
   }
 
   private panels(v: View): Panel[] {
@@ -93,26 +218,33 @@ export class InfoLayer {
       { id: 'header', rect: { x: 0, y: 0, w: S.dial.labelX - 150, h: S.header.h }, key: h(h(headClock, h(w.repos.size, v.tl.mode.length)), h((v.q << 4) | (v.stress.on ? 1 : 0) | (v.tl.speed === 1 ? 2 : 0), kv.app)) + kv.pipeline + kv.repo, draw: drawHeader },
       { id: 'sources', rect: { x: 0, y: top.y0 - 4, w: S.intake.x - 6, h: S.divY - 6 - (top.y0 - 4) }, key: h(h(kv.commit, min), h(S.sources.lod, fade('sources'))), draw: drawSources },
       { id: 'intake', rect: { x: S.intake.x - 6, y: top.y0 - 4, w: S.engines.x - S.intake.x, h: S.divY - 6 - (top.y0 - 4) }, key: h(h(kv.queue, kv.pipeline), Math.floor(now / 10000)), draw: drawIntake },
-      { id: 'engines', rect: { x: S.engines.x - 4, y: top.y0 - 4, w: S.engines.w + 8, h: S.divY - 6 - (top.y0 - 4) }, key: h(h(h(kv.engine, kv.pipeline), enginesClock(v)), h(S.engines.lod, fade('lanes')) + stressT), draw: drawEngines },
+      { id: 'engines', rect: { x: S.engines.x - 4, y: top.y0 - 4, w: S.engines.w + 8, h: S.divY - 6 - (top.y0 - 4) }, key: h(h(h(kv.engine, kv.pipeline), enginesClock(v)), h(S.engines.lod, fade('lanes')) + stressT) + (tracksOn(v) ? 7 : 0), draw: (g, vv, r) => { drawEngines(g, vv, r); drawTracks(g, vv); }, parts: (vv, r) => [(g) => drawEngines(g, vv, r), (g) => drawTracks(g, vv)] },
       { id: 'gates', rect: { x: S.gates.x - 6, y: top.y0 - 4, w: S.bus.x - S.gates.x + 4, h: S.divY - 6 - (top.y0 - 4) }, key: h(h(kv.stats, kv.pr), min), draw: drawGates },
-      { id: 'mains', rect: { x: S.mains.x0 - 4, y: top.y0 - 4, w: S.mains.x1 - S.mains.x0 + 8 + S.m - 4, h: S.mains.heat.y - 4 - (top.y0 - 4) }, key: h(h(kv.repo, min), h(kv.pipeline, fade('rows'))), every: v.stress.on ? 1000 : 400, draw: drawMains },
+      { id: 'mains', rect: { x: S.mains.x0 - 4, y: top.y0 - 4, w: S.mains.x1 - S.mains.x0 + 8 + S.m - 4, h: S.mains.heat.y - 4 - (top.y0 - 4) }, key: h(h(kv.repo, min), h(kv.pipeline, fade('rows'))), every: v.stress.on ? 1000 : 400, draw: drawMains, parts: mainsParts },
       { id: 'heat', rect: { x: S.mains.x0 - 4, y: S.mains.heat.y - 4, w: S.mains.x1 - S.mains.x0 + 8, h: S.mains.heat.h + 6 }, key: h(v.agg.repos.sig, v.stress.on ? 1 : 0), every: 1000, draw: drawHeat },
       { id: 'apps', rect: { x: S.mains.x0 - 4, y: S.deploy.y - 16, w: S.mains.x1 - S.mains.x0 + 8, h: S.H - (S.deploy.y - 16) }, key: h(h(kv.app, kv.deploy), h(min, h(kv.stats, fade('apps')))), draw: drawApps },
-      { id: 'now', rect: { x: L.x0 - 4, y: S.now.y - 4, w: L.x1 - L.x0 + 8, h: S.now.h + 6 }, key: h(h(kv.pipeline, sec), h(kv.repo, nowKey(v.focus))), draw: (g, vv, r) => this.drawNow(g, vv, r) },
-      { id: 'queue', rect: { x: L.x0 - 4, y: S.queue.y - 4, w: L.x1 - L.x0 + 8, h: S.queue.h + 6 }, key: h(h(kv.queue, kv.pipeline), Math.floor(now / 10000)), draw: drawQueue },
+      { id: 'now', rect: { x: L.x0 - 4, y: S.now.y - 4, w: L.x1 - L.x0 + 8, h: S.now.h + 6 }, key: h(h(kv.pipeline, sec), h(kv.repo, nowKey(v.focus))), draw: (g, vv, r) => this.drawNow(g, vv, r), parts: (vv, r) => this.nowParts(vv, r) },
+      { id: 'queue', rect: { x: L.x0 - 4, y: S.queue.y - 4, w: L.x1 - L.x0 + 8, h: S.queue.h + 6 }, key: h(h(kv.queue, kv.pipeline), Math.floor(now / 10000)), draw: drawQueue, parts: queueParts },
       { id: 'pulse', rect: { x: S.pulse.x - 4, y: S.pulse.y - 4, w: S.pulse.w + 8, h: S.H - (S.pulse.y - 4) }, key: h(kv.pipeline, min), draw: drawPulse },
       { id: 'busy', rect: { x: S.busy.x - 4, y: S.busy.y - 4, w: S.busy.w + 8, h: S.H - (S.busy.y - 4) }, key: h(h(kv.pipeline, min), kv.repo), draw: drawBusy },
     ];
   }
 
   // ---- NOW: one pipeline up close ------------------------------------------------------------
-  private drawNow(g: Gfx, v: View, r: Rect): void {
+  /** NOW as two banded parts (p3-yard): its first line, whose timer moves each second, and the
+   *  rest (the steps, the main line), which seldom does. */
+  private nowParts(v: View, r: Rect): Part[] {
+    return [banded((g) => this.drawNow(g, v, r, 1), r.y, r.y + 26), banded((g) => this.drawNow(g, v, r, 2), r.y + 26, r.y + r.h)];
+  }
+
+  /** `only`: 1 the first line, 2 the rest, 0 all of it. */
+  private drawNow(g: Gfx, v: View, r: Rect, only: 0 | 1 | 2 = 0): void {
     const { w, now, S } = v;
     const p = v.focus;
-    this.activeChip.x = -1;
+    if (only !== 1) this.activeChip.x = -1;
     const y1 = r.y + 16;
     if (!p) {
-      g.runs([['NOW', C.ink3], [' · nothing building · every slot is free', C.ink3]], r.x + 4, y1, T.eyebrow, r.w);
+      if (only !== 2) g.runs([['NOW', C.ink3], [' · nothing building · every slot is free', C.ink3]], r.x + 4, y1, T.eyebrow, r.w);
       return;
     }
     const repo = w.repos.get(p.repo);
@@ -126,10 +258,14 @@ export class InfoLayer {
       : `${p.state} · ${fmtDur((p.finished ?? now) - (p.started ?? p.created))}`;
     const broke = p.state === 'failure' || p.state === 'error';
     const x0 = r.x + 4;
+    if (only !== 2) {
     let x = g.eyebrow([['now', C.ink3]], x0, y1, T.eyebrow);
     // Whole tokens: the repo and what happened stay; the branch goes first, then the culprit.
     x = g.runs([[' · ', C.ink3, false, 10], [repo?.name ?? p.repo, C.ink, true], [p.lane === 'gha' ? ' (actions)' : ` #${p.number}`, C.ink2], [` · ${p.branch}`, C.ink3, false, -6], [` · ${where}`, broke ? C.redText : C.ink3, false, 8],
       [broke && p.author ? ` · ${p.sha.slice(0, 7)} ${p.author.replace(/\[bot\]$/, '')}` : '', C.ink3, false, 2]], x, y1, T.label, r.w - (x - x0) - 8);
+    void x;
+    }
+    if (only === 1) return;
     // The right part: the repo's main line, its story in words.
     const split = Math.round(r.w * (r.w > 760 ? 0.6 : 0.56));
     const mx0 = r.x + split + 12, mx1 = r.x + r.w - 14;
@@ -505,6 +641,40 @@ function enginesAt(g: Gfx, v: View, lod: Level, r: Rect): void {
 }
 
 // ---- gates ------------------------------------------------------------------------------------
+/** The building slots' faint full rings (the progress rings' tracks), while any progress ring
+ *  is drawn at the top two quality levels. p3-yard: here, not on the live layer: they do not move,
+ *  and they were ~4 KB of its ~8 KB a frame. (The live layer's progress rings are the same colour
+ *  over them, so the order of the two does not change the pixels.) */
+export function tracksOn(v: View): boolean {
+  const { S, w } = v;
+  if (S.engines.lod >= 2 || v.q > 1) return false;
+  const building = buildingIds(w);
+  if (!building.size) return false;
+  const fallback = w.stats.p50_build_ms || 0;
+  for (const lane of S.engines.lanes) {
+    if (lane.virtual) continue;
+    for (const id of lane.engines) {
+      const e = w.engines.get(id) ?? enginesOf(w).find((x) => x.id === id);
+      const slots = S.engines.slotByEngine.get(id);
+      if (!e || !slots) continue;
+      for (const pid of e.running) {
+        if (!building.has(pid)) continue;
+        const pl = w.pipelines.get(pid);
+        const exp = pl?.expected_ms ?? w.repos.get(pl?.repo ?? '')?.p50_build_ms ?? fallback;
+        if (exp > 0) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function drawTracks(g: Gfx, v: View): void {
+  if (!tracksOn(v)) return;
+  g.begin_();
+  for (const lane of v.S.engines.lanes) for (const s of lane.slots) if (!lane.offline) g.circle(s.x, s.y, s.r + 2.5);
+  g.stroke(withAlpha(C.packet, 0.1), 1);
+}
+
 function drawGates(g: Gfx, v: View, r: Rect): void {
   const { S, w } = v;
   const G = S.gates;
@@ -536,21 +706,49 @@ function drawGates(g: Gfx, v: View, r: Rect): void {
 
 // ---- main lines -------------------------------------------------------------------------------
 function drawMains(g: Gfx, v: View, r: Rect): void {
+  void r;
+  for (const part of mainsParts(v)) part(g);
+}
+
+/** The main lines panel as parts (p3-yard): its head, then a row a part, so a change to one
+ *  line repaints that row's box, not the ~190 KB panel. */
+function mainsParts(v: View, r?: Rect): Part[] {
+  void r;
   const { S, w, now, t } = v;
+  const top = S.top;
   const M = S.mains;
   const ra = v.agg.repos;
   const fresh = ra.fresh;
   const parts: Run[] = ra.red
     ? [[`${ra.red} red`, C.redText], [fresh ? ` · ${fresh} today` : '', C.redText], [ra.oldestRed ? ` · oldest ${fmtDur(now - ra.oldestRed)}` : '', C.ink3], [` · ${ra.green} green`, C.ink3]]
     : [[`all ${ra.green} green`, C.greenInk]];
-  stationHead(g, S, M.x0, M.x1 - M.x0, 'main lines', ' · newest right', parts);
-  const fd = v.lod.fade('rows', t);
+  // the head down to the first row; each row its band (layout.ts: yMid is 16 under a LOD0 row's
+  // top, else the middle of its height; the bands do not overlap)
+  const top0 = (row: MainRow) => row.y - (row.lod === 0 ? 16 : row.h / 2);
+  const first = M.rows.length ? top0(M.rows[0]) : S.mains.heat.y - 4;
+  const out: Part[] = [banded((g) => stationHead(g, S, M.x0, M.x1 - M.x0, 'main lines', ' · newest right', parts), top.y0 - 4, first)];
+  const f0 = v.lod.fade('rows', t);
+  const fd = { from: f0.from, a: f0.a };
   for (const row of M.rows) {
     const repo = w.repos.get(row.repo);
     if (!repo) continue;
-    if (fd.a < 1 && row.lod !== fd.from) { g.alpha(1 - fd.a); mainRow(g, v, repo, row, fd.from); g.alpha(fd.a); mainRow(g, v, repo, row, row.lod); g.alpha(1); }
-    else mainRow(g, v, repo, row, row.lod);
+    const y0 = top0(row), y1 = y0 + row.h;
+    if (fd.a < 1 && row.lod !== fd.from) out.push(banded((g) => { g.alpha(1 - fd.a); mainRow(g, v, repo, row, fd.from); g.alpha(fd.a); mainRow(g, v, repo, row, row.lod); g.alpha(1); }, y0, y1));
+    else out.push(banded((g) => mainRow(g, v, repo, row, row.lod), y0, y1));
   }
+  return out;
+}
+
+/** Adds a box (x0, y0, x1, y1) to a list of disjoint boxes, merging those it overlaps. */
+function addBox(boxes: number[], x0: number, y0: number, x1: number, y1: number): void {
+  for (let b = 0; b < boxes.length; b += 4) {
+    if (x1 < boxes[b] || x0 > boxes[b + 2] || y1 < boxes[b + 1] || y0 > boxes[b + 3]) continue;
+    x0 = Math.min(x0, boxes[b]); y0 = Math.min(y0, boxes[b + 1]); x1 = Math.max(x1, boxes[b + 2]); y1 = Math.max(y1, boxes[b + 3]);
+    boxes.splice(b, 4);
+    addBox(boxes, x0, y0, x1, y1);
+    return;
+  }
+  boxes.push(x0, y0, x1, y1);
 }
 
 function mainRow(g: Gfx, v: View, repo: Repo, row: MainRow, lod: Level): void {
@@ -764,24 +962,35 @@ function drawApps(g: Gfx, v: View, r: Rect): void {
 
 // ---- COMING: the queue in order ---------------------------------------------------------------
 function drawQueue(g: Gfx, v: View, r: Rect): void {
+  for (const part of queueParts(v, r)) part(g);
+}
+
+/** COMING as parts (p3-yard): its head, each waiting row, the rest, each finished row; a queue
+ *  that only aged repaints the rows whose words moved. */
+function queueParts(v: View, r: Rect): Part[] {
+  const out: Part[] = [];
   const { w, now } = v;
   const qt = queueTruth(w);
   const items = qt.items;
   const stuck = items.filter((p) => now - p.created > STUCK_MS).length;
   const x0 = r.x + 4;
-  let x = g.eyebrow([['coming', C.ink3], [' · in order', C.ink3]], x0, r.y + 14, T.eyebrow);
-  g.runs(items.length ? [[` · ${qt.waiting} waiting`, C.amberText], [stuck ? ` · ${stuck} stuck over an hour` : ` · oldest ${fmtDur(now - qt.oldestAt)}`, stuck ? C.redText : C.ink3]] : [[' · nothing waiting, every slot can take the next push · ', C.ink3], ['just finished:', C.ink2]], x, r.y + 14, T.caption, r.w - (x - x0));
+  // bands: the head over the first row; each row 22 px about its line (chips are ~17 px high)
+  const rowBand = (y: number) => [y - 11, y + 11] as const;
+  out.push(banded((g) => {
+    const x = g.eyebrow([['coming', C.ink3], [' · in order', C.ink3]], x0, r.y + 14, T.eyebrow);
+    g.runs(items.length ? [[` · ${qt.waiting} waiting`, C.amberText], [stuck ? ` · ${stuck} stuck over an hour` : ` · oldest ${fmtDur(now - qt.oldestAt)}`, stuck ? C.redText : C.ink3]] : [[' · nothing waiting, every slot can take the next push · ', C.ink3], ['just finished:', C.ink2]], x, r.y + 14, T.caption, r.w - (x - x0));
+  }, r.y, r.y + 27));
   const rowH = 22;
   const nRows = Math.max(0, Math.floor((r.h - 26) / rowH));
   let used = 0;
   if (items.length) {
     const cap = Math.max(1, Math.min(items.length, nRows - 2 > 3 ? Math.min(nRows - 2, 6) : nRows));
     const show = items.slice(0, cap - (items.length > cap ? 1 : 0));
-    show.forEach((p, i) => {
+    show.forEach((p, i) => out.push(banded((g) => {
       const y = r.y + 38 + i * rowH;
       const name = w.repos.get(p.repo)?.name ?? p.repo.split('/')[1] ?? p.repo;
       g.runs([[pnum(p), C.ink2, false, 9], [name, C.ink3, false, 8, true]], x0, y + 4, T.label, 180);
-      x = x0 + 190;
+      let x = x0 + 190;
       const age = now - p.created;
       const est = p.expected_ms ?? w.repos.get(p.repo)?.p50_build_ms ?? w.stats.p50_build_ms ?? 0;
       const lim = r.x + r.w - 6;
@@ -797,27 +1006,29 @@ function drawQueue(g: Gfx, v: View, r: Rect): void {
         x += chip(g, chips[j][0], x, y, chips[j][1], T.chip);
         if (j < chips.length - 1 && x + 22 < lim) { arrow(g, x + 3, x + 18, y, C.ink4); x += 21; }
       }
-    });
+    }, ...rowBand(r.y + 38 + i * rowH))));
     used = show.length;
     if (items.length > show.length) {
       const y = r.y + 38 + show.length * rowH;
       const more = items.length - show.length;
-      g.begin_();
-      for (let i = 0; i < Math.min(more, 24); i++) g.rect(x0 + i * 12, y - 4, 8, 8);
-      g.stroke(C.chipEdge, 1);
-      g.text(`${more} more behind these`, x0 + Math.min(more, 24) * 12 + 6, y + 4, C.ink3, T.caption);
+      out.push(banded((g) => {
+        g.begin_();
+        for (let i = 0; i < Math.min(more, 24); i++) g.rect(x0 + i * 12, y - 4, 8, 8);
+        g.stroke(C.chipEdge, 1);
+        g.text(`${more} more behind these`, x0 + Math.min(more, 24) * 12 + 6, y + 4, C.ink3, T.caption);
+      }, ...rowBand(y)));
       used++;
     }
   }
   // Under the queue (or instead of it): what just finished, so the band keeps telling.
   const left = nRows - used - (used ? 1 : 0);
-  if (left < 1) return;
+  if (left < 1) return out;
   let yTop = r.y + 38 + used * rowH;
-  if (used) { g.text('just finished', x0, yTop + 4, C.ink3, T.caption); yTop += rowH; }
+  if (used) { const yy = yTop; out.push(banded((g) => { g.text('just finished', x0, yy + 4, C.ink3, T.caption); }, ...rowBand(yy))); yTop += rowH; }
   const cols = r.w > 700 ? 2 : 1;
   const colW = (r.w - 8) / cols;
   const done = Array.from(w.pipelines.values()).filter((p) => p.finished && now - p.finished < 3_600_000).sort((a, b) => (b.finished ?? 0) - (a.finished ?? 0)).slice(0, Math.max(0, left * cols));
-  done.forEach((p, i) => {
+  done.forEach((p, i) => out.push(banded((g) => {
     const c = Math.floor(i / left), k = i % left;
     const y = yTop + k * rowH;
     const cx0 = x0 + c * colW;
@@ -828,7 +1039,8 @@ function drawQueue(g: Gfx, v: View, r: Rect): void {
     let cx = cx0 + nameW;
     cx += chip(g, ok ? 'passed' : p.state, cx, y, ok ? 'ok' : p.state === 'failure' || p.state === 'error' ? 'bad' : 'skip', T.chip) + 8;
     g.runs([[fmtDur((p.finished ?? 0) - (p.started ?? p.created)), C.ink3], [` · ${fmtShort(now - (p.finished ?? now))} ago`, C.ink3]], cx, y + 4, T.caption, cx0 + colW - cx - 8);
-  });
+  }, ...rowBand(yTop + (i % left) * rowH))));
+  return out;
 }
 
 // ---- PULSE: the last hour ---------------------------------------------------------------------
