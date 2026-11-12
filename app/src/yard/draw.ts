@@ -47,6 +47,7 @@ export class Yard {
   private sceneSig = '';
   private picks: string[] = [];
   private picksAt = -1e9;
+  private picksVer = 0;
   private picksFresh = -1;
   private laneSig = '';
   private laneSigVer = -1;
@@ -105,13 +106,15 @@ export class Yard {
     }
     const ra = this.agg.repos;
     if (t - this.picksAt > PICKS_MS || ra.fresh !== this.picksFresh || !this.picks.length) {
-      this.picks = ra.ranked.slice(0, 120);
+      // (the scene is laid out again only when the picks changed, not each time they are looked at)
+      const next = ra.ranked.slice(0, 120);
+      if (next.length !== this.picks.length || next.some((id, i) => id !== this.picks[i])) { this.picks = next; this.picksVer++; }
       this.picksAt = t;
       this.picksFresh = ra.fresh;
     }
     // The scene depends on the fleet's shape (counts, tiers, org runs), not on every state
     // change: those the info layer redraws in place.
-    const sig = `${W}|${H}|${scale}|${w.shapeVer}|${ra.ids.length}:${ra.fresh}:${ra.hot}:${ra.orgs.length}|${this.agg.apps.ids.length}|${this.picksAt}|${this.laneSig}|${this.stress.on ? 1 : 0}|${this.lod.histogram.length}`;
+    const sig = `${W}|${H}|${scale}|${w.shapeVer}|${ra.ids.length}:${ra.fresh}:${ra.hot}:${ra.orgs.length}|${this.agg.apps.ids.length}|${this.picksVer}|${this.laneSig}|${this.stress.on ? 1 : 0}|${this.lod.histogram.length}`;
     if (sig !== this.sceneSig || !this.S) {
       this.sceneSig = sig;
       const c = census(w, ra, this.agg.apps, this.stress.on ? this.stress : null);

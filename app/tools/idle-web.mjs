@@ -65,6 +65,7 @@ const tab = arg('--tab', '');
 const route = arg('--route', '');
 if (route) { await page.evaluate((r) => { history.pushState({}, '', r); dispatchEvent(new PopStateEvent('popstate')); }, route); }
 else if (tab) await tid(`tab-${tab}`).click();
+if (process.argv.includes('--pause')) { await page.waitForTimeout(1500); await tid('pause').click(); }
 await page.waitForTimeout(Number(arg('--settle', '4000')));
 const cdp = await page.context().newCDPSession(page);
 await cdp.send('Performance.enable');
