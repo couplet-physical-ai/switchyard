@@ -661,3 +661,95 @@ Mini, paused Live, 30 s, frozen mock (load 1.4–1.8):
 
 `fc37169` (paused: one wake every 32 s instead of a ladder rung that never shrank, since the
 playhead stands) stays: fewer wakes, no frames either way.
+
+## Pass 5, the Yard (p5-yard): the timer turn shrinks (2026-11-12)
+
+Pass 4 found the late frames were the main thread waiting on the data module's turns: the 250 ms
+tick's commit drawing yardInfo + yardLive (637 samples of 22 s in `deliverNativeTimer`), the
+per-frame `Runtime.tick` (269) and full Hermes collections. Pass 5 makes those turns small.
+
+**Where the timer turn went** (p4's mini sample `base-prof1`, the 491 samples of
+`DataSource::draw` inside `exact_fire_native_timer`, Hermes frames merged by function):
+`Array.prototype.sort` ~200, of which `localeCompare` 74, `Collator::create` 37 and
+`Collator::compare` 29; GC ~140 (`collect_garbage` between calls 68, young/incremental the
+rest); `canvas_measure` (the host's text measure) only 13. Hermes builds an `Intl.Collator`
+for **every** `localeCompare` call (ECMA-402 defines it as `new Intl.Collator(…).compare`), and
+`Aggregates.repoJob` re-sorted every repo by org and name, and ranked them all, on every
+`kv.repo` change: at 10× nearly every stream frame.
+
+**What changed** (all in `src/yard/`, plus two recorder patches):
+
+| Commit | What |
+|---|---|
+| `61fa9ee` | The info layer's parts take a key (a number and up to two objects by identity): a part whose key, objects and band match the last paint's is not run, not even hashed; its last hash and box stand. The main lines key each row (repo by identity, row, `shortKey`: `fmtShort`'s words as a number). |
+| `0a008d1` | One `Intl.Collator` (and one numeric) made once, used for every sort in the Yard (the same order by spec; checked on the fixtures' 776 names, 602,176 pairs: 0 disagree). The repos' org/name order is kept while the same ids keep the same org and name. The queue's waiting and just-finished rows are keyed. |
+| `78d8477` | The ranked repos: only the first 120 (the yard's picks), by insertion, scores in a `Float64Array` (checked against the full sort on 30 perturbed trials with ties: 0 differ). The gates' verdicts kept per `kv.pipeline`. |
+| `992b273` | `exact-patches/0003`: the native recorder parses each font string once and quotes each family once (bounded maps). |
+| `088e0e8` | `Yard.ensure` compares the scene signature's twelve parts instead of building a string every draw. |
+| `5f65381` | `exact-patches/0004`: the recorder's `roundRect` with one radius and a size that is not negative records the same ops without ~70 arrays per rectangle. |
+
+**Devbox** (`tools/yard-bench.ts --hermes --fed`, Bun 1.4.2, the recorded fleet at 10×,
+`switchyard-server --demo --speed 10`, base `50768b6` and head run at the same time on one
+stream; `--hermes` now prices `localeCompare` as Hermes does, a collator per call; `--fed`
+asks the overview as the app's `fed` task does):
+
+| | yardLive ms p50 / p99 | yardInfo ms p50 / p99 / mean | info alloc KB/draw | live alloc KB/frame |
+|---|---|---|---|---|
+| base, JIT | 0.14 / 3.16 | 1.33 / 7.70 / 1.90 | – | – |
+| head, JIT | **0.13 / 0.74** | **1.03 / 6.12 / 1.36** | – | – |
+| base, no JIT (an interpreter's proportions) | 0.50 / 4.75 | 3.12 / 52 / 6.7 | 709 | 68 |
+| head, no JIT | 0.51 / 2.27 | **1.73** / 46 / 3.7 | **255** | **53** |
+
+(Allocation from `--alloc`: JSC's heap blocks plus mimalloc's pages across each call, the
+collector held off with `BUN_JSC_largeHeapSize/smallHeapSize=8e9`; coarse per call, fair as a
+mean.) Per panel (no JIT): the main lines' paint p50 3.36 → 0.17 ms, the queue's 1.22 → 0.22 ms.
+The p99 of an info draw is a panel whose content really moved (the queue's rows shift when the
+waiting list grows by one, the main lines reorder): those repaint whole, as they must.
+
+**Pixels.** `tools/yard-pixels.ts` (every info draw through the gate, against a twin with the
+gate off, on the live 10× stream, 60 s): the head's list of differing draws is the base's
+(the pre-existing 12–48 px at x 237–259, p3-yard's), no new one. `tools/yard-regress.mjs`
+(built webs, frozen clock): base → head 2,069 px of 1,248,480 in the Yard; base → base 1,585 in
+the same places (the demo's timers and packets are not frozen by it), so nothing from this pass.
+The two recorder patches are byte-identical by fuzz (0003: 300 trials of font/fillText/caps/
+stretch/save/restore/getters; 0004: 4,000 trials of roundRect under transforms, odd radii and
+negative sizes): 0 differ.
+
+**Mac mini** (`p5yard-m.sh`, a copy of p4's recipe: a fresh `--demo --speed 10` server per run,
+busy Yard 1440×900, real taps, `EXACT_CANVAS_STATS=1`; window A = `perf frames live 30000`;
+base `50768b6` with the shared Exact (0001+0002), head `5f65381` with a private Exact
+(0001–0004); interleaved base/head ×2, 13:11–13:19Z). p5-board's builds ran beside it, so the
+load was 3–14, not p4's 1.3–1.9; **pair 1's base ran at load 14 → 12 and is tainted; pair 2
+(load 3–6 for both) is the clean one.**
+
+| Run | load | fps | missed slots | frame p99 | work late | work median | work p99 |
+|---|---|---|---|---|---|---|---|
+| base 1 (tainted) | 14.2 → 11.8 | 59.08 | 19 / 1228 | 24–48 | 80 / 1209 (6.6 %) | 12.5–13.0 | 24–48 |
+| head 1 | 3.8 → 4.5 | 58.91 | 25 / 1367 | 24–48 | 26 / 1342 (1.9 %) | 11.5–12.0 | **20.0–20.5** |
+| base 2 | 3.0 → 5.7 | 58.85 | 16 / 814 | 24–48 | 39 / 798 (4.9 %) | 10.5–11.0 | 24–48 |
+| head 2 | 3.8 → 3.2 | 59.15 | 12 / 818 | 24–48 | **25 / 806 (3.1 %)** | 12.0–12.5 | **21.5–22.0** |
+
+Every canvas stayed on the GPU (`62–64 gpu/s, 2.3–2.4 ms each, 0.0 recorded/s`). Late work fell
+by a third to two thirds and its p99 left the 24–48 ms bucket for 20–22 ms; the head's sample
+(`sample-head-busy2`, 6 s) has no `arrayPrototypeSort` or `Collator::create` left under the
+timer turn (36 samples of 1,002 on the main thread in `exact_fire_native_timer`). The frame
+p99 and the missed slots did not move: the newest hitches of `perf frames report` are
+**callback gaps** (a 33 ms gap, the callback 1.4–3.7 ms, the work around it 1.4–5.5 ms): the
+display link did not call, with nothing of the app's in the way. With Swift compiles beside it
+that is expected; whether they remain on a quiet mini is the next measurement. **Not met:**
+60 fps, p99 ≤ 17 ms, ≤ 1 % late at 10× (head 2: 59.15 fps, frame p99 24–48, 3.1 % late work).
+
+**Exact: why no timer patch.** `ExactSession.asyncFills` (`host/apple/Sources/ExactKit/Session.swift:473–476`)
+already sends a timer's turn to the owner without the main thread waiting
+(`NativeTaskTimers.deliverNativeTimer`, `NativeTaskTimers.swift:100–114`:
+`fireNativeTimerAsync`), but only on iOS ("macOS follows once physical scrolling there is
+measured"). On macOS it would not save the frame: with a turn in flight the display link's
+tick is *held* (`Frames.swift:80–87` `advanceInFlight`, `submitMotionTick` `tickInFlight`), so
+the canvas misses the same slot, now as a held frame instead of a late one; and it switches
+every macOS fill to the asynchronous path, which is not measured there. The fix is a turn that
+fits, which this pass makes. What Exact would need for a frame never to wait on a timer turn:
+the timer turn split from the canvas commit (the turn's draws recorded on the owner and their
+lists replayed by the next display-link tick, `canvas_draw_turn` under
+`exact_fire_native_timer`), or the shim's between-call full collection
+(`js/src/shim.cc:135–145` `collect_if_due`: every `max(256 KiB, live/2)` allocated) moved off
+the call that answers a frame.
