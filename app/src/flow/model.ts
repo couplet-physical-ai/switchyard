@@ -12,6 +12,7 @@
 // row (`…#push@<t0>`), since it is a new event happening now.
 
 import type { World } from '../world.ts';
+import { COLL } from '../yard/select.ts';
 import type { CiState, Commit, Engine, Pipeline, Step, Workflow } from '../wire.ts';
 
 export type FlowKind = 'build' | 'test' | 'lint' | 'deploy' | 'release' | 'ci';
@@ -269,7 +270,7 @@ function engIndex(w: World): EngIndex {
     // A Dagger host listing its agents counts through them (its own slots are the same slots).
     const wp = h.agents.filter((e) => e.kind === 'wp_agent');
     if (wp.length) h.agents = wp;
-    h.agents.sort((a, b) => (a.label ?? a.id).localeCompare(b.label ?? b.id));
+    h.agents.sort((a, b) => COLL.compare(a.label ?? a.id, b.label ?? b.id)); // (one collator: Hermes makes one per localeCompare, p5)
     let base = 0;
     for (const e of h.agents) {
       h.slots += e.slots ?? 0;
