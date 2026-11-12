@@ -111,6 +111,8 @@ async fn failed_jobs_open_on_their_failed_step() {
         http: reqwest::Client::new(),
         tx,
         failed_steps: Default::default(),
+        deploy_rechecks: Default::default(),
+        active_runs: Default::default(),
         adapters: Arc::new(Adapters::default()),
         clock: Arc::new(|| 0),
     };

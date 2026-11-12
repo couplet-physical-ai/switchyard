@@ -93,6 +93,8 @@ pub fn spawn_all(
                 http: http.clone(),
                 tx: tx.clone(),
                 failed_steps: Default::default(),
+                deploy_rechecks: Default::default(),
+                active_runs: Default::default(),
                 adapters: adapters.clone(),
                 clock: clock.clone(),
             };

@@ -733,7 +733,13 @@ impl Store {
         let sk = sha_key(&d.repo, &d.sha);
         let key = format!("{sk}|{}", d.source);
         if let Some(o) = self.deploys.get(&key)
-            && deploy_version(o) >= deploy_version(&d)
+            && (deploy_version(o) >= deploy_version(&d)
+                // A killed run ends only its own report: it does not undo another run's
+                // verdict on the same commit (a redeploy cancelled after a good one).
+                || (d.canceled
+                    && !o.canceled
+                    && o.pipeline != d.pipeline
+                    && matches!(o.state, DeployState::Success | DeployState::Failure)))
         {
             return;
         }
@@ -1130,7 +1136,7 @@ impl Store {
         }
         // Deploys: keep the newest per app forever (App.last_deploy), drop the rest when old.
         let mut newest: FxHashMap<String, (Ms, String)> = FxHashMap::default();
-        for d in self.deploys.values() {
+        for d in self.deploys.values().filter(|d| !d.canceled) {
             let sk = sha_key(&d.repo, &d.sha);
             let e = newest
                 .entry(d.repo.clone())
@@ -1487,8 +1493,47 @@ impl Store {
         ))
     }
 
+    /// Whether a push to `repo` by `author` starts CI: always on a Roadrunner repo (its
+    /// webhook fires for every push); else only where the repo has shown CI lately (a run,
+    /// a decided commit on its main line), and never for `github-actions[bot]` (a
+    /// GITHUB_TOKEN push starts no workflow).
+    pub fn expects_ci(&self, repo: &str, author: &str) -> bool {
+        if self
+            .repo_meta(repo)
+            .is_some_and(|(_, wid, _)| wid.is_some())
+        {
+            return true;
+        }
+        if author == "github-actions[bot]" || author == "github-actions" {
+            return false;
+        }
+        self.idx
+            .repo_pipelines
+            .get(repo)
+            .is_some_and(|ps| !ps.is_empty())
+            || self.main_hist.get(repo).is_some_and(|h| {
+                h.dots.iter().any(|d| {
+                    matches!(
+                        d.state,
+                        CiState::Success | CiState::Failure | CiState::Error | CiState::Running
+                    )
+                })
+            })
+    }
+
     /// Combined CI state of one commit from its pipelines, GitHub runs and statuses.
     pub fn commit_ci(&self, repo: &str, sha: &str) -> CiState {
+        self.commit_ci_of(repo, sha, false)
+    }
+
+    /// A default-branch commit's CI as its main line reads it: without its pull request's
+    /// runs (they describe the PR; a fast-forward merge lands the PR's head on the branch
+    /// with its PR statuses, and those are not the branch's CI).
+    pub fn main_commit_ci(&self, repo: &str, sha: &str) -> CiState {
+        self.commit_ci_of(repo, sha, true)
+    }
+
+    fn commit_ci_of(&self, repo: &str, sha: &str, main: bool) -> CiState {
         let sk = sha_key(repo, sha);
         let mut states: Vec<CiState> = Vec::new();
         let mut has_wp = false;
@@ -1500,6 +1545,9 @@ impl Store {
             let mut latest: BTreeMap<(u8, u8, bool), (u64, CiState)> = BTreeMap::new();
             for id in ps {
                 if let Some(p) = self.pipelines.get(id) {
+                    if main && p.event == PipelineEvent::PullRequest {
+                        continue;
+                    }
                     if p.lane == LaneKind::Roadrunner {
                         has_wp = true;
                     }
@@ -1533,7 +1581,7 @@ impl Store {
             for k in ss {
                 if let Some(s) = self.statuses.get(k) {
                     if s.context.starts_with("ci/woodpecker") {
-                        if has_wp {
+                        if has_wp || (main && s.context.starts_with("ci/woodpecker/pr/")) {
                             continue;
                         }
                         let wf = s
@@ -1567,6 +1615,7 @@ impl Store {
             .get(&sk)?
             .iter()
             .filter_map(|k| self.deploys.get(k))
+            .filter(|d| !d.canceled)
             .collect();
         if regs.is_empty() {
             return None;
@@ -1637,6 +1686,7 @@ impl Store {
                 pipeline: None,
                 url: None,
                 source: String::new(),
+                canceled: false,
             }),
             repo: repo.to_string(),
             sha: sha.to_string(),
@@ -1912,8 +1962,10 @@ impl Store {
                         Stage::Done
                     }
                 }
+                // Pushed (waiting for CI) only where CI will run; a repo without CI, or a
+                // GITHUB_TOKEN push GitHub never builds, is done at once.
                 CiState::None => {
-                    if c.at > now - 15 * 60_000 {
+                    if c.at > now - 15 * 60_000 && self.expects_ci(&c.repo, &c.author) {
                         Stage::Pushed
                     } else {
                         Stage::Done
@@ -2109,7 +2161,7 @@ impl Store {
             if !reg.branches.contains(&default_branch) {
                 continue;
             }
-            let state = self.commit_ci(id, &c.sha);
+            let state = self.main_commit_ci(id, &c.sha);
             let deployed = self
                 .combined_deploy(id, &c.sha)
                 .is_some_and(|d| d.state == DeployState::Success);

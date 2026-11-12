@@ -166,6 +166,10 @@ pub struct DeployFact {
     /// (a deploy workflow run), `cicd` (the watcher's head verdict).
     #[serde(default)]
     pub source: String,
+    /// The deploy workflow was killed or cancelled: it neither deployed nor failed. It ends
+    /// the run's earlier pending/running report and is no deploy of the commit.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub canceled: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]

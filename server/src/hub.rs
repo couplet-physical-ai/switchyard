@@ -170,6 +170,9 @@ pub struct Hub {
     ring_cap: usize,
     snapshot: RwLock<Arc<Snapshot>>,
     seq: AtomicU64,
+    /// The seq this process started numbering after (a restored history's last); a client
+    /// resuming at or before it saw another process's frames and refetches the snapshot.
+    boot_seq: AtomicU64,
     pub epoch: String,
     pub history: History,
     pub clients: AtomicU64,
@@ -190,6 +193,7 @@ impl Hub {
             ring_cap,
             snapshot: RwLock::new(Arc::new(Snapshot::new(0, 0, Bytes::from_static(b"{}")))),
             seq: AtomicU64::new(0),
+            boot_seq: AtomicU64::new(0),
             epoch,
             history,
             clients: AtomicU64::new(0),
@@ -234,6 +238,7 @@ impl Hub {
     /// Continue numbering after a known seq (e.g. a restored state).
     pub fn set_seq(&self, seq: u64) {
         self.seq.store(seq, Ordering::Release);
+        self.boot_seq.store(seq, Ordering::Release);
     }
 
     pub fn snapshot(&self) -> Arc<Snapshot> {
@@ -300,6 +305,12 @@ impl Hub {
         let r = self.ring.lock();
         let cur = self.seq();
         if since > cur {
+            return None;
+        }
+        // A resume from before this process (a restart): its world is the old process's,
+        // which this one never diffed against, so it starts over from the snapshot.
+        let boot = self.boot_seq.load(Ordering::Acquire);
+        if boot > 0 && since <= boot {
             return None;
         }
         if since == cur {

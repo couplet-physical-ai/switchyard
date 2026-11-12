@@ -46,7 +46,9 @@ const HIST_QUERY: &str = r#"query($org:String!,$n:Int!,$hist:Int!,$after:String)
  organization(login:$org){repositories(first:$n,after:$after,isArchived:false,orderBy:{field:PUSHED_AT,direction:DESC}){
   pageInfo{hasNextPage endCursor}
   nodes{nameWithOwner pushedAt isPrivate defaultBranchRef{name target{... on Commit{
-   history(first:$hist){nodes{oid committedDate messageHeadline author{name user{login}} statusCheckRollup{state}}}
+   history(first:$hist){nodes{oid committedDate messageHeadline author{name user{login}} statusCheckRollup{state contexts(first:40){totalCount nodes{__typename
+    ... on StatusContext{context state createdAt}
+    ... on CheckRun{name status conclusion checkSuite{app{slug} workflowRun{event workflow{name}}}}}}}}}
   }}}}}}}"#;
 
 const PR_QUERY: &str = r#"query($q:String!,$n:Int!,$after:String){
@@ -88,6 +90,71 @@ pub fn check_state(status: &str, conclusion: Option<&str>) -> CiState {
         "QUEUED" | "PENDING" | "WAITING" | "REQUESTED" => CiState::Pending,
         _ => CiState::None,
     }
+}
+
+/// A default-branch commit's own CI state from its rollup (`statusCheckRollup{state contexts}`),
+/// the way the main line reads it: security scanning (CodeQL, Dependabot) is not delivery, a
+/// pull request's runs describe the PR rather than the branch, and of a Roadrunner workflow's
+/// push and manual statuses the newer counts (a manual rerun supersedes the push run). GitHub's
+/// own `state` counts all of those, so a CodeQL "Analyze (actions)" failure read as a red main.
+/// A truncated context list falls back to GitHub's state.
+pub fn main_line_state(rollup: &Value) -> CiState {
+    let nodes = rollup
+        .pointer("/contexts/nodes")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let total = rollup
+        .pointer("/contexts/totalCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(nodes.len() as u64);
+    let github = s(rollup, "/state")
+        .map(rollup_state)
+        .unwrap_or(CiState::None);
+    if nodes.is_empty() || total > nodes.len() as u64 {
+        return github;
+    }
+    let mut states: Vec<CiState> = Vec::new();
+    let mut wp: BTreeMap<&str, (Ms, CiState)> = BTreeMap::new();
+    for c in nodes {
+        if is_scanning(c) {
+            continue;
+        }
+        match c.get("__typename").and_then(Value::as_str) {
+            Some("StatusContext") => {
+                let ctx = s(c, "/context").unwrap_or("");
+                let st = rollup_state(s(c, "/state").unwrap_or(""));
+                if ctx.starts_with("ci/woodpecker/pr/") {
+                    continue;
+                }
+                let wf = ctx
+                    .strip_prefix("ci/woodpecker/push/")
+                    .or_else(|| ctx.strip_prefix("ci/woodpecker/manual/"));
+                if let Some(wf) = wf {
+                    let at = s(c, "/createdAt").and_then(parse_time).unwrap_or(0);
+                    let e = wp.entry(wf).or_insert((at, st));
+                    if at >= e.0 {
+                        *e = (at, st);
+                    }
+                } else {
+                    states.push(st);
+                }
+            }
+            Some("CheckRun") => {
+                let ev = s(c, "/checkSuite/workflowRun/event").unwrap_or("");
+                if ev == "pull_request" || ev == "pull_request_target" {
+                    continue;
+                }
+                states.push(check_state(
+                    s(c, "/status").unwrap_or(""),
+                    s(c, "/conclusion"),
+                ));
+            }
+            _ => {}
+        }
+    }
+    states.extend(wp.into_values().map(|(_, st)| st));
+    combine_states(states)
 }
 
 fn s<'a>(v: &'a Value, p: &str) -> Option<&'a str> {
@@ -146,6 +213,7 @@ pub fn contexts_to_facts(
                         pipeline: None,
                         url: s(c, "/targetUrl").map(str::to_string),
                         source: "status".into(),
+                        canceled: false,
                     }));
                 }
                 out.push(Fact::Status(StatusFact {
@@ -284,6 +352,7 @@ pub fn contexts_to_facts(
                     pipeline: Some(pid.clone()),
                     url: Some(url.clone()),
                     source: "gha".into(),
+                    canceled: false,
                 }));
             }
         }
@@ -472,8 +541,10 @@ pub fn repo_page_facts(nodes: &[Value], with_heads: bool, now: Ms) -> (Vec<RepoM
                     Some(Dot {
                         sha: s(c, "/oid")?.to_string(),
                         at: s(c, "/committedDate").and_then(parse_time)?,
-                        state: s(c, "/statusCheckRollup/state")
-                            .map(rollup_state)
+                        state: c
+                            .get("statusCheckRollup")
+                            .filter(|r| !r.is_null())
+                            .map(main_line_state)
                             .unwrap_or(CiState::None),
                         bot: is_bot(&author),
                         author,
@@ -511,6 +582,108 @@ pub fn failed_step_of(job: &Value) -> Option<u32> {
         .map(|n| n as u32)
 }
 
+/// The deploy runs of one commit from REST `GET /repos/{repo}/actions/runs?head_sha={sha}`:
+/// every deploy-named workflow run outside pull requests (push and manual alike), as deploy
+/// facts. The newest decides the commit's GitHub Actions deploy (`deploy_version`).
+pub fn deploy_runs_facts(repo: &str, sha: &str, runs: &Value) -> Vec<Fact> {
+    let mut out = Vec::new();
+    for r in runs
+        .get("workflow_runs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let name = s(r, "/name").unwrap_or("");
+        let event = s(r, "/event").unwrap_or("");
+        if !name.to_ascii_lowercase().contains("deploy")
+            || event.starts_with("pull_request")
+            || s(r, "/head_sha") != Some(sha)
+        {
+            continue;
+        }
+        let Some(id) = r.get("id").and_then(Value::as_u64) else {
+            continue;
+        };
+        let completed = s(r, "/status") == Some("completed");
+        let (state, canceled) = match (s(r, "/status").unwrap_or(""), s(r, "/conclusion")) {
+            ("completed", Some("success")) => (DeployState::Success, false),
+            ("completed", Some("failure" | "timed_out" | "startup_failure")) => {
+                (DeployState::Failure, false)
+            }
+            ("completed", Some("cancelled" | "stale")) => (DeployState::Failure, true),
+            ("completed", _) => continue,
+            ("in_progress", _) => (DeployState::Running, false),
+            _ => (DeployState::Pending, false),
+        };
+        let started = s(r, "/run_started_at")
+            .or_else(|| s(r, "/created_at"))
+            .and_then(parse_time)
+            .unwrap_or(0);
+        out.push(Fact::Deploy(DeployFact {
+            app: String::new(),
+            repo: repo.into(),
+            sha: sha.into(),
+            via: if event == "workflow_dispatch" || event == "repository_dispatch" {
+                DeployVia::GhaFallback
+            } else {
+                DeployVia::Gha
+            },
+            state,
+            started,
+            finished: completed
+                .then(|| s(r, "/updated_at").and_then(parse_time))
+                .flatten(),
+            pipeline: Some(ids::gha_pipeline(id)),
+            url: s(r, "/html_url").map(str::to_string),
+            source: "gha".into(),
+            canceled,
+        }));
+    }
+    out
+}
+
+/// A GitHub Actions run read directly (REST `GET /repos/{repo}/actions/runs/{id}`): the
+/// last polled `p` with the run's current state; a finished run's unfinished jobs and steps
+/// take its conclusion. `None` while the run is still going.
+pub fn run_closed(p: &Pipeline, run: &Value) -> Option<Pipeline> {
+    if s(run, "/status") != Some("completed") {
+        return None;
+    }
+    let state = check_state(
+        "COMPLETED",
+        Some(&s(run, "/conclusion").unwrap_or("").to_ascii_uppercase()),
+    );
+    let end = s(run, "/updated_at").and_then(parse_time);
+    let mut q = p.clone();
+    q.state = state;
+    q.finished = end.or(q.finished);
+    for w in &mut q.workflows {
+        if !w.state.is_done() {
+            w.state = state;
+            w.finished = q.finished;
+        }
+        for st in &mut w.steps {
+            if !st.state.is_done() {
+                st.state = if st.state == CiState::Running {
+                    state
+                } else {
+                    CiState::Skipped
+                };
+                st.finished = q.finished;
+            }
+        }
+    }
+    Some(q)
+}
+
+/// A run no poll has reported for this long is read directly.
+pub const STALE_RUN_MS: Ms = 3 * 60_000;
+const STALE_RUN_READS: usize = 8;
+
+/// Deploy rechecks per minute, and how often one commit is read again.
+const RECHECKS: usize = 5;
+const RECHECK_EVERY_MS: Ms = 5 * 60_000;
+
 /// Failed-step lookups per batch of facts (the rest follow on the next poll).
 const STEP_LOOKUPS: usize = 8;
 
@@ -523,6 +696,16 @@ pub struct GithubAdapter {
     /// Failed jobs: their failed step (`None`: none failed, e.g. setup), by job id, so a
     /// failed job's `Step.url` opens on that step. A finished job never changes.
     pub failed_steps: parking_lot::Mutex<HashMap<u64, Option<u32>>>,
+    /// Commits whose GitHub Actions deploy failed: (repo, sha) → (first seen, last checked).
+    /// Their runs are read again (REST) until a deploy run of the same commit passes or a
+    /// day goes by, because a manual redeploy (`workflow_dispatch`, e.g. "First Deploy App")
+    /// is not in the commit's check rollup and would leave the failure standing.
+    pub deploy_rechecks: parking_lot::Mutex<HashMap<(String, String), (Ms, Ms)>>,
+    /// GitHub Actions runs last seen running or queued, by run id: (the run, when a poll
+    /// last reported it). A run whose repo drops out of the heads poll (25 most recently
+    /// pushed per org) before it finishes would stay "running" forever; one no poll has
+    /// reported for [`STALE_RUN_MS`] is read directly (REST) and closed.
+    pub active_runs: parking_lot::Mutex<HashMap<u64, (Pipeline, Ms)>>,
     pub adapters: Arc<Adapters>,
     pub clock: Clock,
 }
@@ -633,9 +816,150 @@ impl GithubAdapter {
 
     async fn send(&self, mut facts: Vec<Fact>, live: bool) {
         self.anchor_failed_steps(&mut facts).await;
+        {
+            let now = (self.clock)();
+            let mut ar = self.active_runs.lock();
+            for f in &facts {
+                if let Fact::Pipeline(p) = f
+                    && p.lane == LaneKind::Gha
+                {
+                    if p.state.is_active() {
+                        ar.insert(p.number, (p.clone(), now));
+                    } else {
+                        ar.remove(&p.number);
+                    }
+                }
+            }
+            drop(ar);
+            let mut rc = self.deploy_rechecks.lock();
+            for f in &facts {
+                if let Fact::Deploy(d) = f
+                    && d.source == "gha"
+                    && d.state == DeployState::Failure
+                    && !d.canceled
+                    && d.started > now - 24 * 3_600_000
+                {
+                    rc.entry((d.repo.clone(), d.sha.clone()))
+                        .or_insert((now, 0));
+                }
+            }
+        }
         if !facts.is_empty() {
             let _ = self.tx.send(Ingest { facts, live }).await;
         }
+    }
+
+    /// Close GitHub Actions runs no poll has reported for [`STALE_RUN_MS`] (see
+    /// [`GithubAdapter::active_runs`]): a finished one is published finished, a deleted one
+    /// is dropped, one still going waits for the next read.
+    async fn close_stale_runs(&self) -> anyhow::Result<()> {
+        let now = (self.clock)();
+        let due: Vec<(u64, Pipeline)> = {
+            let mut ar = self.active_runs.lock();
+            ar.retain(|_, (p, _)| now - p.created < 24 * 3_600_000);
+            let mut v: Vec<(u64, Pipeline, Ms)> = ar
+                .iter()
+                .filter(|(_, (_, seen))| now - *seen >= STALE_RUN_MS)
+                .map(|(id, (p, seen))| (*id, p.clone(), *seen))
+                .collect();
+            v.sort_by_key(|x| x.2);
+            v.into_iter()
+                .take(STALE_RUN_READS)
+                .map(|(id, p, _)| (id, p))
+                .collect()
+        };
+        let mut facts = Vec::new();
+        for (id, p) in due {
+            self.adapters.request(NAME, 1);
+            let r = self
+                .http
+                .get(format!(
+                    "{}/repos/{}/actions/runs/{id}",
+                    self.api.trim_end_matches('/'),
+                    p.repo
+                ))
+                .bearer_auth(&self.token)
+                .header("accept", "application/vnd.github+json")
+                .timeout(Duration::from_secs(20))
+                .send()
+                .await?;
+            if r.status() == reqwest::StatusCode::NOT_FOUND {
+                self.active_runs.lock().remove(&id);
+                facts.push(Fact::PipelineGone { id: p.id.clone() });
+                continue;
+            }
+            if !r.status().is_success() {
+                anyhow::bail!("run HTTP {}", r.status());
+            }
+            match run_closed(&p, &r.json::<Value>().await?) {
+                Some(q) => {
+                    self.active_runs.lock().remove(&id);
+                    facts.push(Fact::Pipeline(q));
+                }
+                None => {
+                    if let Some(e) = self.active_runs.lock().get_mut(&id) {
+                        e.1 = now;
+                    }
+                }
+            }
+        }
+        if !facts.is_empty() {
+            let _ = self.tx.send(Ingest { facts, live: true }).await;
+        }
+        Ok(())
+    }
+
+    /// Read the deploy runs of commits whose GitHub Actions deploy failed again (see
+    /// [`GithubAdapter::deploy_rechecks`]); a passing one ends the recheck.
+    async fn recheck_deploys(&self) -> anyhow::Result<()> {
+        let now = (self.clock)();
+        let due: Vec<(String, String)> = {
+            let mut rc = self.deploy_rechecks.lock();
+            rc.retain(|_, (first, _)| now - *first < 24 * 3_600_000);
+            let mut v: Vec<(Ms, (String, String))> = rc
+                .iter()
+                .filter(|(_, (_, last))| now - *last >= RECHECK_EVERY_MS)
+                .map(|(k, (_, last))| (*last, k.clone()))
+                .collect();
+            v.sort();
+            v.into_iter().take(RECHECKS).map(|(_, k)| k).collect()
+        };
+        for (repo, sha) in due {
+            self.adapters.request(NAME, 1);
+            let r = self
+                .http
+                .get(format!(
+                    "{}/repos/{repo}/actions/runs?head_sha={sha}&per_page=50",
+                    self.api.trim_end_matches('/')
+                ))
+                .bearer_auth(&self.token)
+                .header("accept", "application/vnd.github+json")
+                .timeout(Duration::from_secs(20))
+                .send()
+                .await?;
+            let ok = r.status().is_success();
+            let gone = r.status() == reqwest::StatusCode::NOT_FOUND;
+            let facts = if ok {
+                deploy_runs_facts(&repo, &sha, &r.json::<Value>().await?)
+            } else {
+                Vec::new()
+            };
+            let passed = facts
+                .iter()
+                .any(|f| matches!(f, Fact::Deploy(d) if d.state == DeployState::Success));
+            {
+                let mut rc = self.deploy_rechecks.lock();
+                if passed || gone {
+                    rc.remove(&(repo.clone(), sha.clone()));
+                } else if let Some(e) = rc.get_mut(&(repo.clone(), sha.clone())) {
+                    e.1 = now;
+                }
+            }
+            if !facts.is_empty() {
+                let _ = self.tx.send(Ingest { facts, live: true }).await;
+            }
+        }
+        Ok(())
     }
 
     /// One GraphQL page, retried with a smaller page size (GitHub answers 502
@@ -856,6 +1180,16 @@ impl GithubAdapter {
                     Ok(_) => last_closed = now,
                     Err(e) => errs.push(format!("closed prs: {e}")),
                 }
+            }
+            if tick.is_multiple_of(4)
+                && let Err(e) = self.recheck_deploys().await
+            {
+                errs.push(format!("deploy recheck: {e}"));
+            }
+            if tick.is_multiple_of(4)
+                && let Err(e) = self.close_stale_runs().await
+            {
+                errs.push(format!("stale runs: {e}"));
             }
             if tick.is_multiple_of(40)
                 && let Err(e) = self.prs(&open_q, 20, true).await

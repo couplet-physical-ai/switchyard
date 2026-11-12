@@ -520,7 +520,7 @@ fn state_and_event_tables() {
 }
 
 #[test]
-fn killed_deploy_workflow_is_a_failed_deploy_and_skipped_is_none() {
+fn killed_deploy_workflow_is_cancelled_and_skipped_is_none() {
     let mut p: WpPipeline = wp_events()[1].pipeline.clone();
     p.status = "killed".into();
     p.finished = 1_794_339_700;
@@ -536,7 +536,8 @@ fn killed_deploy_workflow_is_a_failed_deploy_and_skipped_is_none() {
     let f = m.facts("Northwind-Labs/aurora-api", 64, &p);
     assert_eq!(pipeline(&f).state, CiState::Canceled);
     let d = deploys(&f);
-    assert_eq!(d[0].state, DeployState::Failure);
+    // Killed (superseded or cancelled): it ends the run's report, and is no failed deploy.
+    assert!(d[0].canceled, "a killed deploy is cancelled, not failed");
     assert_eq!(d[0].started, s(1_794_339_650));
     assert_eq!(d[0].finished, Some(s(1_794_339_700)));
 

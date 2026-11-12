@@ -200,3 +200,107 @@ fn the_last_state_is_the_last_checkpoint_plus_its_frames() {
             .is_none()
     );
 }
+
+/// A client connected before a restart (its world: the old process's, with a phantom
+/// pending pipeline the new process never builds) resumes into a reset, refetches the
+/// last state, and the settle delta removes the phantom; then a PipelineGone during
+/// normal running removes a pipeline from it as well.
+#[tokio::test]
+async fn a_client_from_before_the_restart_drops_what_the_new_process_does_not_have() {
+    let hub = Hub::new(
+        "new".into(),
+        1024,
+        1024,
+        History::Mem(MemHistory::new(3_600_000)),
+    );
+    hub.set_seq(900);
+    let mut rx = hub.tx.subscribe();
+    let adapters = Arc::new(Adapters::default());
+    adapters.register("github", true, None);
+    adapters.backfilling("github", true);
+    let store = Arc::new(parking_lot::RwLock::new(Store::new(StoreConfig::default())));
+    let (tx, ingest) = tokio::sync::mpsc::channel(16);
+    let clock: Clock = Arc::new(now);
+    let mut last = last_state();
+    let phantom = json!({"id": "wp:acme/api:61", "lane": "roadrunner", "repo": "acme/api",
+        "number": 61, "sha": "abc", "branch": "main", "event": "push", "state": "pending",
+        "created": 1, "deploy": false, "flaky": false, "workflows": [], "url": "u"});
+    last["pipelines"] = json!([phantom]);
+    // The client, as the old process left it.
+    let mut client = WireState::from_snapshot(&last);
+    assert_eq!(pipes(&client), vec!["wp:acme/api:61"]);
+    tokio::spawn(run_reducer(
+        store,
+        hub.clone(),
+        ingest,
+        clock,
+        ReducerCfg {
+            frame_ms: 10,
+            snapshot_ms: 20,
+            settle_on: Some(adapters.clone()),
+            settle_quiet_ms: 50,
+            warm: Some(last),
+            ..ReducerCfg::default()
+        },
+    ));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    // It resumes from the old process's last frame: a reset, then the snapshot.
+    assert!(
+        hub.since(900).is_none(),
+        "a resume from before the restart is a reset"
+    );
+    client = WireState::from_snapshot(&snapshot_of(&hub));
+    while rx.try_recv().is_ok() {}
+    // The new process rebuilds: a real pipeline, never the phantom.
+    tx.send(Ingest {
+        facts: vec![pipeline(now())],
+        live: true,
+    })
+    .await
+    .unwrap();
+    adapters.ok("github", now(), None);
+    adapters.backfilling("github", false);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while hub.is_settling() {
+        assert!(tokio::time::Instant::now() < deadline, "never settled");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    while let Ok(f) = rx.try_recv() {
+        client.apply_frame(&serde_json::from_slice(&f.json).unwrap());
+    }
+    assert_eq!(
+        pipes(&client),
+        vec!["wp:acme/api:7"],
+        "the phantom is gone, the real one is in"
+    );
+    // Running: Woodpecker deletes wp:acme/api:7 (a 404) → the client drops it too.
+    tx.send(Ingest {
+        facts: vec![Fact::PipelineGone {
+            id: "wp:acme/api:7".into(),
+        }],
+        live: true,
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    while let Ok(f) = rx.try_recv() {
+        client.apply_frame(&serde_json::from_slice(&f.json).unwrap());
+    }
+    assert!(
+        pipes(&client).is_empty(),
+        "a gone pipeline leaves the connected client"
+    );
+    assert_eq!(
+        client.entities(),
+        WireState::from_snapshot(&snapshot_of(&hub)).entities()
+    );
+}
+
+fn pipes(w: &WireState) -> Vec<String> {
+    w.entities()
+        .iter()
+        .filter(|(k, _)| k.starts_with("pipeline"))
+        .flat_map(|(_, t)| t.keys().cloned())
+        .collect()
+}
