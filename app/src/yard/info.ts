@@ -12,7 +12,7 @@ import type { Quality } from './budget.ts';
 import type { Ctx2D } from '../../app.contract.d.ts';
 import { Gfx, arrow, chip, times } from './gfx.ts';
 import { HashCtx } from './hashctx.ts';
-import { CELL_H, type Lane, type MainRow, type Rect, type Scene, enginesOf } from './layout.ts';
+import { CELL_H, type Lane, type MainRow, type Rect, type Scene, engineGroups, enginesOf } from './layout.ts';
 import { type Level, type LodBook } from './lod.ts';
 import { type Aggregates, type Run, S_GREEN, S_NONE, S_PEND, S_RED, S_RUN, S_STALE, STUCK_MS, busiest, buildingIds, isRed, lastHour, mainStory, orgSpark, queueTruth, thousands } from './select.ts';
 import type { StressFleet } from './stress.ts';
@@ -569,10 +569,12 @@ function drawIntake(g: Gfx, v: View, r: Rect): void {
 function drawEngines(g: Gfx, v: View, r: Rect): void {
   const { S, w } = v;
   const E = S.engines;
-  const all = enginesOf(w);
   let busy = 0, slots = 0;
   if (S.stress) { for (let i = 0; i < E.lanes.length || i < v.stress.lanes.length; i++) { const l = v.stress.lanes[i]; if (!l) break; slots += l.slots; for (let s = 0; s < l.slots; s++) if (v.stress.busy(i, s, v.t)) busy++; } }
-  else for (const e of all) { if (e.online === false) continue; slots += Math.max(1, e.slots); }
+  // The slots builds run in: the hosts' agents and the GitHub runners (engineGroups' lanes). A
+  // Dagger engine host's slots are its agents' slots, so it is not counted again (it was: 28
+  // where the fleet has 16).
+  else for (const gr of engineGroups(w)) for (const e of gr.engines) { if (e.online === false) continue; slots += Math.max(1, e.slots); }
   if (!S.stress) busy = buildingIds(w).size;
   const p50 = w.stats.p50_build_ms;
   stationHead(g, S, E.x, E.w, 'engines', ' · slots', [[`${busy} of ${slots} busy`, C.amberText], [`${p50 ? ` · ${fmtDur(p50)} typical` : ''} · ${thousands(w.stats.pipelines_24h)} today`, C.ink3]]);

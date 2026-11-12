@@ -66,10 +66,13 @@ export class World {
   /** Fleet time of the snapshot this world was loaded from (what `health` has seen starts here). */
   loadedAt = 0;
   loaded = false;
+  /** The server process the snapshot came from (Snapshot.epoch; '' when it names none). */
+  srvEpoch = '';
 
   load(s: Snapshot): void {
     this.protocol = String(s.protocol ?? '');
     this.seq = s.seq ?? 0;
+    this.srvEpoch = String((s as { epoch?: string }).epoch ?? '');
     this.at = s.at ?? 0;
     this.orgs = toMap(s.orgs);
     this.repos = toMap(s.repos);

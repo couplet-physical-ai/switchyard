@@ -554,7 +554,11 @@ function waitingDrafts(w: World, now: number, b: Built, lim: { until: number }):
     const e = rec[i];
     if (e.at < since) break;
     edge(e.at);
-    if (e.k === 'push') add(e.repo, e.sha, e.at, w.commits.get(`${e.repo}@${e.sha}`) ?? ({ repo: e.repo, sha: e.sha, branch: e.branch, title: e.title, author: e.author, bot: e.bot, at: e.at, stage: 'pushed', ci: 'none', pipelines: [] } as Commit));
+    // A push whose commit the server already moved on (a repo with no CI: the server marks it
+    // done at once) waits for nothing: no waiting row, no intake count.
+    const known = e.k === 'push' ? w.commits.get(`${e.repo}@${e.sha}`) : undefined;
+    if (known && known.stage !== 'pushed') continue;
+    if (e.k === 'push') add(e.repo, e.sha, e.at, known ?? ({ repo: e.repo, sha: e.sha, branch: e.branch, title: e.title, author: e.author, bot: e.bot, at: e.at, stage: 'pushed', ci: 'none', pipelines: [] } as Commit));
   }
   for (const c of b.pushed) {
     if (c.at < since) break;

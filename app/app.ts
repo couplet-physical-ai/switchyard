@@ -431,6 +431,7 @@ async function connect(server: string, token: string, epoch0: number): Promise<C
     }
     up = new HttpUpstream(base, token);
     const snap = await up.snapshot();
+    liveEpoch = String((snap as { epoch?: string }).epoch ?? '');
     if (!replayKeeps(base)) {
       // p5-board: a reload while paused (a reset's) stays paused: Contract's time control says so,
       // and the timers it would start ticking show nothing new
@@ -466,6 +467,12 @@ const INBOX_MAX = 4000;
  *  then is the snapshot fetched again. A new connect (`loads`: a snapshot taken) starts it at the
  *  snapshot's seq, its inbox emptied. */
 let streamSeq = 0, streamKey = '', loads = 0;
+/** The server process the fleet was fetched from (Snapshot.epoch). A stream opened again after a
+ *  drop asks /api/v1/meta which process answers now: another one (the server restarted) means
+ *  the resume may join a new numbering, so the fleet is fetched again (a reset), never trusted
+ *  across processes (sy-client's stale-state audit: a restart could leave entities the new
+ *  process never had, and so never removes). */
+let liveEpoch = '';
 const noteSeq = (f: WireFrame) => { const q = (f as { seq?: number }).seq; if (f.t === 'delta' && typeof q === 'number' && q > streamSeq) streamSeq = q; };
 let feedWake = 0, wakeOwed = false;
 /** The pace the last overview answered (app.contract's pulse). */
@@ -486,13 +493,21 @@ function liveFeed(server: string, token: string, seq: number, ok: boolean, gen: 
     return server === 'demo' && ok ? { ok: true, status: 'demo', wake: feedWake } : idle;
   }
   const key = `${base}|${tokenVer(token)}|${gen}|${loads}`;
+  const resumed = streamKey === key;
   if (streamKey !== key) { streamKey = key; inbox.length = 0; streamSeq = seq; }
   let status = 'connecting';
+  let otherProcess = false;
+  if (resumed && liveEpoch && up) {
+    const want = liveEpoch;
+    up.meta().then((m) => { if (m?.epoch && m.epoch !== want) otherProcess = true; }, () => {});
+  }
   return fetch(wsUrl(base, `/api/v1/stream?since=${Math.max(seq, streamSeq)}`, token), {
     // A resume's first message can carry many merged frames: allow 4 MiB a message. (An open
     // stream holds twice its ceiling of the native lanes' 64 MiB, beside a history read.)
     exactIndependentHttp: { maxResponseBytes: 4 << 20 },
     exactStream(ev) {
+      if (otherProcess && status !== 'reset') { inbox.length = 0; status = 'reset'; }
+      if (status === 'reset') return { ok: false, status, wake: feedWake };
       if (ev.type === 'open') status = 'live';
       else if (ev.type === 'message' && typeof ev.data === 'string') {
         status = 'live';
