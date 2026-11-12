@@ -193,6 +193,7 @@ bindInsights(tl, () => up, engineHist);
  *  `draw` or a promise's continuation, is never run). */
 function advance(t: number, asking = true): void {
   if (t > clock) clock = t;
+  if (inbox.length) drain(); // (a draw too: a heartbeat moves the server's now, which the timers read)
   tl.tick(clock);
   engineHist.sample(tl.world);
   if (demo) {
@@ -426,11 +427,30 @@ async function connect(server: string, token: string, epoch0: number): Promise<C
   }
 }
 
+/** The stream's frames, waiting for the clock they arrived at (the mapper has none): taken in
+ *  by the next source turn that advances the clock (`advance`). While the pulse is asleep or
+ *  slow (ov.pace 1 or 2), the first frame to wait moves the feed's `wake`, and Contract ticks
+ *  once for it (app.contract `fed`, 30 ms later): the world, the overview and what shows them
+ *  follow the stream's frames, not a clock. Paused, a frame is kept at once (nothing shows it). */
+const inbox: WireFrame[] = [];
+const INBOX_MAX = 4000;
+let feedWake = 0, wakeOwed = false;
+/** The pace the last overview answered (app.contract's pulse). */
+let lastPace = 0;
+function drain(): boolean {
+  wakeOwed = false;
+  const fs = inbox.splice(0);
+  for (const f of fs) if (!tl.ingest(f, clock)) return false;
+  return true;
+}
+
 function liveFeed(server: string, token: string, seq: number, ok: boolean) {
-  if (!ok) return { ok: false, status: 'idle' };
-  if (server === 'demo') return { ok: true, status: 'demo' };
+  const idle = { ok: false, status: 'idle', wake: feedWake };
+  inbox.length = 0;
+  if (!ok) return idle;
+  if (server === 'demo') return { ok: true, status: 'demo', wake: feedWake };
   const base = resolveBase(server);
-  if (!base) return { ok: false, status: 'idle' };
+  if (!base) return idle;
   let status = 'connecting';
   return fetch(wsUrl(base, `/api/v1/stream?since=${seq}`, token), {
     // A resume's first message can carry many merged frames: allow 4 MiB a message. (An open
@@ -442,15 +462,28 @@ function liveFeed(server: string, token: string, seq: number, ok: boolean) {
         status = 'live';
         // A coalesced message means frames were dropped on the way in: the world has a gap.
         if ((ev as { coalesced?: number }).coalesced) status = 'reset';
-        else for (const f of parseFrames(ev.data)) {
-          if (!tl.ingest(f, clock)) { status = 'reset'; break; }
+        else {
+          const fs = parseFrames(ev.data);
+          if (tl.mode === 'paused' && !inbox.length) {
+            for (const f of fs) if (!tl.ingest(f, clock)) { status = 'reset'; break; }
+          } else if (fs.some((f) => f.t === 'reset') && tl.mode !== 'replay') {
+            inbox.length = 0;
+            status = 'reset';
+          } else if (inbox.length + fs.length > INBOX_MAX) {
+            inbox.length = 0; // (never: the wake takes them within ~30 ms) a gap: refetch
+            status = 'reset';
+          } else {
+            for (const f of fs) inbox.push(f);
+            // (a heartbeat alone changes nothing shown: it waits for the next turn)
+            if (!wakeOwed && lastPace !== 0 && fs.some((f) => f.t !== 'hb')) { wakeOwed = true; feedWake++; }
+          }
         }
       } else if (ev.type === 'error') {
         const e = ev as { kind?: string; message?: string };
         console.log(`stream ended: ${e.kind ?? ''} ${e.message ?? ''}`);
         status = status === 'reset' ? 'reset' : e.kind === 'Network' ? 'closed' : 'error';
       } else if (ev.type === 'close') status = status === 'reset' ? 'reset' : 'closed';
-      return { ok: status === 'live', status };
+      return { ok: status === 'live', status, wake: feedWake };
     },
   });
 }
@@ -490,10 +523,11 @@ function overview(): Result<'overview'> {
   if (oldFloorOn()) factory.city.pump(clock); // fab-w5: the city's app histories (H7), a few fetches per data turn, never from a draw (only while the old floor is drawn: it alone shows them)
   const dial = replayDial(); // fx-day: the dial counts a day replay's hours (and logs a replay's streaming when it ends)
   const vis = redraw(w, building + queued);
+  lastPace = vis.pace;
   return {
     status: w.loaded ? 'ready' : 'waiting', mode: tl.mode, speed: tl.speed, sentence, summary, layoutKey: `${S?.key ?? ''}|${yard.budget.quality >= 3 ? 'lo' : 'hi'}`, repos: w.repos.size,
     building, queued, red, appsUp, appsTotal, appsDown, facHead: factory.coffee.glance0.drawn, behind, seq: w.seq, // fx-glance: the coffee header's totals as drawn
-    tick: vis.tick, pace: vis.pace, host: hostLabel(), dial, dialPad: Math.round(((S?.m ?? 16) + 22) * k), dialFont: Math.round(11 * k), dialH: Math.round(34 * k),
+    tick: vis.tick, pace: vis.pace, wake: vis.wake, wakeKey: vis.wakeKey, host: hostLabel(), dial, dialPad: Math.round(((S?.m ?? 16) + 22) * k), dialFont: Math.round(11 * k), dialH: Math.round(34 * k),
     hud: yard.hud.on, stress: stressOn, quality: yard.budget.quality, facKey: factory.floorKey,
     facDrawer: factory.selected !== '', facQ: factory.budget.quality, facStress: factory.stress.on, facCalm: factory.calm, facStats: factory.statsLine(), ...factory.counts(),
   };
@@ -502,23 +536,38 @@ function overview(): Result<'overview'> {
 /** The canvases' redraw key (`ov.tick`) and the pulse's pace (`ov.pace`) (mac-perf, "idle = still").
  *  The key moves only when something the view on top shows has changed: the world (a new
  *  version), the mode or speed, the view on top, and the clock only where a shown text follows
- *  it: each second while anything runs or waits (its m:ss timer), else each minute (clock times
- *  and ages); a replay's playhead 4 times a second. Idle, it stands still: no canvas is asked
- *  for a frame and no source re-asked through it. The pace: 0, the 250 ms pulse (the demo, a
- *  replay, playing behind, a change in the last 3 s, the HUD, stress); 1, the 1 s pulse, which
- *  only notices the stream's next frame and the clock turning. */
-let visTick = 0, visSig = '', visData = '', visChanged = -1e9;
-function redraw(w: { ver: number }, active: number): { tick: number; pace: number } {
+ *  it: each minute (clock times and ages), each second while busy and a timer shows (while only
+ *  the timers tick, Contract adds the second itself: `rk`), a replay's playhead 4 times a
+ *  second. Idle, it stands still: no canvas is asked for a frame and no source re-asked
+ *  through it. The pace: 0, the 250 ms pulse (the demo, a replay, playing behind, the HUD,
+ *  stress, the older floors on top, a fleet not loaded yet); 1, a shown timer runs: the 1 s
+ *  tick moves `rk` and asks nothing else; 2, no pulse. Paces 1 and 2 wake a few times a minute
+ *  (`wake`: a ladder of one-shot timers to the playhead's next minute, or 1 s after a change, so
+ *  what the change started is seen to tick), and the stream's frames wake the clock (`fed`). */
+let visTick = 0, visSig = '', visData = '', visChanged = -1e9, visWakes = 0;
+const LADDER = [32, 16, 8, 4, 2, 1];
+function redraw(w: { ver: number }, active: number): { tick: number; pace: number; wake: number; wakeKey: number } {
   const replaying = tl.mode === 'replay';
-  // (what the view on top shows: the board's own runs, deploys and checks; Live's running and waiting rows)
-  const ticking = active > 0 || (topView === 'factory' && f3.ticking) || (topView === 'now' && feedTicking());
+  // (what the view on top shows: the Yard's every running or queued job, the board's own runs,
+  // deploys and checks, Live's running and waiting rows)
+  // (Live and the board: as they last built; a change is looked at again a second later, `wake`)
+  // (paused, the playhead stands: no timer moves)
+  const ticking = tl.mode === 'paused' ? false : topView === 'factory' ? f3.ticking : topView === 'now' ? feedTicking() : topView === 'yard' ? active > 0 : false;
   const g = replaying ? 250 : ticking || tl.mode === 'behind' ? 1000 : 60_000;
   const data = `${tl.epoch}|${w.ver}|${tl.mode}|${tl.speed}|${stressOn ? 1 : 0}|${yard.hud.on ? 1 : 0}`;
-  if (data !== visData) { visData = data; visChanged = clock; }
   const sig = `${topView}|${data}|${Math.floor(tl.playhead / g)}`;
+  if (`${topView}|${data}` !== visData) { visData = `${topView}|${data}`; visChanged = clock; }
   if (sig !== visSig) { visSig = sig; visTick++; }
-  const busy = !!demo || replaying || tl.mode === 'behind' || clock - visChanged < 3000 || yard.hud.on || stressOn || !w.ver;
-  return { tick: visTick, pace: busy ? 0 : 1 };
+  const busy = !!demo || replaying || tl.mode === 'behind' || yard.hud.on || stressOn || !w.ver || oldTop;
+  const pace = busy ? 0 : ticking ? 1 : 2;
+  // the next wake: a second after a change (the board and Live count their timers when they
+  // draw what it brought), else the largest rung under the playhead's next minute
+  let wake = 0;
+  if (pace) {
+    const left = 60_000 - (((tl.playhead % 60_000) + 60_000) % 60_000);
+    wake = clock - visChanged < 1000 ? 1 : LADDER.find((s) => s * 1000 <= left) ?? 1;
+  }
+  return { tick: visTick, pace, wake, wakeKey: ++visWakes };
 }
 
 /** The old floor (/factory?v=1, the web's) was drawn in the last 5 s: its histories are fetched
@@ -599,6 +648,7 @@ export const sources: Sources = {
     now: () => tl.playhead,
     offsetMin: () => yard.offsetMin,
     upstream: () => up,
+    advance: (t) => advance(t),
   }) as unknown as Pick<Sources, 'nowFeed' | 'nowPanel' | 'nowLog'>,
   // the Factory redo: a press on the floor, the inspector's run, its log (src/flowfloor/)
   flowPick: ([x, y]) => {
@@ -612,7 +662,7 @@ export const sources: Sources = {
     const h = f3.pick(Number(x), Number(y));
     return { kind: h?.kind ?? '', id: h?.id ?? '', label: h ? `${h.x},${h.y},${h.w},${h.h}` : '', route: h?.url ?? '' };
   },
-  f3Detail: ([kind, id]) => safe('f3Detail', NO_F3, () => f3Detail(tl.world, String(kind ?? ''), String(id ?? ''), tl.playhead, f3.where)),
+  f3Detail: ([kind, id, _key, t]) => { if (t > 0) advance(t); return safe('f3Detail', NO_F3, () => f3Detail(tl.world, String(kind ?? ''), String(id ?? ''), tl.playhead, f3.where)); }, // (t: the timers' second, app.contract `tickMs`)
   f3Log: ([id, step, workflow, tick, failed]) => {
     const v = logOf(up, String(id ?? ''), String(step ?? ''), String(workflow ?? ''), Number(tick) || 0, !!failed);
     return v instanceof Promise ? v.then(tidyLog) : tidyLog(v);
@@ -675,7 +725,7 @@ export const sources: Sources = {
     return c;
   },
   liveFeed: ([server, _ver, seq, _gen, ok]) => liveFeed(server, needsToken(server) ? token : '', seq, ok),
-  overview: ([t], _store, _storage, native) => { if (t > 0) advance(t); safe('heapLog', 0, () => { probeAsk(native); probeFlush(native); logHeap(clock, native, !!up && tl.world.loaded); return 0; }); /* leak: the heap line (src/memlog.ts) */ if (oldFloorOn()) safe('plantHist', 0, () => { factory.plant.pump(clock); return 0; }); return safe('overview', EMPTY_OV, overview); }, // fab-w6: the machine walls' 24 h histories are asked here (a source), never in a draw
+  overview: ([t, _seq, _ok, top], _store, _storage, native) => { const tp = String(top ?? ''); oldTop = tp.endsWith('~old'); topView = oldTop ? tp.slice(0, -4) : tp; if (t > 0) advance(t); safe('heapLog', 0, () => { probeAsk(native); probeFlush(native); logHeap(clock, native, !!up && tl.world.loaded); return 0; }); /* leak: the heap line (src/memlog.ts) */ if (oldFloorOn()) safe('plantHist', 0, () => { factory.plant.pump(clock); return 0; }); return safe('overview', EMPTY_OV, overview); }, // fab-w6: the machine walls' 24 h histories are asked here (a source), never in a draw
   timeControl: async ([what, speed]) => {
     if (what === 'pause') tl.pause();
     else if (what === 'play') {
@@ -765,7 +815,7 @@ export const sources: Sources = {
     else if (what === 'stress') setStress(on === 1);
     return { ok: true, status: `${what} ${on === 1 ? 'on' : 'off'}` };
   },
-  // (asked again when the query or the world's seq changes: its second argument is a key, not a clock)
+  // (asked again when the query changes or the palette opens: its second argument is a key, not a clock)
   search: ([q]) => {
     return safe('search', { hits: [] }, () => ({ hits: search(tl.world, q, tl.playhead).map((h) => ({ kind: h.kind, id: h.id, title: h.title, subtitle: h.subtitle, route: route(h.kind, h.id) })) }));
   },
@@ -777,7 +827,7 @@ export const sources: Sources = {
 const EMPTY_OV: Result<'overview'> = {
   status: 'waiting', mode: 'live', speed: 1, sentence: 'waiting for the fleet', summary: 'The delivery yard, waiting for data.', layoutKey: '', repos: 0,
   building: 0, queued: 0, red: 0, appsUp: 0, appsTotal: 0, appsDown: 0, facHead: '', behind: '', seq: 0, // fx-glance
-  tick: 0, pace: 0, host: '', dial: '1 hour, sped up', dialPad: 38, dialFont: 11, dialH: 34, hud: false, stress: false, quality: 0, facKey: '', facDrawer: false, facQ: 0, facStress: false, facCalm: true, facStats: '', facCity: 0, facCars: 0, facBays: 0, facLens: 0, facLensTop: '',
+  tick: 0, pace: 0, wake: 0, wakeKey: 0, host: '', dial: '1 hour, sped up', dialPad: 38, dialFont: 11, dialH: 34, hud: false, stress: false, quality: 0, facKey: '', facDrawer: false, facQ: 0, facStress: false, facCalm: true, facStats: '', facCity: 0, facCars: 0, facBays: 0, facLens: 0, facLensTop: '',
 };
 /** A source that throws answers its empty value instead (and says so once in the log): a sparse
  *  or surprising entity costs a view its rows, never the app. */
@@ -817,6 +867,8 @@ export const surfaces: Record<string, number> = { factoryFloor: 3, factoryLive: 
  *  canvas keeps its last pixels) and asks for no frame; `ov.tick` moves when the view on top
  *  changes, so it is drawn again as it comes back. */
 let topView = '';
+/** The older floors (the web's /factory?v=1 and ?v=2) are on top: they animate, the pulse runs. */
+let oldTop = false;
 
 export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame): boolean {
   if (probing() && !probeInside()) return probeWrap(surface, ctx, frame, () => draw(surface, args, ctx, frame)); // leak: the hidden heap probe (src/heapprobe.ts)

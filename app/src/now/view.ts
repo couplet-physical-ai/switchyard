@@ -21,6 +21,10 @@ export interface NowDeps {
   /** Minutes east of UTC, for clock times. */
   offsetMin: () => number;
   upstream: () => Upstream | null;
+  /** Moves the module clock to `t` (the host's ms), as the overview's ask does: while only the
+   *  timers' second ticks (app.contract `tickMs`), the overview is not asked and Live reads the
+   *  clock this way. */
+  advance?: (t: number) => void;
 }
 
 // ---- caps ----
@@ -742,11 +746,18 @@ function logCapable(up: Upstream | null): boolean {
 
 export function nowSources(d: NowDeps) {
   return {
-    nowFeed: (a: FeedArgs) => {
+    nowFeed: (args: [...FeedArgs, number?]) => {
+      const t = Number(args[4]) || 0;
+      if (t > 0) d.advance?.(t);
+      const a = args.slice(0, 4) as FeedArgs;
       const r = safe('nowFeed', EMPTY_FEED as NowFeed | Promise<NowFeed>, () => feedAnswer(d, a));
       return r instanceof Promise ? r.catch((e) => safe('nowFeed', EMPTY_FEED, () => { throw e; })) : r;
     },
-    nowPanel: (a: [string, number]) => safe('nowPanel', EMPTY_PANEL, () => panelAnswer(d, a)),
+    nowPanel: (a: [string, number, number?]) => {
+      const t = Number(a[2]) || 0;
+      if (t > 0) d.advance?.(t);
+      return safe('nowPanel', EMPTY_PANEL, () => panelAnswer(d, [a[0], a[1]]));
+    },
     nowLog: (a: LogArgs) => safe('nowLog', NO_LOG as Log | Promise<Log>, () => logAnswer(d, a)),
   };
 }

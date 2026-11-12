@@ -60,11 +60,12 @@ members App
   state f3Kind = ""
   derive f3On = here == "factory" and facV3
   derive f3Sec = floor(clockMs / 1000)
-  resource f3D = f3Detail(f3Kind, f3Sel, (f3On and f3Sel != "") ? ov.tick : 0) as shape F3Detail else empty()
+  resource f3D = f3Detail(f3Kind, f3Sel, (f3On and f3Sel != "") ? rk : 0, (f3On and f3Sel != "") ? tickMs : 0) as shape F3Detail else empty()
   derive f3Dock = f3Sel != "" and f3D.ok
   // what the board did, for the tests and the HUD (asks, paints, transits)
-  // (once a second while the board is on top: "still" is two seconds without a paint)
-  resource f3S = f3Stats(f3On ? f3Sec : 0) as shape F3Stat else empty(ok=false, status="", work="")
+  // (as what the board shows changes, not its timers' second; once a second while the HUD shows
+  // it: "still" is two seconds without a paint)
+  resource f3S = f3Stats(f3On ? (ov.hud ? f3Sec : ov.tick) : 0) as shape F3Stat else empty(ok=false, status="", work="")
   resource f3L = f3Log(f3D.logId, f3D.logStep, f3D.logWorkflow, f3D.logLive ? floor(clockMs / 10000) : 0, f3D.logFail) as shape FlLog else empty()
   mutation f3Hit as shape Hit then afterF3Hit
   derive f3Now = match f3Hit { case some(h) => h, case none => Hit(kind="", id="", label="", route="") }

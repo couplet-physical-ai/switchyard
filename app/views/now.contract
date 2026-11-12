@@ -224,10 +224,10 @@ members App
   derive nowRepo = searchParam(top(nav), "repo")
   derive nowApp = searchParam(top(nav), "app")
   derive nowSha = searchParam(top(nav), "sha")
-  // asked again when what they show changed (ov.tick: the fleet, or the clock where a shown
+  // asked again when what they show changed (rk: the fleet, or the clock where a shown
   // timer or age follows it), never 4 times a second
-  resource nowData = nowFeed(here == "now" ? ov.tick : 0, nowRepo, nowApp, nowSha) as shape NowFeed else empty()
-  resource nowPanelData = nowPanel(nowSel, (here == "now" and nowSel != "") ? ov.tick : 0) as shape NowPanel else empty()
+  resource nowData = nowFeed(here == "now" ? rk : 0, nowRepo, nowApp, nowSha, here == "now" ? tickMs : 0) as shape NowFeed else empty()
+  resource nowPanelData = nowPanel(nowSel, (here == "now" and nowSel != "") ? rk : 0, (here == "now" and nowSel != "") ? tickMs : 0) as shape NowPanel else empty()
   // The log tail: only with the server's capability; every 10 s while its step runs; dropped
   // (an empty selection) when the detail closes.
   resource nowLogData = nowLog(nowSel, nowPanelData.logStep, nowPanelData.logWorkflow, nowPanelData.logLive ? floor(clockMs / 10000) : 0, nowSel.startsWith("job:") and nowPanelData.logCap, nowPanelData.logFail) as shape NowLog else empty()

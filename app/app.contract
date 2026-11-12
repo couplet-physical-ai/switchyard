@@ -6,7 +6,7 @@ use NowView from "./views/now.contract"
 use FlowInspector from "./views/flow.contract"
 use F3Inspector from "./views/factory3.contract"
 use UpdatePill from "./views/update.contract"
-use Conn, Tok, Ack, Overview, Hit, Media, Time, Found, Link from "./views/shapes.contract"
+use Conn, Tok, Ack, Feed, Overview, Hit, Media, Time, Found, Link from "./views/shapes.contract"
 use WebReload from "./views/webreload.contract"
 use TokenCard from "./views/token.contract"
 
@@ -57,7 +57,10 @@ component App
   state draftToken = ""
   state gen = 0
   state tokGen = 0
+  // The clock: `clockMs` moves with every tick (the timers' second among them); `ovClock` only
+  // with the ticks that ask the overview (the busy pulse, a wake, the stream's frames, a tab).
   state clockMs = 0
+  state ovClock = 0
   state mode = "live"
   state speed = 1
   state q = ""
@@ -76,10 +79,19 @@ component App
   // fx-kc: asked again when the token's read fails or recovers (tokBad), not for each status
   derive tokBad = tok.status == "denied" or tok.status == "error"
   resource conn = connect(server, tok.ver, gen) with time.epochAtZero, time.utcOffset, tokBad as shape Conn else empty(ok=false, status="connecting", error="", seq=0, label="", kind="", needsSetup=false, signIn="")
-  resource feed = liveFeed(server, tok.ver, conn.seq, gen, conn.ok) as shape Ack else empty(ok=false, status="idle")
-  resource ov = overview(clockMs, conn.seq, conn.ok) as shape Overview else empty()
-  // (asked again when the query or the fleet changes; never on the clock)
-  resource found = search(q, ov.seq) as shape Found else empty(hits=[])
+  resource feed = liveFeed(server, tok.ver, conn.seq, gen, conn.ok) as shape Feed else empty(ok=false, status="idle", wake=0)
+  // (asked again by the clock only while busy (ov.pace 0) or at a wake; by the stream's frames
+  // through `fed`; by the view on top, and by the older floors being on top (the web's))
+  resource ov = overview(ovClock, conn.seq, conn.ok, ovTop) as shape Overview else empty()
+  // What the canvases and Live redraw on: ov.tick (what they show changed: the fleet, the view,
+  // the minute) and, while a shown timer runs (ov.pace 1), the second
+  derive rk = ov.pace == 1 ? ov.tick * 1000000 + floor(clockMs / 1000) % 1000000 : ov.tick
+  // the clock the timers' sources read while only the second ticks (else 0: ov's asks advance it)
+  derive tickMs = ov.pace == 1 ? clockMs : 0
+  // (asked again when the query changes or the palette opens; never on the clock, and not for each
+  // of the stream's frames while nothing shows it: its empty query sorts the whole fleet)
+  state palGen = 0
+  resource found = search(q, palGen) as shape Found else empty(hits=[])
   mutation ctl as shape Ack refreshes ov
   mutation replayed as shape Ack refreshes ov then afterReplay
   mutation hit as shape Hit refreshes ov then afterHit
@@ -135,6 +147,7 @@ component App
   derive headAgrees = ov.facHead != "" and ov.facHead == `${ov.red} red · ${ov.building} building · ${ov.queued} queued · ${ov.appsDown} down`
   // (the old floor's alone: asked only while it is on top; elsewhere it fetches nothing)
   derive facV1 = here == "factory" and not facV2 and not facV3
+  derive ovTop = (facV1 or facV2) ? `${here}~old` : here
   resource coffee = coffeeOpen(server, visits, conn.seq, conn.ok and facV1, facV1 ? ov.tick : 0) as shape Ack else empty(ok=false, status="")
   members "./views/now.contract"
   members "./views/flow.contract"
@@ -144,13 +157,31 @@ component App
   members "./views/hooks.contract"
 
   // The clock (mac-perf, "idle = still"): 4 times a second while something moves or plays
-  // (ov.pace 0: the demo, a replay, a change in the last 3 s); idle, once a second, only to see
-  // the stream's next frame and the clock turn. The canvases follow ov.tick, which moves only
-  // when what they show changed.
-  task pulse when ov.pace == 0
+  // (ov.pace 0: the demo, a replay, playing behind, the HUD, the older floors; and until the
+  // token file's connect is reported). While a timer on top runs (ov.pace 1), once a second,
+  // and that tick asks nothing but what shows a timer (rk, tickMs). Else no pulse at all: the
+  // stream's frames wake the clock (`fed`), and a few wakes a minute turn the minute (ages, hh:mm;
+  // a ladder of one-shot timers to the minute's turn, ov.wake; one second after a change, to
+  // see what it started).
+  derive tfWaits = tfUsed and not tfReported
+  task pulse when ov.pace == 0 or tfWaits
     every(250, tick)
-  task pulseIdle when ov.pace != 0
-    every(1000, tick)
+  task pulseSec when ov.pace == 1 and not tfWaits
+    every(1000, tickSec)
+  task fed when feed.wake > 0 key=`${feed.wake}`
+    after(30, tick)
+  task wake1 when ov.pace != 0 and ov.wake == 1 key=ov.wakeKey
+    after(1000, tick)
+  task wake2 when ov.pace != 0 and ov.wake == 2 key=ov.wakeKey
+    after(2000, tick)
+  task wake4 when ov.pace != 0 and ov.wake == 4 key=ov.wakeKey
+    after(4000, tick)
+  task wake8 when ov.pace != 0 and ov.wake == 8 key=ov.wakeKey
+    after(8000, tick)
+  task wake16 when ov.pace != 0 and ov.wake == 16 key=ov.wakeKey
+    after(16000, tick)
+  task wake32 when ov.pace != 0 and ov.wake == 32 key=ov.wakeKey
+    after(32000, tick)
   task tokWait when tokLoading and not tokSlow
     after(400, tokWaited)
   task tokCalm when tokSlow and not tokLoading and not tokRetrying
@@ -177,15 +208,21 @@ component App
     after(30000, retry)
   task steady when feed.status == "live" and retries > 0
     after(20000, steadyAgain)
-  // fab-lens: the coffee check's last visit
-  task coffeeLook when conn.ok and here == "factory" and not looking key=server
+  // fab-lens: the coffee check's last visit (the old floor's, /factory?v=1 on the web: the board
+  // and the Yard never show it, so they mark nothing each minute)
+  task coffeeLook when conn.ok and facV1 and not looking key=server
     after(20000, startLooking)
-  task coffeeAgain when looking and here == "factory" and visitTry > 0 key=`${visitTry}`
+  task coffeeAgain when looking and facV1 and visitTry > 0 key=`${visitTry}`
     after(60000, markVisit)
-  task coffeeLeave when looking and here != "factory"
+  task coffeeLeave when looking and not facV1
     after(1, leaveFactory)
 
   action tick
+    let t = performanceNow()
+    clockMs = t
+    ovClock = t
+  // a shown timer's second: the overview is not asked
+  action tickSec
     clockMs = performanceNow()
   action tokWaited
     tokSlow = true
@@ -227,11 +264,15 @@ component App
     if visitNow != ""
       visits = visitNow
       visitN = visitN + 1
+  // (a new view on top reads the clock now: the pulse may have been asleep)
   action follow(url: string)
+    tick()
     nav = go(nav, url)
   action back
+    tick()
     nav = back(nav)
   action goTo(name: string)
+    tick()
     nav = go(nav, name == "now" ? "/" : `/${name}`)
 
   // Time controls (DESIGN.md, "Time")
@@ -326,6 +367,7 @@ component App
   // ⌘K
   action openPalette
     q = ""
+    palGen = palGen + 1
     showModal("palette")
   action typed(v: string)
     q = v
@@ -436,11 +478,11 @@ component App
             // the marks and words (repainted only when they change) and the squares in transit.
             column flex=1 min-height=0 position="relative" testId="factory" key=f3Key outline="none" pointermove=f3Leave
               column position="absolute" inset=0 testId="factory-floor"
-                canvas surface=f3Board(f3Win, f3Sel, ov.mode, reduced, f3Dock, f3Over.label, ov.tick) position="absolute" left=0 top=0 width="100%" height="100%"
+                canvas surface=f3Board(f3Win, f3Sel, ov.mode, reduced, f3Dock, f3Over.label, rk) position="absolute" left=0 top=0 width="100%" height="100%"
                   tabindex=0 role="img" aria-label=ov.summary pointerup=f3Up pointermove=f3Move touch-action="none" testId="factory-live" outline="none" cursor=(f3Over.label != "" ? "pointer" : "default")
                   :focus-visible
                     box-shadow="inset 0 0 0 1px #A3A3A3"
-                canvas surface=f3Live(ov.tick) position="absolute" left=0 top=0 width="100%" height="100%" pointer-events="none" aria-hidden=true testId="factory-moving"
+                canvas surface=f3Live(rk) position="absolute" left=0 top=0 width="100%" height="100%" pointer-events="none" aria-hidden=true testId="factory-moving"
               if f3Dock
                 F3Inspector(d=f3D, log=f3L, close=f3Close)
               // the developer HUD (the status line's "hud"): what the board painted
@@ -512,8 +554,8 @@ component App
           if e.name == "yard"
             column flex=1 min-height=0 position="relative" testId="yard"
               canvas surface=yardStatic(ov.layoutKey, ov.stress) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-static"
-              canvas surface=yardInfo(ov.layoutKey, ov.tick) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-info"
-              canvas surface=yardLive(reduced ? "reduced" : "full", picked, ov.tick) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-live"
+              canvas surface=yardInfo(ov.layoutKey, rk) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-info"
+              canvas surface=yardLive(reduced ? "reduced" : "full", picked, rk) position="absolute" left=0 top=0 width="100%" height="100%" aria-hidden=true testId="yard-live"
               canvas surface=yardTop(ov.hud, hovAt) position="absolute" left=0 top=0 width="100%" height="100%"
                 role="img" aria-label=ov.summary pointerdown=pressYard pointermove=moveYard touch-action="none" testId="yard-top"
               // The dial is the replay: the canvas draws its face, this button is its words and its press.

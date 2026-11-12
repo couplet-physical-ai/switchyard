@@ -107,13 +107,18 @@ test "board: paused, no pixel changes"
   clock +1500 real
   tap "pause"
   clock data
-  clock +4000
-  clock +3000 real
-  // "ok" = neither canvas was painted for two seconds
+  clock +2000
+  clock +1000 real
+  // nothing shown ticks: the pulse stopped (no clock, no source asked, nothing redrawn)
+  expect state ov.pace == 2
+  // the HUD's numbers (asked 4 times a second while it shows): "ok" = neither canvas was
+  // painted for two seconds
+  tap "hud-toggle"
+  clock data
+  clock +3000
+  clock +2000 real
   expect state f3S.ok == true
   expect state f3S.status == "transits=0 live=0"
-  // and the clock slowed to its idle pulse (once a second): nothing moves
-  expect state ov.pace == 1
 
 test "board: a press on the bin's newest failure opens the inspector; Escape closes it"
   clock data

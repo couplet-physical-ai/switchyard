@@ -35,6 +35,13 @@ shape Ack
   ok: bool
   status: string
 
+// The live stream (app.ts `liveFeed`): `wake` moves when frames wait for a clock to be taken in
+// at (the pulse is asleep or slow): Contract ticks once for them (app.contract `fed`).
+shape Feed
+  ok: bool
+  status: string
+  wake: number
+
 shape Hit
   kind: string
   id: string
@@ -61,8 +68,12 @@ shape Overview
   seq: number
   // the canvases' redraw key: moves only when what they show changed (app.ts `redraw`)
   tick: number
-  // the pulse: 0 every 250 ms (something moves or plays), 1 every second (idle)
+  // the pulse: 0 every 250 ms (something moves or plays), 1 every second (a shown timer runs;
+  // the second is a key only: nothing is asked for it but what shows a timer), 2 none (idle)
   pace: number
+  // the next wake (seconds; 1-32, a ladder to the minute's turn) and its key (re-arms it)
+  wake: number
+  wakeKey: number
   host: string
   dial: string
   dialPad: number
