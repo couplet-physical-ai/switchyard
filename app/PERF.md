@@ -1004,3 +1004,74 @@ Busy CPU at 10×: the board 12.36 → 11.32 %, the Yard 24.59 → 23.41 %.
 - The macOS `tests/*.test.contract` suite on `81f4ba5`, on the mini after the A/B: every file
   0 failed (`suite rc=0`, 16 files, some tests skipped on macOS as marked).
 
+
+## Pass 7 (p7-text): Exact's Mac text pass asks only what a batch touched (exact-patches/0005, 2026-11-12)
+
+Branch `sy/mac-p7`, base `df6e18a` (pass 6, the 0.1.8 candidate). Brief: Live idle with timers
+≤ 1.5 % on the mini (better ≤ 1.0 %), with the patch tiny, macOS-host only, and the look unchanged.
+
+**The cost** (pass 6's mini profile, Live idle with three running timers, `sample` 10 s, 77
+non-waiting samples):
+- `Presenter.refreshVisibleText` was 23 of them, 30 % of the process.
+- Every batch with ops dropped the `TextViewportIndex`, so one timer text changing once a second
+  meant:
+  - rebuilding the index, a `convertRect` per shown paragraph of the page (5 samples);
+  - walking every paragraph within 1600 pt of the viewport.
+- Per paragraph, the walk asks `canRasterText` three times and `textIsSmall` once. That is four
+  `pixelScale` → `convertToBacking` transform walks (9 samples) and three `canvasAbove` ancestor
+  walks (4). For a small label, which is most of Live, every answer is "nothing to do".
+
+**The change** (`scripts/exact-patches/0005-mac-text-pass-touched-only.patch`; its header is the
+upstream write-up):
+- **Words-only batches.** A batch is words-only when every op is one of:
+  - a paragraph's runs;
+  - a `props` op that sets or clears only `text`, `title` or `accessibilityLabel` (a timer's
+    second is a `props text` op);
+  - an svg, CSS-animation, canvas2d or canvas-surface op.
+
+  Such a batch keeps the index and records the ids it touched, with their inline owners and text
+  ancestors (as `touched` walks them).
+- **After the batch,** `batchApplied` runs the same `refreshVisibleText(limit: 0)` with its
+  candidates filtered to those ids, keeping every other band. It does so only when all of these
+  hold:
+  - no text work is owed (`textPending`);
+  - no selection, capture, flight, exit, reader paragraph or scroll callback is involved;
+  - the index is `unmoved`: no NodeView or BlockView moved, resized, mounted or reparented since it
+    was built (a `NodeView.textGeometry` counter, as iOS's `TextIndexIOS.swift` has), and each
+    indexed document's `visibleRect` and `convertToBacking` unit are unchanged (no scroll at any
+    level, resize, zoom or display change).
+- **Anything else** gets the old full pass with a fresh index. Scroll callbacks, the pump,
+  `settlePump` and `topLayerChanged` are unchanged.
+- **Why the pixels are the same:**
+  - For an untouched paragraph, every input of the pass is as it was when the last pass settled
+    it. So the full pass would do nothing for it.
+  - Text work that arises between batches never waits for a later batch: an idle page has none.
+    Updates come from the display path (updateLayer/draw → ensure, requestTextPublication),
+    scroll callbacks or the pump.
+  - Touched paragraphs get exactly the old per-node treatment.
+- **The new XCTest class `TextTouchedMacTests`** (in the patch) checks:
+  - the new words' surface is shown;
+  - an untouched paragraph keeps its very IOSurface;
+  - a full pass afterwards finds nothing to do;
+  - a frame move, a page zoom and a mount each make the index stale.
+
+**Status: not yet measured.** The mini was reserved (sy-ship's 0.1.7 gate, then its soak) for the
+whole of p7's window, so nothing above is proven on macOS yet. Not even the build is.
+- **The kit:** `app/tools/p7/` runs the whole proof as one detached job:
+  - `kit.sh` clones head and base, and `p7-all.sh` makes two private Exact copies (0001–0005 and
+    0001–0004), builds both, and runs:
+    - the interleaved CPU batch: Live idle ABBA ×3, board and Yard idle, Live paused, busy 10×
+      Live, board and Yard, then one `sample` profile of each;
+    - the window server's pictures of a deterministic drive (the demo on the agent's clock: ticks,
+      a scroll, a held scroll and its release, a resize, new rows), head, base, base2 and head2;
+    - Exact's XCTests;
+    - the macOS suite.
+  - `collect.sh` judges the results; `cleanup.sh` removes everything it made.
+- **Pass criteria:**
+  - Live idle with timers ≤ 1.5 % (head mean);
+  - board and Yard idle no worse than base +0.15 pp;
+  - paused ≤ 0.2 %;
+  - busy fps no worse than base, and ≥ 59 on the board and the Yard;
+  - window pictures base vs head identical step by step, or differing only where base vs base2
+    does;
+  - the XCTests and the suite pass.

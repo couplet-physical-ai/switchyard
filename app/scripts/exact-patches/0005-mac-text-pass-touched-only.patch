@@ -45,10 +45,18 @@ added lazily for paragraphs that do not paint through bands; they are pruned by 
 pass and are not read meanwhile. Touched paragraphs get exactly the old per-node treatment
 (same order, same limit, same replaceVisible batching and wait).
 
-Verified (Switchyard sy/mac-p7, app/PERF.md "Pass 7"): Exact host XCTests of the text, scroll,
-zoom and split paths on macOS; macOS screenshots base vs head at the same agent-clock moments
-after timer ticks, a scroll of a long list, a resize and new rows: pixel-identical; `sample` and
-`ps` CPU of Live idle with timers, base vs head, interleaved on the mini. The web is untouched.
+Checks. TextTouchedMacTests (new, in this patch): after words-only batches the surface shows the
+new words, an untouched paragraph keeps its very IOSurface, and a full refreshVisibleText() run
+afterwards finds nothing to do; a frame move, a page zoom and a mount each make the index stale.
+The existing Mac classes of the text, scroll, zoom, split and table paths (PageZoomMacTests,
+PageScrollMacTests, InnerScrollMacTests, TextParityMacTests, TextSelectionMacTests,
+TextDecorationMacTests, PixelGridMacTests, PaintCaptureMacTests, SplitMacTests, SheetHostMacTests,
+TableFeedMacTests, CollectionMacTests, AgentStickyRevealMacTests, ScrollAnchoringMacTests,
+OwnerScrollMacTests, BoxFilterTests, PressWashMacTests, HeldStateTests, HDRColorTests, ...). A real
+app (Switchyard's Live tab: dozens of 1 s timers over a long list), base vs head: the window
+server's pictures at the same agent-clock moments after ticks, a held scroll, a release, a resize
+and new rows; and the idle tab's CPU, interleaved. The kit is Switchyard's app/tools/p7/; the
+results are in app/PERF.md, pass 7. The web is untouched.
 
 diff --git a/host/apple/Sources/ExactKit/Mac/BlockHostMac.swift b/host/apple/Sources/ExactKit/Mac/BlockHostMac.swift
 index e4835240..2cd32108 100644
