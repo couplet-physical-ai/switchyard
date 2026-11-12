@@ -1,31 +1,60 @@
 # Changelog
 
-This page lists tagged releases newest first, from `v0.1.7` back to `v0.0.1`. Dates are tag dates. Short commit IDs identify changes in the public repository.
+This page lists tagged releases newest first, from `v0.1.8` back to `v0.0.1`. Dates are tag dates. Short commit IDs identify changes in the public repository.
 
-## Unreleased
+## v0.1.8
 
-<!-- PENDING: 0.1.8 / 0.1.9 -->
+<!-- PENDING: 0.1.8 tag date (tagged after the release soak) -->
 
-No commits newer than `v0.1.7` are present on `main`. The listed untagged changes are on `origin/sy/mac-p6` and `origin/sy/retire`; the retirement branch includes the macOS performance work.
+**Date:** 2026-11-12 (release candidate; the tag follows the release soak)
+
+*Theme: The last performance pass: one Factory, a quieter Live, and no stale runs.*
+
+This is the final planned performance release of the macOS app. What remains on the Yard's
+busy frames is in Exact's runtime, not the app ([why](performance/releases.md#why-the-yard-is-not-a-steady-17-ms-p99)).
 
 **Views**
 
-- On `origin/sy/retire`, every `/factory?v=…` route now opens the berth board. The earlier isometric floor and square swarm are retired. (`c1626f0`)
+- Every `/factory?v=…` route opens the berth board on every host. The isometric floor (`?v=1`) and the square swarm (`?v=2`) are retired, about 25,500 lines with their tests and tools, and with them the day replay, whose only controls were on those floors. The board keeps its own hour replay and time controls. (`c1626f0`, `23dd186`)
+- Live no longer shows a push to a repository without CI as a waiting row, and the Yard's engine header counts each slot once (28 → 16 on the live fleet). (`0a02dd2`)
 
 **macOS**
 
-- On `origin/sy/mac-p6` and `origin/sy/retire`, the Factory board and Yard information layer keep clipped, static painting on the Core Graphics path instead of asking the host to record each frame. (`5a3001c`)
+- Exact patch 0005: after a batch that only changes words (a timer's second), the macOS host refreshes only the paragraphs that batch touched. Live idle with timers 1.86 → 1.44 % CPU, busy Live at 10× 16.5 → 13.9 %, 0 of 1,370,880 pixels different. ([Exact patches](performance/exact-patches.md); `7a4c7fa`, `4c4cf53`)
+- The Factory board and the Yard's information layer stay on Core Graphics, with whole clears clipped, so Core Animation never records them while they animate. (`5a3001c`)
+- A `switchyard://view/…` link that arrives while the fleet is still connecting switches the tab instead of leaving the app on the connect screen. (`5eb7aa5`)
 
 **Performance**
 
-- On `origin/sy/mac-p6` and `origin/sy/retire`, Live keeps its displayed rows and sends only changed timer fields; the Factory and Yard progress rings fill by device pixel. (`81f4ba5`, `a9ae29c`)
-- The performance report adds an interleaved comparison of idle and ticking views. (`df6e18a`)
+- Live keeps its displayed rows by identity and its one-second answer shrinks from 8.5 KB to 4.5 KB; that answer is no longer written to disk every second. The first feed lands four rows at a time, so the connect's longest frame falls from 96–192 ms to 14.5–15 ms. (`81f4ba5`)
+- Progress rings fill in whole device pixels, so a still ring redraws every few seconds rather than every second. (`a9ae29c`)
+- Idle with timers: Factory 1.81 → 1.25 %, Yard 1.41 → 0.89 %. ([Numbers per release](performance/releases.md))
 
-## v0.1.7 (pre-release)
+**Fixes**
+
+- After a server reset, the app refetches the fleet even when the next frame arrives first. The refetch used to be disarmed by that frame, so later deltas landed on a stale fleet and removed runs stayed forever. A stream reopened after a drop checks which server process answers and refetches after a restart. ([post-mortem](../reports/incidents/2026-11-12-phantom-and-stale-data.md); `0a02dd2`, `ad702e9`)
+
+**Server**
+
+- During a warm boot, runs, running deploys, engines and the queue update live, and `/snapshot` follows them; a run that finishes during the boot no longer stays "running" until the boot settles. (`9bb1679`, `03a3e12`)
+- A client resuming at or before the sequence a restarted server began from is reset. (`a65ad31`)
+- Woodpecker pipelines created and then deleted for want of a matching workflow no longer sit in the waiting column. (`b23b922`)
+- Main lines read each red commit's own checks, so CodeQL, Dependabot and pull-request runs no longer turn a main line red (24 → 12 red on the live fleet). A manual redeploy that passes supersedes a failed push deploy. (`f95db94`, `6b6135b`, `844f290`)
+
+**Release and docs**
+
+- The release soak gates on least-squares slopes and the post-collection heap floor, not on two samples. (`c4fefdc`, `9253bff`)
+- A headless 60-minute trace of Live's retained heap against the live fleet: Live's own share grows about 0.004 MB/min, so the earlier "creep" was collection noise. (`19d52f3`)
+- The Exact issue write-up on macOS frame waits, [`app/upstream/exact-macos-frame-waits.md`](https://github.com/couplet-physical-ai/switchyard/blob/main/app/upstream/exact-macos-frame-waits.md). (`f9ccec6`)
+- This documentation site.
+
+## v0.1.7
 
 **Date:** 2026-11-12
 
 *Theme: Keep the board smooth when many runs move at once.*
+
+Published as a pre-release, then promoted to Latest after a fresh 45-minute soak (15 minutes on each tab) under the slope gate (`c4fefdc`).
 
 **macOS**
 

@@ -69,8 +69,10 @@ The full language and its history: [Design language](reference/design.md) and
 - [Developing](guides/developing.md): toolchain, the mock server, tests.
 - [Deploying and operating](guides/deploying.md): CI, the deploy, restarts and warm boot.
 - [Releasing the macOS app](guides/releasing.md): gated prerelease, update test, soak, promote.
-- [Performance](reference/performance/index.md): how it is measured and every pass so far.
+- [Performance](reference/performance/index.md): how it is measured and every pass.
 - [Changelog](reference/changelog.md).
+- Post-mortems: [macOS out of memory](reports/incidents/2026-11-11-macos-oom.md) (0.1.3/0.1.4),
+  [phantom and stale data](reports/incidents/2026-11-12-phantom-and-stale-data.md).
 
 The source is public: [couplet-physical-ai/switchyard](https://github.com/couplet-physical-ai/switchyard)
 (MIT).

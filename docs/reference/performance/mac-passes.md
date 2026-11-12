@@ -1,6 +1,6 @@
 # macOS performance passes
 
-This is the ordered pass record through pass 6, the latest measured pass in [`app/PERF.md` at `df6e18a`](https://github.com/couplet-physical-ai/switchyard/blob/df6e18a/app/PERF.md). Numbers are conditional on the stated Mac mini, workload, load, and window; a CPU percentage from an idle tab is not a frame-time measurement.
+This is the ordered pass record through pass 7, the last pass, in [`app/PERF.md`](https://github.com/couplet-physical-ai/switchyard/blob/main/app/PERF.md). All seven passes ship by 0.1.8, the final planned performance release. Numbers are conditional on the stated Mac mini, workload, load, and window; a CPU percentage from an idle tab is not a frame-time measurement.
 
 ## Summary
 
@@ -13,7 +13,7 @@ This is the ordered pass record through pass 6, the latest measured pass in [`ap
 | 5 — Yard | 2026-11-12 | Shrink recurring sort, paint, and recorder work | Clean mini pair: late work 4.9% to 3.1%; work p99 moved from 24–48 ms to 21.5–22 ms. |
 | 5 — Factory board | 2026-11-12 | Claim the GPU once and repaint changed marks | Busy board improved from 55.6 fps (one window 42.1) to 59.4–59.7 fps; recorded replays fell to 0/s. |
 | 6 — idle | 2026-11-12 | Keep timer-only canvases on Core Graphics and reduce Live's timer payload | Idle Factory 1.81/1.70% to 1.25/1.23%; Yard 1.41% to 0.89%; Live stayed about 1.85%. |
-| 7 — touched-text follow-up | 2026-11-12 | Limit macOS text refresh to paragraphs touched by safe words-only batches | Pre-change `refreshVisibleText` was 30% of Live's idle process samples; no post-change mini CPU number is recorded. |
+| 7 — touched text (Exact patch 0005) | 2026-11-12 | Limit macOS text refresh to paragraphs touched by safe words-only batches | Live idle with timers 1.86% to 1.44%; busy Live at 10× 16.5% to 13.9% CPU; 0 pixels differ. |
 
 The first source calls the initial work the `idle` pass, not “pass 1”; it is listed first because the source labels its follow-up “idle pass 2.” The heap-cap and OOM work predates this sequence and is covered in the [incident report](../../reports/incidents/2026-11-11-macos-oom.md).
 
@@ -85,12 +85,24 @@ The first source calls the initial work the `idle` pass, not “pass 1”; it is
 
 **Changes.** [`5a3001c`](https://github.com/couplet-physical-ai/switchyard/commit/5a3001c) kept the board and Yard info canvases on Core Graphics and left the moving board layer on GPU; `boardAt` now asks only for values that can change on a second. [`a9ae29c`](https://github.com/couplet-physical-ai/switchyard/commit/a9ae29c) quantized progress rings to visible device pixels. [`81f4ba5`](https://github.com/couplet-physical-ai/switchyard/commit/81f4ba5) kept unchanged Live rows by identity, reduced the timer answer from 543 values / 8.5 KB to 250 / 4.5 KB, and made it independent of the persistent store so it was not written each second. The first Live feed was also applied in small groups of four rows every 40 ms instead of one +1,367-view batch.
 
-**Proof.** Interleaved mini idle windows with three visible timers had 0 canvas frames in every tab. Factory CPU fell from 1.81/1.70% to 1.25/1.23%; Yard from 1.41% to 0.89%. Live stayed at 1.86/1.84% from a base of 1.81/2.18%, so the 1.5% target was not met. Paused Live was 0.11% with 0 frames. At 10×, Factory held 59.69 fps and Yard 59.54 fps; the Live connect hitch's maximum work fell from 96–192 ms to 14.5–15 ms. The follow-up host optimization is documented as Exact patch 0005; its mini performance result is not in the pass-6 record.
+**Proof.** Interleaved mini idle windows with three visible timers had 0 canvas frames in every tab. Factory CPU fell from 1.81/1.70% to 1.25/1.23%; Yard from 1.41% to 0.89%. Live stayed at 1.86/1.84% from a base of 1.81/2.18%, so the 1.5% target was not met. Paused Live was 0.11% with 0 frames. At 10×, Factory held 59.69 fps and Yard 59.54 fps; the Live connect hitch's maximum work fell from 96–192 ms to 14.5–15 ms. The remaining Live cost was Exact's text pass; pass 7 addresses it with Exact patch 0005.
 
-## Pass 7 — touched-text host pass (unmeasured)
+## Pass 7 — touched-text host pass
 
-**Symptom and profile evidence.** The pass-6 Live-idle sample with three running timers found `Presenter.refreshVisibleText` in 23 of 77 non-waiting process samples (about 30% of the total process). Each batch walked every text candidate near the viewport and repeated text-scale/geometry checks even when it changed only one timer label.
+**Symptom and profile evidence.** Pass 6 left Live idle with timers at about 1.85%, above the 1.5% target. Its Live-idle sample with three running timers found `Presenter.refreshVisibleText` in 23 of 77 non-waiting process samples (about 30% of the process). Every batch with operations dropped the text viewport index, so one timer label changing once a second rebuilt the index (a `convertRect` per shown paragraph) and walked every paragraph within 1,600 points of the viewport, asking four backing-scale and three ancestor questions of each. For a small label, which is most of Live, every answer was "nothing to do".
 
-**Change.** [`7a4c7fa`](https://github.com/couplet-physical-ai/switchyard/commit/7a4c7fa) adds Exact patch 0005. For a words-only batch, the macOS presenter refreshes only touched paragraphs when no text work is pending and geometry, scroll, scale, selection, and capture state are unchanged. Other batches keep the full refresh path. See [Exact patches](exact-patches.md).
+**Change.** [`7a4c7fa`](https://github.com/couplet-physical-ai/switchyard/commit/7a4c7fa) adds Exact patch 0005. A batch is words-only when every operation sets a paragraph's runs, sets or clears only `text`, `title` or `accessibilityLabel`, or repaints an svg, animation or canvas. After such a batch the macOS presenter keeps the index and refreshes only the touched paragraphs, provided no text work is owed and no view moved, resized, mounted or reparented, and no document scrolled or changed scale since the index was built. Every other batch takes the full pass as before. See [Exact patches](exact-patches.md).
 
-**Proof and limit.** `TextTouchedMacTests` checks that changed words appear, untouched paragraph surfaces are reused, a full refresh has no remaining work, and move/zoom/mount invalidate the index. The p7 work brief did not record a post-patch mini CPU A/B; the 30% figure is a pre-change profile, not an improvement result. Treat pass 7 as correctness-tested but not yet performance-proven.
+**Proof.** [`4c4cf53`](https://github.com/couplet-physical-ai/switchyard/commit/4c4cf53) records the mini run (quiet, load 1.1–2.3, interleaved dev builds, 56–57 s windows; head = pass 6 plus 0005, base = pass 6):
+
+| | Base | Head |
+|---|---|---|
+| Live idle, timers ticking (ABBA ×3) | 1.66, 2.05, 1.88 → **1.86%** | 1.43, 1.40, 1.48 → **1.44%** |
+| Board idle, timers | 1.42% | 1.40% |
+| Yard idle, timers | 0.89% | 0.89% |
+| Live paused (×3, 0 frames both) | 0.23% mean | 0.19% mean |
+| Live busy 10×, CPU | 16.46% | 13.90% |
+| Board busy 10× (×2) | 59.38 / 59.39 fps | 58.81 / 59.38 fps |
+| Yard busy 10× (×2) | 59.30 / 59.22 fps | 59.45 / 59.36 fps |
+
+The Live-idle profile went from 5 `refreshVisibleText` samples to 0 and from 38 to 20 active main-thread samples. Window-server pictures of a deterministic drive (start, two timer ticks, a scroll, a tick after it) differed in **0 of 1,370,880 pixels** base vs head, and base vs a second base, at every step. The drive stopped at a held wheel scroll, which the mini's terminal could not post; held scroll, resize and new rows take the full pass, which `TextTouchedMacTests` (2/2) covers. Of Exact's 23 XCTest classes only `PixelGridMacTests` failed, the same way on base (the mini drives a 1× display). The macOS suite passed 38/0. Verdict: 0005 passes and ships in 0.1.8.

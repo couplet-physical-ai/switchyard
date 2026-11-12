@@ -1,6 +1,6 @@
 # Performance
 
-This page is the short route from a question to a repeatable Switchyard measurement. The current Mac pass record is [`app/PERF.md` at pass 6](https://github.com/couplet-physical-ai/switchyard/blob/df6e18a/app/PERF.md); the pages here explain the method and preserve release evidence.
+This page is the short route from a question to a repeatable Switchyard measurement. The Mac pass record is [`app/PERF.md`](https://github.com/couplet-physical-ai/switchyard/blob/main/app/PERF.md) (passes 1–7, the last in 0.1.8); the pages here explain the method and preserve release evidence.
 
 ## Pick the right host
 

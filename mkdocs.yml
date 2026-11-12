@@ -41,4 +41,5 @@ nav:
   - Decisions:
       - "0001 The Factory is the berth board": decisions/0001-the-factory-is-the-berth-board.md
   - Reports:
+      - "2026-11-12 Phantom and stale data": reports/incidents/2026-11-12-phantom-and-stale-data.md
       - "2026-11-11 macOS out of memory": reports/incidents/2026-11-11-macos-oom.md

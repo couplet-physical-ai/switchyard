@@ -29,7 +29,9 @@ Then run the live end-to-end checks against the deployed service. Confirm that a
 
 ## Restarts and warm boot
 
-After a process restart, the server loads the last recorded fleet state and serves it while upstream adapters rebuild the in-memory store. During this period `GET /api/v1/meta` reports `booting: true`. A normal rebuild takes about six minutes; counts remain at the last known state rather than falling to a partial backfill. When the adapters settle, the server publishes the difference to the rebuilt state in one delta and clears `booting`.
+After a process restart, the server loads the last recorded fleet state and serves it while upstream adapters rebuild the in-memory store. During this period `GET /api/v1/meta` reports `booting: true`. A normal rebuild takes about six minutes; counts remain at the last known state rather than falling to a partial backfill. Runs, running deploys, engines, and the queue keep updating during the boot, so a run that finishes then shows finished within seconds. When the adapters settle, the server publishes the difference to the rebuilt state in one delta and clears `booting`.
+
+Every deploy restarts the server, so every connected client is reset once: a client that resumes the stream at or before the sequence the new process started from (`boot_seq`) gets a reset and refetches the snapshot. Clients reconnect on their own; a brief "catching up" after a deploy is expected. Time deploys away from a macOS release soak, which measures a client connected to the live server.
 
 Do not treat `booting: true` by itself as a failed deployment. Check adapter status in `meta`, allow the startup backfill to settle, and confirm that `booting` clears. A failed or degraded adapter should be investigated separately from the service rollout.
 
@@ -43,3 +45,4 @@ To roll back, deploy a previously verified Switchyard commit through the same de
 - `gh run` shows GitHub Actions, including macOS releases, but not Roadrunner builds. Use `gh rr` for Roadrunner status and logs.
 - Path filters prevent unrelated builds: a client-only change does not rebuild the Rust server, while a `contract/` change affects server, client, and contract validation.
 - During warm boot, compare metadata and adapter status rather than interpreting a temporary change in the state display as a completed deployment.
+- A run shown as running long after it finished, or a pipeline waiting with nothing behind it, is a bug, not warm-boot behavior: compare `/api/v1/snapshot` with the upstream. The [stale-data post-mortem](../reports/incidents/2026-11-12-phantom-and-stale-data.md) lists the causes found so far.

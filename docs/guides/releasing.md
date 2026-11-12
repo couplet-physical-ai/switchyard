@@ -29,6 +29,17 @@ A gated release is published as a prerelease. GitHub's stable `latest` feed and 
 
 The soak checks that the app remains alive, no new crash report appears, RSS and JavaScript heap plateau, and each view stays within its memory gates. The Yard must draw frames. The heap line is required because RSS alone can miss growth inside Hermes. A borderline or failed soak remains a prerelease; do not promote it.
 
+A garbage-collected heap is a sawtooth: it moves about 2 MB a minute without leaking, so two samples a few minutes apart prove nothing (0.1.7's first soak was flagged that way and passed a rerun). Since `c4fefdc` each view segment of at least 15 minutes is judged on every sample:
+
+| Check | Limit | Why |
+|---|---|---|
+| External-memory slope (least squares) | ≤ +0.05 MB/min | The primary leak signal: the 0.1.3/0.1.4 crash grew it about 9 MB/min. |
+| Heap slope (least squares) | ≤ +0.3 MB/min | Uses every sample, not two. |
+| Heap half-means | second half ≤ first half + 1.5 MB | Robust to the sawtooth. |
+| Live creep on the post-collection floor (each minute's lowest heap) | slope ≤ +0.1 MB/min, or half-means ≤ +1 MB | Slow creep where nothing redraws. |
+
+The full rationale, with the numbers from 0.1.6 and 0.1.7, is in `packaging/RELEASING.md`.
+
 After promotion, `--promote` makes the candidate the stable Latest release and starts the tap bump. The stable update feed then points to it, and a fresh Homebrew install receives the new cask.
 
 ## Signing and downloads
