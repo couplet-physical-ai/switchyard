@@ -17,6 +17,8 @@ import { bindInsights } from './src/insights.ts';
 import { search } from './src/project.ts';
 import { nowSources } from './src/now/view.ts';
 import { FlowFloor } from './src/flowfloor/floor.ts';
+import { Board3 } from './src/factory3/board.ts';
+import { NO_F3, f3Detail, tidyLog } from './src/factory3/inspect.ts';
 import { detailOf, logOf, NO_DETAIL } from './src/flowfloor/inspect.ts';
 import { logHeap } from './src/memlog.ts';
 import { nextChunkMs, replaySizing, Timeline } from './src/timeline.ts';
@@ -172,6 +174,8 @@ const yard = new Yard(tl);
 const factory = new Factory(tl);
 /** The Factory redo (ZERO.md "FACTORY REDO", src/flowfloor/): one fixed, fitted line of work. */
 const flow = new FlowFloor();
+/** Factory 3 (FACTORY3.md, src/factory3/): the berth board, at /factory?v=3. */
+const f3 = new Board3();
 factory.hud = yard.hud;
 /** Stress mode (a 10× synthetic fleet for the renderers): one switch for the yard and the floor. */
 let stressOn = false;
@@ -572,6 +576,17 @@ export const sources: Sources = {
   },
   flowDetail: ([id]) => safe('flowDetail', NO_DETAIL, () => detailOf(tl.world, String(id ?? ''), tl.playhead)),
   flowLog: ([id, step, workflow, tick, failed]) => logOf(up, String(id ?? ''), String(step ?? ''), String(workflow ?? ''), Number(tick) || 0, !!failed),
+  // Factory 3: a press on the board, the inspector's detail (its log is flowLog's)
+  f3Pick: ([x, y]) => {
+    const h = f3.pick(Number(x), Number(y));
+    return { kind: h?.kind ?? '', id: h?.id ?? '', label: h ? `${h.x},${h.y},${h.w},${h.h}` : '', route: h?.url ?? '' };
+  },
+  f3Detail: ([kind, id]) => safe('f3Detail', NO_F3, () => f3Detail(tl.world, String(kind ?? ''), String(id ?? ''), tl.playhead, f3.where)),
+  f3Log: ([id, step, workflow, tick, failed]) => {
+    const v = logOf(up, String(id ?? ''), String(step ?? ''), String(workflow ?? ''), Number(tick) || 0, !!failed);
+    return v instanceof Promise ? v.then(tidyLog) : tidyLog(v);
+  },
+  f3Stats: () => ({ ok: f3.still, status: f3.statsLine() }),
   webVersion: () => webVersion(),
   parseLink: ([u, server, token]) => parseLink(u, server, token),
   // SWITCHYARD_TOKEN_FILE (macOS, env only; src/hooks.ts): the token, once, through parseLink.
@@ -761,7 +776,7 @@ export const answer: Answer = ((source: keyof Sources, args: unknown, store: Sto
 
 // ---- canvases ------------------------------------------------------------------------------
 /** Surface → its arity (Contract passes that many arguments). */
-export const surfaces: Record<string, number> = { factoryFloor: 3, factoryLive: 4, factoryTop: 4 /* fab-w7 */, flowFloor: 5, yardStatic: 2, yardInfo: 2, yardLive: 3, yardTop: 2 };
+export const surfaces: Record<string, number> = { factoryFloor: 3, factoryLive: 4, factoryTop: 4 /* fab-w7 */, flowFloor: 5, f3Board: 6, f3Live: 1, yardStatic: 2, yardInfo: 2, yardLive: 3, yardTop: 2 };
 
 /** The route on top (`viewOnTop`). The yard stays mounted under every other view; its live
  *  layer animating there cost 3-4× the ops of the view on top. Covered, it is not drawn (the
@@ -773,7 +788,7 @@ export function draw(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
   // Covered, the floor's live layer sleeps; the 250 ms tick (a surface argument) wakes it when
   // it is on top again.
   if ((surface === 'factoryLive' || surface === 'factoryTop' /* fab-w7 */) && topView !== '' && topView !== 'factory') return false;
-  if (surface === 'flowFloor' && topView !== '' && topView !== 'factory') return false;
+  if ((surface === 'flowFloor' || surface === 'f3Board' || surface === 'f3Live') && topView !== '' && topView !== 'factory') return false;
   try {
     return drawSurface(surface, args, ctx, frame);
   } catch (e) {
@@ -794,6 +809,11 @@ function drawSurface(surface: string, args: unknown[], ctx: Ctx2D, frame: Frame)
     advance(frame.time, false);
     return flow.draw(ctx, frame, tl.world, tl.playhead, { win: String(args[0] ?? '30m'), sel: String(args[1] ?? ''), mode: String(args[2] ?? 'live'), reduced: !!args[3] });
   }
+  if (surface === 'f3Board') {
+    advance(frame.time, false);
+    return f3.drawBoard(ctx, frame, tl.world, tl.playhead, { win: String(args[0] ?? '30m'), sel: String(args[1] ?? ''), mode: String(args[2] ?? 'live'), reduced: !!args[3], dock: !!args[4], hov: String(args[5] ?? '') });
+  }
+  if (surface === 'f3Live') return f3.drawLive(ctx, frame);
   if (surface === 'factoryFloor') {
     advance(frame.time, false);
     factory.wheel(Number(args[2]) || 0);

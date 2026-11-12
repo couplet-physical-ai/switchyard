@@ -1,0 +1,206 @@
+// Factory 3, "the berth board", at /factory?v=3 (FACTORY3.md; views/factory3.contract,
+// src/factory3/): six stations in flow order, the ledger of events under them, the FAILED bin's
+// window, the inspector docked over the ledger. /factory and /factory?v=1 keep their own floors
+// (tests/factory-v2.test.contract, tests/factory.test.contract).
+// A press on the board is a real pointer gesture at a point in the canvas (`drag 1 0 from x y`
+// presses, moves one point and lets go: a click). The points are the recorded fleet's
+// (contract/fixtures, frozen) at 1440×900; the app logs them (`factory3: newest failed … x,y`,
+// `factory3: window 2h at x,y`, `factory3: newest red … x,y`).
+// Stillness: tools/factory3.test.ts proves it on the draw list (a fleet with no work running
+// gives the same frame from one second to the next, and nothing in transit); here the moving
+// layer is read through `f3S` (how many transits the board ever started, how often the moving
+// layer painted).
+
+size 1440x900
+
+test "board: v=3 keeps a board behind the setup card"
+  clock data
+  type "root" "/factory?v=3"
+  clock settle
+  expect state here == "factory"
+  expect state facV3 == true
+  expect state facV2 == false
+  expect tree has "factory-floor"
+  expect tree has "factory-live"
+  expect tree has "factory-moving"
+  expect tree has "setup"
+  expect tree missing "f3-inspector"
+  expect text "tab-factory" == "Factory"
+
+test "board: /factory and /factory?v=1 are not the board"
+  clock data
+  type "root" "/factory"
+  clock settle
+  expect state facV3 == false
+  expect state facV2 == true
+  expect tree missing "factory-moving"
+  type "root" "/factory?v=1"
+  clock settle
+  expect state facV3 == false
+  expect state facV2 == false
+  expect tree missing "factory-moving"
+
+test "board: the demo fills it; the failed bin's window starts at 30 minutes"
+  clock data
+  type "root" "/factory?v=3"
+  clock settle
+  tap "setup-demo"
+  clock data
+  clock +1000
+  clock +1500 real
+  expect tree missing "setup"
+  expect state ov.status == "ready"
+  expect state f3Win == "30m"
+  expect state f3Sel == ""
+  expect tree has "replay"
+  expect tree missing "f3-inspector"
+
+test "board: on a fleet where nothing changes, nothing ever travels"
+  clock data
+  type "root" "/factory?v=3"
+  clock settle
+  tap "setup-connect"
+  clock settle
+  type "server-field" "fixtures"
+  tap "settings-save"
+  clock data
+  clock +1000
+  clock +1500 real
+  expect state conn.ok == true
+  expect state ov.repos == 394
+  clock +4000
+  clock +1500 real
+  // no transit was ever started and the moving layer never painted
+  expect state f3S.status == "transits=0 live=0"
+
+test "board: paused, no pixel changes"
+  clock data
+  type "root" "/factory?v=3"
+  clock settle
+  tap "setup-connect"
+  clock settle
+  type "server-field" "fixtures"
+  tap "settings-save"
+  clock data
+  clock +1000
+  clock +1500 real
+  tap "pause"
+  clock data
+  clock +4000
+  clock +3000 real
+  // "ok" = neither canvas was painted for two seconds
+  expect state f3S.ok == true
+  expect state f3S.status == "transits=0 live=0"
+
+test "board: a press on the bin's newest failure opens the inspector; Escape closes it"
+  clock data
+  type "root" "/factory?v=3"
+  clock settle
+  tap "setup-connect"
+  clock settle
+  type "server-field" "fixtures"
+  tap "settings-save"
+  clock data
+  clock +1000
+  clock +1500 real
+  tap "factory-live" drag 1 0 from 679 210 mouse
+  clock data
+  clock +500
+  expect state f3Kind == "run"
+  expect state f3Dock == true
+  expect state f3D.kind == "run"
+  expect state f3D.state == "fail"
+  expect state f3D.logFail == true
+  expect tree has "f3-inspector"
+  expect tree has "f3-link-rr"
+  expect tree has "f3-link-commit"
+  type "factory" key "Escape"
+  clock data
+  expect state f3Sel == ""
+  expect tree missing "f3-inspector"
+
+test "board: the same press again closes; close closes"
+  clock data
+  type "root" "/factory?v=3"
+  clock settle
+  tap "setup-connect"
+  clock settle
+  type "server-field" "fixtures"
+  tap "settings-save"
+  clock data
+  clock +1000
+  clock +1500 real
+  tap "factory-live" drag 1 0 from 679 210 mouse
+  clock data
+  clock +500
+  expect tree has "f3-inspector"
+  tap "factory-live" drag 1 0 from 679 210 mouse
+  clock data
+  clock +500
+  expect state f3Sel == ""
+  expect tree missing "f3-inspector"
+  tap "factory-live" drag 1 0 from 679 210 mouse
+  clock data
+  clock +500
+  expect tree has "f3-inspector"
+  tap "f3-close"
+  clock data
+  expect tree missing "f3-inspector"
+
+test "board: a window chip sets the failed bin's window"
+  clock data
+  type "root" "/factory?v=3"
+  clock settle
+  tap "setup-connect"
+  clock settle
+  type "server-field" "fixtures"
+  tap "settings-save"
+  clock data
+  clock +1000
+  clock +1500 real
+  expect state f3Win == "30m"
+  tap "factory-live" drag 1 0 from 729 180 mouse
+  clock data
+  clock +500
+  expect state f3Win == "2h"
+  expect state f3Sel == ""
+
+test "board: a red main line opens as a main line, with its links"
+  clock data
+  type "root" "/factory?v=3"
+  clock settle
+  tap "setup-connect"
+  clock settle
+  type "server-field" "fixtures"
+  tap "settings-save"
+  clock data
+  clock +1000
+  clock +1500 real
+  tap "factory-live" drag 1 0 from 899 133 mouse
+  clock data
+  clock +500
+  expect state f3Kind == "repo"
+  expect state f3Sel == "Northwind-Labs/hollow-relay"
+  expect state f3D.state == "fail"
+  expect text "f3-name" == "hollow-relay"
+  expect tree has "f3-link-github"
+
+test "board: the tabs leave and come back; a Live deep link leaves the Factory"
+  clock data
+  type "root" "/factory?v=3"
+  clock settle
+  tap "setup-demo"
+  clock data
+  tap "tab-yard"
+  clock settle
+  expect state here == "yard"
+  expect tree has "yard-live"
+  type "root" "/factory?v=3"
+  clock settle
+  clock +500
+  clock +1000 real
+  expect state here == "factory"
+  expect tree has "factory-moving"
+  type "root" "/?repo=Northwind-Labs%2Fcicd"
+  clock settle
+  expect state here == "now"
