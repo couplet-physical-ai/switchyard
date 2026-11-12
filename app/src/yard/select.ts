@@ -71,14 +71,19 @@ export function queueTruth(w: World): QueueTruth {
   let rrN = 0, ghaN = 0, oldestAt = 0;
   for (const q of w.queues.values()) {
     const lane = q.id === 'gha' ? gha : rr;
+    // A listed id the world no longer holds (removed), or holds finished, waits for nothing: it
+    // is not counted, even while the queue's own `pending` still does (the server patches the
+    // queue apart from the pipeline; Felipe's phantoms).
+    let stale = 0, listed = 0;
     for (const id of q.items ?? []) {
       const p = w.pipelines.get(id);
-      if (!p || ids.has(id)) continue;
-      if (p.state !== 'running' && p.state !== 'pending' && p.state !== 'blocked') continue;
+      if (ids.has(id)) continue;
+      if (!p || (p.state !== 'running' && p.state !== 'pending' && p.state !== 'blocked')) { stale++; continue; }
       ids.add(id);
       lane.push(p);
+      listed++;
     }
-    const n = Math.max(q.pending ?? 0, q.items?.length ?? 0);
+    const n = Math.max((q.pending ?? 0) - stale, listed);
     if (q.id === 'gha') ghaN += n; else rrN += n;
     if (q.oldest_wait_ms > 0 && (q.pending ?? 0) > 0) {
       const at = w.at - q.oldest_wait_ms;

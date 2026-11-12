@@ -248,8 +248,8 @@ function hostOrder(h: string): number {
 
 function engIndex(w: World): EngIndex {
   const hit = engCache.get(w);
-  // Engines are all this index reads (World.kv.engine bumps on every engine change; a load bumps all).
-  const ver = w.kv.engine;
+  // Engines, and whether the runs they name still run (World.kv bumps on every change; a load bumps all).
+  const ver = w.kv.engine * 100003 + w.kv.pipeline;
   if (hit && hit.ver === ver) return hit;
   const byName = new Map<string, Engine>();
   const hosts = new Map<string, HostAgg>();
@@ -274,7 +274,11 @@ function engIndex(w: World): EngIndex {
     let base = 0;
     for (const e of h.agents) {
       h.slots += e.slots ?? 0;
-      h.busy += e.busy ?? 0;
+      // A run the engine still names but the world removed (or holds finished) holds no slot,
+      // even before the server patches the engine (Felipe's phantoms).
+      let gone = 0;
+      for (const pid of e.running ?? []) { const p = w.pipelines.get(pid); if (!p || p.state !== 'running') gone++; }
+      h.busy += Math.max(0, (e.busy ?? 0) - gone);
       (e.running ?? []).forEach((pid, i) => { if (!slotOf.has(pid)) slotOf.set(pid, { host: h!.host, slot: base + i + 1, agent: e.label ?? e.id }); });
       base += Math.max(e.slots ?? 0, e.running?.length ?? 0);
     }
