@@ -581,3 +581,83 @@ How to read it:
   - parse the snapshot as it streams in (a byte stream overlapping the ~270 ms download with the
     ~250 ms parse);
   - a larger parse step on native.
+
+## Pass 4 (p4-gpu): where the Yard's native frame goes, and the paused wakes (2026-11-12)
+
+Mac mini, recorded fleet at 10× (`switchyard-server --demo --speed 10`, fresh per run), busy Yard,
+1440×900, real taps (`EXACT_AGENT=live`), sy-client's 0.1.6 soak app running beside it (load 1.3–1.9).
+
+**It is not the GPU path.** `EXACT_CANVAS_STATS=1` (read from the drive's `app:` lines: `log show`
+and `log stream` catch nothing, NSLog from a child of the agent does not reach the unified log)
+reads, every second of the busy Yard at base `368b10d` (5 runs): `3–66 gpu/s (2.2–4.0 ms each),
+0.0 recorded/s, 0.0 bitmap/s` (~62 while packets move, 3–8 while only the panels change). All four
+layers replay on Vello; nothing is recorded by Core Animation.
+
+**Where the main thread goes** (`sample <pid> 22` inside a 30 s window, 12,517 samples a thread):
+
+| Main thread | Samples | |
+|---|---|---|
+| idle (`mach_msg`) | 10,755 (86 %) | |
+| display-link callback (`Frames.tick`) | 659 | of which 269 waiting on the owner (`Runtime.tick` → `Owner.sync`) and 377 applying batches (`fitDocument` 152, `ShortcutHost.sync` 102: a `buttonFace` asked of the owner per button per batch) |
+| a native timer delivered (`deliverNativeTimer`) | 787 | **637 waiting on the owner** (`fireNativeTimer` → `Owner.sync`), 147 applying its batch |
+
+| Owner (data module) thread | Samples |
+|---|---|
+| idle | 11,404 |
+| a timer's turn (`exact_fire_native_timer`) | 631: its commit draws the canvases whose args moved (`canvas_draw_turn` 501: JS 419, a full Hermes collection between calls 68) |
+| frame ticks (`exact_tick_at`) | 267 |
+| the stream (`exact_pump`) | 88 |
+
+So a late frame is the main thread waiting: the 250 ms tick (`fed`, the overview) is a native timer
+the main thread delivers synchronously, and its commit draws `yardInfo` (and `yardLive`) on the
+owner. A display-link callback that comes during that turn waits for it. The frame report agrees:
+the late frames' callbacks run 15–28 ms from the frame's timestamp with 1–3 ms of apply, and their
+neighbours have a `callback gap`. Also: on this Mac the callback itself arrives 4.5–8.7 ms after
+the frame's timestamp (target offset 7.9–12.2 ms, steady within a run), so a frame's work can't
+read under that, and the budget after the callback is 8–12 ms, of which the GPU replay takes 2.2–4.
+
+**Tried, measured, reverted: the info layer in slices.** A draw asked its dirty panels until their
+last hashed ops would pass 700 and left the rest to the next 1–3 frames (`853ba6e`). On the
+devbox it cut the info draw (Bun without JIT, `yard-bench --hermes`, 10×) from p50 10.1 / p90 24.5
+/ p99 54.9 ms to 2.1 / 5.8 / 21.9. On the mini it bought nothing: the slices moved the same owner
+work into the frames that followed, where the display-link callback waits for it in
+`Runtime.tick`. Busy Yard, 10×, 30 s windows, interleaved, sy-client's soak app beside:
+
+| Run | Tree | Callbacks | FPS | Late | Work median | Work p99 | CPU | Load |
+|---|---|---|---|---|---|---|---|---|
+| base 3 | `368b10d` | 824 | 58.97 | 32 (3.9 %) | 9.0–9.5 | 22.0–22.5 | 30.1 % | 1.86 → 2.13 |
+| head 3 | `853ba6e` (slices) | 836 | 59.22 | 41 (4.9 %) | 9.0–9.5 | 23.5–24.0 | 26.2 % | 2.10 → 2.11 |
+| base 4 | `368b10d` | 779 | 59.09 | 31 (4.0 %) | 9.0–9.5 | 24–48 | 27.6 % | 1.95 → 1.99 |
+| head 4 | `853ba6e` (slices) | 836 | 59.08 | 52 (6.2 %) | 9.0–9.5 | 22.5–23.0 | 30.5 % | 1.64 → 1.88 |
+
+The recorded fleet is busy in bursts: the canvas stats alternate ~62 gpu/s (packets moving) with
+3–8 gpu/s (only the panels), so a 30 s window has ~800 callbacks, not 1,800. The panels' hashed
+ops (10×) for whoever cuts the info layer next: mains 2,360 (5–6 ms in Bun without JIT), queue 630
+(3.2 ms), heat 420, sources 300, apps 257, now 160, the rest ≤ 80; 12 of 20 asks of mains found
+the same calls (a per-row key would skip them).
+
+**What is left, then, is not the canvases' drawing but the owner's turns the main thread waits
+on**: the tick's commit (overview, the args draws), the frame tick, the stream's pump, and a full
+Hermes collection between calls (Exact's `collect_if_due`, `js/src/shim.cc`: one whenever the
+allocation since the last one passes half the live heap, ~10 MB at the Yard's ~20 MB). Each holds
+whichever display-link callback falls inside it. The ways out are in Exact (deliver a timer
+without the main thread waiting on its turn; collect off the frame path) or fewer, smaller owner
+turns in the app; neither fit this pass.
+
+**Paused, Live asked frames** (sy-client's 368b10d run: 44 callbacks a paused 30 s window). The
+cause was the test mock: it answered `/api/v1/tstream` (the device-token WebSocket path, which the
+real server's `api.rs` serves) with 404, so the app, holding a token, reconnected every 8–16 s,
+refetched the 2 MB snapshot and re-mounted Live's rows (their `nowIn` entrance: ~22 frames each
+time). The mock now serves `tstream` as `stream` (`853ba6e`). Against the real server the app never
+saw this; it still reconnects that way against any server that refuses the stream.
+
+Mini, paused Live, 30 s, frozen mock (load 1.4–1.8):
+
+| Tree | Mock | Callbacks | CPU |
+|---|---|---|---|
+| base `368b10d` | 404 on `tstream` | 44 | 1.69 % |
+| base `368b10d` | serves `tstream` | **0** | **0.11 %** |
+| head `a5712a9` (+ `fc37169`) | serves `tstream` | 0 | 0.12 % |
+
+`fc37169` (paused: one wake every 32 s instead of a ladder rung that never shrank, since the
+playhead stands) stays: fewer wakes, no frames either way.

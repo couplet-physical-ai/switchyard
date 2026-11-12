@@ -565,7 +565,11 @@ function redraw(w: { ver: number }, active: number): { tick: number; pace: numbe
   // the next wake: a second after a change (the board and Live count their timers when they
   // draw what it brought), else the largest rung under the playhead's next minute
   let wake = 0;
-  if (pace) {
+  // p4: paused, the playhead stands, so no age, timer or hh:mm moves and `left` below never
+  // shrinks: the same rung came back forever (Live's `feedUntil` could pin it to 1 s). One wake
+  // every 32 s is left, for the heap line (src/memlog.ts, every 30 s).
+  if (pace && tl.mode === 'paused') wake = 32;
+  else if (pace) {
     let left = 60_000 - (((tl.playhead % 60_000) + 60_000) % 60_000);
     // (Live: also when its rows stop being right, a row crossing a band's edge: its feed is built again then)
     if (topView === 'now') left = Math.min(left, Math.max(0, feedUntil() - tl.playhead) + 1);
