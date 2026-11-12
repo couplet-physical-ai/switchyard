@@ -190,6 +190,7 @@ for (const [k, a] of [...by].sort((x, y) => y[1].reduce((p, c) => p + c, 0) - x[
 const fw = frameWork.map((f) => f.ms);
 console.log(`frame work: p50 ${q(fw, 0.5).toFixed(2)} p90 ${q(fw, 0.9).toFixed(2)} p99 ${q(fw, 0.99).toFixed(2)} max ${q(fw, 1).toFixed(2)} ms · over 8 ms ${fw.filter((x) => x > 8).length} · over 16 ms ${fw.filter((x) => x > 16).length}`);
 for (const f of [...frameWork].sort((a, b) => b.ms - a.ms).slice(0, 12)) console.log(`  ${(f.at / 1000).toFixed(2)} s  ${f.ms.toFixed(1)} ms  ${f.what}`);
+console.log(`board: ${((sources as unknown as { f3Stats: (a: unknown[]) => { work: string } }).f3Stats([])).work}`);
 if (pixRuns.length) {
   const part = pixRuns.filter((x) => x.kind === 'part'), whole = pixRuns.filter((x) => x.kind === 'whole');
   const bad = pixRuns.filter((x) => x.n);
