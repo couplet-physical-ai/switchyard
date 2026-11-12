@@ -17,7 +17,7 @@ export type Hit = { kind: string; id: string; x: number; y: number; w: number; h
 export const WINDOWS: [string, number][] = [['10m', 600_000], ['30m', 1_800_000], ['1h', 3_600_000], ['2h', 7_200_000]];
 
 /** The design space, and the box the camera frames (the stations, their labels, the pit's head). */
-export const D = { x0: 0, y0: 64, x1: 1440, y1: 770 };
+export const D = { x0: 0, y0: 70, x1: 1440, y1: 800 };
 
 /** The spine's height: the line every station sits on. */
 const Y = 350;
@@ -25,13 +25,13 @@ const SRC = { x: 24, s: 56, ys: [222, 350, 478] };
 const IN = { x: 150, y: 274, cols: 6, rows: 6, cell: 22, gap: 4 };
 const ENG = { x: 350, w: 444, plate: 70, pitch: 61, bay: 54, rows: [190, 350, 510], h: 136 };
 const GATE = { x: 830, w: 52, y0: 270, y1: 430 };
-const PIT = { x0: 650, x1: 1030, y0: 652, y1: 732 };
-const YARD = { x0: 928, x1: 1152, y0: 172, row: 21, rows: 19 };
-const PRESS = { x: 1186, w: 64, y0: 288, y1: 412 };
+const PIT = { x0: 640, x1: 1020, y0: 684, y1: 764 };
+const YARD = { x0: 928, x1: 1164, y0: 172, row: 21, rows: 22 };
+const PRESS = { x: 1192, w: 64, y0: 288, y1: 412 };
 const SKY = { x0: 1280, x1: 1436, base: 546, top: 112 };
 /** where the lanes turn: between sources and intake, intake and engines, engines and the gate,
  *  the gate and the yard, the yard and the press, the press and the apps */
-const TURN = { src: 112, eng: 330, out: 812, yard: 906, press: 1168, apps: 1264 };
+const TURN = { src: 112, eng: 330, out: 812, yard: 906, press: 1176, apps: 1268 };
 
 const AMBER = C.packet, GREEN = C.green, RED = C.red;
 const BODY = '#161617', TOPB = '#1F1F21', SHADE = '#0A0A0B', WELL = '#0C0C0D', TRACK = '#141416';
@@ -328,16 +328,20 @@ function drawPit(g: Gfx, o: SwarmOpts, hits: Hit[], t: number): void {
   for (let i = 0; i < 4; i++) { g.alpha((0.05 + 0.03 * Math.sin(t / 700 + i)) * heat); g.fillRect(x0, y1 - 10 - i * 14, x1 - x0, 10 + i * 14, RED); }
   g.alpha(1);
   g.fillRect(x0 - 10, y1, x1 - x0 + 20, 6, '#1A1314');
-  const pitch = 34, perRow = Math.floor((x1 - x0 - 16) / pitch);
-  const rows = 2;
+  // up to 8: each cube with its repo beside it, three to a row (rows of 3, 3, 2); more: two rows of
+  // bare cubes
+  const named = f.length <= 8;
+  const pitch = named ? Math.floor((x1 - x0 - 12) / 3) : 26, perRow = named ? 3 : Math.floor((x1 - x0 - 16) / pitch);
+  const rows = named ? 3 : 2;
   f.slice(0, perRow * rows).forEach((it, i) => {
     const c = i % perRow, r = Math.floor(i / perRow);
-    const cx = x0 + 22 + c * pitch, cy = y1 - 22 - r * 30;
+    const cx = x0 + 20 + c * pitch, cy = named ? y0 + 34 + r * 20 : y1 - 16 - r * 24;
     // a fresh one (in the last 2 minutes) still glows hot; older ones cool to a deeper red
     const fresh = o.now - (it.finished ?? 0) < 120_000;
-    cube(g, cx, cy, 22, fresh ? '#FF7A6E' : RED, fresh ? 1.2 + 0.3 * Math.sin(t / 220) : 0.8);
-    if (o.selected === it.id) brackets(g, cx - 15, cy - 15, 30, 30);
-    hits.push({ kind: 'failed', id: it.id, x: cx - 15, y: cy - 15, w: 30, h: 30, url: it.url, label: `${it.name} #${it.number}` });
+    cube(g, cx, cy, named ? 14 : 17, fresh ? '#FF7A6E' : RED, fresh ? 1.2 + 0.3 * Math.sin(t / 220) : 0.8);
+    if (named) g.text(g.fit(it.name, 10, pitch - 26), cx + 13, cy + 4, C.redText, 10);
+    if (o.selected === it.id) brackets(g, cx - (named ? 11 : 14), cy - (named ? 11 : 14), named ? 22 : 28, named ? 22 : 28);
+    hits.push({ kind: 'failed', id: it.id, x: cx - 12, y: cy - (named ? 10 : 14), w: named ? pitch - 6 : 28, h: named ? 20 : 28, url: it.url, label: `${it.name} #${it.number}` });
   });
   if (f.length > perRow * rows) g.text(`+${f.length - perRow * rows}`, x1 - 8, y0 + 16, C.redText, 11, true, 'right');
   // the newest, named over the pile: repo #n · the step it failed at · how long ago
@@ -369,22 +373,22 @@ function drawPit(g: Gfx, o: SwarmOpts, hits: Hit[], t: number): void {
 /** The main-line yard: one named row per main line, its recent runs as square beads (oldest at
  *  the left, newest at the right, next to the track's end); red lines lit and pulled to the top,
  *  then the green ones that moved last. */
-function drawYard(g: Gfx, S: Stages, hits: Hit[], t: number): void {
+function drawYard(g: Gfx, S: Stages, hits: Hit[], t: number, o: SwarmOpts): void {
   block(g, YARD.x0 - 8, YARD.y0 - 8, YARD.x1 - YARD.x0 + 16, YARD.rows * YARD.row + 16);
   const rows = S.mains.rows;
   const nRed = S.mains.red.length;
   // red rows first; if there are more reds than room, leave the last row for "+N red"
   const shown = rows.slice(0, YARD.rows);
-  const bead = 7, bp = 9, bx1 = YARD.x1 - 6;
+  const bead = 7, bp = 9, bx1 = YARD.x1 - 6, NB = 8;
   for (let i = 0; i < shown.length; i++) {
     const y = yardRowY(i);
     const r = shown[i];
-    // the track: a dim rail from the name to the beads
-    g.fillRect(YARD.x0 + 102, y - 0.5, bx1 - 10 * bp - YARD.x0 - 104, 1, r.red ? '#3A2224' : '#232325');
     if (r.red) { g.alpha(0.06 + 0.02 * Math.sin(t / 900 + i)); g.fillRect(YARD.x0 - 4, y - YARD.row / 2 + 1, YARD.x1 - YARD.x0 + 8, YARD.row - 2, RED); g.alpha(1); }
-    g.text(g.fit(r.name, 10.5, 98), YARD.x0, y + 4, r.red ? C.redText : C.ink3, 10.5);
-    // its beads: the last 10 runs, newest at the right
-    const bs = r.beads;
+    g.text(g.fit(r.name, 10.5, 94), YARD.x0, y + 4, r.red ? C.redText : C.ink3, 10.5);
+    // how long it has been red ("red 17h"), newest broken first
+    if (r.red) g.text(r.since ? `red ${ago(o.now - r.since)}` : 'red', YARD.x0 + 98, y + 4, '#B86A70', 9.5);
+    // its beads: the last runs, newest at the right
+    const bs = r.beads.slice(-NB);
     for (let j = 0; j < bs.length; j++) {
       const bxx = bx1 - (bs.length - j) * bp;
       const col = bs[j] === 'fail' ? RED : bs[j] === 'run' ? AMBER : '#4E6B57';
@@ -472,8 +476,8 @@ function drawApps(g: Gfx, S: Stages, hits: Hit[], t: number): void {
 // ---- the labels -------------------------------------------------------------------------------
 
 function ago(ms: number): string {
-  const m = Math.round(ms / 60_000);
-  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h`;
+  const m = Math.max(0, Math.round(ms / 60_000));
+  return m < 60 ? `${m}m` : m < 48 * 60 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`;
 }
 
 /** Each station's label just above it: the name, the big number, its unit. (x centre, y top). */
@@ -508,7 +512,7 @@ export function drawSwarmFloor(g: Gfx, S: Stages, now: number, o: SwarmOpts): { 
   drawIntake(g, S, o, hits, now);
   drawEngines(g, S, o, hits);
   drawGate(g, S, o.t);
-  drawYard(g, S, hits, o.t);
+  drawYard(g, S, hits, o.t, o);
   drawPress(g, S, o.t, hits);
   drawApps(g, S, hits, o.t);
   drawPit(g, o, hits, o.t);

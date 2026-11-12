@@ -152,7 +152,7 @@ function build(w: World, now: number): Stages {
     };
     (row.red ? rows : greens).push(row);
   }
-  rows.sort((a, b) => a.since - b.since);
+  rows.sort((a, b) => b.since - a.since); // newest broken first
   greens.sort((a, b) => b.at - a.at);
   rows.push(...greens.slice(0, 40));
   // ---- deploy: deploys running now, today's count, the failed ones still failed

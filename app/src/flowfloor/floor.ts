@@ -24,6 +24,7 @@ export class FlowFloor {
   private hits: Hit[] = [];
   private t0 = -1;
   private said = '';
+  private saidChip = '';
   /** For the HUD and the tests: what the last frame drew. */
   stats = { failed: 0, running: 0, waiting: 0, red: 0, apps: 0, machines: 0, ops: 0, cubes: 0 };
 
@@ -53,14 +54,16 @@ export class FlowFloor {
       [` · ${S.mains.red.length} main lines red`, C.ink3],
       [` · ${S.apps.up} of ${S.apps.total} apps up`, C.ink3],
     ], x, y0, 11.5, W - right - x - 16);
-    const headTop = top + 44;
+    // the floor starts right under the headline (its labels ride on the stations)
+    const headTop = top + 34;
     // the camera: the design box fitted into the window under the headline (and left of the
     // inspector), centred; it never pans or zooms by hand
     const aw = W - right - 24, ah = H - headTop - 40;
     const sc = Math.max(0.2, Math.min(aw / (D.x1 - D.x0), ah / (D.y1 - D.y0)));
     this.fitS = sc;
     this.fitX = 12 + (aw - (D.x1 - D.x0) * sc) / 2 - D.x0 * sc;
-    this.fitY = headTop + Math.max(0, (ah - (D.y1 - D.y0) * sc) / 2) - D.y0 * sc;
+    // top-aligned: what the fit leaves over goes under the floor, never between it and the headline
+    this.fitY = headTop + 8 - D.y0 * sc;
     const t = a.reduced ? 0 : f.time - this.t0;
     ctx.save();
     ctx.beginPath(); ctx.rect(0, headTop + 4, W - right, H - headTop - 4); ctx.clip();
@@ -73,6 +76,10 @@ export class FlowFloor {
     const fh = this.hits.find((h) => h.kind === 'failed');
     const said = fh ? `${W}x${H}:${right}|${fh.id}` : '';
     if (fh && said !== this.said) { this.said = said; console.log(`flow: newest failed crate ${fh.id} at ${Math.round(fh.x + fh.w / 2)},${Math.round(fh.y + fh.h / 2)}`); }
+    // and where the bin's 2h chip is (the tests press it), once per layout
+    const ch = this.hits.find((h) => h.kind === 'window' && h.id === '2h');
+    const saidC = ch ? `${W}x${H}:${right}|${Math.round(ch.x)}` : '';
+    if (ch && saidC !== this.saidChip) { this.saidChip = saidC; console.log(`flow: window 2h at ${Math.round(ch.x + ch.w / 2)},${Math.round(ch.y + ch.h / 2)}`); }
     this.stats = { failed: failed.length, running: S.engines.running, waiting: S.intake.waiting, red: S.mains.red.length, apps: S.apps.total, machines: S.engines.machines.length, ops: g.ops, cubes: r.cubes };
     return !a.reduced;
   }
