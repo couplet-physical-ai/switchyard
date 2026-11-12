@@ -398,7 +398,7 @@ export function sceneOf(b: Board, L: Layout, o: SceneOpts): Scene {
       if (sel) brackets(12, y + 2, L.W - 24, rowH - 4);
       T(ago(r.at), 16 + 26, base, C.ink3, 11, false, 2);
       T(r.kind === 'deployment' ? 'deploy' : r.kind, 16 + 38, base, C.ink3, 11);
-      const nx = 16 + 38 + 50;
+      const nx = 16 + 38 + 58;
       const nameW = Math.min(170, Math.max(110, (leftEnd - nx) * 0.3));
       T(fit(r.name, 11.5, nameW), nx, base, C.ink, 11.5, true);
       const ranW = tw(r.ranOn, 11);

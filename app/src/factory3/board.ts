@@ -279,7 +279,7 @@ export class Board3 {
   /** For the HUD and the perf tools: asked, built, painted. */
   workLine(): string {
     const st = this.stats;
-    return `asks=${st.asks} builds=${st.builds} paints=${st.paints} live=${st.livePaints} transits=${st.transits} ops=${st.ops}`;
+    return `board paints ${st.paints} · moving-layer paints ${st.livePaints} · transits ${st.transits} · scene builds ${st.builds} · ${st.ops} marks`;
   }
   /** "still": no pixel of either canvas has changed for two seconds (and one was painted at all). */
   get still(): boolean {
