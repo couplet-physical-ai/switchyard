@@ -540,7 +540,7 @@ function overview(): Result<'overview'> {
  *  the timers tick, Contract adds the second itself: `rk`), a replay's playhead 4 times a
  *  second. Idle, it stands still: no canvas is asked for a frame and no source re-asked
  *  through it. The pace: 0, the 250 ms pulse (the demo, a replay, playing behind, the HUD,
- *  stress, the older floors on top, a fleet not loaded yet); 1, a shown timer runs: the 1 s
+ *  stress, the older floors on top); 1, a shown timer runs: the 1 s
  *  tick moves `rk` and asks nothing else; 2, no pulse. Paces 1 and 2 wake a few times a minute
  *  (`wake`: a ladder of one-shot timers to the playhead's next minute, or 1 s after a change, so
  *  what the change started is seen to tick), and the stream's frames wake the clock (`fed`). */
@@ -558,7 +558,9 @@ function redraw(w: { ver: number }, active: number): { tick: number; pace: numbe
   const sig = `${topView}|${data}|${Math.floor(tl.playhead / g)}`;
   if (`${topView}|${data}` !== visData) { visData = `${topView}|${data}`; visChanged = clock; }
   if (sig !== visSig) { visSig = sig; visTick++; }
-  const busy = !!demo || replaying || tl.mode === 'behind' || yard.hud.on || stressOn || !w.ver || oldTop;
+  // (no fleet yet, or none to be had: the connect's answer and the reconnect timers ask again; the
+  // setup and offline cards are still)
+  const busy = !!demo || replaying || tl.mode === 'behind' || yard.hud.on || stressOn || oldTop;
   const pace = busy ? 0 : ticking ? 1 : 2;
   // the next wake: a second after a change (the board and Live count their timers when they
   // draw what it brought), else the largest rung under the playhead's next minute
