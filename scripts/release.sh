@@ -3,6 +3,9 @@
 #
 #   scripts/release.sh 0.1.0            # tag v0.1.0 on origin/main, build + publish, bump the tap
 #   scripts/release.sh 0.1.0 --dry-run  # print what would happen
+#   scripts/release.sh 0.1.5 --gate     # publish as a PRERELEASE (not Latest, tap untouched) for
+#                                       # the mini gates (RELEASING.md "Gated releases")
+#   scripts/release.sh 0.1.5 --promote  # after the gates pass: make it Latest, bump the tap
 #
 # 1. checks origin/main's HEAD is green on Roadrunner (gh rr status; --skip-ci to bypass);
 # 2. tags it v<version> and pushes the tag -> .github/workflows/release.yml builds the arm64
@@ -16,11 +19,26 @@ set -euo pipefail
 export GIT_TERMINAL_PROMPT=0
 V=${1:?usage: scripts/release.sh <version> [--dry-run] [--skip-ci]}; shift
 V=${V#v}
-DRY=0 SKIPCI=0
-for a in "$@"; do case "$a" in --dry-run) DRY=1 ;; --skip-ci) SKIPCI=1 ;; *) echo "unknown $a" >&2; exit 2 ;; esac; done
+DRY=0 SKIPCI=0 GATE=0 PROMOTE=0
+for a in "$@"; do case "$a" in --dry-run) DRY=1 ;; --skip-ci) SKIPCI=1 ;; --gate) GATE=1 ;; --promote) PROMOTE=1 ;; *) echo "unknown $a" >&2; exit 2 ;; esac; done
 [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]] || { echo "bad version $V" >&2; exit 2; }
 REPO=couplet-physical-ai/switchyard TAP=couplet-physical-ai/homebrew-tap
 cd "$(dirname "$0")/.."
+bump_tap() {
+  gh workflow run bump-switchyard.yml -R "$TAP" -f version="$V"
+  sleep 15
+  brun=$(gh run list -R "$TAP" -w bump-switchyard.yml --limit 1 --json databaseId --jq '.[0].databaseId')
+  timeout 600 gh run watch "$brun" -R "$TAP" --exit-status --interval 10 >/dev/null || { echo "tap bump run $brun failed" >&2; exit 1; }
+  echo "tap: $(gh api "repos/$TAP/commits/main" --jq '.sha[0:7] + " " + .commit.message')"
+}
+if [[ $PROMOTE == 1 ]]; then
+  [[ "$(gh release view "v$V" -R "$REPO" --json isPrerelease --jq .isPrerelease)" == true ]] || { echo "v$V is not a prerelease (already promoted?)" >&2; exit 1; }
+  [[ $DRY == 1 ]] && { echo "dry run: would make v$V Latest and bump the tap"; exit 0; }
+  gh release edit "v$V" -R "$REPO" --prerelease=false --latest >/dev/null
+  echo "v$V is Latest: $(curl -fsSL "https://github.com/$REPO/releases/latest/download/latest.json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])') on the stable feed"
+  bump_tap
+  echo "done: installed apps offer Update (latest.json); brew upgrade --cask --greedy switchyard also works"; exit 0
+fi
 timeout 60 git fetch -q origin main --tags
 sha=$(git rev-parse origin/main)
 if git rev-parse -q --verify "refs/tags/v$V" >/dev/null; then echo "tag v$V already exists" >&2; exit 1; fi
@@ -33,7 +51,8 @@ if [[ $SKIPCI == 0 ]]; then
   rm -f /tmp/sy-rr-status.$$; echo "Roadrunner: green"
 fi
 if [[ $DRY == 1 ]]; then echo "dry run: would tag v$V at ${sha::7}, push it, watch release.yml, dispatch $TAP bump-switchyard"; exit 0; fi
-git tag -a "v$V" "$sha" -m "Switchyard $V"
+msg="Switchyard $V"; [[ $GATE == 1 ]] && msg="$msg [gated]"
+git tag -a "v$V" "$sha" -m "$msg"
 timeout 60 git push -q origin "v$V"
 echo "pushed tag v$V; waiting for the release workflow…"
 run=""
@@ -45,12 +64,12 @@ done
 echo "https://github.com/$REPO/actions/runs/$run"
 timeout 9000 gh run watch "$run" -R "$REPO" --exit-status --interval 30 >/dev/null || { echo "release run $run failed" >&2; exit 1; }
 gh release view "v$V" -R "$REPO" --json url --jq .url
+if [[ $GATE == 1 ]]; then
+  echo "v$V is a gated PRERELEASE: not Latest, tap untouched. Gates: RELEASING.md 'Gated releases'; then scripts/release.sh $V --promote"
+  echo "feed: https://github.com/$REPO/releases/download/v$V/latest.json"; exit 0
+fi
 if [[ "$V" == 0.0.* || "$V" == *-* ]]; then
   echo "v$V is a prerelease: the tap stays on the latest release"; exit 0
 fi
-gh workflow run bump-switchyard.yml -R "$TAP" -f version="$V"
-sleep 15
-brun=$(gh run list -R "$TAP" -w bump-switchyard.yml --limit 1 --json databaseId --jq '.[0].databaseId')
-timeout 600 gh run watch "$brun" -R "$TAP" --exit-status --interval 10 >/dev/null || { echo "tap bump run $brun failed" >&2; exit 1; }
-echo "tap: $(gh api "repos/$TAP/commits/main" --jq '.sha[0:7] + " " + .commit.message')"
+bump_tap
 echo "done: installed apps offer Update (latest.json); brew upgrade --cask --greedy switchyard also works"

@@ -11,6 +11,7 @@
 #   - SY_SOAK_HEAP_CAP_MB=<n>: the max heap over the last 10 minutes must be ≤ n;
 #   - no new Switchyard crash report (.ips) in ~/Library/Logs/DiagnosticReports during the run
 #     (a GCBase::oom one is named as such).
+# fps is derived from the heap line's `frames <n>` (a running count) when present.
 # Numbers in a heap line: the first `<n>MB`/`<n>mb`/`used=<n>` is read as the used heap in MB.
 #
 #   SY_TOKEN_FILE=<local 600 file> scripts/release/soak-mini.sh <version> [minutes]
@@ -105,6 +106,12 @@ if len(heap) >= 3:
         ok = ok and last10 <= cap
 elif need_heap: print("FAIL: no heap: lines from the app (SY_SOAK_NEED_HEAP=1)"); ok = False
 else: print("JS heap: no heap: lines logged (RSS only; RSS did not show 0.1.4's leak)")
+# fps from the heap line's running frame count (`frames <n>`), when it has one
+fr = [(i, re.search(r"frames\s+([0-9]+)", r["heap"])) for i, r in enumerate(rows)]
+fr = [(i, int(m.group(1))) for i, m in fr if m]
+if len(fr) >= 2:
+    fps = [(b[1] - a[1]) / (60.0 * (b[0] - a[0])) for a, b in zip(fr, fr[1:]) if b[0] > a[0] and b[1] >= a[1]]
+    if fps: print(f"fps (from frames): first {fps[0]:.1f}, last {fps[-1]:.1f}, min {min(fps):.1f}, mean {sum(fps)/len(fps):.1f}")
 print(f"soak: alive {n} min, " + ("memory plateaus" if ok else "memory does NOT plateau"))
 sys.exit(0 if ok else 1)
 PY

@@ -151,6 +151,12 @@ jobs:
           cat "$RUNNER_TEMP/notes.md"
           # Prerelease: asked for, or a 0.0.x / x.y.z-suffix version (test builds never become "latest").
           pre=(); [[ "${{ inputs.prerelease }}" == true || "$V" == 0.0.* || "$V" == *-* ]] && pre=(--prerelease)
+          # A gated release (scripts/release.sh --gate: the tag's message says [gated]) publishes as a
+          # prerelease; it becomes Latest only after the mini's gates pass (scripts/release.sh --promote).
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            git fetch -q --force origin "+$GITHUB_REF:$GITHUB_REF" || true
+            if git for-each-ref "$GITHUB_REF" --format='%(contents)' | grep -q '\[gated\]'; then pre=(--prerelease); echo "gated: publishing as a prerelease"; fi
+          fi
           if gh release view "v$V" >/dev/null 2>&1; then
             gh release upload "v$V" dist/*.zip dist/*.dmg dist/SHA256SUMS dist/latest.json --clobber
             gh release edit "v$V" --notes-file "$RUNNER_TEMP/notes.md"

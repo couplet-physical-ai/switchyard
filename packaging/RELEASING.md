@@ -111,3 +111,28 @@ SY_TOKEN_FILE=$T scripts/release/soak-mini.sh N 25
 token moved out of the Keychain then, and any later update with a prompt is a regression. The
 soak exists because 0.1.3 and 0.1.4 die of a Hermes OOM after 4 to 18 min live while their RSS
 stays flat, so RSS alone does not catch it.
+
+## Gated releases (since the 0.1.4 rollback)
+
+A gated release never reaches users before the mini proves it. `--gate` publishes it as a
+**prerelease**: GitHub's `/releases/latest` and so the stable feed skip it, and the tap's cron
+bump only follows the latest release. The gates run against the release's own feed, then
+`--promote` makes it Latest and bumps the tap.
+
+```sh
+P=0.1.3 N=0.1.5 T=~/.config/switchyard/e2e-token
+scripts/release.sh $N --gate
+# 1. P → N through N's own feed: 0 Keychain prompts, window within 5 s, the seeded token scrubbed.
+#    --keep leaves N installed for the soak.
+SY_UPDATE_FEED=https://github.com/couplet-physical-ai/switchyard/releases/download/v$N/latest.json \
+  SY_TOKEN_FILE=$T SY_SEED_TOKEN=1 scripts/release/update-e2e-mini.sh $P $N --keep
+# 2. a live soak of at least 20 min of the installed N: it stays alive, no crash report, and the
+#    heap and RSS stay flat.
+SY_TOKEN_FILE=$T SY_SOAK_NEED_HEAP=1 SY_SOAK_HEAP_CAP_MB=<cap> scripts/release/soak-mini.sh $N 25
+# 3. only now: Latest + tap, then the users' paths: the stable feed and a fresh brew install.
+scripts/release.sh $N --promote
+SY_TOKEN_FILE=$T scripts/release/update-e2e-mini.sh $P $N
+SY_TOKEN_FILE=$T SY_SNAPSHOT=1 scripts/release/install-e2e-mini.sh $N
+```
+
+If any gate fails, the release stays a prerelease. Nothing needs to be rolled back.
