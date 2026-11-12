@@ -46,6 +46,8 @@ export class Yard {
   private gt = new Gfx();
   S: Scene | null = null;
   private sceneSig = '';
+  private sigParts = new Float64Array(12).fill(NaN);
+  private sigLanes = '';
   private picks: string[] = [];
   private picksAt = -1e9;
   private picksVer = 0;
@@ -115,7 +117,18 @@ export class Yard {
     }
     // The scene depends on the fleet's shape (counts, tiers, org runs), not on every state
     // change: those the info layer redraws in place.
-    const sig = `${W}|${H}|${scale}|${w.shapeVer}|${ra.ids.length}:${ra.fresh}:${ra.hot}:${ra.orgs.length}|${this.agg.apps.ids.length}|${this.picksVer}|${this.laneSig}|${this.stress.on ? 1 : 0}|${this.lod.histogram.length}`;
+    // (p5-yard: its parts compared as they are; the string is built only when one moved, not
+    // in every draw of every layer)
+    const sp = this.sigParts;
+    const same = sp[0] === W && sp[1] === H && sp[2] === scale && sp[3] === w.shapeVer && sp[4] === ra.ids.length && sp[5] === ra.fresh && sp[6] === ra.hot
+      && sp[7] === ra.orgs.length && sp[8] === this.agg.apps.ids.length && sp[9] === this.picksVer && sp[10] === (this.stress.on ? 1 : 0) && sp[11] === this.lod.histogram.length
+      && this.sigLanes === this.laneSig && this.sceneSig !== '';
+    const sig = same ? this.sceneSig : `${W}|${H}|${scale}|${w.shapeVer}|${ra.ids.length}:${ra.fresh}:${ra.hot}:${ra.orgs.length}|${this.agg.apps.ids.length}|${this.picksVer}|${this.laneSig}|${this.stress.on ? 1 : 0}|${this.lod.histogram.length}`;
+    if (!same) {
+      sp[0] = W; sp[1] = H; sp[2] = scale; sp[3] = w.shapeVer; sp[4] = ra.ids.length; sp[5] = ra.fresh; sp[6] = ra.hot;
+      sp[7] = ra.orgs.length; sp[8] = this.agg.apps.ids.length; sp[9] = this.picksVer; sp[10] = this.stress.on ? 1 : 0; sp[11] = this.lod.histogram.length;
+      this.sigLanes = this.laneSig;
+    }
     if (sig !== this.sceneSig || !this.S) {
       this.sceneSig = sig;
       const c = census(w, ra, this.agg.apps, this.stress.on ? this.stress : null);
