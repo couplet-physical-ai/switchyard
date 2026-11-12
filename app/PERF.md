@@ -434,3 +434,72 @@ plus `World.apply`.
 - **What remains of the simulation's cost:** `prune` 21 % (every 60 s of fleet, `for…in` sweeps
   over the commits, pipelines, deploys and PRs, with deletes from those objects), JSON parse 20 % and
   stringify 17 % (the frames' copies).
+
+## Idle pass 2 (idle2): clock ticks cost ~nothing (2026-11-12)
+
+Branch `sy/mac-idle2`, base `ff823ac` (the `idle` pass). What a 1 Hz tick costs now:
+
+- **Live**: a clock-only tick re-stamps the last feed: timers, ages, rings and the intake.
+  - Cost: 0.03–0.05 ms in Bun; the rows and their order are unchanged.
+  - A full rebuild is two turns: 2.3 + 2.0 ms on the demo (was one 6.2 ms turn).
+  - finished events are built only when they can be shown.
+- **Board**: a tick repaints only the marks that changed, clipped to their boxes: 0.14 % of the board, 7 of 706 marks. Pixels are identical to a whole paint.
+- **Yard**: the header and engines panels redraw only when their words change.
+- **Launch**: `src/json.ts` cuts arrays of objects by indexOf plus a verifying `JSON.parse`, without the interpreted scanner. The snapshot parses in 68 yields (was 118).
+
+Mac mini, dev build, 1440×900, `/tmp/sy-idle2-m.sh`:
+
+- Each run is a perf drive (`EXACT_AGENT=live`, connected by real taps).
+- CPU is the app's `ps -o time` delta, sampled every 2 s over 56–57 s.
+- Frames come from `perf frames live`.
+- Load average: 0.9–1.8 (nothing else on the mini) unless noted. Live has no Pause of its own: it is paused from the Yard's.
+- LIVE is `tools/live-proxy.ts` to the real fleet, with its stream flowing.
+- frozen is `server/mock.ts --frozen`: 3 builds "running", so 1 Hz timers tick and no stream frames arrive.
+- merged is HEAD plus `sy/mac-perf` 4ec35d8 (`leak`'s Exact patch 0002).
+
+| Idle CPU | Live | Board | Yard |
+|---|---|---|---|
+| base, LIVE ticking | 3.28 % | 4.44 % | 3.60 % |
+| head, LIVE ticking | 2.86 % | **1.88 %** | 3.05 % |
+| base, LIVE paused | — | 4.51 % | 3.37 % |
+| head, LIVE paused | — | 1.89 % | 2.96 % |
+| base, frozen (timers) | 3.66 % | 4.55 % | 3.56 % |
+| merged, frozen (timers) | 3.21 % | **2.09 %** | 2.84 % |
+| merged, LIVE paused / frozen paused | 2.65 % | 2.05 % | — |
+
+The `idle` worker's frozen numbers at `51959e7` were 4.65 / 6.55 / 4.77 %.
+
+**Busy**: the recorded fleet at 1× (`switchyard-server --demo`), 20 s windows.
+
+| Busy | Live | Board | Yard |
+|---|---|---|---|
+| base | 60.00 fps · frame p99 16.5–17 · work p99 18.5–19 · 7.1 % CPU | 60.00 fps · p99 16.5–17 · work max 48–96 · 11.6 % CPU | 59.05 fps · p99 24–48 · 41 of 313 late · 19.1 % CPU |
+| head | 60.00 fps · p99 16.5–17 · work p99 20.5–21 · 7.6 % CPU | no frame asked in the window · 3.4 % CPU | 58.55 fps · p99 24–48 · 22 of 164 late · 17.0 % CPU |
+
+**Tab switches**: the 3 s after each tap, base vs head, with the most work in one frame.
+
+- Factory: none asked (both).
+- Yard: 11.5–12 ms (base) / 10–10.5 ms (head).
+- Back to Live: none (base) / 16.5–17 ms (head).
+- Back to the board, head only: 48–96 ms, a run's transit on the board as it was shown again.
+
+**Launch → data**: process start → `token-file: connected` (snapshot fetched, parsed, loaded), warm, 3 runs.
+
+- base: 859–980 ms.
+- head: 847–856 ms.
+- merged: 865–870 ms.
+- Cold first launch: 1.3–3.4 s.
+
+The parts:
+
+- Exact boots in 100–170 ms.
+- The snapshot fetch from the mini takes ~440 ms (715 KB brotli; first byte at 170 ms).
+- Parsing and loading take the rest.
+
+Live's rows follow in the next turns (the drive's own wait for `nowData.idle == false` met within 0.75 s of its start).
+
+Where the floor is:
+
+- With nothing changing (paused, or a frozen fleet), the board still costs ~1.9–2.1 %.
+- That is the 1 Hz `pulseIdle` re-asking `overview(clockMs)` and the runner re-evaluating what reads `ov`.
+- Next: make `liveFeed` answer per stream frame so `ov` follows it, and stop the pulse when nothing on top ticks.
