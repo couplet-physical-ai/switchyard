@@ -94,6 +94,19 @@ async function parseArray(t: string, i: number, p: Pace): Promise<[unknown[], nu
   };
   for (;;) {
     const c = t.charCodeAt(i);
+    if (c === 0x7b && runStart < 0) {
+      // A run of whole objects without the JS scanner (an interpreted loop, the slow part on
+      // Hermes): a server's array is homogeneous, so each element starts with the same first key;
+      // the run ends just before the next `,{"<key>":` past RUN bytes, found by indexOf. JSON.parse
+      // of the run then succeeds only if that is an element's end (inside a string or a nested
+      // object the run is cut mid-value and does not parse): else the next candidate.
+      const k = await fastRun(t, i, out, p);
+      if (k > 0) {
+        i = k;
+        const ch = t.charCodeAt(i);
+        if (ch === 0x2c) { i = skipWs(t, i + 1); continue; }
+      }
+    }
     const e = c === 0x7b || c === 0x5b ? endBounded(t, i, RUN) : endOfValue(t, i);
     if (e < 0) {
       // one large element (a history's base inside its frames): its own piecewise parse
@@ -116,6 +129,30 @@ async function parseArray(t: string, i: number, p: Pace): Promise<[unknown[], nu
     if (ch === 0x5d) { await flush(); return [out, i + 1]; }
     throw new SyntaxError(`JSON: expected , or ] at ${i}`);
   }
+}
+
+/** Parses a run of the array's objects from `i` (at least RUN bytes of them, at most 4 × RUN)
+ *  into `out` when the next element's start can be found by its first key; returns the index
+ *  just past the run (at its `,`), or -1 (nothing parsed: the scanner goes on from `i`). */
+async function fastRun(t: string, i: number, out: unknown[], p: Pace): Promise<number> {
+  if (t.charCodeAt(i + 1) !== 0x22) return -1;
+  const ke = endOfString(t, i + 1);
+  if (t.charCodeAt(ke) !== 0x3a /* : */) return -1;
+  const next = `},${t.slice(i, ke + 1)}`;
+  let from = i + RUN;
+  for (let tries = 0; tries < 3; tries++) {
+    const k = t.indexOf(next, from);
+    if (k < 0 || k - i > 4 * RUN) return -1;
+    let vs: unknown[] | null = null;
+    try { vs = JSON.parse(`[${t.slice(i, k + 1)}]`) as unknown[]; } catch { vs = null; }
+    if (vs) {
+      for (const v of vs) out.push(v);
+      await p.add(k + 1 - i);
+      return k + 1;
+    }
+    from = k + 2;
+  }
+  return -1;
 }
 
 /** Past a value without parsing it, yielding as it scans. */
