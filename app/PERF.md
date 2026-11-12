@@ -876,3 +876,131 @@ Graphics updated the bitmap in place.
 - Live's idle with timers (2.14 %): one 1 Hz tick re-stamps `nowTickData`; the cost is likely the
   runtime's apply (texts relaid each second), not the module (0.005 ms in Bun). Unmeasured.
 - A layout change still repaints the whole board (~70 KB now, ~1 per 45 s at 10×).
+
+## Pass 6 (p6-idle): a board that never animates on the GPU, and Live's second (2026-11-12)
+
+Branch `sy/mac-p6`, base `e5d51d6` (the 0.1.7 candidate). Brief: idle with timers ≤ 1.5 % on Live,
+the board and the Yard; paused unchanged; the busy board and Yard at 60 fps; the same look.
+
+**Where a ticking second went** (the mini, Live idle with timers, `sample <pid> 10`, a profile only:
+`/tmp/p6/mini/sample-prof-idle-now1.txt`, summarised by `/tmp/p6/samp.py`). Of the samples not
+waiting:
+
+- **Main thread, 57 %.** All of it is the 1 s batch's apply. 30 % of the process is one Exact host
+  function, `Presenter.refreshVisibleText`. After every batch it walks every text near the viewport
+  and asks `canRasterText` of each, and that question is a transform walk (`pixelScale` →
+  `convertSizeToBacking`). The rest is the ops and the CA commit.
+- **Owner thread, 35 %.** Half of it is Hermes writing `nowTick`'s 8.5 KB answer.
+  - Exact's `keptReply` (js/src/binary.js) calls a replacer per value, and runs a regex per key and
+    per string.
+  - The rest is the settlement.
+- **The kept thread, 6 %, plus 33 ms of each 10 s blocked in `fcntl`.** Every second's `nowTick` answer
+  was written to disk for the next launch's first frame: a file, a rename, and a full sync.
+  - It was a store reader: its arguments read `rk` and `nowData.tick`, and so, through `ov` and
+    `conn`, the token's read.
+
+**What changed:**
+
+- **The board stays with Core Graphics** (`Board3.boardGpu` off), and only the live layer claims the GPU.
+  - The board's first paint on a fresh bitmap asks for no frame.
+  - A fresh bitmap lands what was travelling.
+  - Its whole repaint's clear is clipped to the canvas, the same pixels. The host never takes one of
+    its lists for a cover, so its kept lists (Canvas2DKept) are dropped after the first job and
+    never start again. Core Animation never records the board, even while a square travels and the
+    board asks for frames.
+  - The timers' second is a few boxes painted into the bitmap the replay queue keeps, not a Vello
+    replay of the whole canvas.
+- **boardAt**: a second on, with the same world, version, minute and window, the board's model asks
+  again only what follows the second: the deploys landed in the last 30 s and the day's count.
+  - The scenes are the same for 59 s of seconds (factory3.test).
+  - Bun, no JIT, the fixtures' running board, one draw a second (`tools/f3-sec.ts`): draw p50
+    1.80 → 1.16 ms.
+- **The Yard's info layer stays with Core Graphics**, as above (`InfoLayer.cg`).
+- **Progress rings by the pixel**: the Yard's live-layer rings and Live's machine rings fill in
+  whole device pixels of arc, within half a pixel of the exact fill.
+  - A still Yard's live layer is replayed when a pixel moves, not every second.
+  - A 5-minute run's ring changes 79 times instead of 300 (now.test).
+- **Live's second:**
+  - Kept rows: chips, links, finished jobs and unchanged machines are frozen when made and answered
+    again by identity (`keptMach`). Exact writes a frozen array item once and keeps its text, so a
+    second's answer visits 250 values, not 543, and writes 4.5 KB of JSON, not 8.5.
+  - `nowTick`'s arguments read only states: the clock's second, and `nowFed`, which a task takes as
+    a feed lands. So it is no longer a store reader, and no second's answer is written to disk.
+- **The connect's hitch** (sy-client's tab-switch drive: one 96–192 ms frame after settings-save,
+  pre-existing):
+  - It is the first feed's commit, `+1367` views in one batch (the drive log's
+    `fulfil (nowData) → epoch 7 (+1367 …)`).
+  - About 900 of those views are the 30 "earlier" rows, below the fold.
+  - That band now shows 4 rows, then 4 more every 40 ms (`nowRows`). The steady state is the same
+    views (web: 1,436 elements in both).
+- **A hidden A/B switch**, `SWITCHYARD_CANVAS=gpu|board,info[,noq]` (Hooks.swift `heapLog`,
+  app.ts `canvasAsk`): `board`/`info` put those canvases on the GPU as in pass 5, and `noq` draws
+  the rings at their exact fill.
+
+**Pixels** (web):
+- `tools/factory3-shots.mjs stills`, base vs head: only the status line's port differs (51–150 px of
+  5.2 M).
+- `tools/yard-regress.mjs`, base → head: yard 1,045 px; base → base: 580 px (the same timer and ring
+  spots); factory 8.9 % on both (the demo's own noise).
+- Live stills at the same second: the timers' phase only (one second apart) and the LIVE beat.
+- The Mac (the drives' screenshots, `/tmp/p6/mini/shot-{base,head}-idle-*.png`): Live differs in
+  the timers only, 1,905 px.
+  - The board's and the Yard's info layer's words are drawn by Core Graphics again, as in 0.1.6
+    (pass 5 had moved them to Vello). Core Graphics' glyphs are a little heavier than Vello's;
+    every mark, colour and position is the same.
+  - The board's diff is the words' anti-aliasing: 60 k of 1.3 M px, 6.8 k over 64 of 255.
+
+**The mini** (1440×900, dev builds of head `81f4ba5` and base `e5d51d6` on one private Exact,
+`/tmp/p6/p6-m.sh` + `p6-batch2.sh`. Interleaved, 15:06–15:25Z, sy-ship's build off the mini, load
+1.0–1.8. Raw logs: `/tmp/p6/mini/`.)
+
+Idle with timers: the frozen mock (it serves `tstream`; 3 builds running), CPU from `ps` over 56–57 s:
+
+| Tab | base `e5d51d6` | head | frames in the windows |
+|---|---|---|---|
+| Live | 1.81 %, 2.18 % | 1.86 %, 1.84 % | 0 / 0 |
+| Board | 1.81 %, 1.70 % | **1.25 %, 1.23 %** | 0 / 0 (head: 0 GPU, 1 bitmap replay a second; base: 1 GPU replay a second, 3.3–5.5 ms each) |
+| Yard | 1.41 % | **0.89 %** | 0 / 0 |
+| Live, paused | — | 0.11 % | 0 |
+
+Busy: the recorded fleet at 10× (a fresh `switchyard-server --demo --speed 10` per run), window A,
+30 s:
+
+| | base | head |
+|---|---|---|
+| Board | 59.69 fps, 1 of 200 missed, p99 16.5–17 ms; every canvas on the GPU | 59.69 fps, 1 of 196 missed, p99 16.5–17 ms; 0 recorded, the board's bitmap 1–5 replays a second, the moving layer on the GPU |
+| Yard | 59.60 fps, 5 of 752 missed, p99 16.5–17 ms | 59.54 fps, 6 of 767 missed, p99 16.5–17 ms |
+
+The connect, which is the 6 s window right after settings-save (recorded fleet, Live on top):
+
+| | base | head |
+|---|---|---|
+| Frames | 51.07 fps, 11 missed of 77 | 58.00 fps, 2 missed of 85 |
+| Work max | 96–192 ms | **14.5–15 ms** |
+
+Busy CPU at 10×: the board 12.36 → 11.32 %, the Yard 24.59 → 23.41 %.
+
+**Results.**
+- The board is under the target: 1.81 / 1.70 → 1.25 / 1.23 %, with 60 fps kept at 10× (0 recorded).
+- The Yard is under it: 1.41 → 0.89 %.
+- The connect's hitch is gone.
+- Live is not under it: 2.0 → 1.85 % (the mean of two each). Its owner thread now does less (kept
+  rows; no kept answer, none of the per-second `exact.kept.nowTickData` writes the base did). But
+  each second's batch still costs the main thread its apply and `refreshVisibleText`'s walk. That is
+  Exact's host, and the app can't avoid it with one batch a second.
+
+**What is left.**
+- **Live ≤ 1.5 %** needs an Exact host change. `refreshVisibleText` (PresenterMac.swift:260) runs
+  after every batch, `batchApplied`, PresenterMac.swift:477. It walks every text near the viewport:
+  - `TextViewportIndex(…)` is rebuilt with a `convertRect` per node;
+  - it asks `canRasterText` → `textIsSmall` → `pixelScale` (ZoomMac.swift:30, a
+    `convertToBacking` per node) twice per node (replaceVisible, then the raster loop).
+  A batch that only changed some texts' content could refresh just those, or `pixelScale` could be
+  computed once per pass for nodes under no magnification. That is an exact-patches/0005 with its
+  own proof.
+- `native time format="timer"` is not a fit for Live. A standalone live `time` reserves its box for
+  one more hour digit, which would move the "/ ~5:26" after it. Inside a paragraph it would need a
+  space for the 4 px gap. And it would still be one batch a second.
+- The macOS `tests/*.test.contract` suite on `81f4ba5`, on the mini after the A/B: every file
+  0 failed (`suite rc=0`, 16 files, some tests skipped on macOS as marked).
+
