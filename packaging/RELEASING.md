@@ -129,7 +129,7 @@ SY_UPDATE_FEED=https://github.com/couplet-physical-ai/switchyard/releases/downlo
 # 2. a live soak of at least 20 min of the installed N: it stays alive, no crash report, and the
 #    heap and RSS stay flat; with the view cycle each segment is gated on its own heap, and the
 #    Yard must draw frames.
-SY_TOKEN_FILE=$T SY_SOAK_NEED_HEAP=1 SY_SOAK_HEAP_CAP_MB=<cap> SY_SOAK_CYCLE=live:8,factory:8,yard:9 \
+SY_TOKEN_FILE=$T SY_SOAK_NEED_HEAP=1 SY_SOAK_HEAP_CAP_MB=<cap> SY_SOAK_CYCLE=live:15,factory:15,yard:15 \
   scripts/release/soak-mini.sh $N   # 0.1.6+: cycles the views via switchyard://view/<name>
 # 3. only now: Latest + tap, then the users' paths: the stable feed and a fresh brew install.
 scripts/release.sh $N --promote
@@ -138,3 +138,38 @@ SY_TOKEN_FILE=$T SY_SNAPSHOT=1 scripts/release/install-e2e-mini.sh $N
 ```
 
 If any gate fails, the release stays a prerelease. Nothing needs to be rolled back.
+
+## The soak's memory gate, and why it changed (0.1.7)
+
+Up to the first 0.1.7 run, each view segment was judged by its **heap 3 minutes before the end
+compared with its last heap reading**, failing if it grew more than 8 %. That compares two single
+samples of a garbage-collected heap that swings 15 ↔ 19 MB minute to minute. The verdict depended
+on where the two samples landed in the sawtooth, not on whether memory grew:
+
+- **0.1.7 run 1:** flagged Live +12.1 % and Factory +12.6 %. The least-squares slopes of the same
+  runs were +0.19 and +0.15 MB/min, external memory was flat (≤ +0.02 MB/min), and RSS was flat.
+- **0.1.6:** passed, with a Live slope of +0.16 MB/min. Its samples simply landed better; on a
+  different sampling the same check would have flagged it too.
+- **sy-client's 40-min soak of the 0.1.7 tree:** successive 8-min windows of one Live run gave
+  slopes from −0.26 to +0.23 MB/min, while the 20-min half-means were 15.85 / 15.86 MB. An 8-min
+  slope is ±0.25 MB/min from GC noise alone.
+
+The gate was therefore changed **after a flagged run**, and that is stated here on purpose. It is
+legitimate because the old check was statistically broken, not too strict: it would have failed
+0.1.6 on another sampling. The flagged 0.1.7 run was **not** promoted on re-analysis; 0.1.7 got a
+fresh 45-min soak under the new gate.
+
+The gate now, per view segment (segments of at least 15 min):
+
+| Signal | Limit | Why |
+|---|---|---|
+| External-memory slope (least squares) | ≤ +0.05 MB/min | the primary leak signal: 0.1.3/0.1.4 grew it about 9 MB/min |
+| Heap slope (least squares) | ≤ +0.3 MB/min | uses every sample, not two |
+| Heap half-means (segments ≥ 10 min) | second half ≤ first half + 1.5 MB | robust to the sawtooth |
+| Live creep on the post-GC floor (each minute's lowest heap sample) | slope ≤ +0.1 MB/min **or** half-means ≤ +1 MB | slow creep where nothing redraws |
+| Heap maximum | ≤ the cap | |
+| Yard frames | > 0 | |
+| Process | alive, no new crash report | |
+
+A Live creep result with both legs within 20 % of their limits is BORDERLINE: the run exits 3, and
+the release is reported, not promoted.
