@@ -480,7 +480,8 @@ function overview(): Result<'overview'> {
   const S = yard.S;
   // One truth for building and queued: the yard, the status line and the QUEUE band agree.
   const { building, queued, red, up: appsUp, down: appsDown, apps: appsTotal, repos } = factory.coffee.status(w, stressOn, clock); // fx-glance: ONE count (buildingIds, queueTruth) for the status line and the coffee header; stress mode: the 10× fleet's own
-  const behind = tl.mode === 'live' ? '' : `${fmtDur(tl.behindMs())} behind`;
+  // (to the minute: no view shows it, and a field that moves each second re-sends every canvas's arguments on the web)
+  const behind = tl.mode === 'live' ? '' : `${fmtDur(Math.floor(tl.behindMs() / 60_000) * 60_000)} behind`;
   const sentence = w.loaded
     ? `${repos} repos · ${building} building · ${queued} queued · ${red} main ${red === 1 ? 'line' : 'lines'} red · ${appsUp} of ${appsTotal} apps up` // fx-glance
     : 'waiting for the fleet';
