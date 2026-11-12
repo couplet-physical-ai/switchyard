@@ -12,6 +12,7 @@ from typed arrays, without holding ten times the entities.
 |---|---|---|
 | macOS (Metal) | `tools/perf-drive.mjs macos … "perf frames live 6000"` | Exact's frame health on a normal event loop (`EXACT_AGENT=live`): display-link callbacks, FPS, missed slots on the 60 Hz grid, and per-frame *work* (from the frame's timestamp until its callback returned and the owner work it sent landed). Drives use a named, emptied store (`--storage yard-perf --reset-storage`) and connect by real taps; any `clock` op would put the app on the agent's virtual clock, and then frame health reads `virtual-clock` and nothing is measured. |
 | Web Chromium | `tools/perf-web.mjs [--server URL] [--stress] [--scale 2]` | Playwright's Chromium on a free `requestAnimationFrame` loop (fps, median and p95 interval), and CDP `Performance.getMetrics` over the window: `ScriptDuration` (all JavaScript) and `TaskDuration` (all main-thread work) divided by frames. |
+| Bun (headless) | `tools/live-heap.ts [--server URL] [--min 60] [--no-live]`, or `--server demo --sim` | The data module's retained heap with Live on top: app.ts driven as Contract asks it (connect, the stream through a real WebSocket, overview per tick, nowFeed, nowTick, the pulse, `fed` and the wakes), `Bun.gc(true)` then `heapStats()` every 30 s, the growing object types. `--no-live` leaves Live's sources out (the stream, the world and the overview only). |
 | Either | the HUD (⌘⇧D, or `hud` in the status line) | fps and frame interval from `frame.time`, the cost model's draw estimate, quality level, LOD histogram, packet counts, info-layer redraw rate and cost. The draw figure is an *estimate* (calibrated per executor: Hermes or JIT); a `draw` may not read a clock. |
 
 The build Mac is shared. Every macOS row says what else was running.
@@ -1004,3 +1005,47 @@ Busy CPU at 10×: the board 12.36 → 11.32 %, the Yard 24.59 → 23.41 %.
 - The macOS `tests/*.test.contract` suite on `81f4ba5`, on the mini after the A/B: every file
   0 failed (`suite rc=0`, 16 files, some tests skipped on macOS as marked).
 
+
+## Live's heap (live-heap): no creep, the Mac's slopes are the GC sawtooth (2026-11-12)
+
+The release soaks' heap line on the mini (Hermes `js_allocatedBytes`, every 30 s) gave Live +0.11 to
++0.19 MB/min over 7–9-min segments, with external memory and RSS flat; another soak's 20-min Live
+segment was flat (half-means 15.85 / 15.86 MB). `js_allocatedBytes` counts garbage not yet collected,
+so the question was whether anything is *retained*.
+
+`tools/live-heap.ts` drives the real data module in Bun as the Mac's Live tab does (Contract's
+cadences, the stream through a real WebSocket) and reads the retained heap after a full GC every
+30 s (`Bun.gc(true)`, `heapStats()`). From 2 min (the fleet in) to the end:
+
+| Run | Retained heap | Slope, whole run | Slope, last 30 min | Objects |
+|---|---|---|---|---|
+| Live fleet, 60 min, Live's sources asked | 17.76 → 18.82 MB (min 17.64, max 18.97), half-means 18.18 / 18.68 | +0.017 MB/min | +0.007 MB/min | 82,164 → 94,793 |
+| Live fleet, 60 min, `--no-live` (stream, world, overview) | 15.55 → 16.36 MB, half-means 15.84 / 16.24 | +0.013 MB/min | +0.006 MB/min | 73,842 → 82,850 |
+| Recorded fleet at 10× (local `--demo --speed 10`), 45 min, Live | 16.83 → 17.28 MB (min 16.74, max 17.56) | +0.008 MB/min | +0.002 MB/min | 78,542 → 79,803 |
+| the same, `--no-live` | 14.85 → 14.80 MB | +0.003 MB/min | +0.001 MB/min | 70,098 → 72,371 |
+
+- Live itself retains 2.2–2.5 MB (its last feed, its rows, the flow model's caches), the same at
+  the start and at the end. Its share of the slope is +0.004 MB/min over the whole hour (2,125
+  frames, 2,915 feeds and 9,533 ticks; the stream dropped and reopened twice) and +0.001 over the
+  last 30 min. At 10× the stream (13,474 frames, 5,813 feeds, 9 snapshot reloads) it is +0.005 and
+  +0.001, and Live's object count is flat (+1,261).
+- What grows is the world and the stream, in both runs, and it slows: +0.013 → +0.006 MB/min.
+  The fleet grew a little (over the last 40 min: 176 → 200 pipelines, the snapshot 2.80 → 2.82 MB). `world.recent`
+  (≤ 400 events at ~30 a minute) fills in ~13 min. The object types that grew are many small
+  strings (+5,874 with Live, +3,930 without) and JSC Structures (+3,115 / +2,030: the server's
+  objects come in many key orders). Arrays and Objects grew by under 1,200 each, and no type grows in
+  step with feeds or ticks.
+- `--server demo --sim` (the built-in demo on a virtual clock, 6 h in ~7 min) grows ~0.07 MB/min
+  with or without Live. That is the in-app demo's own simulation filling its 24 h of history
+  (`server/sim.ts`, commits kept a day); Live adds its world-sized caches on top (+2.6 → +3.9 MB
+  over 6 h, as that world grows).
+
+Nothing to fix. The heap line's +0.11–0.19 MB/min over 7–9 min is Hades collecting old garbage only
+now and then, at Live's low allocation rate. A segment shorter than one GC cycle reads as a slope,
+and the 20-min segment's flat half-means are the same heap seen over a whole cycle.
+
+Rerun (from `app/`, ~60 min each, both at once):
+`timeout 4200 bun tools/live-heap.ts --min 60 --out /tmp/live.jsonl` and the same with `--no-live`;
+add `--server http://127.0.0.1:<port> --no-token` for a local `switchyard-server --demo --speed 10
+--auth open`. The token comes from `SWITCHYARD_TOKEN_FILE` (default `~/.config/switchyard/e2e-token`)
+and is never printed.
