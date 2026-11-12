@@ -661,3 +661,71 @@ Mini, paused Live, 30 s, frozen mock (load 1.4–1.8):
 
 `fc37169` (paused: one wake every 32 s instead of a ladder rung that never shrank, since the
 playhead stands) stays: fewer wakes, no frames either way.
+
+## Pass 5, the board (p5-board): no frame waits on a whole board, and a refused stream stops looping (2026-11-12)
+
+Branch `sy/mac-p5board`, base `50768b6`. The board (Factory) at 10× read 32–40 fps with
+0.2–0.8 s stalls on the mini (pre-existing; 60 at 1×). Two causes, both the board's own.
+
+**1. The board never reached the GPU** (`f33ac50`). The macOS host gives a canvas to its GPU
+module only if the first draw with anything in it after a fresh bitmap asks for the next frame
+(PERF.md "Where the native frame went"; the old floor's and the Yard's `gpuClaim`). Board3's two
+layers asked for nothing there (an idle board asks for nothing), so both stayed with Core
+Graphics; and while a transit animates (both layers ask for frames until it lands: at 10× nearly
+always) Core Animation records and replays, on the main thread, every list the canvas kept since
+its last cover, each frame. The board's partial repaints never cover, so that was up to 64 lists
+a frame. Each layer's first paint on a fresh bitmap now asks for one more frame (which draws
+nothing); a fresh bitmap whose draw was skipped while covered (app.ts) is owed its whole paint and
+its claim.
+
+**2. A change in the number of marks repainted the whole board** (`bdfb9f7`, `69b0626`).
+`paint()` compared the scenes index by index and went whole whenever their lengths differed: a run
+arriving, leaving or landing. A whole board is 100–180 KB of list through Exact's recorder (the
+list, base64, JSON); at 10× that came about once a second. Now:
+- `diffOps` walks both lists in order and aligns them again after marks that came or went (the
+  nearest equal pair, 24 marks a side, 6,000 compares at most, else whole). Matched marks keep their
+  order in both lists, so a pixel outside every changed box is painted by the same marks in the
+  same order.
+- The 30 % whole-repaint share is the boxes' union in 16 px tiles, not their sum (the events list
+  moving down one row is ~280 overlapping boxes in one column).
+- Over 24 boxes, the repaint is cleared and clipped as its tiles' runs, and every mark on those
+  tiles is painted again: a few rects, not hundreds.
+- A whole or tiled repaint paints last, grouped by font and colour, every word that no later mark
+  and no other word overlaps (`paintOrder`): each font change sends the face's whole family list
+  (Exact's recorder: a number per character, ~400 B), and the board's words alternate fonts (~120
+  changes, half of a whole board). A whole board: 101.7 → 69.7 KB (the fixtures' board).
+
+**Devbox** (`tools/f3-bench.ts`, new: the board against the live 10× recorded fleet in Bun, a small
+Contract runtime (connect, the stream, the overview at the pulse / `fed` / wakes, `rk`, 60 Hz
+draws), the draws through Exact's own recorder (`--real`), `BUN_JSC_useJIT=0`, 45 s, interleaved,
+load 1.5–2.2):
+
+| Run | Whole paints | Frames > 16 ms | Frame work p99 / max | Largest list |
+|---|---|---|---|---|
+| base 1 | 26 of 84 (every count change) | 31 | 40.3 / 63.0 ms | 158.6 KB |
+| head 1 | 3 of 67 (the mount, layout changes) | 3 | 11.5 / 39.6 ms | 108.1 KB (the mount) |
+| base 2 | 19 of 77 | 24 | 45.7 / 71.4 ms | 177.3 KB |
+| head 2 | 2 of 77 | 6 | 27.1 / 39.7 ms | 107.9 KB (the mount) |
+| head + tile runs (`69b0626`) | 3 of 84 (the mount, the bench's font pass, a layout change) | 6 | 24.3 / 39.7 ms | partials ≤ 60 KB |
+| head + words grouped | 3 of 78 | 6 | 23.0 / 36.1 ms (the mount) | 72.8 KB (the mount) |
+
+**Pixels.** `f3-bench --pixels`: every board list also goes to a canvas that keeps it (Exact's web
+replayer in headless Chromium, `tools/floorpix.ts`), and after each paint a whole repaint of the
+same scene, in the scene's own order, goes to a fresh one. 84 paints at 10× (81 partial, 3 whole):
+**0 pixels differ**; with the words grouped, 78 paints (73 partial): **0 pixels differ**.
+`factory3-shots stills` base vs head (frozen fixtures): the only differences are the running
+timers (the two runs 4 s apart) and the proxy's port in the status line.
+
+**3. A refused stream** (`9648d25`). Against a server that refuses `/api/v1/tstream`, `retry`
+bumped `gen`, the connect's argument, so every rung of the ladder fetched the 2 MB snapshot again
+and loaded a new world (Live rebuilt; and paused, `tl.load` put the module back to live under a
+paused UI, so its 1 Hz timers ticked). The ladder itself was right: 2, 4, 8, 16, then every 30 s
+(the 8–16 s seen were its rungs inside 30 s windows; a test on the base tree reaches 30 s and
+stays). Now:
+- `retry` bumps `fgen`, the stream's own argument; the connect (and the world, and Live's rows)
+  stands. The stream resumes after the newest seq it brought (`since`); a resume the server can
+  no longer serve comes back as a reset, which refetches the snapshot at once (`refetch`).
+- A failed connect still asks the snapshot on the ladder.
+- A reload while paused stays paused.
+- `tests/reconnect.test.contract`: the mock's `/nostream/` (the same API, the stream 404'd);
+  retries at 2, 4, 8, 16, 30, 30, 30 s, never sooner; `gen` stands (one snapshot); Live's rows stand.
