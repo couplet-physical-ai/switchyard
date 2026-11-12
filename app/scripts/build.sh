@@ -7,6 +7,8 @@
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 EXACT2=${EXACT2:-$("$here/scripts/fetch-exact.sh" | tail -1)}
+# A given checkout gets our Exact patches too (idempotent), so every build is the release's Exact.
+"$here/scripts/patch-exact.sh" "$EXACT2"
 export EXACT2 EXACT_FEEDBACK=${EXACT_FEEDBACK:-0}
 cd "$here"
 case "${1:-}" in
