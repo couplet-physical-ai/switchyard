@@ -213,3 +213,64 @@ test "board: the tabs leave and come back; a Live deep link leaves the Factory"
   type "root" "/?repo=Northwind-Labs%2Fcicd"
   clock settle
   expect state here == "now"
+
+// The board's own time controls (they share the timeline with the Yard's): its "replay the last
+// hour" button plays the hour at 60× and the footer's go-live comes back; Pause holds, Play
+// resumes; ¼× plays behind live and 1× catches up. The board stays the board throughout.
+test "board: replay the last hour, then back to live"
+  clock data
+  type "root" "/factory"
+  clock settle
+  tap "setup-demo"
+  clock data
+  clock +1000
+  expect state ov.mode == "live"
+  tap "replay"
+  clock data
+  expect state mode == "replay"
+  expect state ov.mode == "replay"
+  expect state ov.speed == 60
+  expect tree has "factory-moving"
+  clock +2000
+  expect state ov.mode == "replay"
+  tap "go-live"
+  clock data
+  expect state ov.mode == "live"
+  expect state ov.speed == 1
+  expect tree missing "go-live"
+  expect state here == "factory"
+
+test "board: pause and play, quarter speed and 1×"
+  clock data
+  type "root" "/factory"
+  clock settle
+  tap "setup-demo"
+  clock data
+  clock +1000
+  expect tree has "timebar"
+  tap "pause"
+  clock data
+  expect state mode == "paused"
+  expect state ov.mode == "paused"
+  expect text "pause" == "Play"
+  expect tree has "go-live"
+  clock +2000
+  tap "pause"
+  clock data
+  expect text "pause" == "Pause"
+  tap "go-live"
+  clock data
+  expect state ov.mode == "live"
+  tap "speed-quarter"
+  clock data
+  expect state speed == 0.25
+  expect state ov.mode == "behind"
+  clock +3000
+  tap "speed-1"
+  clock data
+  expect state speed == 1
+  tap "go-live"
+  clock data
+  expect state ov.mode == "live"
+  expect state here == "factory"
+  expect tree has "factory-moving"
