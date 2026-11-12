@@ -37,7 +37,7 @@ and a token (kept in a file only you can read, "Security" below) in the connecti
 ### Exact patches
 
 Our native builds use a patched Exact. `scripts/exact-patches/*.patch` (applied in name order
-to the checkout at `exact.pin`) is the whole set; today there are four:
+to the checkout at `exact.pin`) is the whole set; today there are five:
 
 - `0001-heap-512m.patch`: `exact_js::DEFAULT_MAX_HEAP` (`js/src/lib.rs`) 64 MiB → 512 MiB, the
   Hermes heap ceiling of the data module (app.ts). Exact has no app-level setting for it (only
@@ -51,6 +51,10 @@ to the checkout at `exact.pin`) is the whole set; today there are four:
 - `0004-recorder-roundrect-one-radius.patch` (after 0003): the recorder's `roundRect` with one
   radius and a size that is not negative records the same ops without the ~70 arrays it made
   per rectangle (byte-identical; less garbage for Hermes to collect).
+- `0005-mac-text-pass-touched-only.patch` (macOS host only): after a batch that only gives text
+  new words (a running timer's second), the Mac presenter's text pass asks only of the paragraphs
+  that batch touched, when nothing else moved, scrolled or is owed, instead of rebuilding its
+  index and walking every paragraph near the viewport (30 % of Live's idle CPU; PERF.md, pass 7).
 
 `scripts/patch-exact.sh <exact dir>` applies them to a checkout's working tree (HEAD stays at
 the pin). `scripts/fetch-exact.sh` calls it after checkout and before setup, into
