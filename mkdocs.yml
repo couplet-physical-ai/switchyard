@@ -9,6 +9,10 @@ site_description: The live control room for a CI/CD fleet. Every commit, pipelin
 repo_url: https://github.com/couplet-physical-ai/switchyard
 edit_uri: edit/main/docs/
 
+extra:
+  # local previews (mkdocs serve) resolve Hypothesis annotations to the published URL
+  canonical_base: https://switchyard.docs.example.com
+
 nav:
   - Home: index.md
   - Guides:
