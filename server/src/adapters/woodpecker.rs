@@ -190,6 +190,13 @@ pub fn map_state(s: &str) -> CiState {
     }
 }
 
+/// A pipeline Woodpecker stored before reading its config: `created` with no workflows.
+/// If no workflow matches the event it is deleted unpublished (a 404 from then on);
+/// otherwise it is published again with its workflows moments later.
+pub fn pre_config(p: &WpPipeline) -> bool {
+    p.status == "created" && p.workflows.as_ref().is_none_or(|w| w.is_empty())
+}
+
 pub fn map_event(e: &str) -> PipelineEvent {
     match e {
         "pull_request" | "pull_request_closed" | "pull_request_metadata" => {
@@ -246,8 +253,12 @@ impl Mapper {
     }
 
     /// Map one Woodpecker pipeline (list row, detail or SSE event) to facts:
-    /// the pipeline itself, plus a deploy fact for each deploy workflow.
+    /// the pipeline itself, plus a deploy fact for each deploy workflow. Nothing for a
+    /// pipeline that is not real yet ([`pre_config`]).
     pub fn facts(&self, repo: &str, repo_id: u64, p: &WpPipeline) -> Vec<Fact> {
+        if pre_config(p) {
+            return Vec::new();
+        }
         let mut out = Vec::with_capacity(2);
         let event = map_event(&p.event);
         let pr = if event == PipelineEvent::PullRequest {
@@ -513,6 +524,16 @@ impl WpClient {
     }
 
     pub async fn get<T: for<'de> Deserialize<'de>>(&self, path: &str) -> anyhow::Result<T> {
+        self.get_opt(path)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("GET {path}: HTTP 404 Not Found"))
+    }
+
+    /// [`WpClient::get`], with a 404 as `Ok(None)` (every other failure is an error).
+    pub async fn get_opt<T: for<'de> Deserialize<'de>>(
+        &self,
+        path: &str,
+    ) -> anyhow::Result<Option<T>> {
         self.adapters.request(NAME, 1);
         let r = self
             .http
@@ -522,10 +543,13 @@ impl WpClient {
             .send()
             .await?;
         let st = r.status();
+        if st == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
         if !st.is_success() {
             anyhow::bail!("GET {path}: HTTP {st}");
         }
-        Ok(r.json().await?)
+        Ok(Some(r.json().await?))
     }
 
     pub async fn repos(&self) -> anyhow::Result<Vec<WpRepo>> {
@@ -543,8 +567,9 @@ impl WpClient {
         Ok(out)
     }
 
-    pub async fn pipeline(&self, repo_id: u64, number: u64) -> anyhow::Result<WpPipeline> {
-        self.get(&format!("/api/repos/{repo_id}/pipelines/{number}"))
+    /// One pipeline's detail; `None` once Woodpecker has deleted it (404).
+    pub async fn pipeline(&self, repo_id: u64, number: u64) -> anyhow::Result<Option<WpPipeline>> {
+        self.get_opt(&format!("/api/repos/{repo_id}/pipelines/{number}"))
             .await
     }
 
@@ -901,7 +926,9 @@ impl WpAdapter {
                         {
                             details.push((rid, name.clone(), p.number));
                         }
-                        sh.lock().known.insert((rid, p.number), p.status.clone());
+                        if !pre_config(&p) {
+                            sh.lock().known.insert((rid, p.number), p.status.clone());
+                        }
                         facts.extend(mapper.facts(&name, rid, &p));
                         if facts.len() >= 500 {
                             self.send(std::mem::take(&mut facts), false).await;
@@ -918,16 +945,20 @@ impl WpAdapter {
         let got = futures::stream::iter(details)
             .map(|(rid, name, n)| {
                 let c = self.client.clone();
-                async move { (rid, name, c.pipeline(rid, n).await) }
+                async move { (rid, name, n, c.pipeline(rid, n).await) }
             })
             .buffer_unordered(8)
             .collect::<Vec<_>>()
             .await;
         let mut facts = Vec::new();
-        for (rid, name, r) in got {
-            if let Ok(p) = r {
-                self.queue_logs(&name, rid, &p, false);
-                facts.extend(mapper.facts(&name, rid, &p));
+        for (rid, name, n, r) in got {
+            match r {
+                Ok(Some(p)) => {
+                    self.queue_logs(&name, rid, &p, false);
+                    facts.extend(mapper.facts(&name, rid, &p));
+                }
+                Ok(None) => facts.push(gone(sh, &name, rid, n)),
+                Err(_) => {}
             }
         }
         self.send(facts, false).await;
@@ -976,11 +1007,14 @@ impl WpAdapter {
                 continue;
             };
             match self.client.pipeline(rid, n).await {
-                Ok(p) => {
-                    sh.lock().known.insert((rid, n), p.status.clone());
+                Ok(Some(p)) => {
+                    if !pre_config(&p) {
+                        sh.lock().known.insert((rid, n), p.status.clone());
+                    }
                     self.queue_logs(&name, rid, &p, true);
                     facts.extend(mapper.facts(&name, rid, &p));
                 }
+                Ok(None) => facts.push(gone(sh, &name, rid, n)),
                 Err(e) => debug!(error = %e, "reconcile detail failed"),
             }
         }
@@ -1078,8 +1112,10 @@ async fn stream_once(
                         g.repos
                             .entry(e.repo.id)
                             .or_insert_with(|| e.repo.full_name.clone());
-                        g.known
-                            .insert((e.repo.id, e.pipeline.number), e.pipeline.status.clone());
+                        if !pre_config(&e.pipeline) {
+                            g.known
+                                .insert((e.repo.id, e.pipeline.number), e.pipeline.status.clone());
+                        }
                         let m = Mapper {
                             public_url: client.public_url.clone(),
                             agents: g.agents.clone(),
@@ -1101,6 +1137,14 @@ async fn stream_once(
                 Err(err) => debug!(error = %err, "unparsed woodpecker event"),
             }
         }
+    }
+}
+
+/// Woodpecker deleted this pipeline (404): forget it and take it off the board.
+fn gone(sh: &Mutex<Shared>, repo: &str, rid: u64, n: u64) -> Fact {
+    sh.lock().known.remove(&(rid, n));
+    Fact::PipelineGone {
+        id: ids::wp_pipeline(repo, n),
     }
 }
 

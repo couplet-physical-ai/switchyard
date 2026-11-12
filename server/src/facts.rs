@@ -21,6 +21,10 @@ pub enum Fact {
     MainHist(MainHist),
     /// A CI run: Woodpecker pipeline or GitHub Actions run, full current state.
     Pipeline(Pipeline),
+    /// A pipeline the upstream no longer has (Woodpecker deleted it: 404): drop it.
+    PipelineGone {
+        id: String,
+    },
     /// A pull request as GitHub reports it.
     Pr(PrFact),
     /// A commit status or check run on a sha (one context).
