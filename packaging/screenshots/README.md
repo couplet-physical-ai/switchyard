@@ -2,7 +2,9 @@
 
 Images the top-level README's hero uses. Dark appearance, a 1440x900 window (the Mac mini's
 display is 1x, so macOS shots are 1440x900; web shots can be 2880x1800 with `EXACT_SCALE=2`), real data from a live server
-or the built-in demo fleet; nothing internal in frame (no private hostnames or IPs).
+or the built-in demo fleet; nothing internal in frame (no private hostnames, IPs, org or repo
+names). The shots taken before the public scrub (2026-11-13) have such names painted over with
+the background; re-shoot from the demo fleet (synthetic names) to replace them.
 
 | File | What |
 |---|---|
