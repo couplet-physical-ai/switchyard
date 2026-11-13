@@ -900,15 +900,30 @@ fn median(mut v: Vec<Ms>) -> Option<Ms> {
     Some(v[v.len() / 2])
 }
 
+static BOT_MARKERS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// The site's own bots whose logins carry no `[bot]` / `-bot` mark: lowercase substrings
+/// (`SWITCHYARD_BOT_LOGINS`, comma list), set once at boot (later calls are ignored).
+pub fn set_bot_markers(markers: Vec<String>) {
+    let _ = BOT_MARKERS.set(
+        markers
+            .into_iter()
+            .map(|m| m.trim().to_ascii_lowercase())
+            .filter(|m| !m.is_empty())
+            .collect(),
+    );
+}
+
 pub fn is_bot(login: &str) -> bool {
     let l = login.to_ascii_lowercase();
     l.ends_with("[bot]")
         || l.ends_with("-bot")
         || l.contains("renovate")
         || l.contains("dependabot")
-        || l.contains("autofix")
         || l == "github-actions"
-        || l == "northwind-ci-bot"
+        || BOT_MARKERS
+            .get()
+            .is_some_and(|m| m.iter().any(|b| l.contains(b.as_str())))
 }
 
 /// Transient events for one pipeline observation (old → new).

@@ -93,21 +93,21 @@
             "context": "ci/woodpecker/push/deploy",
             "state": "PENDING",
             "createdAt": "2026-11-10T19:41:25Z",
-            "targetUrl": "https://ci.dev.example.internal/repos/64/pipeline/28/3"
+            "targetUrl": "https://ci.dev.example.com/repos/64/pipeline/28/3"
            },
            {
             "__typename": "StatusContext",
             "context": "ci/woodpecker/push/ci",
             "state": "SUCCESS",
             "createdAt": "2026-11-10T19:41:24Z",
-            "targetUrl": "https://ci.dev.example.internal/repos/64/pipeline/28/1"
+            "targetUrl": "https://ci.dev.example.com/repos/64/pipeline/28/1"
            },
            {
             "__typename": "StatusContext",
             "context": "ci/woodpecker/push/docs",
             "state": "SUCCESS",
             "createdAt": "2026-11-10T19:40:29Z",
-            "targetUrl": "https://ci.dev.example.internal/repos/64/pipeline/28/2"
+            "targetUrl": "https://ci.dev.example.com/repos/64/pipeline/28/2"
            }
           ]
          }
@@ -185,21 +185,21 @@
             "context": "ci/failsafe-deploy",
             "state": "SUCCESS",
             "createdAt": "2026-11-10T19:36:45Z",
-            "targetUrl": "https://ci.dev.example.internal/repos/30/pipeline/23"
+            "targetUrl": "https://ci.dev.example.com/repos/30/pipeline/23"
            },
            {
             "__typename": "StatusContext",
             "context": "ci/woodpecker/push/ci",
             "state": "SUCCESS",
             "createdAt": "2026-11-10T19:35:31Z",
-            "targetUrl": "https://ci.dev.example.internal/repos/30/pipeline/23/1"
+            "targetUrl": "https://ci.dev.example.com/repos/30/pipeline/23/1"
            },
            {
             "__typename": "StatusContext",
             "context": "ci/woodpecker/push/deploy",
             "state": "SUCCESS",
             "createdAt": "2026-11-10T19:36:46Z",
-            "targetUrl": "https://ci.dev.example.internal/repos/30/pipeline/23/2"
+            "targetUrl": "https://ci.dev.example.com/repos/30/pipeline/23/2"
            }
           ]
          }
@@ -329,21 +329,21 @@
             "context": "ci/failsafe-deploy",
             "state": "SUCCESS",
             "createdAt": "2026-11-10T15:47:56Z",
-            "targetUrl": "https://ci.dev.example.internal/repos/44/pipeline/97"
+            "targetUrl": "https://ci.dev.example.com/repos/44/pipeline/97"
            },
            {
             "__typename": "StatusContext",
             "context": "ci/woodpecker/push/ci",
             "state": "SUCCESS",
             "createdAt": "2026-11-10T15:43:57Z",
-            "targetUrl": "https://ci.dev.example.internal/repos/44/pipeline/97/1"
+            "targetUrl": "https://ci.dev.example.com/repos/44/pipeline/97/1"
            },
            {
             "__typename": "StatusContext",
             "context": "ci/woodpecker/push/deploy",
             "state": "SUCCESS",
             "createdAt": "2026-11-10T15:47:57Z",
-            "targetUrl": "https://ci.dev.example.internal/repos/44/pipeline/97/2"
+            "targetUrl": "https://ci.dev.example.com/repos/44/pipeline/97/2"
            }
           ]
          }

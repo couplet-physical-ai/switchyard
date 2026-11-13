@@ -103,7 +103,7 @@ second** (`ReducerCfg::insights_every_ms`) instead of on each 33 ms flush; trend
 
 ## Deployed server
 
-`https://switchyard.apps.example.internal` — platform LXC (2 cores / 2 GiB), `--profile ct` build,
+`https://switchyard.apps.example.com` — platform LXC (2 cores / 2 GiB), `--profile ct` build,
 live against every upstream (five orgs, ~390 repos, ~240 apps). Measured from a Linux dev box
 through the platform edge (TLS, Caddy) with a read-only service token.
 
@@ -118,5 +118,5 @@ through the platform edge (TLS, Caddy) with a read-only service token.
 Re-run the live check any time:
 
 ```sh
-SY_TOKEN=… cargo run --release --example e2e -- https://switchyard.apps.example.internal
+SY_TOKEN=… cargo run --release --example e2e -- https://switchyard.apps.example.com
 ```

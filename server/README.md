@@ -3,7 +3,7 @@
 The live brain of Switchyard: one Rust (tokio + axum) binary that ingests every CI/CD
 upstream of the fleet (Roadrunner/Woodpecker, GitHub, the cicd console, the apps catalog),
 keeps the whole fleet's state in memory, and streams it to every client as one snapshot +
-a delta stream. Deployed at **https://switchyard.apps.example.internal**. The wire protocol is
+a delta stream. Deployed at **https://switchyard.apps.example.com**. The wire protocol is
 [`contract/CONTRACT.md`](../contract/CONTRACT.md).
 
 ```
@@ -119,8 +119,8 @@ h=$(tr -d '\n' < new-token | sha256sum | cut -d' ' -f1)
 # list every identity that should keep working, e.g. e2e:<h1>,client:<h2>
 printf 'e2e:%s,client:%s' "$h" "$h_client" | gh secret set SWITCHYARD_SERVICE_TOKENS -R Northwind-Labs/deploy-wrapper
 gh workflow run populate-secrets.yml -R Northwind-Labs/deploy-wrapper   # writes the app env, restarts it
-curl -so /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $(cat old-token)" https://switchyard.apps.example.internal/api/v1/meta  # 401
-curl -so /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $(cat new-token)" https://switchyard.apps.example.internal/api/v1/meta  # 200
+curl -so /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $(cat old-token)" https://switchyard.apps.example.com/api/v1/meta  # 401
+curl -so /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $(cat new-token)" https://switchyard.apps.example.com/api/v1/meta  # 200
 ```
 
 Device tokens: `GET /api/v1/tokens` lists the caller's, `DELETE /api/v1/tokens/{id}` revokes one. The cicd
@@ -145,9 +145,9 @@ Live checks against a running server (numbers in [`docs/PERF.md`](docs/PERF.md))
 ```sh
 # health, readiness (every adapter ok), a real snapshot, live deltas; with a sha pushed
 # right after it starts, the time until that commit shows up on the stream
-SY_TOKEN=… cargo run --release --example e2e -- https://switchyard.apps.example.internal [sha]
+SY_TOKEN=… cargo run --release --example e2e -- https://switchyard.apps.example.com [sha]
 # N real WebSocket clients: delivery lag, merged frames, resets
-cargo run --release --example wsload -- wss://switchyard.apps.example.internal/api/v1/stream 200 60
+cargo run --release --example wsload -- wss://switchyard.apps.example.com/api/v1/stream 200 60
 ```
 
 ## Deploy
@@ -167,7 +167,7 @@ git archive <sha> app contract packaging | tar -x -C /tmp/sy-src
 # 2. pin the server + web together; pushing main deploys (Roadrunner, ~2 min)
 cd deploy-wrapper && scripts/bump.sh <sha> --web /tmp/sy-web && git push origin main
 # 3. verify (meta.git_sha and meta.web.sha are the pinned commit)
-SY_TOKEN=$(cat e2e-token) cargo run --release --example e2e -- https://switchyard.apps.example.internal
+SY_TOKEN=$(cat e2e-token) cargo run --release --example e2e -- https://switchyard.apps.example.com
 ```
 
 Server and web always ship in one bump, so the page and the stream never disagree on the

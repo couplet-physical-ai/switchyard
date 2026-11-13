@@ -552,12 +552,9 @@ fn derived_values() {
     let r = entity(&v, "repos", "Northwind-EMS/ember-api");
     assert_eq!(
         r["links"]["woodpecker"],
-        "https://ci.dev.example.internal/repos/38"
+        "https://ci.dev.example.com/repos/38"
     );
-    assert_eq!(
-        r["links"]["cicd"],
-        "https://cicd.apps.example.internal/repos/38"
-    );
+    assert_eq!(r["links"]["cicd"], "https://cicd.apps.example.com/repos/38");
     let c = entity(
         &v,
         "commits",

@@ -140,8 +140,8 @@ fn pick<'a>(list: &'a [&'a str], seed: u64) -> &'a str {
     list[(seed % list.len() as u64) as usize]
 }
 
-/// The domain every private host moves to (`ci.dev.<private>` → `ci.dev.example.internal`).
-pub const NEUTRAL_DOMAIN: &str = "example.internal";
+/// The domain every private host moves to (`ci.dev.<private>` → `ci.dev.example.com`).
+pub const NEUTRAL_DOMAIN: &str = "example.com";
 
 /// What a recording calls private (site-specific, from the environment).
 #[derive(Clone, Debug, Default)]
@@ -1374,16 +1374,16 @@ mod tests {
             c.neutral_hosts(
                 r#"{"url":"https://ci.dev.corp.example/repos/1/pipeline/84","b":"https://ci.dev.corp.example"}"#
             ),
-            r#"{"url":"https://ci.dev.example.internal/repos/1/pipeline/84","b":"https://ci.dev.example.internal"}"#
+            r#"{"url":"https://ci.dev.example.com/repos/1/pipeline/84","b":"https://ci.dev.example.com"}"#
         );
         assert_eq!(
             c.neutral_hosts("https://x.lab.internal:8000/a"),
-            "https://x.example.internal:8000/a"
+            "https://x.example.com:8000/a"
         );
         for keep in [
             "https://github.com/a/b",
             "https://notcorp.example/",
-            "https://switchyard.apps.example.internal/",
+            "https://switchyard.apps.example.com/",
             "plain text",
         ] {
             assert_eq!(c.neutral_hosts(keep), keep);
@@ -1394,12 +1394,12 @@ mod tests {
         assert!(c.check_clean(b"Acme-Private-Two/billing").is_ok());
         assert_eq!(
             c.neutral_text("POST http://prov-api.corp.example:8000/api failed"),
-            "POST http://prov-api.example.internal:8000/api failed"
+            "POST http://prov-api.example.com:8000/api failed"
         );
         let bare = "dial prov-api.lab.internal:8000: refused. ok.corp.example.";
         assert_eq!(
             c.neutral_text(bare),
-            "dial prov-api.example.internal:8000: refused. ok.example.internal."
+            "dial prov-api.example.com:8000: refused. ok.example.com."
         );
         assert!(c.check_clean(c.neutral_text(bare).as_bytes()).is_ok());
         assert_eq!(
@@ -1412,14 +1412,19 @@ mod tests {
         );
         // Private and shared address space, whatever the site (built at run time, so no
         // private address appears verbatim in the source).
-        for (a, rest) in [(10, ".1.2.3"), (192, ".168.0.9:80"), (172, ".20.0.1/"), (100, ".100.1.2")] {
+        for (a, rest) in [
+            (10, ".1.2.3"),
+            (192, ".168.0.9:80"),
+            (172, ".20.0.1/"),
+            (100, ".100.1.2"),
+        ] {
             let bad = format!("x //{a}{rest}");
             assert!(check_clean(bad.as_bytes()).is_err(), "{bad}");
         }
         for ok in ["v1.10.2", "8.8.8.8", "100.0.0.1", "took 10.8s", "1.2.3.4.5"] {
             assert!(check_clean(ok.as_bytes()).is_ok(), "{ok}");
         }
-        assert!(c.check_clean(b"https://ci.dev.example.internal/x").is_ok());
+        assert!(c.check_clean(b"https://ci.dev.example.com/x").is_ok());
     }
 
     #[test]
@@ -1480,7 +1485,7 @@ mod tests {
         assert!(!p["links"].to_string().contains("corp.example"), "{txt}");
         assert_eq!(
             p["links"]["cicd"],
-            "https://cicd.apps.example.internal/pipelines/9/7"
+            "https://cicd.apps.example.com/pipelines/9/7"
         );
         assert!(
             p["links"]["commit"]
@@ -1516,10 +1521,7 @@ mod tests {
         s.entity("deploy", &mut d);
         assert_eq!(
             d["links"]["app"],
-            format!(
-                "https://{}.apps.example.internal/",
-                d["app"].as_str().unwrap()
-            )
+            format!("https://{}.apps.example.com/", d["app"].as_str().unwrap())
         );
         assert!(
             !d.to_string().contains("secret") && !d.to_string().contains("billing."),
@@ -1527,14 +1529,11 @@ mod tests {
         );
         let mut e = serde_json::json!({"id": "wp-agent-1", "url": "https://ci.dev.corp.example/admin/agents"});
         s.entity("engine", &mut e);
-        assert_eq!(e["url"], "https://ci.dev.example.internal/admin/agents");
+        assert_eq!(e["url"], "https://ci.dev.example.com/admin/agents");
         // An app's URL keeps the site's app domain (neutral), its first label the stand-in.
         assert_eq!(
             a["url"],
-            format!(
-                "https://{}.apps.example.internal/",
-                a["id"].as_str().unwrap()
-            )
+            format!("https://{}.apps.example.com/", a["id"].as_str().unwrap())
         );
     }
 }

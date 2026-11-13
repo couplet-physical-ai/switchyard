@@ -65,14 +65,14 @@ runs.
 
 | Variable | Default | Used for |
 |---|---|---|
-| `WOODPECKER_URL` | `https://ci.dev.example.internal` | Woodpecker API + event stream |
+| `WOODPECKER_URL` | `https://ci.dev.example.com` | Woodpecker API + event stream |
 | `WOODPECKER_PUBLIC_URL` | `WOODPECKER_URL` | links shown to people |
 | `WOODPECKER_TOKEN` | — (adapter disabled) | Woodpecker API token of the CI bot identity (read-only use) |
 | `GITHUB_TOKEN` (or `GITHUB_BOT_TOKEN`) | — (adapter disabled) | GitHub GraphQL (read-only use) |
 | `GITHUB_API_URL` | `https://api.github.com` | |
-| `CICD_URL` | `https://cicd.apps.example.internal` | cicd console API |
+| `CICD_URL` | `https://cicd.apps.example.com` | cicd console API |
 | `CICD_READ_TOKEN` | — (falls back to the GitHub token: lanes + watcher only) | cicd SSO-gated reads (engine hosts, traces) |
-| `APPS_CATALOG_URL` | `https://catalog.apps.example.internal/api/apps` | app inventory + health |
+| `APPS_CATALOG_URL` | `https://catalog.apps.example.com/api/apps` | app inventory + health |
 | `SWITCHYARD_ORGS` | the five Exowatt orgs | which GitHub orgs to watch |
 | `SWITCHYARD_BACKFILL_HOURS` | `24` | boot backfill window |
 | `EXOWATT_AUTH_AUDIENCE` | — | OAuth client id(s) of the SSO edge (verifies browser identities) |

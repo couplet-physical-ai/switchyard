@@ -92,7 +92,38 @@ enum Cmd {
     },
 }
 
+/// `SWITCHYARD_ENV_FILE`: a dotenv-style file (`KEY=VALUE` lines, `#` comments, optional
+/// quotes) whose keys fill in what the environment leaves unset, so a local server can run
+/// from `server/.env` (copy `server/.env.example`). Deployed servers get their environment
+/// from the platform and set no file.
+fn load_env_file() -> Result<()> {
+    let Some(path) = std::env::var_os("SWITCHYARD_ENV_FILE").filter(|p| !p.is_empty()) else {
+        return Ok(());
+    };
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("SWITCHYARD_ENV_FILE {}", path.to_string_lossy()))?;
+    for line in text.lines() {
+        let line = line.trim();
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((k, v)) = line.split_once('=').filter(|_| !line.starts_with('#')) else {
+            continue;
+        };
+        let (k, v) = (k.trim(), v.trim());
+        let v = v
+            .strip_prefix('"')
+            .and_then(|x| x.strip_suffix('"'))
+            .or_else(|| v.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')))
+            .unwrap_or(v);
+        if !k.is_empty() && std::env::var_os(k).is_none() {
+            // SAFETY: called first thing in main, before any other thread exists.
+            unsafe { std::env::set_var(k, v) };
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
+    load_env_file()?;
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -113,6 +144,14 @@ fn main() -> Result<()> {
             engine_host: up.cicd_engine_host,
         });
     }
+    // The site's own bot logins without a bot mark (e.g. an app acting as a user).
+    switchyard::store::set_bot_markers(
+        std::env::var("SWITCHYARD_BOT_LOGINS")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::to_string)
+            .collect(),
+    );
     match &cli.cmd {
         Some(Cmd::Version) => {
             println!(

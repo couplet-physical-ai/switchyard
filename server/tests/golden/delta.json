@@ -20,7 +20,7 @@
               "name": "clone",
               "started": 1794339469000,
               "state": "success",
-              "url": "https://ci.dev.example.internal/repos/38/pipeline/53/3"
+              "url": "https://ci.dev.example.com/repos/38/pipeline/53/3"
             },
             {
               "exit_code": 0,
@@ -28,7 +28,7 @@
               "name": "tests",
               "started": 1794339471000,
               "state": "success",
-              "url": "https://ci.dev.example.internal/repos/38/pipeline/53/4"
+              "url": "https://ci.dev.example.com/repos/38/pipeline/53/4"
             },
             {
               "exit_code": 0,
@@ -36,10 +36,10 @@
               "name": "db-migrations",
               "started": 1794339471000,
               "state": "success",
-              "url": "https://ci.dev.example.internal/repos/38/pipeline/53/5"
+              "url": "https://ci.dev.example.com/repos/38/pipeline/53/5"
             }
           ],
-          "url": "https://ci.dev.example.internal/repos/38/pipeline/53/3"
+          "url": "https://ci.dev.example.com/repos/38/pipeline/53/3"
         },
         {
           "engine": "dagger-ci-102-2",
@@ -54,7 +54,7 @@
               "name": "clone",
               "started": 1794339470000,
               "state": "success",
-              "url": "https://ci.dev.example.internal/repos/38/pipeline/53/6"
+              "url": "https://ci.dev.example.com/repos/38/pipeline/53/6"
             },
             {
               "exit_code": 0,
@@ -62,10 +62,10 @@
               "name": "security-scan",
               "started": 1794339472000,
               "state": "success",
-              "url": "https://ci.dev.example.internal/repos/38/pipeline/53/7"
+              "url": "https://ci.dev.example.com/repos/38/pipeline/53/7"
             }
           ],
-          "url": "https://ci.dev.example.internal/repos/38/pipeline/53/6"
+          "url": "https://ci.dev.example.com/repos/38/pipeline/53/6"
         }
       ]
     }

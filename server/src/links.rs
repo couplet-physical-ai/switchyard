@@ -29,9 +29,9 @@ impl Default for Bases {
     fn default() -> Bases {
         Bases {
             github: "https://github.com".into(),
-            woodpecker: "https://ci.dev.example.internal".into(),
-            roadrunner: "https://ci.dev.example.internal".into(),
-            cicd: "https://cicd.apps.example.internal".into(),
+            woodpecker: "https://ci.dev.example.com".into(),
+            roadrunner: "https://ci.dev.example.com".into(),
+            cicd: "https://cicd.apps.example.com".into(),
             engine_host: "VM 153".into(),
         }
     }
@@ -210,7 +210,7 @@ mod tests {
         );
         assert_eq!(
             wp_step(413, 135, 4),
-            "https://ci.dev.example.internal/repos/413/pipeline/135/4"
+            "https://ci.dev.example.com/repos/413/pipeline/135/4"
         );
         let job = "https://github.com/acme/api/actions/runs/1/job/22";
         assert_eq!(gh_job_id(job), Some(22));
@@ -226,16 +226,13 @@ mod tests {
         );
         assert_eq!(
             engine_page(Some("VM 153")),
-            "https://cicd.apps.example.internal/engine"
+            "https://cicd.apps.example.com/engine"
         );
         assert_eq!(
             engine_page(Some("VM 154")),
-            "https://ci.dev.example.internal/admin/agents"
+            "https://ci.dev.example.com/admin/agents"
         );
-        assert_eq!(
-            engine_page(None),
-            "https://ci.dev.example.internal/admin/agents"
-        );
+        assert_eq!(engine_page(None), "https://ci.dev.example.com/admin/agents");
         assert_eq!(tag_of("refs/tags/v1"), Some("v1"));
         assert_eq!(tag_of("refs/heads/main"), None);
     }

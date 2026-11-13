@@ -6,3 +6,7 @@ dist/
 .DS_Store
 /inspo/
 site/
+
+# local site configuration (server/.env.example is the template)
+.env
+*.env.local

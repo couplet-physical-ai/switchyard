@@ -172,7 +172,7 @@ fn heads_contexts_codeql_filtered_actions_grouped() {
     assert_eq!(st[0].at, t("2026-11-10T19:41:25Z"));
     assert_eq!(
         st[0].url.as_deref(),
-        Some("https://ci.dev.example.internal/repos/64/pipeline/28/3")
+        Some("https://ci.dev.example.com/repos/64/pipeline/28/3")
     );
     assert!(deploys(&f, "Northwind-Labs/aurora-api").is_empty());
 
@@ -197,7 +197,7 @@ fn heads_failsafe_status_is_a_roadrunner_deploy() {
     assert_eq!(d.pipeline, None);
     assert_eq!(
         d.url.as_deref(),
-        Some("https://ci.dev.example.internal/repos/30/pipeline/23")
+        Some("https://ci.dev.example.com/repos/30/pipeline/23")
     );
     // The failsafe status is also a status.
     assert!(
