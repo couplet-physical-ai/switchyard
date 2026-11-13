@@ -28,9 +28,17 @@ jobs:
           persist-credentials: false
       - name: Toolchain (server/rust-toolchain.toml)
         run: rustup toolchain install && rustc --version && cargo --version
-      - uses: Swatinem/rust-cache@v2
+      # actions/cache (the org allows GitHub-owned and verified actions only).
+      - uses: actions/cache@v4
         with:
-          workspaces: server
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            server/target
+          key: server-${{ runner.os }}-${{ hashFiles('server/rust-toolchain.toml') }}-${{ hashFiles('server/Cargo.lock') }}
+          restore-keys: |
+            server-${{ runner.os }}-${{ hashFiles('server/rust-toolchain.toml') }}-
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
