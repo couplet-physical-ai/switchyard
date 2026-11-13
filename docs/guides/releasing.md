@@ -4,13 +4,13 @@ macOS releases are built on GitHub Actions, then published as GitHub release ass
 
 ## Stable release path
 
-The release script checks that the source revision is green on Roadrunner, tags it, waits for the macOS workflow, and then asks the tap to update its cask:
+The release script checks that the source revision is green on GitHub Actions, tags it, waits for the macOS workflow, and then asks the tap to update its cask:
 
 ```sh
 scripts/release.sh VERSION
 ```
 
-Use `--dry-run` to print the planned actions. `--skip-ci` skips the Roadrunner check. The workflow in [`.github/workflows/release.yml`](https://github.com/couplet-physical-ai/switchyard/blob/main/.github/workflows/release.yml) runs on GitHub's macOS runners. It sets up Bun 1.4.2 and the pinned Exact checkout, builds the Apple Silicon app, packages a ZIP and disk image, writes `SHA256SUMS` and `latest.json`, smoke-launches the packaged app, and publishes the release.
+Use `--dry-run` to print the planned actions. `--skip-ci` skips the CI check. The workflow in [`.github/workflows/release.yml`](https://github.com/couplet-physical-ai/switchyard/blob/main/.github/workflows/release.yml) runs on GitHub's macOS runners. It sets up Bun 1.4.2 and the pinned Exact checkout, builds the Apple Silicon app, packages a ZIP and disk image, writes `SHA256SUMS` and `latest.json`, smoke-launches the packaged app, and publishes the release. The server a fresh install talks to and the org order are site configuration: the workflow reads them from the repository secrets `SWITCHYARD_DEFAULT_SERVER` and `SWITCHYARD_ORGS`, and an app release refuses to build without the server.
 
 The Homebrew tap's `bump-switchyard` workflow verifies the release checksum and updates the `switchyard` cask. It also checks periodically, so the tap can catch up after a release without embedding tap credentials in this repository.
 

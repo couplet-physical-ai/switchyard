@@ -16,7 +16,7 @@ out to where it lives.
 | `/yard` | The Yard. |
 | `/connect?server=…&token=…` | The connect confirmation (the web form of a `switchyard://connect` link). |
 
-On the web these are paths under <https://switchyard.apps.example.internal>. In the macOS app the
+On the web these are paths under your Switchyard server (for example `https://switchyard.example.com/yard`). In the macOS app the
 same routes are reached through the links below, the palette and the tabs.
 
 ## `switchyard://` links (macOS)

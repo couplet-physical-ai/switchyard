@@ -1,8 +1,9 @@
 # Install Switchyard on a Mac
 
 Switchyard's macOS app runs on **Apple Silicon** Macs with **macOS 14 (Sonoma) or newer** and
-connects to <https://switchyard.apps.example.internal> (sign in with your Exowatt Google account).
-The full documentation, including this guide, is at <https://switchyard.docs.example.internal>.
+connects to your team's Switchyard server (sign in with your organization's single sign-on).
+This guide writes that server as `https://switchyard.example.com`; use your own. The full
+documentation, including this guide, is in [`docs/`](../docs/index.md).
 
 ## With Homebrew (recommended)
 
@@ -52,20 +53,20 @@ Check the installed version with
 
 The app needs a **device token** (your own, revocable). On first launch it offers
 **Sign in on the web…** (opens the page below), **Use a token…** and **Watch the demo**. In the
-browser, signed in with your Exowatt Google account:
+browser, signed in with your organization account:
 
-1. Open <https://switchyard.apps.example.internal/connect> (or click **Sign in on the web…**) and
+1. Open `https://switchyard.example.com/connect` (or click **Sign in on the web…**) and
    click **Create device token**.
 2. Click **Open in Switchyard**. macOS opens the app (a `switchyard://connect` link) on
    *Connect to this server?*.
 3. Click **Connect**. The token is saved only now, after you confirm, in a private file
    (`~/Library/Application Support/com.exowatt.switchyard/token`, mode `0600`).
 
-The top-right status then reads `live · switchyard.apps.example.internal`.
+The top-right status then reads `live · <your server>`.
 
 **Fallback** (the link does nothing, e.g. the browser blocks it): on the same page click
 **Copy token**; in Switchyard click **Connect…** (or the status at the top right), leave
-**Server** as `https://switchyard.apps.example.internal`, paste the token into **Token**, and click
+**Server** as your server's address, paste the token into **Token**, and click
 **Connect**.
 
 **Updating from 0.1.2 or earlier: one Keychain prompt.** Those versions kept the token in the
@@ -97,9 +98,9 @@ browser (signed in), `GET /api/v1/tokens` lists yours and `DELETE /api/v1/tokens
 | `Refusing to load cask couplet-physical-ai/tap/switchyard from untrusted tap` | `brew trust couplet-physical-ai/tap`, then install again |
 | `Error: Cask 'switchyard' is unavailable` | `brew update`, or `brew untap couplet-physical-ai/tap && brew tap couplet-physical-ai/tap` |
 | *"Switchyard" is damaged / can't be opened* | the quarantine flag is still set: `xattr -dr com.apple.quarantine /Applications/Switchyard.app` |
-| `depends_on arch: :arm64` | Intel Macs are not supported; use the web app at https://switchyard.apps.example.internal |
-| The app shows *Connect Switchyard to a server* | mint a token at https://switchyard.apps.example.internal/connect (see First run above) |
+| `depends_on arch: :arm64` | Intel Macs are not supported; use the web app on your server |
+| The app shows *Connect Switchyard to a server* | mint a token at `/connect` on your server (see First run above) |
 | An app at 0.1.2 or earlier shows no window | a Keychain prompt is waiting, maybe behind other windows (check the Dock or press ⌘-Tab): answer it with your login password and **Always Allow**, then update to the current release |
-| The app opens but shows no data | check you can open https://switchyard.apps.example.internal in a browser (Exowatt SSO; on the company network or VPN if required) |
+| The app opens but shows no data | check you can open your server in a browser (single sign-on; on the company network or VPN if required) |
 
 Release notes and every build: <https://github.com/couplet-physical-ai/switchyard/releases>.

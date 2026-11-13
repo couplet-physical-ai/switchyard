@@ -49,7 +49,7 @@ its deploy, its app. A hairline joins one stage to the next when one led to the 
 like a departure board:
 
 ```text
-1m  push  deploy-wrapper  main · deploy …   vm 154 · slot 2   passed 2m 23s ——— green ——— roadrunner 1m 56s ——— up
+1m  push  web-deploy  main · deploy …   vm 154 · slot 2   passed 2m 23s ——— green ——— roadrunner 1m 56s ——— up
 ```
 
 ## The inspector

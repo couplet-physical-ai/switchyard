@@ -48,7 +48,7 @@ Events are grouped by time:
 Each event is one block:
 
 ```text
-16:56   push   atlas-desk  main  bdcb949  chore(autofix): sync workflow template     autofix[bot]  commit ↗
+16:56   push   atlas-desk  main  bdcb949  chore(autofix): sync workflow template   autofix[bot]  commit ↗
 now      └ ○ deploy  ci · deploy   waiting 0:13 ---> roadrunner · #9 in line ---> ~2m 34s build   roadrunner ↗
 ```
 

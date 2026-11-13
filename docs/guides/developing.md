@@ -54,7 +54,7 @@ The mock has a self-test, and [`scripts/ci/validate_fixtures.py`](https://github
 
 ## Test the server
 
-From `server/`, run the same checks as the Roadrunner server pipeline:
+From `server/`, run the same checks as the server workflow:
 
 ```sh
 cargo fmt --all -- --check

@@ -13,7 +13,7 @@ nothing internal is hard-coded beyond the public hostnames already used across t
 | Engine (Dagger engine hosts: cpu/mem/load) | cicd `GET /api/engines` | — | 30 s |
 | Repo (inventory, default branch, Woodpecker id) | Woodpecker `GET /api/repos?active=true` + GitHub GraphQL org repositories | — | 10 min (Woodpecker), 1 h (GitHub) |
 | Repo main line (`main.recent`, quiet repos) | GitHub GraphQL: default-branch history (20 commits) with `statusCheckRollup.state` | — | 1 h, heads of recently pushed repos every 45–90 s |
-| Commit | Woodpecker push pipelines (instant) + GitHub GraphQL heads of the most recently pushed repos | — | 45 s (Northwind-Labs), 90 s (other orgs) |
+| Commit | Woodpecker push pipelines (instant) + GitHub GraphQL heads of the most recently pushed repos | — | 45 s (the first org of `SWITCHYARD_ORGS`), 90 s (other orgs) |
 | Pipeline (GitHub Actions), checks, statuses | GitHub GraphQL `statusCheckRollup.contexts` of each head and each open PR head: `CheckRun`s grouped by workflow run → one `gha:` pipeline; `StatusContext`s → statuses | — | with the heads / PR polls |
 | PR | GitHub GraphQL `search(type: ISSUE)`: recently updated open PRs (non-Dependabot) + PRs closed since the last sweep | all open human PRs (10 min), Dependabot PRs (30 min), closed in the last 24 h (boot) | 60 s |
 | Deploy | Woodpecker `deploy` workflows (instant) + the `ci/failsafe-deploy` commit status + GitHub Actions deploy workflow runs + cicd's per-repo deploy verdict | — | with the sources above |
@@ -63,19 +63,27 @@ runs.
 
 ## Configuration
 
+Every site-specific value is runtime configuration (never source): [`../.env.example`](../.env.example)
+lists every key with neutral placeholders; `SWITCHYARD_ENV_FILE=<file>` loads a dotenv-style file
+for the keys the environment leaves unset. An unset site key turns off the adapter that needs it
+(its note in `/api/v1/meta` names the key), links on an unset base are empty, and the boot log
+lists every missing key.
+
 | Variable | Default | Used for |
 |---|---|---|
-| `WOODPECKER_URL` | `https://ci.dev.example.com` | Woodpecker API + event stream |
+| `WOODPECKER_URL` | — (Woodpecker adapter disabled) | Woodpecker API + event stream |
 | `WOODPECKER_PUBLIC_URL` | `WOODPECKER_URL` | links shown to people |
 | `WOODPECKER_TOKEN` | — (adapter disabled) | Woodpecker API token of the CI bot identity (read-only use) |
 | `GITHUB_TOKEN` (or `GITHUB_BOT_TOKEN`) | — (adapter disabled) | GitHub GraphQL (read-only use) |
 | `GITHUB_API_URL` | `https://api.github.com` | |
-| `CICD_URL` | `https://cicd.apps.example.com` | cicd console API |
+| `CICD_URL` | — (cicd adapter and traces disabled) | cicd console API |
+| `CICD_ENGINE_HOST` | — | the machine the console's `/engine` page shows (engine deep links) |
 | `CICD_READ_TOKEN` | — (falls back to the GitHub token: lanes + watcher only) | cicd SSO-gated reads (engine hosts, traces) |
-| `APPS_CATALOG_URL` | `https://catalog.apps.example.com/api/apps` | app inventory + health |
-| `SWITCHYARD_ORGS` | the five Exowatt orgs | which GitHub orgs to watch |
+| `APPS_CATALOG_URL` | — (apps adapter disabled) | app inventory + health |
+| `SWITCHYARD_ORGS` | — (GitHub adapter disabled) | which GitHub orgs to watch, in display order |
+| `SWITCHYARD_BOT_LOGINS` | — | lowercase substrings of the site's own bot logins without a bot mark |
 | `SWITCHYARD_BACKFILL_HOURS` | `24` | boot backfill window |
-| `EXOWATT_AUTH_AUDIENCE` | — | OAuth client id(s) of the SSO edge (verifies browser identities) |
+| `EXOWATT_AUTH_AUDIENCE` | — | OAuth client id(s) of the SSO edge (verifies browser identities; the platform sets it) |
 | `SWITCHYARD_SERVICE_TOKENS` | — | `name:sha256hex,…` of read-only service tokens (`sys_…` Bearer; monitors, live e2e) |
 | `EXOWATT_AUTH_ALLOWED_EMAIL_DOMAINS` / `SWITCHYARD_EMAIL_DOMAINS` | — | who may sign in |
 

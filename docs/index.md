@@ -22,7 +22,7 @@ Search and deep links: [Links and search](guides/links.md).
 
 ## Where to get it
 
-- **Web:** <https://switchyard.apps.example.internal> (Exowatt sign-in).
+- **Web:** your team's Switchyard server (single sign-on); the server serves the web app at `/`.
 - **macOS** (Apple silicon, macOS 14+): Homebrew. It updates itself.
 
 ```sh

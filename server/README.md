@@ -3,7 +3,8 @@
 The live brain of Switchyard: one Rust (tokio + axum) binary that ingests every CI/CD
 upstream of the fleet (Roadrunner/Woodpecker, GitHub, the cicd console, the apps catalog),
 keeps the whole fleet's state in memory, and streams it to every client as one snapshot +
-a delta stream. Deployed at **https://switchyard.apps.example.com**. The wire protocol is
+a delta stream. Everything site-specific (orgs, upstream URLs, tokens) is runtime
+configuration: [`.env.example`](.env.example) lists every key. The wire protocol is
 [`contract/CONTRACT.md`](../contract/CONTRACT.md).
 
 ```
@@ -117,17 +118,15 @@ Rotate a service token (the value never leaves a 0600 file):
 umask 077; python3 -c "import secrets; print('sys_' + secrets.token_urlsafe(32))" > new-token
 h=$(tr -d '\n' < new-token | sha256sum | cut -d' ' -f1)
 # list every identity that should keep working, e.g. e2e:<h1>,client:<h2>
-printf 'e2e:%s,client:%s' "$h" "$h_client" | gh secret set SWITCHYARD_SERVICE_TOKENS -R Northwind-Labs/deploy-wrapper
-gh workflow run populate-secrets.yml -R Northwind-Labs/deploy-wrapper   # writes the app env, restarts it
-curl -so /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $(cat old-token)" https://switchyard.apps.example.com/api/v1/meta  # 401
-curl -so /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $(cat new-token)" https://switchyard.apps.example.com/api/v1/meta  # 200
+# set it in the deployment's secret store (SWITCHYARD_SERVICE_TOKENS) and restart the server
+curl -so /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $(cat old-token)" "$SWITCHYARD_URL/api/v1/meta"  # 401
+curl -so /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $(cat new-token)" "$SWITCHYARD_URL/api/v1/meta"  # 200
 ```
 
 Device tokens: `GET /api/v1/tokens` lists the caller's, `DELETE /api/v1/tokens/{id}` revokes one. The cicd
 read token this server uses (`CICD_READ_TOKEN`) is the other half of cicd's
-`SWITCHYARD_READ_TOKEN`; rotate it on both sides: `gh secret set SWITCHYARD_READ_TOKEN -R
-Northwind-Labs/cicd` + `gh workflow run populate-secrets.yml -R Northwind-Labs/cicd`, then the
-same value as `CICD_READ_TOKEN` here.
+`SWITCHYARD_READ_TOKEN`; rotate it on both sides: the console's secret first, then the same
+value as `CICD_READ_TOKEN` here.
 
 ## Test and bench
 
@@ -138,41 +137,37 @@ cargo test --locked            # unit, adapters (recorded upstream payloads), pr
 cargo bench --bench core       # ingest, snapshot, fan-out; numbers in docs/PERF.md
 ```
 
-CI: `.woodpecker/server.yaml` (Roadrunner) runs all of the above (benches in `--test` mode).
+CI: `.github/workflows/server.yml` (GitHub Actions) runs all of the above (benches in `--test` mode).
 
 Live checks against a running server (numbers in [`docs/PERF.md`](docs/PERF.md)):
 
 ```sh
 # health, readiness (every adapter ok), a real snapshot, live deltas; with a sha pushed
 # right after it starts, the time until that commit shows up on the stream
-SY_TOKEN=… cargo run --release --example e2e -- https://switchyard.apps.example.com [sha]
+SY_TOKEN=… cargo run --release --example e2e -- "$SWITCHYARD_URL" [sha]
 # N real WebSocket clients: delivery lag, merged frames, resets
-cargo run --release --example wsload -- wss://switchyard.apps.example.com/api/v1/stream 200 60
+cargo run --release --example wsload -- "wss://${SWITCHYARD_URL#https://}/api/v1/stream" 200 60
 ```
 
 ## Deploy
 
-The app platform deploys only Northwind-Labs repos, so a private wrapper repo
-(`Northwind-Labs/deploy-wrapper`) pins one commit of this public repo (`UPSTREAM`) and
-carries the web client prebuilt at the same commit (`web/`). On the app's container its
-build script fetches the pinned commit, builds this crate (`--profile ct`, persistent target
-dir, hot redeploy) and serves `web/` via `--static-dir`. The web client is built off the
-container: Exact's toolchain does not fit the platform's build window, and the container is
-small and runs the live server.
+A deployment lives outside this public repository: it pins one commit of it, supplies the
+site's configuration (the keys in [`.env.example`](.env.example); secrets from the platform's
+secret store) and serves the web client built at the same commit via `--static-dir`. The web
+client is built off the server's host: Exact's toolchain is heavy, and the host runs the live
+server.
 
 ```sh
-# 1. the web client at the commit being deployed (Bun + Exact at app/exact.pin)
+# 1. the web client at the commit being deployed (Bun + Exact at app/exact.pin), with the
+#    site's org order (the server's SWITCHYARD_ORGS)
 git archive <sha> app contract packaging | tar -x -C /tmp/sy-src
-(cd /tmp/sy-src/app && scripts/build.sh web /tmp/sy-web)
-# 2. pin the server + web together; pushing main deploys (Roadrunner, ~2 min)
-cd deploy-wrapper && scripts/bump.sh <sha> --web /tmp/sy-web && git push origin main
+(cd /tmp/sy-src/app && SWITCHYARD_ORGS=… scripts/build.sh web /tmp/sy-web)
+# 2. pin the server + web together in the deployment, and roll it out
 # 3. verify (meta.git_sha and meta.web.sha are the pinned commit)
-SY_TOKEN=$(cat e2e-token) cargo run --release --example e2e -- https://switchyard.apps.example.com
+SY_TOKEN=$(cat e2e-token) cargo run --release --example e2e -- "$SWITCHYARD_URL"
 ```
 
-Server and web always ship in one bump, so the page and the stream never disagree on the
-protocol. `scripts/bump.sh <sha>` without `--web` keeps the current `web/`. Runtime
-secrets are platform env vars written by the wrapper's `populate-secrets.yml`
-(`WOODPECKER_TOKEN`, `GITHUB_TOKEN`, `CICD_READ_TOKEN`, `SWITCHYARD_SERVICE_TOKENS`).
-After a deploy, `readyz` is ready within ~1 min and the restart settles into history
-after ~4 min (see [Restart settling](#how-it-works)).
+Server and web always ship together, so the page and the stream never disagree on the
+protocol. Runtime secrets are platform env vars (`WOODPECKER_TOKEN`, `GITHUB_TOKEN`,
+`CICD_READ_TOKEN`, `SWITCHYARD_SERVICE_TOKENS`). After a deploy, `readyz` is ready within
+~1 min and the restart settles into history after ~4 min (see [Restart settling](#how-it-works)).

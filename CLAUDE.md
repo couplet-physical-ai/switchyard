@@ -2,24 +2,29 @@
 
 ## CI/CD
 
-This repo runs its CI on **Roadrunner** (Exowatt's Woodpecker + Dagger CI, `.woodpecker/`); it does not deploy from there. Check builds with `gh rr status`, `gh rr watch`, `gh rr logs`, `gh rr rerun` (install: `gh extension install Northwind-Labs/gh-ci && gh alias set rr roadrunner --clobber`) — `gh run` only sees GitHub Actions. Console: https://cicd.apps.example.internal.
+CI runs on **GitHub Actions**, GitHub-hosted runners only (`.github/workflows/`); this repo
+does not deploy anything. Check runs with `gh run list`, `gh run watch`, `gh run view --log-failed`.
 
-Pipelines (path-filtered, so a client-only change never rebuilds the server):
+Workflows (path-filtered, so a client-only change never rebuilds the server):
 
 | File | Runs when | What |
 |---|---|---|
-| `.woodpecker/server.yaml` | `server/**`, `contract/**` | `cargo fmt --check`, `clippy -D warnings`, `cargo test`, criterion smoke (`cargo bench -- --test`) |
-| `.woodpecker/client.yaml` | `app/**`, `contract/**` | Exact web build + the app's `*.test.contract` suites on the web host (headless Chromium, Linux) |
-| `.woodpecker/contract.yaml` | `contract/**`, `scripts/ci/**` | `scripts/ci/validate_fixtures.py`: fixtures match `contract/CONTRACT.md` |
-| `.woodpecker/security.yaml` | every PR and push to main | gitleaks (`.gitleaks.toml`: default rules + internal IPs / lab hostnames) and osv-scanner |
+| `server.yml` | `server/**`, `contract/**` | `cargo fmt --check`, `clippy -D warnings`, `cargo test`, criterion smoke (`cargo bench -- --test`) |
+| `client.yml` | `app/**`, `contract/**` | Exact web build + the app's `*.test.contract` suites on the web host (headless Chromium, Linux) + the mock server's selftest |
+| `contract.yml` | `contract/**`, `scripts/ci/**` | `scripts/ci/validate_fixtures.py`: fixtures match `contract/CONTRACT.md` |
+| `release-lint.yml` | `.github/**`, `scripts/release*` | `scripts/ci/check_release_shell.py` |
+| `security.yml` | every PR and push to main | `scripts/check-no-internal.sh`, gitleaks (`.gitleaks.toml`), osv-scanner (report-only) |
+| `dco.yml` | every PR | the required `DCO` check: every commit signed off (`git commit -s`) |
+| `release.yml` | tag `v*` | macOS release: builds on a macOS runner, publishes a GitHub release, bumps the cask in [`couplet-physical-ai/homebrew-tap`](https://github.com/couplet-physical-ai/homebrew-tap) |
 
-macOS releases are the exception: they build on **GitHub Actions** macOS runners
-(`.github/workflows/release.yml`, tag `v*`), publish a GitHub release and bump the cask in
-[`couplet-physical-ai/homebrew-tap`](https://github.com/couplet-physical-ai/homebrew-tap).
-Check those with `gh run list -w release.yml`. One command cuts a release: `scripts/release.sh <version>`; details in `packaging/RELEASING.md`.
+One command cuts a release: `scripts/release.sh <version>`; details in `packaging/RELEASING.md`.
 
 ## Public repo
 
-This repository is public. Never commit secrets, tokens, internal IPs (`192.168.*`, `10.*`),
-`*.lab.example.internal` hostnames or people's emails; internal endpoints come from env at
-deploy time. Run `gitleaks dir . -c .gitleaks.toml` before pushing.
+This repository is public. Never commit secrets, tokens, internal hostnames, private IPs,
+private org or repo names, or people's emails. Everything site-specific is runtime
+configuration: the server reads it from the environment (`server/.env.example` lists every key
+with neutral placeholders), the macOS release from repository secrets (`release.yml`), and the
+real values live with the private deployment. Tests, fixtures and docs use synthetic names
+(`Northwind-*` orgs, `*.example.com` hosts). Before pushing, run `scripts/check-no-internal.sh`
+and `gitleaks dir . -c .gitleaks.toml`.

@@ -1,23 +1,40 @@
 # Deploy and operate Switchyard
 
-Roadrunner builds and checks this repository; it does not deploy the service. A separate Roadrunner pipeline in the `deploy-wrapper` repository deploys a pinned Switchyard revision as a coordinated server and web build.
+GitHub Actions builds and checks this repository; it does not deploy the service. A deployment lives outside this public repository: it pins a Switchyard revision, supplies the site's configuration, and rolls out the server and web build together.
 
 ## CI in this repository
 
-The pipelines in [`.woodpecker/`](https://github.com/couplet-physical-ai/switchyard/tree/main/.woodpecker) are path-filtered. Check them with the Roadrunner GitHub extension, not `gh run`:
+The workflows in [`.github/workflows/`](https://github.com/couplet-physical-ai/switchyard/tree/main/.github/workflows) run on GitHub-hosted runners and are path-filtered. Check them with `gh run list`, `gh run watch` and `gh run view --log-failed`:
 
-| Pipeline | Trigger paths | Checks |
+| Workflow | Trigger paths | Checks |
 |---|---|---|
-| [`server.yaml`](https://github.com/couplet-physical-ai/switchyard/blob/main/.woodpecker/server.yaml) | `server/**`, `contract/**` | Rust formatting, Clippy with warnings denied, tests, and a Criterion benchmark smoke run. |
-| [`client.yaml`](https://github.com/couplet-physical-ai/switchyard/blob/main/.woodpecker/client.yaml) | `app/**`, `contract/**` | Exact web build, `*.test.contract` suites in headless Chromium, and the mock-server self-test. |
-| [`contract.yaml`](https://github.com/couplet-physical-ai/switchyard/blob/main/.woodpecker/contract.yaml) | `contract/**`, `scripts/ci/**` | Fixture validation against the wire contract. |
-| [`security.yaml`](https://github.com/couplet-physical-ai/switchyard/blob/main/.woodpecker/security.yaml) | Every pull request and push to `main` | Gitleaks and an OSV dependency scan. |
+| [`server.yml`](https://github.com/couplet-physical-ai/switchyard/blob/main/.github/workflows/server.yml) | `server/**`, `contract/**` | Rust formatting, Clippy with warnings denied, tests, and a Criterion benchmark smoke run. |
+| [`client.yml`](https://github.com/couplet-physical-ai/switchyard/blob/main/.github/workflows/client.yml) | `app/**`, `contract/**` | Exact web build, `*.test.contract` suites in headless Chromium, and the mock-server self-test. |
+| [`contract.yml`](https://github.com/couplet-physical-ai/switchyard/blob/main/.github/workflows/contract.yml) | `contract/**`, `scripts/ci/**` | Fixture validation against the wire contract. |
+| [`security.yml`](https://github.com/couplet-physical-ai/switchyard/blob/main/.github/workflows/security.yml) | Every pull request and push to `main` | `scripts/check-no-internal.sh` (no internal hosts, private orgs or private addresses in any tracked file), Gitleaks, and an OSV dependency scan. |
+| [`dco.yml`](https://github.com/couplet-physical-ai/switchyard/blob/main/.github/workflows/dco.yml) | Every pull request | Every commit is signed off. |
 
-Useful commands are `gh rr status`, `gh rr watch`, `gh rr logs`, and `gh rr rerun`. The Roadrunner console is [cicd.apps.example.internal](https://cicd.apps.example.internal). GitHub Actions is used for the macOS release workflow; it does not replace Roadrunner CI for these pipelines.
+## Configuration
+
+Everything site-specific is runtime configuration, never source. The server reads it from the environment; [`server/.env.example`](https://github.com/couplet-physical-ai/switchyard/blob/main/server/.env.example) lists every key with neutral placeholders:
+
+| Key | What |
+|---|---|
+| `SWITCHYARD_ORGS` | GitHub orgs to watch, in display order |
+| `WOODPECKER_URL`, `WOODPECKER_PUBLIC_URL` | Woodpecker API and the web UI links open |
+| `CICD_URL`, `CICD_ENGINE_HOST` | the Roadrunner console and the machine its `/engine` page shows |
+| `APPS_CATALOG_URL` | the apps platform's catalog |
+| `SWITCHYARD_BOT_LOGINS` | the site's own bots whose logins carry no bot mark |
+| `SWITCHYARD_PUBLIC_URL`, `SWITCHYARD_EMAIL_DOMAINS` | the public base URL and who may sign in |
+| `WOODPECKER_TOKEN`, `GITHUB_TOKEN`, `CICD_READ_TOKEN`, `SWITCHYARD_SERVICE_TOKENS` | secrets, from the platform's secret store |
+
+An unset key turns off the adapter that needs it: `GET /api/v1/meta` lists each adapter's state with the missing key as its note, links built on an unset base are empty, and the boot log names every missing key. For a local run, copy the example to `server/.env` (ignored by git) and start the server with `SWITCHYARD_ENV_FILE=.env`.
+
+The macOS release reads the default server and the org order from repository secrets (`SWITCHYARD_DEFAULT_SERVER`, `SWITCHYARD_ORGS`); see [Releasing](releasing.md). A web build takes the org order from `SWITCHYARD_ORGS` in its environment, like the server.
 
 ## Service deployment
 
-The separate `deploy-wrapper` Roadrunner pipeline pins a commit of this repository, builds the Rust server and Exact web client from that revision, rolls out the service, and verifies it. The deployment configuration is separate from this repository's `.woodpecker/` checks.
+The deployment pins a commit of this repository, builds the Rust server and Exact web client from that revision with the site's configuration, rolls out the service, and verifies it. Its pipeline and configuration are separate from this repository's checks.
 
 After rollout, request `GET /api/v1/meta` through an authorized session and compare the reported build metadata with the pinned revision:
 
@@ -41,8 +58,7 @@ To roll back, deploy a previously verified Switchyard commit through the same de
 
 ## Operational gotchas
 
-- A passing Roadrunner build is not a deployment. Watch the separate deployment pipeline for rollout and verification.
-- `gh run` shows GitHub Actions, including macOS releases, but not Roadrunner builds. Use `gh rr` for Roadrunner status and logs.
+- A passing CI run is not a deployment. Watch the separate deployment pipeline for rollout and verification.
 - Path filters prevent unrelated builds: a client-only change does not rebuild the Rust server, while a `contract/` change affects server, client, and contract validation.
 - During warm boot, compare metadata and adapter status rather than interpreting a temporary change in the state display as a completed deployment.
 - A run shown as running long after it finished, or a pipeline waiting with nothing behind it, is a bug, not warm-boot behavior: compare `/api/v1/snapshot` with the upstream. The [stale-data post-mortem](../reports/incidents/2026-11-12-phantom-and-stale-data.md) lists the causes found so far.

@@ -6,10 +6,16 @@
 scripts/release.sh 0.1.0
 ```
 
-It checks that `origin/main` is green on Roadrunner (`gh rr status`), tags it `v0.1.0`,
-pushes the tag, waits for [`release.yml`](../.github/workflows/release.yml), then runs the
-tap's `bump-switchyard` workflow. `--dry-run` shows the plan; `--skip-ci` skips the
-Roadrunner check.
+It checks that `origin/main` is green on GitHub Actions (every check run of the commit passed),
+tags it `v0.1.0`, pushes the tag, waits for [`release.yml`](../.github/workflows/release.yml),
+then runs the tap's `bump-switchyard` workflow. `--dry-run` shows the plan; `--skip-ci` skips
+the CI check.
+
+Site configuration comes from repository secrets, never from the source:
+`SWITCHYARD_DEFAULT_SERVER` (the server a fresh install talks to; an app release refuses to build
+without it) and `SWITCHYARD_ORGS` (the watched orgs in display order, the server's list). Set
+them with `gh secret set <NAME> -R couplet-physical-ai/switchyard`. Public release notes and the
+cask caveat never name the server.
 
 ## What the release workflow does
 
@@ -62,7 +68,8 @@ If GitHub's macOS runners are down or cannot build Exact:
 scripts/release/release-mac-mini.sh 0.1.0
 ```
 
-It refuses to start when `/Volumes/Farm` (shared) has under 20 GB free, then copies `HEAD` to the mini (`mini-user@192.0.2.1`,
+It refuses to start when `/Volumes/Farm` (shared) has under 20 GB free, then copies `HEAD` to the mini (`$MINI` or `$SY_MINI`,
+`user@host`, kept with the private deployment's configuration, never here;
 `/Volumes/Farm/farm-exowatt/switchyard-release`: one Exact checkout `exact/`, one working tree
 `src/` whose `app/target` is kept between releases, and its own `CARGO_HOME`/`RUSTUP_HOME`; ~15 GB), builds and packages there, verifies the checksums here, publishes
 the release with `gh`, and dispatches the tap bump.
@@ -89,8 +96,8 @@ SY_UPDATE_FEED=https://github.com/couplet-physical-ai/switchyard/releases/downlo
 
 ## After every release: the mini proofs
 
-Run all three on the Mac mini against the new stable release `N` (previous release `P`). Each one
-quits only `/Applications`' copy. Tokens go over as files only (`SY_TOKEN_FILE`, mode 600).
+Run all three on the Mac mini (`SY_MINI=user@host`) against the new stable release `N`
+(previous release `P`). Each one quits only `/Applications`' copy. Tokens go over as files only (`SY_TOKEN_FILE`, mode 600).
 
 ```sh
 T=~/.config/switchyard/e2e-token

@@ -30,4 +30,4 @@ The server publishes a snapshot and then ordered frames that update it. Sequence
 
 ## Build and operations
 
-Roadrunner checks the source repository; a separate Roadrunner pipeline deploys the web build and server together. The macOS app has its own GitHub Actions release workflow. See [developing](../guides/developing.md), [deploying](../guides/deploying.md), [installing](../guides/install.md), and [releasing](../guides/releasing.md).
+GitHub Actions checks the source repository; a separate deployment, outside this repository, deploys the web build and server together with the site's configuration. The macOS app has its own GitHub Actions release workflow. See [developing](../guides/developing.md), [deploying](../guides/deploying.md), [installing](../guides/install.md), and [releasing](../guides/releasing.md).

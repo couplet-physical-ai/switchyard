@@ -37,7 +37,7 @@ brew tap couplet-physical-ai/tap && brew trust couplet-physical-ai/tap && brew i
 
 - **macOS** (Apple Silicon, macOS 14+): the one-liner above. It updates itself: **Update** in the
   app (or `brew upgrade --cask --greedy switchyard`).
-- **Web**: <https://switchyard.apps.example.internal> (Exowatt SSO).
+- **Web**: served by your team's Switchyard server at `/` (single sign-on).
 
 Details, the dmg route and troubleshooting: [packaging/INSTALL.md](packaging/INSTALL.md).
 Releasing: [packaging/RELEASING.md](packaging/RELEASING.md)
