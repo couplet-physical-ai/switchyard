@@ -242,7 +242,7 @@ type Deploy = {               // id = "owner/name@sha" (same as the commit's id)
 }
 type DeployRef = { id: string, state: Deploy["state"] }
 
-type App = {                  // id = app slug ("roster")
+type App = {                  // id = app slug ("billing")
   id: string, repo?: string, url: string,
   health: "up" | "degraded" | "down" | "unknown",
   latency_ms?: number,

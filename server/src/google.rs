@@ -1,6 +1,6 @@
 //! Google ID token verification (the platform edge's oauth2-proxy forwards one
 //! on every signed-in browser request; `gcloud auth print-identity-token`
-//! mints one for people on the VPN). Same policy as the platform app-auth / roster:
+//! mints one for people on the VPN). Same policy as the platform's other apps:
 //! RS256 against Google's JWKS (cached 1 h, refreshed once on an unknown kid),
 //! issuer accounts.google.com, audience in `EXOWATT_AUTH_AUDIENCE` (comma
 //! list), exp/iat/nbf with 10 s leeway, e-mail domain allow-list.
