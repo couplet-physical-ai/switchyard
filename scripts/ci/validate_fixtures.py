@@ -16,7 +16,7 @@ Checks (stdlib only, so CI needs no install):
   * the ops are replayed onto the snapshot's entities: `patch` (RFC 7386 JSON Merge Patch on
     an entity the client holds) and `dot` (upsert one Dot into repos[id].main.recent, sorted by
     (at, sha), newest 12 kept) must leave an entity that still matches the contract;
-  * no fixture carries an internal address (192.168.*, 10.*, *.lab.example.com).
+  * no fixture carries an internal address (192.168.*, 10.*, *.internal hostnames).
 
 Exit 0 = valid; 1 = invalid (every problem printed); missing fixtures are reported and
 pass until the server thread delivers them.
@@ -92,7 +92,7 @@ EVENTS: dict[str, list[str]] = {
     "health": ["app", "from", "to", "at"],
     "main": ["repo", "from", "to", "at"],
 }
-INTERNAL = re.compile(r"(?<![\d.])(?:192\.168|10)\.\d{1,3}\.\d{1,3}(?:\.\d{1,3})?(?![\d.])|\.lab\.example\.com", re.I)
+INTERNAL = re.compile(r"(?<![\d.])(?:192\.168|10)\.\d{1,3}\.\d{1,3}(?:\.\d{1,3})?(?![\d.])|[a-z0-9-]\.internal(?![a-z0-9-])", re.I)
 REPO_ID = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 MS_MIN, MS_MAX = 1_500_000_000_000, 4_000_000_000_000  # 2017 .. 2096, in ms
 

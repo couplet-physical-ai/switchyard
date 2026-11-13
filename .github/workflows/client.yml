@@ -1,0 +1,82 @@
+# The Exact client (app/): the web build, every tests/*.test.contract suite on the web host
+# (headless Chromium, 1440x900) and the mock server's selftest, on Linux. The macOS build and its
+# tests run in release.yml. Runs only when app/, contract/, the Exact pin or this file changes,
+# so a server-only change never rebuilds the client.
+#
+# Toolchain: Bun 1.4.2, expo/exact at the pin (app/exact.pin, else packaging/exact.pin; keep
+# EXACT_PIN below equal, the run checks), `exact setup` (Rust toolchains, wasm-bindgen, Binaryen,
+# node_modules, Playwright's Chromium) plus Chromium's system libraries. The Exact checkout and
+# setup's downloads are cached by the pin and the Exact patches.
+name: client
+on:
+  pull_request:
+    paths: ["app/**", "contract/**", "packaging/exact.pin", ".github/workflows/client.yml"]
+  push:
+    branches: [main]
+    paths: ["app/**", "contract/**", "packaging/exact.pin", ".github/workflows/client.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  EXACT_PIN: 316d1f292f92f91a223d2f582e80fe17979c12c1
+  EXACT_FEEDBACK: "0"
+jobs:
+  web:
+    name: web
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Exact pin
+        id: pin
+        run: |
+          if [ ! -f app/app.contract ]; then echo "no app/ on this commit yet"; echo "app=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ -f app/exact.pin ]; then pinfile=app/exact.pin; else pinfile=packaging/exact.pin; fi
+          grep -qx "$EXACT_PIN" "$pinfile" || { echo "::error::exact pin changed: update EXACT_PIN in .github/workflows/client.yml"; exit 1; }
+          echo "app=true" >> "$GITHUB_OUTPUT"
+          echo "exact=$HOME/.cache/switchyard/exact-ci" >> "$GITHUB_OUTPUT"
+      - uses: oven-sh/setup-bun@v2
+        if: steps.pin.outputs.app == 'true'
+        with:
+          bun-version: 1.4.2
+      - uses: actions/cache@v4
+        if: steps.pin.outputs.app == 'true'
+        with:
+          path: |
+            ~/.cache/switchyard/exact-ci
+            ~/.cache/exact
+            ~/.cache/ms-playwright
+            ~/.cargo/bin/wasm-bindgen*
+          key: exact-${{ runner.os }}-${{ env.EXACT_PIN }}-${{ hashFiles('app/scripts/exact-patches/**', 'app/scripts/patch-exact.sh') }}
+          restore-keys: exact-${{ runner.os }}-${{ env.EXACT_PIN }}-
+      - name: Exact setup
+        if: steps.pin.outputs.app == 'true'
+        env:
+          EXACT2: ${{ steps.pin.outputs.exact }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          if [ ! -d "$EXACT2/.git" ]; then
+            mkdir -p "$(dirname "$EXACT2")"
+            timeout 900 git clone -q --filter=blob:none https://github.com/expo/exact.git "$EXACT2"
+          fi
+          cd "$EXACT2"
+          if [ "$(git rev-parse HEAD)" != "$EXACT_PIN" ]; then
+            timeout 300 git fetch -q origin || true
+            git checkout -q -f "$EXACT_PIN"
+          fi
+          timeout 3600 bun scripts/exact.mjs setup || true
+          timeout 900 bun node_modules/playwright-core/cli.js install-deps chromium-headless-shell
+          timeout 600 bun scripts/exact.mjs setup --check || true
+      - name: Web build, web tests, mock server selftest
+        if: steps.pin.outputs.app == 'true'
+        env:
+          EXACT2: ${{ steps.pin.outputs.exact }}
+        run: |
+          sh app/scripts/build.sh web "$RUNNER_TEMP/switchyard-web"
+          sh app/scripts/build.sh test web
+          timeout 600 bun app/server/selftest.ts

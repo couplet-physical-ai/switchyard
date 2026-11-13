@@ -1,0 +1,29 @@
+# The release shell (GitHub workflow `run:` blocks, scripts/release*) parses with bash -n and never
+# expands a possibly-empty array unguarded under `set -u` (the macOS runner's bash 3.2 fails on it;
+# that broke the v0.1.0 publish). scripts/ci/check_release_shell.py, stdlib only.
+name: release-lint
+on:
+  pull_request:
+    paths: [".github/**", "scripts/release*", "scripts/release/**", "scripts/ci/check_release_shell.py"]
+  push:
+    branches: [main]
+    paths: [".github/**", "scripts/release*", "scripts/release/**", "scripts/ci/check_release_shell.py"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  release-shell:
+    name: release-shell
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 scripts/ci/check_release_shell.py

@@ -1,0 +1,49 @@
+# Security scan for a PUBLIC repo on every pull request and push to main:
+#  1. secrets: gitleaks `dir` over the tree at the commit (tracked files only, no .git) with the
+#     repo's .gitleaks.toml (gitleaks defaults plus the private-address rules). Any finding fails;
+#     secrets are redacted in the log.
+#  2. sca: osv-scanner `scan source --recursive` against OSV.dev, report-only (warns, never fails).
+# Both tools run from their upstream images, pinned by digest.
+name: security
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.29.0@sha256:71d3ee5990f2176f763b438298453fc37e87b119122045e176ca9d44ff00b08b
+  OSV_SCANNER_IMAGE: ghcr.io/google/osv-scanner:v2.4.0@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475
+jobs:
+  security-scan:
+    name: security-scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Tree at the commit
+        run: |
+          mkdir -p "$RUNNER_TEMP/src"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/src"
+      - name: secrets (gitleaks)
+        run: |
+          timeout 600 docker run --rm -v "$RUNNER_TEMP/src:/src:ro" -w /src "$GITLEAKS_IMAGE" \
+            dir . --config /src/.gitleaks.toml --redact --verbose --no-banner \
+            --exit-code 1 --max-target-megabytes 20
+      - name: sca (osv-scanner, report-only)
+        run: |
+          code=0
+          timeout 900 docker run --rm -v "$RUNNER_TEMP/src:/src:ro" "$OSV_SCANNER_IMAGE" \
+            scan source --recursive --format table /src || code=$?
+          case "$code" in
+            0) echo "sca: no known vulnerabilities" ;;
+            1) echo "::warning title=osv-scanner::known vulnerabilities (report-only, see the table above)" ;;
+            128) echo "sca: no package sources" ;;
+            *) echo "::warning title=osv-scanner::osv-scanner exited $code (report-only)" ;;
+          esac

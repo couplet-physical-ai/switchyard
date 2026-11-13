@@ -1,0 +1,41 @@
+# switchyard-server (server/): cargo fmt --check, clippy -D warnings, the test suite (unit,
+# property, golden, replay), and a criterion smoke (every bench body runs once in test mode).
+# Runs only when server/, contract/ or this file changes. The toolchain is server/rust-toolchain.toml.
+name: server
+on:
+  pull_request:
+    paths: ["server/**", "contract/**", ".github/workflows/server.yml"]
+  push:
+    branches: [main]
+    paths: ["server/**", "contract/**", ".github/workflows/server.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  server:
+    name: server
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Toolchain (server/rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version && cargo --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: test
+        run: cargo test --locked
+      - name: bench smoke
+        run: cargo bench --locked --bench core -- --test

@@ -1,6 +1,6 @@
 # gitleaks config for a PUBLIC repo: gitleaks' default rules plus three that keep internal
 # network details out of git (private addresses and lab hostnames come from env at deploy
-# time, never from the tree). Used by .woodpecker/security.yaml (ci-dagger security-scan).
+# time, never from the tree). Used by .github/workflows/security.yml (gitleaks dir).
 title = "switchyard"
 
 [extend]
@@ -22,9 +22,9 @@ keywords = ["10."]
 
 [[rules]]
 id = "internal-lab-hostname"
-description = "Internal *.lab.example.com hostname"
-regex = '''([a-z0-9-]+\.)+lab\.example\.com'''
-keywords = ["lab.example.com"]
+description = "Internal lab hostname (*.lab.<domain>.internal)"
+regex = '''([a-z0-9-]+\.)+lab\.[a-z0-9-]+\.internal'''
+keywords = [".internal"]
 
 [allowlist]
 description = "Build outputs and vendored lockfiles"
