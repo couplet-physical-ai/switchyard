@@ -1,6 +1,6 @@
 # Install and update
 
-The macOS app runs on Apple Silicon with macOS 14 or newer. You can install it with Homebrew or from a disk image, then connect it to the web service with a device token. The web app is available at [switchyard.apps.example.com](https://switchyard.apps.example.com) and uses single sign-on.
+The macOS app runs on Apple Silicon with macOS 14 or newer. You can install it with Homebrew or from a disk image, then connect it to the web service with a device token. The web app is available at [switchyard.apps.example.internal](https://switchyard.apps.example.internal) and uses single sign-on.
 
 ## Install with Homebrew
 
@@ -28,13 +28,13 @@ The app is ad-hoc signed because the project does not have an Apple Developer ID
 
 The app needs a read-only device token to access a server that requires authentication.
 
-1. Open [switchyard.apps.example.com/connect](https://switchyard.apps.example.com/connect) and sign in through single sign-on.
+1. Open [switchyard.apps.example.internal/connect](https://switchyard.apps.example.internal/connect) and sign in through single sign-on.
 2. Create a device token, then choose **Open in Switchyard**. macOS opens a `switchyard://connect` link.
 3. Review the server and confirm the connection in the app. The token is saved locally only after you confirm.
 
-If the link does not open the app, use **Copy token** on the connect page. In Switchyard, choose **Connect…**, set the server to `https://switchyard.apps.example.com`, paste the token into the token field, and connect. The token field is an input; never put the token in a URL, shell command, or support message.
+If the link does not open the app, use **Copy token** on the connect page. In Switchyard, choose **Connect…**, set the server to `https://switchyard.apps.example.internal`, paste the token into the token field, and connect. The token field is an input; never put the token in a URL, shell command, or support message.
 
-To use the web app, open [switchyard.apps.example.com](https://switchyard.apps.example.com) and sign in. The browser uses the signed-in session rather than a separate device-token setup.
+To use the web app, open [switchyard.apps.example.internal](https://switchyard.apps.example.internal) and sign in. The browser uses the signed-in session rather than a separate device-token setup.
 
 ## Where the token is stored
 

@@ -35,7 +35,7 @@ cask "switchyard" do
   ]
 
   caveats <<~CAVEATS
-    Switchyard connects to https://switchyard.apps.example.com (Exowatt SSO).
+    Switchyard connects to https://switchyard.apps.example.internal (Exowatt SSO).
     The app is ad-hoc signed; this cask removes the quarantine flag on install.
     It updates itself (Update in the app); `brew upgrade --cask --greedy switchyard` also works.
   CAVEATS

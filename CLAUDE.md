@@ -2,7 +2,7 @@
 
 ## CI/CD
 
-This repo runs its CI on **Roadrunner** (Exowatt's Woodpecker + Dagger CI, `.woodpecker/`); it does not deploy from there. Check builds with `gh rr status`, `gh rr watch`, `gh rr logs`, `gh rr rerun` (install: `gh extension install Northwind-Labs/gh-ci && gh alias set rr roadrunner --clobber`) — `gh run` only sees GitHub Actions. Console: https://cicd.apps.example.com.
+This repo runs its CI on **Roadrunner** (Exowatt's Woodpecker + Dagger CI, `.woodpecker/`); it does not deploy from there. Check builds with `gh rr status`, `gh rr watch`, `gh rr logs`, `gh rr rerun` (install: `gh extension install Northwind-Labs/gh-ci && gh alias set rr roadrunner --clobber`) — `gh run` only sees GitHub Actions. Console: https://cicd.apps.example.internal.
 
 Pipelines (path-filtered, so a client-only change never rebuilds the server):
 
@@ -21,5 +21,5 @@ Check those with `gh run list -w release.yml`. One command cuts a release: `scri
 ## Public repo
 
 This repository is public. Never commit secrets, tokens, internal IPs (`192.168.*`, `10.*`),
-`*.lab.example.com` hostnames or people's emails; internal endpoints come from env at
+`*.lab.example.internal` hostnames or people's emails; internal endpoints come from env at
 deploy time. Run `gitleaks dir . -c .gitleaks.toml` before pushing.

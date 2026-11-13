@@ -13,7 +13,7 @@ The pipelines in [`.woodpecker/`](https://github.com/couplet-physical-ai/switchy
 | [`contract.yaml`](https://github.com/couplet-physical-ai/switchyard/blob/main/.woodpecker/contract.yaml) | `contract/**`, `scripts/ci/**` | Fixture validation against the wire contract. |
 | [`security.yaml`](https://github.com/couplet-physical-ai/switchyard/blob/main/.woodpecker/security.yaml) | Every pull request and push to `main` | Gitleaks and an OSV dependency scan. |
 
-Useful commands are `gh rr status`, `gh rr watch`, `gh rr logs`, and `gh rr rerun`. The Roadrunner console is [cicd.apps.example.com](https://cicd.apps.example.com). GitHub Actions is used for the macOS release workflow; it does not replace Roadrunner CI for these pipelines.
+Useful commands are `gh rr status`, `gh rr watch`, `gh rr logs`, and `gh rr rerun`. The Roadrunner console is [cicd.apps.example.internal](https://cicd.apps.example.internal). GitHub Actions is used for the macOS release workflow; it does not replace Roadrunner CI for these pipelines.
 
 ## Service deployment
 

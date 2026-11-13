@@ -1,7 +1,7 @@
 # Screenshots
 
 Images the top-level README's hero uses. Dark appearance, a 1440x900 window (the Mac mini's
-display is 1x, so macOS shots are 1440x900; web shots can be 2880x1800 with `EXACT_SCALE=2`), real data from https://switchyard.apps.example.com
+display is 1x, so macOS shots are 1440x900; web shots can be 2880x1800 with `EXACT_SCALE=2`), real data from https://switchyard.apps.example.internal
 or the built-in demo fleet; nothing internal in frame (no private hostnames or IPs).
 
 | File | What |

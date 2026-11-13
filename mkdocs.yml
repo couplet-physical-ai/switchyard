@@ -1,4 +1,4 @@
-# Switchyard's docs site: https://switchyard.docs.example.com
+# Switchyard's docs site: https://switchyard.docs.example.internal
 # Theme, plugins, markdown extensions and branding come from the shared `exowatt-mkdocs`
 # package (INHERIT below); this file carries only the site's identity and nav. The site is
 # built and published by Roadrunner (see docs/guides/deploying.md, "The docs site").
@@ -11,7 +11,7 @@ edit_uri: edit/main/docs/
 
 extra:
   # local previews (mkdocs serve) resolve Hypothesis annotations to the published URL
-  canonical_base: https://switchyard.docs.example.com
+  canonical_base: https://switchyard.docs.example.internal
 
 nav:
   - Home: index.md

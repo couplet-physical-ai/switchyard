@@ -7,7 +7,7 @@
 #   SWITCHYARD_VERSION         informational; sy-ship stamps the version into Info.plist after
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
-export SWITCHYARD_DEFAULT_SERVER="${SWITCHYARD_DEFAULT_SERVER:-https://switchyard.apps.example.com}"
+export SWITCHYARD_DEFAULT_SERVER="${SWITCHYARD_DEFAULT_SERVER:-https://switchyard.apps.example.internal}"
 app=$(SWITCHYARD_MAC_FLAGS="--release" "$here/scripts/build.sh" mac | tail -1)
 [ -n "$app" ] && [ -d "$app" ] || { echo "build-macos-release: no Switchyard.app was built" >&2; exit 1; }
 # A bake without app.ts's data module still links (every source then answers "unknown source"):

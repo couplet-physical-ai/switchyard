@@ -66,7 +66,7 @@ def main() -> int:
         "The app is ad-hoc signed (no Developer ID); the cask clears the quarantine flag. Without Homebrew:",
         "download the dmg below, drag Switchyard to Applications, then run",
         "`xattr -dr com.apple.quarantine /Applications/Switchyard.app`. Checksums: `SHA256SUMS`.",
-        "Web: https://switchyard.apps.example.com", "",
+        "Web: https://switchyard.apps.example.internal", "",
     ]
     any_change = False
     for key, title in SECTIONS:

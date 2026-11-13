@@ -3,7 +3,7 @@
 // Built by scripts/release/build-macos.sh --placeholder. Not the product.
 import AppKit
 
-let webURL = URL(string: ProcessInfo.processInfo.environment["SWITCHYARD_URL"] ?? "https://switchyard.apps.example.com")!
+let webURL = URL(string: ProcessInfo.processInfo.environment["SWITCHYARD_URL"] ?? "https://switchyard.apps.example.internal")!
 
 final class Canvas: NSView {
     override func draw(_ dirtyRect: NSRect) {

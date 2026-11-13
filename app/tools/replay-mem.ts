@@ -1,6 +1,6 @@
 // Drives the data module (app.ts) in Bun through a live last-hour replay and prints its JS heap,
 // to find what grows (the native module has 64 MiB). Run:
-//   SWITCHYARD_TOKEN_FILE=~/.config/switchyard/e2e-token bun app/tools/replay-mem.ts https://switchyard.apps.example.com 60
+//   SWITCHYARD_TOKEN_FILE=~/.config/switchyard/e2e-token bun app/tools/replay-mem.ts https://switchyard.apps.example.internal 60
 import { heapStats } from 'bun:jsc';
 import { sources, draw } from '../app.ts';
 

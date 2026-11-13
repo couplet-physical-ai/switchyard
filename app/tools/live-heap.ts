@@ -29,7 +29,7 @@ import { sources } from '../app.ts';
 const argv = process.argv.slice(2);
 const flag = (k: string) => argv.includes(k);
 const opt = (k: string, d: string) => { const i = argv.indexOf(k); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
-const SERVER = opt('--server', 'https://switchyard.apps.example.com');
+const SERVER = opt('--server', 'https://switchyard.apps.example.internal');
 const MINUTES = Number(opt('--min', '60'));
 const LIVE = !flag('--no-live');
 const OUT = opt('--out', `/tmp/live-heap-${LIVE ? 'live' : 'nolive'}-${Date.now()}.jsonl`);

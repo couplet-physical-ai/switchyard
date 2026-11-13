@@ -2,7 +2,7 @@
 // wants a token (the live one) from a headless browser: it serves a web build and forwards
 // /api/* there with the token added, as the SSO edge adds a session. The page sees exactly
 // production's shape: same-origin /api/v1/* and ws(s)://<page>/api/v1/stream, no token.
-//   bun app/tools/live-proxy.ts --dist /tmp/sy-web --upstream https://switchyard.apps.example.com \
+//   bun app/tools/live-proxy.ts --dist /tmp/sy-web --upstream https://switchyard.apps.example.internal \
 //     --token-file ~/.config/switchyard/e2e-token [--port 8095]
 // The token is read from the file and never printed. Local use only (it binds 127.0.0.1).
 import { join, normalize } from 'node:path';
@@ -12,7 +12,7 @@ const arg = (name: string, def = '') => {
   return i > 0 ? process.argv[i + 1] ?? def : def;
 };
 const dist = arg('dist', 'dist');
-const upstream = arg('upstream', 'https://switchyard.apps.example.com').replace(/\/+$/, '');
+const upstream = arg('upstream', 'https://switchyard.apps.example.internal').replace(/\/+$/, '');
 const port = Number(arg('port', '8095'));
 const tokenFile = arg('token-file');
 const token = tokenFile ? (await Bun.file(tokenFile.replace(/^~/, process.env.HOME ?? '')).text()).trim() : '';
