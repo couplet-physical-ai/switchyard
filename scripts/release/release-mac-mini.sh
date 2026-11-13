@@ -5,7 +5,7 @@
 #
 #   scripts/release/release-mac-mini.sh 0.1.0 [--mode app|placeholder] [--no-publish]
 #
-# Env: MINI (default mini-user@192.0.2.1, Tailscale), MINI_DIR (default
+# Env: MINI (user@host of the release Mac; default SY_MINI, no built-in host), MINI_DIR (default
 # /Volumes/Farm/farm-exowatt/switchyard-release: holds exact/ at the pin plus its own
 # CARGO_HOME/RUSTUP_HOME; set up by `bun scripts/exact.mjs setup` there).
 set -euo pipefail
@@ -13,7 +13,7 @@ export GIT_TERMINAL_PROMPT=0
 V=${1:?version}; V=${V#v}; shift
 MODE=app PUBLISH=1
 while [[ $# -gt 0 ]]; do case "$1" in --mode) MODE=$2; shift 2 ;; --no-publish) PUBLISH=0; shift ;; *) echo "unknown $1" >&2; exit 2 ;; esac; done
-MINI=${MINI:-mini-user@192.0.2.1}
+MINI=${MINI:-${SY_MINI:?set MINI or SY_MINI=user@host of the release Mac (packaging/RELEASING.md)}}
 MINI_DIR=${MINI_DIR:-/Volumes/Farm/farm-exowatt/switchyard-release}
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 "$MINI")
 cd "$(dirname "$0")/../.."

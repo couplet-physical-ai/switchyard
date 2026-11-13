@@ -21,7 +21,35 @@ export function isRed(r: Repo | undefined): boolean {
   return s === 'failure' || s === 'error';
 }
 
-export const ORG_ORDER = ['Northwind-Labs', 'Northwind-EMS', 'Northwind-Forge', 'couplet-physical-ai', 'copper-browser'];
+/** The demo fleet's orgs (tests, dev builds): the order a build without SWITCHYARD_ORGS shows. */
+export const DEMO_ORGS = ['Northwind-Labs', 'Northwind-EMS', 'Northwind-Forge', 'couplet-physical-ai', 'copper-browser'];
+
+/** The watched orgs in display order. Site-specific, so not in the source: a build bakes the
+ *  server's SWITCHYARD_ORGS in (app.ts → setOrgOrder); without it, the demo fleet's. Changed in
+ *  place, so every importer sees the set list. */
+export const ORG_ORDER: string[] = DEMO_ORGS.slice();
+/** The `Word-` prefix two or more of the orgs share (shown without it), '' for none. */
+let orgPrefix = sharedPrefix(ORG_ORDER);
+
+/** Set the watched orgs (comma list or array, display order); empty keeps the current list. */
+export function setOrgOrder(orgs: string | string[]): void {
+  const list = (typeof orgs === 'string' ? orgs.split(',') : orgs).map((o) => o.trim()).filter((o) => o);
+  if (!list.length) return;
+  ORG_ORDER.length = 0;
+  ORG_ORDER.push(...list);
+  orgPrefix = sharedPrefix(ORG_ORDER);
+}
+
+function sharedPrefix(orgs: string[]): string {
+  const n = new Map<string, number>();
+  for (const o of orgs) {
+    const i = o.indexOf('-');
+    if (i > 0) n.set(o.slice(0, i + 1), (n.get(o.slice(0, i + 1)) ?? 0) + 1);
+  }
+  let best = '';
+  for (const [p, k] of n) if (k >= 2 && k > (n.get(best) ?? 0)) best = p;
+  return best;
+}
 
 export function orgRank(org: string): number {
   if (org === BOTS) return 100;
@@ -31,7 +59,7 @@ export function orgRank(org: string): number {
 
 export function orgLabel(org: string): string {
   if (org === BOTS) return 'bots';
-  const o = org.replace(/^Northwind-/, '');
+  const o = orgPrefix && org.startsWith(orgPrefix) && org.length > orgPrefix.length ? org.slice(orgPrefix.length) : org;
   if (o === 'couplet-physical-ai') return 'couplet';
   if (o === 'copper-browser') return 'copper';
   return o.toLowerCase();

@@ -11,10 +11,10 @@
 # anywhere under the app's Application Support, Logs or Preferences (it must live only in the
 # Keychain). The script only ever quits /Applications' copy (dev builds share the bundle id).
 # (Exact's own render; screencapture is blocked over ssh).
-# brew on the mini belongs to felipearce; the app runs in mini-user's GUI session.
+# brew on the mini belongs to its admin user; the app runs in the SY_MINI user's GUI session.
 set -euo pipefail
 V=${1:?version}; KEEP=${2:-}
-HOST=${SY_MINI:-mini-user@192.0.2.1}
+HOST=${SY_MINI:?set SY_MINI=user@host of the release Mac (packaging/RELEASING.md)}
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST")
 # The token file and the snapshot live under the app user's home: /Volumes/Farm is a removable
 # volume, which macOS privacy (TCC) keeps from apps launched this way ("couldn't be opened").

@@ -5,12 +5,16 @@
 import type { Answer, Ctx2D, Frame, NativeModule, Result, Sources, Store } from './app.contract.d.ts';
 import { HttpUpstream, resolveBase, setDefaultServer, wsUrl, type Upstream } from './src/api.ts';
 
-// A release build bakes the team's server in (app/scripts/build-macos-release.sh sets it);
-// dev and test builds leave it empty and ask on first launch.
+// A release build bakes the team's server in (app/scripts/build-macos-release.sh passes the
+// build's SWITCHYARD_DEFAULT_SERVER); dev and test builds leave it empty and ask on first launch.
 const DEFAULT_SERVER = import.meta.env.SWITCHYARD_DEFAULT_SERVER ?? '';
 const WEB_SHA = import.meta.env.SWITCHYARD_WEB_SHA ?? '';
 const WEB_TREE = import.meta.env.SWITCHYARD_WEB_TREE ?? '';
+// The watched orgs in display order (the server's SWITCHYARD_ORGS, baked in by the build);
+// unset, the demo fleet's order.
+const ORGS = import.meta.env.SWITCHYARD_ORGS ?? '';
 setDefaultServer(DEFAULT_SERVER);
+setOrgOrder(ORGS);
 import { DEMO_REPLAY, DemoUpstream } from './src/demo.ts';
 import { EngineHistory } from './src/enginehist.ts';
 import { bindInsights } from './src/insights.ts';
@@ -27,6 +31,7 @@ import { updateDo, updateState } from './src/update.ts';
 import type { Frame as WireFrame } from './src/wire.ts';
 import { Yard } from './src/yard/draw.ts';
 import { InfoLayer } from './src/yard/info.ts';
+import { setOrgOrder } from './src/yard/select.ts';
 import { totals } from './src/totals.ts';
 import { isRed } from './src/yard/layout.ts';
 import { dotLine, fmtDur } from './src/yard/paint.ts';

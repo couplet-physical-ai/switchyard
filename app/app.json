@@ -52,6 +52,7 @@
   ],
   "env": [
     "SWITCHYARD_DEFAULT_SERVER",
+    "SWITCHYARD_ORGS",
     "SWITCHYARD_WEB_SHA",
     "SWITCHYARD_WEB_TREE"
   ]

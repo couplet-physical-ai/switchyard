@@ -19,6 +19,7 @@ import { clusterIdOf, clusterOrder, foldStep, guessClass, isRedState, normTeam, 
 import type { Upstream } from './api.ts';
 import { EngineHistory, STEP } from './enginehist.ts';
 import { Timeline } from './timeline.ts';
+import { ORG_ORDER } from './yard/select.ts';
 import type {
   App, AppDetail, ChangeCounts, Changes, CiState, Cluster, Deploy, DeployRef, DeployState, DeployVia, Engine, EngineHistoryDoc, Flake, Group, Health,
   Insights as InsightsDoc, Metric, Pipeline, Pr, Repo, Trend,
@@ -42,12 +43,20 @@ export type GroupHue = { l: number; c: number; h: number; hex: string; slot: num
  *  slots in order, the five known orgs their own (fx-lanes). */
 // fx-lanes: the palette re-picked (REVIEW-iter2 #1): lane neighbours ΔE_ok ≥ 0.10, any two groups ≥ 0.06, every group ≥ 0.10 from red, amber, ok and the fixed flash (grammar.ts PALETTE, tools/factory-grammar.test.ts prints the closest pair)
 const TEAM_SLOTS: [number, number, number][] = [[0.80, 0.055, 219], [0.62, 0.075, 267], [0.67, 0.075, 118], [0.80, 0.070, 307]];
-const ORG_SLOTS: Record<string, [number, number, number]> = {
-  'Northwind-Labs': [0.54, 0.075, 290], 'Northwind-Forge': [0.69, 0.073, 335], 'Northwind-EMS': [0.67, 0.075, 187],
-  'couplet-physical-ai': [0.60, 0.075, 337], 'copper-browser': [0.71, 0.064, 258],
-};
-/** The org slots in lane order (an unknown org takes the first one no known org holds). */
-const ORG_ORDER_HUE = ['Northwind-Labs', 'Northwind-Forge', 'Northwind-EMS', 'couplet-physical-ai', 'copper-browser'];
+/** The five org colours, by the org's place in ORG_ORDER (the watched orgs, display order; the
+ *  names are site configuration, not source): the k-th org takes ORG_COLOURS[k]. */
+const ORG_COLOURS: [number, number, number][] = [[0.54, 0.075, 290], [0.67, 0.075, 187], [0.69, 0.073, 335], [0.60, 0.075, 337], [0.71, 0.064, 258]];
+/** The org slots in lane order, as places in ORG_ORDER (an unknown org takes the first one no
+ *  known org holds). */
+const ORG_HUE_ORDER = [0, 2, 1, 3, 4];
+/** The known orgs with their colour, in lane order. */
+function orgOrderHue(): string[] {
+  return ORG_HUE_ORDER.map((k) => ORG_ORDER[k]).filter((o): o is string => !!o);
+}
+function orgSlot(org: string): [number, number, number] | undefined {
+  const k = ORG_ORDER.indexOf(org);
+  return k >= 0 ? ORG_COLOURS[k] : undefined;
+}
 /** Teams past the hued slots fold into "other teams": neutral. */
 export const OTHER_HUE: GroupHue = hue(0.62, 0.012, 90, -1, true);
 /** The bots siding (§C): near-neutral, drawn with a hatch. */
@@ -270,8 +279,9 @@ export class Insights {
         free--;
       } else if (free > 0) {
         // fewer than five orgs: a team after the four blues borrows a free org colour
-        const o = ORG_ORDER_HUE.find((k) => !this.orgHueTaken.has(k) && !this.world.orgs.has(k));
-        if (o) { this.orgHueTaken.add(o); const [l, c, hh] = ORG_SLOTS[o]!; x = hue(l, c, hh, TEAM_SLOTS.length + ORG_ORDER_HUE.indexOf(o)); free--; }
+        const order = orgOrderHue();
+        const o = order.find((k) => !this.orgHueTaken.has(k) && !this.world.orgs.has(k));
+        if (o) { this.orgHueTaken.add(o); const [l, c, hh] = orgSlot(o)!; x = hue(l, c, hh, TEAM_SLOTS.length + order.indexOf(o)); free--; }
       }
       this.hueOf.set(g.id, x);
     }
@@ -280,11 +290,12 @@ export class Insights {
   /** An org's own slot; an org §C does not know takes the first slot no known org of this
    *  fleet holds. */
   private orgHue(org: string): GroupHue | undefined {
-    const pick = ORG_SLOTS[org] && !this.orgHueTaken.has(org) ? org : ORG_ORDER_HUE.find((o) => !this.orgHueTaken.has(o) && !this.world.orgs.has(o));
+    const order = orgOrderHue();
+    const pick = orgSlot(org) && !this.orgHueTaken.has(org) ? org : order.find((o) => !this.orgHueTaken.has(o) && !this.world.orgs.has(o));
     if (!pick) return undefined;
     this.orgHueTaken.add(pick);
-    const [l, c, h] = ORG_SLOTS[pick]!;
-    return hue(l, c, h, TEAM_SLOTS.length + ORG_ORDER_HUE.indexOf(pick));
+    const [l, c, h] = orgSlot(pick)!;
+    return hue(l, c, h, TEAM_SLOTS.length + order.indexOf(pick));
   }
 
   // ── clusters and flakes ──
@@ -881,7 +892,7 @@ function flakeOrder(a: Flake, b: Flake): number {
   return b.flips_24h - a.flips_24h || b.last_at - a.last_at || (a.id < b.id ? -1 : 1);
 }
 function orgRank(id: string): number {
-  const i = ORG_ORDER_HUE.indexOf(id.slice(4));
+  const i = orgOrderHue().indexOf(id.slice(4));
   return i < 0 ? 99 : i;
 }
 

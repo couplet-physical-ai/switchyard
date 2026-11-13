@@ -39,7 +39,7 @@ if [[ -n "$CYCLE" ]]; then
     MIN=$(( MIN + ${seg#*:} ))
   done
 fi
-HOST=${SY_MINI:-mini-user@192.0.2.1}
+HOST=${SY_MINI:?set SY_MINI=user@host of the release Mac (packaging/RELEASING.md)}
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 "$HOST")
 DIR=/Users/${HOST%@*}/.switchyard-e2e
 TAIL=${SY_SOAK_TAIL:-5}; TAIL_PCT=${SY_SOAK_TAIL_PCT:-8}; HALF_PCT=${SY_SOAK_HALF_PCT:-25}

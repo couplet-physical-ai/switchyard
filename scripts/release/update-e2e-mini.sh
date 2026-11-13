@@ -21,7 +21,7 @@
 # 0.1.2 → 0.1.3) but still requires the window.
 set -euo pipefail
 FROM=${1:?from-version}; TO=${2:?to-version}; KEEP=${3:-}
-HOST=${SY_MINI:-mini-user@192.0.2.1}
+HOST=${SY_MINI:?set SY_MINI=user@host of the release Mac (packaging/RELEASING.md)}
 ARG=${SY_UPDATE_ARG:---update-now}
 REPO=couplet-physical-ai/switchyard
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST")

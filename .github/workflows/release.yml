@@ -2,9 +2,13 @@
 # sign it (no Developer ID exists), publish zip + dmg + SHA256SUMS as a GitHub release, and
 # let couplet-physical-ai/homebrew-tap's bump-switchyard workflow move the cask.
 #
-# macOS builds stay on GitHub Actions (Exowatt rule; the repo is public, so macOS minutes are
-# free). Everything else runs on Roadrunner (.woodpecker/). One command cuts a release:
-# `scripts/release.sh 0.1.0` (tags v0.1.0, waits for this workflow, bumps the tap).
+# Like the rest of CI (.github/workflows/), it runs on GitHub-hosted runners (the repo is
+# public, so macOS minutes are free). One command cuts a release: `scripts/release.sh 0.1.0`
+# (tags v0.1.0, waits for this workflow, bumps the tap).
+#
+# Site configuration comes from repository secrets, never from the source: SWITCHYARD_DEFAULT_SERVER
+# (the server a fresh install talks to) and SWITCHYARD_ORGS (the watched orgs in display order,
+# the server's list). An app release refuses to build without the server.
 #
 # Manual runs: mode=placeholder proves the release path without the client; mode=exact-probe
 # builds Exact's Caltrain example to prove and time the toolchain (publishes nothing).
@@ -45,6 +49,8 @@ jobs:
       MODE: ${{ inputs.mode || 'app' }}
       CARGO_TERM_COLOR: never
       EXACT_FEEDBACK: "0"
+      SWITCHYARD_DEFAULT_SERVER: ${{ secrets.SWITCHYARD_DEFAULT_SERVER }}
+      SWITCHYARD_ORGS: ${{ secrets.SWITCHYARD_ORGS }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -57,6 +63,10 @@ jobs:
           set -euo pipefail
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then v=${GITHUB_REF_NAME#v}; else v=${{ inputs.version }}; v=${v#v}; fi
           [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]] || { echo "bad version $v"; exit 1; }
+          if [[ "$MODE" == app ]]; then
+            [[ -n "$SWITCHYARD_DEFAULT_SERVER" ]] || { echo "::error::repository secret SWITCHYARD_DEFAULT_SERVER is unset: the app would ship without its server"; exit 1; }
+            [[ -n "$SWITCHYARD_ORGS" ]] || echo "::warning::repository secret SWITCHYARD_ORGS is unset: the app shows the demo fleet's org order"
+          fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
           # A gated release (scripts/release.sh --gate: the tag's message says [gated]) publishes as a
           # prerelease; it becomes Latest only after the mini's gates pass (scripts/release.sh --promote).

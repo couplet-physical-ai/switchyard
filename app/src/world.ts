@@ -5,7 +5,7 @@
 
 import type { App, Cluster, Commit, Deploy, Dot, Engine, Event, Flake, Frame as WireFrame, Group, Health, Kind, Lane, Org, Pipeline, Pr, Queue, Repo, Snapshot, Stats, Trend, Watcher } from './wire.ts';
 
-/** The sources column's row for bots (AUTOFIX, Renovate, agents). */
+/** The sources column's row for bots (merge bots, Renovate, agents). */
 export const BOTS = '@bots';
 
 export type Listener = (e: Event, w: World) => void;

@@ -63,7 +63,7 @@ function checkShape(snap: Snapshot): void {
   ok(pipes.every(([k, p]) => (p.lane === 'roadrunner' ? k === `wp:${p.repo}:${p.number}` : /^gha:\d+$/.test(k)) && snap.repos[p.repo]), `pipeline ids wp:/gha: (${pipes.length})`);
   ok(Object.entries(snap.prs).every(([k, p]) => k === `${p.repo}#${p.number}`), 'pr keys == repo#number');
   ok(Object.entries(snap.deploys).every(([k, d]) => k === `${d.app}:${d.sha}` && snap.apps[d.app]), 'deploy keys == app:sha');
-  ok(Object.keys(snap.apps).length === 64 && Object.entries(snap.apps).every(([k, a]) => a.url === `https://${k}.apps.example.internal`), '64 apps with apps.example.internal urls');
+  ok(Object.keys(snap.apps).length === 64 && Object.entries(snap.apps).every(([k, a]) => a.url === `https://${k}.apps.example.com`), '64 apps with apps.example.com urls');
   const notUp = Object.values(snap.apps).filter((a) => a.health !== 'up').length;
   ok(notUp >= 1 && notUp <= 4, `apps degraded/down: ${notUp}`);
   ok(Object.entries(snap.lanes).every(([k, l]) => k === l.id && snap.repos[k]?.lane === l.mode), 'lanes keyed by repo, mode == repo.lane');

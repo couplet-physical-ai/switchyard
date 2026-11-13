@@ -1,4 +1,6 @@
 # Security scan for a PUBLIC repo on every pull request and push to main:
+#  0. internal names: scripts/check-no-internal.sh fails on any tracked file naming the company's
+#     hosts, its private GitHub orgs or a private / CGNAT IPv4 address.
 #  1. secrets: gitleaks `dir` over the tree at the commit (tracked files only, no .git) with the
 #     repo's .gitleaks.toml (gitleaks defaults plus the private-address rules). Any finding fails;
 #     secrets are redacted in the log.
@@ -27,6 +29,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: internal names (company hosts, private orgs, private addresses)
+        run: timeout 120 bash scripts/check-no-internal.sh
       - name: Tree at the commit
         run: |
           mkdir -p "$RUNNER_TEMP/src"

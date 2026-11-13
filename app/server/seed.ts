@@ -61,7 +61,7 @@ export function* seedFleetSteps(s: Sim): Generator<void, void, void> {
       id, org: d.org, name: d.name, default_branch: r.chance(0.06) ? 'master' : 'main', lane, ...(note ? { lane_note: note } : {}),
       main: { head: '', state: lane === 'none' ? 'none' : 'success', since: T0, culprit: null, recent: [] },
       heat, open_prs: 0,
-      links: { github: `https://github.com/${id}`, ...(lane === 'ci' || lane === 'ci_only' || lane === 'none' ? {} : { woodpecker: `https://ci.dev.example.internal/repos/${1000 + i}` }), cicd: `https://cicd.apps.example.internal/repos/${id}` },
+      links: { github: `https://github.com/${id}`, ...(lane === 'ci' || lane === 'ci_only' || lane === 'none' ? {} : { woodpecker: `https://ci.dev.example.com/repos/${1000 + i}` }), cicd: `https://cicd.apps.example.com/repos/${id}` },
       p50_build_ms: Math.round(30 + 120 * size) * 1000,
     };
     const rx: RepoX = {
@@ -94,7 +94,7 @@ export function* seedFleetSteps(s: Sim): Generator<void, void, void> {
     const x = r();
     rx.via = x < 0.8 ? 'roadrunner' : x < 0.93 ? 'gha' : 'manual';
     const a: App = {
-      repo: rx.r.id, url: `https://${slug}.apps.example.internal`, health: 'up', checked: T0, runtime: r.pick(N.RUNTIMES),
+      repo: rx.r.id, url: `https://${slug}.apps.example.com`, health: 'up', checked: T0, runtime: r.pick(N.RUNTIMES),
       team: r.pick(TEAM_BY_ORG[rx.r.org] ?? N.TEAMS),
     };
     const ax: AppX = { id: slug, a, rx, baseLat: r.int(35, 220), pinned: false, samples: [] };

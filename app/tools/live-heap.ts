@@ -29,7 +29,9 @@ import { sources } from '../app.ts';
 const argv = process.argv.slice(2);
 const flag = (k: string) => argv.includes(k);
 const opt = (k: string, d: string) => { const i = argv.indexOf(k); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
-const SERVER = opt('--server', 'https://switchyard.apps.example.internal');
+// The server: --server, else SWITCHYARD_URL (no built-in default: it is site configuration).
+const SERVER = opt('--server', process.env.SWITCHYARD_URL ?? '');
+if (!SERVER && !flag('--sim')) throw new Error('live-heap: pass --server <server URL> or set SWITCHYARD_URL');
 const MINUTES = Number(opt('--min', '60'));
 const LIVE = !flag('--no-live');
 const OUT = opt('--out', `/tmp/live-heap-${LIVE ? 'live' : 'nolive'}-${Date.now()}.jsonl`);

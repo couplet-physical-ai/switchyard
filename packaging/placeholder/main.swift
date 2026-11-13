@@ -3,7 +3,8 @@
 // Built by scripts/release/build-macos.sh --placeholder. Not the product.
 import AppKit
 
-let webURL = URL(string: ProcessInfo.processInfo.environment["SWITCHYARD_URL"] ?? "https://switchyard.apps.example.internal")!
+// The web app to open: SWITCHYARD_URL at run time (site configuration; none is built in).
+let webURL = URL(string: ProcessInfo.processInfo.environment["SWITCHYARD_URL"] ?? "https://github.com/couplet-physical-ai/switchyard")!
 
 final class Canvas: NSView {
     override func draw(_ dirtyRect: NSRect) {

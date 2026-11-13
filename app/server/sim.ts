@@ -500,7 +500,7 @@ export class Sim {
   newPipeId(rx: RepoX, lane: Lane): { id: string; number: number; url: string } {
     if (lane === 'roadrunner') {
       const number = ++rx.wpNum;
-      return { id: `wp:${rx.r.id}:${number}`, number, url: `https://ci.dev.example.internal/repos/${1000 + rx.idx}/pipeline/${number}` };
+      return { id: `wp:${rx.r.id}:${number}`, number, url: `https://ci.dev.example.com/repos/${1000 + rx.idx}/pipeline/${number}` };
     }
     const run = ++this.ghaRun;
     return { id: `gha:${run}`, number: ++rx.ghaNum, url: `https://github.com/${rx.r.id}/actions/runs/${run}` };

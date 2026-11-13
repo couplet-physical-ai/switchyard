@@ -7,7 +7,8 @@
 #                                       # the mini gates (RELEASING.md "Gated releases")
 #   scripts/release.sh 0.1.5 --promote  # after the gates pass: make it Latest, bump the tap
 #
-# 1. checks origin/main's HEAD is green on Roadrunner (gh rr status; --skip-ci to bypass);
+# 1. checks origin/main's HEAD is green on GitHub Actions (every finished check run of the
+#    commit passed or was skipped, none still running; --skip-ci to bypass);
 # 2. tags it v<version> and pushes the tag -> .github/workflows/release.yml builds the arm64
 #    .app on GitHub's macOS runner, ad-hoc signs it and publishes zip + dmg + SHA256SUMS;
 # 3. waits for that run, then runs the tap's bump-switchyard workflow so
@@ -44,11 +45,15 @@ sha=$(git rev-parse origin/main)
 if git rev-parse -q --verify "refs/tags/v$V" >/dev/null; then echo "tag v$V already exists" >&2; exit 1; fi
 echo "release v$V at origin/main ${sha::7}: $(git log -1 --format=%s "$sha")"
 if [[ $SKIPCI == 0 ]]; then
-  if ! timeout 120 gh rr status "$sha" -R "$REPO" >/tmp/sy-rr-status.$$ 2>&1; then
-    cat /tmp/sy-rr-status.$$; rm -f /tmp/sy-rr-status.$$
-    echo "main ${sha::7} is not green on Roadrunner (use --skip-ci to release anyway)" >&2; exit 1
+  # name<TAB>status<TAB>conclusion of every check run on the commit (GitHub Actions jobs, DCO).
+  checks=$(timeout 120 gh api "repos/$REPO/commits/$sha/check-runs?per_page=100" \
+    --jq '.check_runs[] | [.name, .status, (.conclusion // "")] | @tsv') || { echo "could not read the checks of ${sha::7}" >&2; exit 1; }
+  bad=$(printf '%s\n' "$checks" | awk -F'\t' 'NF && !($2 == "completed" && ($3 == "success" || $3 == "skipped" || $3 == "neutral"))')
+  if [[ -z "$checks" || -n "$bad" ]]; then
+    printf '%s\n' "${bad:-no check runs}"
+    echo "main ${sha::7} is not green on GitHub Actions (use --skip-ci to release anyway)" >&2; exit 1
   fi
-  rm -f /tmp/sy-rr-status.$$; echo "Roadrunner: green"
+  echo "GitHub Actions: green ($(printf '%s\n' "$checks" | grep -c .) checks)"
 fi
 if [[ $DRY == 1 ]]; then echo "dry run: would tag v$V at ${sha::7}, push it, watch release.yml, dispatch $TAP bump-switchyard"; exit 0; fi
 msg="Switchyard $V"; [[ $GATE == 1 ]] && msg="$msg [gated]"

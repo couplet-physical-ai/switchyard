@@ -9,6 +9,7 @@
 (so 0.1.0 covers everything); none = the whole history. Prints Markdown on stdout.
 Python 3 stdlib only (macOS runners ship bash 3.2, which has no associative arrays).
 """
+import os
 import re
 import subprocess
 import sys
@@ -56,6 +57,9 @@ def main() -> int:
                     key = section
                     break
         groups[key].append(f"- {text if key != 'other' else subject} ({sha[:7]})")
+    # The team's web app, for notes that stay private (the mini's): release notes on GitHub are
+    # public, so the release workflow leaves SWITCHYARD_NOTES_WEB_URL unset.
+    web = os.environ.get("SWITCHYARD_NOTES_WEB_URL", "").strip().rstrip("/")
     out = [] if changes_only else [
         f"## Switchyard {version}", "",
         "macOS (Apple Silicon, macOS 14+) and web. Install or upgrade:", "",
@@ -66,7 +70,7 @@ def main() -> int:
         "The app is ad-hoc signed (no Developer ID); the cask clears the quarantine flag. Without Homebrew:",
         "download the dmg below, drag Switchyard to Applications, then run",
         "`xattr -dr com.apple.quarantine /Applications/Switchyard.app`. Checksums: `SHA256SUMS`.",
-        "Web: https://switchyard.apps.example.internal", "",
+        *([f"Web: {web}", ""] if web else []),
     ]
     any_change = False
     for key, title in SECTIONS:
