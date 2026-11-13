@@ -9,6 +9,10 @@
 //! hosts and IPs are replaced by deterministic stand-ins (the same input
 //! always maps to the same output, so the recording stays consistent); bots,
 //! public repos, public hostnames and every number/state/time are kept.
+//!
+//! What is private is site-specific, so it comes from the environment
+//! ([`SanitizeCfg::from_env`]; keys in `server/.env.example`), never from this source:
+//! private DNS suffixes, org renames and extra bot markers.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -136,7 +140,170 @@ fn pick<'a>(list: &'a [&'a str], seed: u64) -> &'a str {
     list[(seed % list.len() as u64) as usize]
 }
 
+/// The domain every private host moves to (`ci.dev.<private>` → `ci.dev.example.internal`).
+pub const NEUTRAL_DOMAIN: &str = "example.internal";
+
+/// What a recording calls private (site-specific, from the environment).
+#[derive(Clone, Debug, Default)]
+pub struct SanitizeCfg {
+    /// Private DNS suffixes (`SWITCHYARD_SANITIZE_DOMAINS`, comma list): a host under one keeps
+    /// its leading labels on [`NEUTRAL_DOMAIN`], and an e-mail at one is refused.
+    pub domains: Vec<String>,
+    /// Org renames (`SWITCHYARD_SANITIZE_ORGS`, comma list of `real=stand-in`), applied to the
+    /// whole recording before anything else, so ids keep their order (pick stand-ins that
+    /// sort like the real names).
+    pub orgs: Vec<(String, String)>,
+    /// Extra login markers of the site's own bots, kept as bots (`SWITCHYARD_SANITIZE_BOTS`).
+    pub bots: Vec<String>,
+}
+
+fn list(v: &str) -> Vec<String> {
+    v.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+impl SanitizeCfg {
+    /// From the environment. `SWITCHYARD_SANITIZE_DOMAINS` must be set (it may be empty
+    /// when the site has no private domain): a sanitizer that does not know them cannot
+    /// promise a clean recording.
+    pub fn from_env() -> Result<SanitizeCfg> {
+        let domains = std::env::var("SWITCHYARD_SANITIZE_DOMAINS").context(
+            "SWITCHYARD_SANITIZE_DOMAINS is unset: list the site's private DNS suffixes \
+             (comma list; empty for none), see server/.env.example",
+        )?;
+        let orgs = std::env::var("SWITCHYARD_SANITIZE_ORGS").unwrap_or_default();
+        let bots = std::env::var("SWITCHYARD_SANITIZE_BOTS").unwrap_or_default();
+        Ok(SanitizeCfg {
+            domains: list(&domains)
+                .into_iter()
+                .map(|d| d.trim_start_matches('.').to_ascii_lowercase())
+                .collect(),
+            orgs: list(&orgs)
+                .into_iter()
+                .filter_map(|p| {
+                    let (a, b) = p.split_once('=')?;
+                    Some((a.trim().to_string(), b.trim().to_string()))
+                })
+                .filter(|(a, b)| !a.is_empty() && !b.is_empty())
+                .collect(),
+            bots: list(&bots)
+                .into_iter()
+                .map(|b| b.to_ascii_lowercase())
+                .collect(),
+        })
+    }
+
+    /// `host` under a private domain: its leading labels on [`NEUTRAL_DOMAIN`].
+    fn neutral_host(&self, host: &str) -> Option<String> {
+        let low = host.to_ascii_lowercase();
+        self.domains
+            .iter()
+            .filter(|d| low == **d || low.ends_with(&format!(".{d}")))
+            .max_by_key(|d| d.len())
+            .map(|d| {
+                let head = &host[..host.len() - d.len()];
+                format!("{head}{NEUTRAL_DOMAIN}")
+            })
+    }
+
+    /// Hosts in URLs under a private domain move to [`NEUTRAL_DOMAIN`], so links keep their
+    /// shape without naming internal machines.
+    pub fn neutral_hosts(&self, s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut rest = s;
+        while let Some(i) = rest.find("://") {
+            out.push_str(&rest[..i + 3]);
+            rest = &rest[i + 3..];
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '-'))
+                .unwrap_or(rest.len());
+            let host = &rest[..end];
+            match self.neutral_host(host) {
+                Some(n) => out.push_str(&n),
+                None => out.push_str(host),
+            }
+            rest = &rest[end..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// [`Self::neutral_hosts`] for free text (log lines): also private host names without a
+    /// scheme, and every e-mail address becomes a neutral one.
+    pub fn neutral_text(&self, s: &str) -> String {
+        let host_char = |c: char| c.is_ascii_alphanumeric() || c == '.' || c == '-';
+        let text = self.neutral_hosts(s);
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text.as_str();
+        while let Some(i) = rest.find(host_char) {
+            out.push_str(&rest[..i]);
+            rest = &rest[i..];
+            let end = rest.find(|c: char| !host_char(c)).unwrap_or(rest.len());
+            let run = &rest[..end];
+            let word = run.trim_end_matches('.');
+            match self.neutral_host(word).filter(|_| word.contains('.')) {
+                Some(n) => {
+                    out.push_str(&n);
+                    out.push_str(&run[word.len()..]);
+                }
+                None => out.push_str(run),
+            }
+            rest = &rest[end..];
+        }
+        out.push_str(rest);
+        neutral_emails(&out)
+    }
+
+    /// Org renames, token-bounded (`Org` and `Org/…`, never part of a longer name).
+    pub fn rename_orgs(&self, s: &str) -> String {
+        let word = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.';
+        let mut out = s.to_string();
+        for (a, b) in &self.orgs {
+            let mut res = String::with_capacity(out.len());
+            let mut i = 0;
+            while let Some(k) = out[i..].find(a.as_str()).map(|k| k + i) {
+                let before = out[..k].chars().next_back();
+                let after = out[k + a.len()..].chars().next();
+                res.push_str(&out[i..k]);
+                if before.is_some_and(word) || after.is_some_and(word) {
+                    res.push_str(a);
+                } else {
+                    res.push_str(b);
+                }
+                i = k + a.len();
+            }
+            res.push_str(&out[i..]);
+            out = res;
+        }
+        out
+    }
+
+    /// Refuse anything that looks internal: [`check_clean`], plus the private domains (as
+    /// hosts or e-mail domains) and the private org names.
+    pub fn check_clean(&self, b: &[u8]) -> Result<()> {
+        check_clean(b)?;
+        let text = String::from_utf8_lossy(b);
+        let low = text.to_ascii_lowercase();
+        for d in &self.domains {
+            if [".", "@", "//"]
+                .iter()
+                .any(|p| low.contains(&format!("{p}{d}")))
+            {
+                anyhow::bail!("found a host or address under a private domain");
+            }
+        }
+        if self.rename_orgs(&text) != text {
+            anyhow::bail!("found a private org name");
+        }
+        Ok(())
+    }
+}
+
 pub struct Sanitizer {
+    /// What is private here (domains, org renames, bot markers).
+    pub cfg: SanitizeCfg,
     /// Repos that are public: names and titles are kept.
     pub public_repos: BTreeSet<String>,
     /// Logins kept as-is (bots, product identities).
@@ -149,13 +316,13 @@ pub struct Sanitizer {
     clean: WireState,
 }
 
-fn is_bot_login(l: &str) -> bool {
+fn is_bot_login(l: &str, extra: &[String]) -> bool {
     let l = l.to_ascii_lowercase();
     l.ends_with("[bot]")
         || l.ends_with("-bot")
         || l.contains("renovate")
         || l.contains("dependabot")
-        || l.contains("autofix")
+        || extra.iter().any(|b| l.contains(b.as_str()))
         || l == "github-actions"
         || l.starts_with("app/")
 }
@@ -163,6 +330,7 @@ fn is_bot_login(l: &str) -> bool {
 impl Sanitizer {
     pub fn new(public_repos: BTreeSet<String>) -> Sanitizer {
         Sanitizer {
+            cfg: SanitizeCfg::default(),
             public_repos,
             keep_logins: BTreeSet::new(),
             repo_map: BTreeMap::new(),
@@ -171,6 +339,12 @@ impl Sanitizer {
             raw: WireState::default(),
             clean: WireState::default(),
         }
+    }
+
+    /// The same sanitizer with the site's notion of private.
+    pub fn with_cfg(mut self, cfg: SanitizeCfg) -> Sanitizer {
+        self.cfg = cfg;
+        self
     }
 
     fn is_public(&self, repo: &str) -> bool {
@@ -259,16 +433,19 @@ impl Sanitizer {
         let well_known = [
             "renovate",
             "dependabot",
-            "autofix",
             "github-actions",
             "woodpecker",
             "copilot",
             "claude",
         ];
-        if is_bot_login(l) && well_known.iter().any(|w| low.contains(w)) {
+        let bot = is_bot_login(l, &self.cfg.bots);
+        if bot
+            && (well_known.iter().any(|w| low.contains(w))
+                || self.cfg.bots.iter().any(|b| low.contains(b.as_str())))
+        {
             return l.to_string();
         }
-        if is_bot_login(l) || low.contains("bot") {
+        if bot || low.contains("bot") {
             if let Some(x) = self.login_map.get(l) {
                 return x.clone();
             }
@@ -359,9 +536,8 @@ impl Sanitizer {
                 out = out.replace(&r, &m);
             }
         }
-        if out.contains(".lab.example.com")
-            || out.contains("192.168.")
-            || out.contains("10.0.")
+        let out = self.cfg.neutral_hosts(&out);
+        if private_ipv4(&out).is_some()
             || out.contains('@') && out.contains(".com") && !out.contains("://")
         {
             return String::new();
@@ -550,8 +726,8 @@ impl Sanitizer {
                     v["repo"] = Value::from(self.repo(r));
                 }
                 if let Some(u) = v.get("url").and_then(Value::as_str) {
-                    if u.contains(".apps.example.com") {
-                        v["url"] = Value::from(format!("https://{new_id}.apps.example.com/"));
+                    if let Some(x) = self.app_url(u, &new_id) {
+                        v["url"] = Value::from(x);
                     } else if !u.is_empty() {
                         v["url"] = Value::from(format!("https://{new_id}.example.com/"));
                     }
@@ -622,7 +798,11 @@ impl Sanitizer {
                     })
                     .unwrap_or_default();
                 for k in ["line", "signature"] {
-                    if let Some(t) = v.get(k).and_then(Value::as_str).map(neutral_text) {
+                    if let Some(t) = v
+                        .get(k)
+                        .and_then(Value::as_str)
+                        .map(|t| self.cfg.neutral_text(t))
+                    {
                         v[k] = Value::from(t);
                     }
                 }
@@ -727,11 +907,10 @@ impl Sanitizer {
                 .and_then(Value::as_str)
                 .unwrap_or("app")
                 .to_string();
-            v["links"]["app"] = Value::from(if u.contains(".apps.example.com") {
-                format!("https://{app}.apps.example.com/")
-            } else {
-                format!("https://{app}.example.com/")
-            });
+            v["links"]["app"] = Value::from(
+                self.app_url(&u, &app)
+                    .unwrap_or_else(|| format!("https://{app}.example.com/")),
+            );
         }
         if matches!(kind, "engine" | "queue")
             && let Some(u) = v.get("url").and_then(Value::as_str).map(str::to_string)
@@ -774,6 +953,16 @@ impl Sanitizer {
         }
     }
 
+    /// An app's own URL on the site's private app domain (`https://<app>.<apps domain>/`),
+    /// with the app's stand-in as its first label; `None` for any other URL.
+    fn app_url(&self, u: &str, app: &str) -> Option<String> {
+        let n = self.cfg.neutral_hosts(u);
+        let host = n.split_once("://")?.1.split(['/', ':', '?', '#']).next()?;
+        let rest = host.split_once('.')?.1;
+        (rest.ends_with(NEUTRAL_DOMAIN) && rest.contains('.'))
+            .then(|| format!("https://{app}.{rest}/"))
+    }
+
     /// One link: private repo names replaced, hosts neutral.
     fn link(&mut self, s: &str) -> String {
         let mut out = s.to_string();
@@ -787,7 +976,7 @@ impl Sanitizer {
                 out = out.replace(&from, &to);
             }
         }
-        neutral_hosts(&out)
+        self.cfg.neutral_hosts(&out)
     }
 
     fn pipeline_id(&mut self, id: &str) -> String {
@@ -1031,20 +1220,28 @@ pub fn sanitize_dir(
     input: &Path,
     out: &Path,
     public_repos: BTreeSet<String>,
+    cfg: SanitizeCfg,
 ) -> Result<(usize, usize)> {
-    let mut s = Sanitizer::new(public_repos);
-    let mut snap: Value = serde_json::from_slice(
-        &std::fs::read(input.join("snapshot.json")).context("snapshot.json")?,
-    )?;
+    let mut s = Sanitizer::new(public_repos).with_cfg(cfg.clone());
+    // Org renames and private hosts first, over the whole text: every id, link and log line
+    // then carries the stand-ins, so the sanitizer's own id order holds.
+    let pre = |t: &str| cfg.neutral_text(&cfg.rename_orgs(t));
+    let mut snap: Value = serde_json::from_str(&pre(&std::fs::read_to_string(
+        input.join("snapshot.json"),
+    )
+    .context("snapshot.json")?))?;
     s.prime(&snap);
     let raw = snap.clone();
     s.snapshot(&mut snap);
     s.seed(&raw, &snap);
     std::fs::create_dir_all(out)?;
-    let snap_bytes = neutral_hosts(&serde_json::to_string(&snap)?).into_bytes();
-    check_clean(&snap_bytes).context("snapshot still contains something internal")?;
+    let snap_bytes = cfg
+        .neutral_hosts(&serde_json::to_string(&snap)?)
+        .into_bytes();
+    cfg.check_clean(&snap_bytes)
+        .context("snapshot still contains something internal")?;
     std::fs::write(out.join("snapshot.json"), &snap_bytes)?;
-    let text = std::fs::read_to_string(input.join("hour.jsonl")).context("hour.jsonl")?;
+    let text = pre(&std::fs::read_to_string(input.join("hour.jsonl")).context("hour.jsonl")?);
     let mut w = std::io::BufWriter::new(std::fs::File::create(out.join("hour.jsonl"))?);
     let mut n = 0;
     for line in text.lines() {
@@ -1053,8 +1250,9 @@ pub fn sanitize_dir(
         }
         let mut f: Value = serde_json::from_str(line)?;
         s.frame(&mut f);
-        let b = neutral_hosts(&serde_json::to_string(&f)?).into_bytes();
-        check_clean(&b).with_context(|| format!("frame {n} still contains something internal"))?;
+        let b = cfg.neutral_hosts(&serde_json::to_string(&f)?).into_bytes();
+        cfg.check_clean(&b)
+            .with_context(|| format!("frame {n} still contains something internal"))?;
         w.write_all(&b)?;
         w.write_all(b"\n")?;
         n += 1;
@@ -1075,8 +1273,6 @@ const LONG_LIVED: [&str; 8] = [
     "trunk",
 ];
 
-/// Internal-only hosts (`<x>.dev.example.com`, `<x>.example.com`) in URLs become
-/// `<x>.example.com`, so links keep their shape without naming internal machines.
 /// A plain version tag (`v1.2.3`, `0.14.0`, `v0.1.8-rc.2`): kept by the sanitizer;
 /// any other tag may name something private.
 fn is_version_tag(t: &str) -> bool {
@@ -1094,58 +1290,9 @@ fn is_version_tag(t: &str) -> bool {
     core_ok && pre_ok
 }
 
-pub fn neutral_hosts(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(i) = rest.find("://") {
-        out.push_str(&rest[..i + 3]);
-        rest = &rest[i + 3..];
-        let end = rest
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '-'))
-            .unwrap_or(rest.len());
-        let host = &rest[..end];
-        let internal = [
-            ".dev.example.com",
-            ".lab.example.com",
-            ".example.com",
-        ]
-        .iter()
-        .find_map(|suf| host.strip_suffix(suf));
-        match internal {
-            Some(first) => {
-                out.push_str(first.split('.').next().unwrap_or("internal"));
-                out.push_str(".example.com");
-            }
-            None => out.push_str(host),
-        }
-        rest = &rest[end..];
-    }
-    out.push_str(rest);
-    out
-}
-
-/// [`neutral_hosts`] for free text (log lines): also internal host names without a scheme.
-pub fn neutral_text(s: &str) -> String {
-    let mut out = neutral_hosts(s);
-    for suf in [
-        ".lab.example.com",
-        ".example.com",
-        ".dev.example.com",
-    ] {
-        while let Some(i) = out.find(suf) {
-            let start = out[..i]
-                .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '-'))
-                .map_or(0, |j| j + 1);
-            let first = out[start..i].split('.').next().unwrap_or("").to_string();
-            let first = if first.is_empty() {
-                "internal".to_string()
-            } else {
-                first
-            };
-            out.replace_range(start..i + suf.len(), &format!("{first}.example.com"));
-        }
-    }
-    // E-mail addresses (test parameters, owners) become a neutral one.
+/// Every e-mail address in free text becomes `user@example.com`.
+pub fn neutral_emails(s: &str) -> String {
+    let mut out = s.to_string();
     let mut from = 0;
     while let Some(k) = out[from..].find('@').map(|k| k + from) {
         let word = |c: char| c.is_ascii_alphanumeric() || "._%+-".contains(c);
@@ -1165,23 +1312,44 @@ pub fn neutral_text(s: &str) -> String {
     out
 }
 
-/// Refuse anything that looks internal: lab hosts, private IPs, e-mails.
-pub fn check_clean(b: &[u8]) -> Result<()> {
-    let s = String::from_utf8_lossy(b);
-    for bad in [
-        ".lab.example.com",
-        ".dev.example.com",
-        "192.168.",
-        "@example.com",
-        "users.noreply.github.com",
-    ] {
-        if s.contains(bad) {
-            anyhow::bail!("found {bad:?}");
+/// The first private or shared-space IPv4 literal in `s` (RFC 1918, carrier-grade NAT
+/// 100.64/10, link-local), if any: dotted quads only, so versions like `1.10.2` pass.
+pub fn private_ipv4(s: &str) -> Option<std::net::Ipv4Addr> {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i].is_ascii_digit() && (i == 0 || !(b[i - 1].is_ascii_digit() || b[i - 1] == b'.')) {
+            let end = (i..b.len())
+                .find(|&j| !(b[j].is_ascii_digit() || b[j] == b'.'))
+                .unwrap_or(b.len());
+            let quad = s[i..end].trim_end_matches('.');
+            if let Ok(ip) = quad.parse::<std::net::Ipv4Addr>() {
+                let o = ip.octets();
+                if ip.is_private()
+                    || ip.is_link_local()
+                    || (o[0] == 100 && (64..128).contains(&o[1]))
+                {
+                    return Some(ip);
+                }
+            }
+            i = end;
+        } else {
+            i += 1;
         }
     }
-    let re_10 = s.match_indices("\"10.").count() + s.match_indices("//10.").count();
-    if re_10 > 0 {
-        anyhow::bail!("found a 10.x address");
+    None
+}
+
+/// Refuse anything that looks internal whatever the site: private IPv4 literals and
+/// GitHub's per-person no-reply addresses. ([`SanitizeCfg::check_clean`] adds the site's
+/// private domains and orgs.)
+pub fn check_clean(b: &[u8]) -> Result<()> {
+    let s = String::from_utf8_lossy(b);
+    if s.contains("users.noreply.github.com") {
+        anyhow::bail!("found a users.noreply.github.com address");
+    }
+    if let Some(ip) = private_ipv4(&s) {
+        anyhow::bail!("found a private address ({}.x)", ip.octets()[0]);
     }
     Ok(())
 }
@@ -1190,44 +1358,68 @@ pub fn check_clean(b: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// A site whose private names are made up for the test (`corp.example`, `Acme-Private`).
+    fn site() -> SanitizeCfg {
+        SanitizeCfg {
+            domains: vec!["corp.example".into(), "lab.internal".into()],
+            orgs: vec![("Acme-Private".into(), "Northwind-Labs".into())],
+            bots: vec!["helper".into()],
+        }
+    }
+
     #[test]
     fn internal_hosts_become_neutral() {
+        let c = site();
         assert_eq!(
-            neutral_hosts(
-                r#"{"url":"https://ci.dev.example.com/repos/1/pipeline/84","b":"https://ci.dev.example.com"}"#
+            c.neutral_hosts(
+                r#"{"url":"https://ci.dev.corp.example/repos/1/pipeline/84","b":"https://ci.dev.corp.example"}"#
             ),
-            r#"{"url":"https://ci.example.com/repos/1/pipeline/84","b":"https://ci.example.com"}"#
+            r#"{"url":"https://ci.dev.example.internal/repos/1/pipeline/84","b":"https://ci.dev.example.internal"}"#
         );
-        // Built at runtime so the internal host never appears verbatim in the source.
-        let lab = format!("https://x.{}.example.com:8000/a", "lab");
-        assert_eq!(neutral_hosts(&lab), "https://x.example.com:8000/a");
+        assert_eq!(
+            c.neutral_hosts("https://x.lab.internal:8000/a"),
+            "https://x.example.internal:8000/a"
+        );
         for keep in [
             "https://github.com/a/b",
-            "https://switchyard.apps.example.com/",
+            "https://notcorp.example/",
+            "https://switchyard.apps.example.internal/",
             "plain text",
         ] {
-            assert_eq!(neutral_hosts(keep), keep);
+            assert_eq!(c.neutral_hosts(keep), keep);
         }
-        assert!(check_clean(b"https://ci.dev.example.com/x").is_err());
-        let plain = format!(
-            "POST http://prov-api.{}.example.com:8000/api failed",
-            "lab"
-        );
+        assert!(c.check_clean(b"https://ci.dev.corp.example/x").is_err());
+        assert!(c.check_clean(b"owner@corp.example").is_err());
+        assert!(c.check_clean(b"Acme-Private/billing").is_err());
+        assert!(c.check_clean(b"Acme-Private-Two/billing").is_ok());
         assert_eq!(
-            neutral_text(&plain),
-            "POST http://prov-api.example.com:8000/api failed"
+            c.neutral_text("POST http://prov-api.corp.example:8000/api failed"),
+            "POST http://prov-api.example.internal:8000/api failed"
         );
-        let bare = format!("dial prov-api.{}.example.com:8000: refused", "lab");
+        let bare = "dial prov-api.lab.internal:8000: refused. ok.corp.example.";
         assert_eq!(
-            neutral_text(&bare),
-            "dial prov-api.example.com:8000: refused"
+            c.neutral_text(bare),
+            "dial prov-api.example.internal:8000: refused. ok.example.internal."
         );
-        assert!(check_clean(neutral_text(&bare).as_bytes()).is_ok());
+        assert!(c.check_clean(c.neutral_text(bare).as_bytes()).is_ok());
         assert_eq!(
-            neutral_text("FAILED t.py::test_x[owner@example.com] and a@b.io. @here"),
+            c.neutral_text("FAILED t.py::test_x[owner@corp.example] and a@b.io. @here"),
             "FAILED t.py::test_x[user@example.com] and user@example.com. @here"
         );
-        assert!(check_clean(neutral_hosts("https://ci.dev.example.com/x").as_bytes()).is_ok());
+        assert_eq!(
+            c.rename_orgs(r#"{"id":"Acme-Private/x","org":"Acme-Private","o":"Acme-Private-2"}"#),
+            r#"{"id":"Northwind-Labs/x","org":"Northwind-Labs","o":"Acme-Private-2"}"#
+        );
+        // Private and shared address space, whatever the site (built at run time, so no
+        // private address appears verbatim in the source).
+        for (a, rest) in [(10, ".1.2.3"), (192, ".168.0.9:80"), (172, ".20.0.1/"), (100, ".100.1.2")] {
+            let bad = format!("x //{a}{rest}");
+            assert!(check_clean(bad.as_bytes()).is_err(), "{bad}");
+        }
+        for ok in ["v1.10.2", "8.8.8.8", "100.0.0.1", "took 10.8s", "1.2.3.4.5"] {
+            assert!(check_clean(ok.as_bytes()).is_ok(), "{ok}");
+        }
+        assert!(c.check_clean(b"https://ci.dev.example.internal/x").is_ok());
     }
 
     #[test]
@@ -1266,25 +1458,30 @@ mod tests {
 
     #[test]
     fn deep_links_hide_private_repos_apps_and_hosts() {
-        let mut s = Sanitizer::new(["acme/open".to_string()].into_iter().collect());
+        let mut s =
+            Sanitizer::new(["acme/open".to_string()].into_iter().collect()).with_cfg(site());
         let gh = "https://github.com/acme/secret-billing";
         let mut p = serde_json::json!({
             "id": "wp:acme/secret-billing:7", "repo": "acme/secret-billing", "sha": "abc",
-            "title": "secret billing change", "url": "https://ci.dev.example.com/repos/9/pipeline/7",
-            "links": {"cicd": "https://cicd.apps.example.com/pipelines/9/7",
-                      "woodpecker": "https://ci.dev.example.com/repos/9/pipeline/7",
+            "title": "secret billing change", "url": "https://ci.dev.corp.example/repos/9/pipeline/7",
+            "links": {"cicd": "https://cicd.apps.corp.example/pipelines/9/7",
+                      "woodpecker": "https://ci.dev.corp.example/repos/9/pipeline/7",
                       "commit": format!("{gh}/commit/abc"),
                       "release": format!("{gh}/releases/tag/secret-billing-2026")},
             "ref": "secret-billing-2026",
             "workflows": [{"name": "ci", "url": format!("{gh}/actions/runs/1"), "steps": [
-                {"name": "a", "url": "https://cicd.apps.example.com/pipelines/9/7?tab=steps&step=3"},
+                {"name": "a", "url": "https://cicd.apps.corp.example/pipelines/9/7?tab=steps&step=3"},
                 {"name": "b", "url": format!("{gh}/actions/runs/1/job/2")}]}]
         });
         s.entity("pipeline", &mut p);
         let txt = p.to_string();
         assert!(!txt.contains("secret"), "{txt}");
         // (Whole frames go through `neutral_hosts` when written; links are neutral already.)
-        assert!(!p["links"].to_string().contains("dev.example.com"), "{txt}");
+        assert!(!p["links"].to_string().contains("corp.example"), "{txt}");
+        assert_eq!(
+            p["links"]["cicd"],
+            "https://cicd.apps.example.internal/pipelines/9/7"
+        );
         assert!(
             p["links"]["commit"]
                 .as_str()
@@ -1305,28 +1502,39 @@ mod tests {
             assert!(!is_version_tag(drop), "{drop}");
         }
         let mut a = serde_json::json!({"id": "billing", "repo": "acme/secret-billing",
-            "url": "https://billing.apps.example.com/", "health": "up", "checked": 0,
-            "status_url": "https://grafana.dev.example.com/d/x/?var-app=billing",
-            "links": {"status": "https://grafana.dev.example.com/d/x/?var-app=billing",
+            "url": "https://billing.apps.corp.example/", "health": "up", "checked": 0,
+            "status_url": "https://grafana.dev.corp.example/d/x/?var-app=billing",
+            "links": {"status": "https://grafana.dev.corp.example/d/x/?var-app=billing",
                       "logs": format!("{gh}/actions/workflows/app-logs.yml"), "repo": gh}});
         s.entity("app", &mut a);
         assert!(a.get("status_url").is_none() && a["links"].get("logs").is_none());
         assert!(!a.to_string().contains("secret"), "{a}");
         let mut d = serde_json::json!({"id": "acme/secret-billing@abc", "app": "billing",
             "repo": "acme/secret-billing", "sha": "abc", "via": "roadrunner", "state": "success",
-            "started": 0, "links": {"app": "https://billing.apps.example.com/",
+            "started": 0, "links": {"app": "https://billing.apps.corp.example/",
                                     "commit": format!("{gh}/commit/abc")}});
         s.entity("deploy", &mut d);
         assert_eq!(
             d["links"]["app"],
-            format!("https://{}.apps.example.com/", d["app"].as_str().unwrap())
+            format!(
+                "https://{}.apps.example.internal/",
+                d["app"].as_str().unwrap()
+            )
         );
         assert!(
             !d.to_string().contains("secret") && !d.to_string().contains("billing."),
             "{d}"
         );
-        let mut e = serde_json::json!({"id": "wp-agent-1", "url": "https://ci.dev.example.com/admin/agents"});
+        let mut e = serde_json::json!({"id": "wp-agent-1", "url": "https://ci.dev.corp.example/admin/agents"});
         s.entity("engine", &mut e);
-        assert_eq!(e["url"], "https://ci.example.com/admin/agents");
+        assert_eq!(e["url"], "https://ci.dev.example.internal/admin/agents");
+        // An app's URL keeps the site's app domain (neutral), its first label the stand-in.
+        assert_eq!(
+            a["url"],
+            format!(
+                "https://{}.apps.example.internal/",
+                a["id"].as_str().unwrap()
+            )
+        );
     }
 }

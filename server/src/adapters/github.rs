@@ -3,7 +3,7 @@
 //! * Boot + hourly: every non-archived repo per org with its default branch and
 //!   the last 20 default-branch commits with their rollup state (the dot line
 //!   of quiet repos), as `Repos` + `MainHist` facts.
-//! * Every 45 s (Northwind-Labs) / 90 s (others): the most recently pushed repos,
+//! * Every 45 s (the first configured org) / 90 s (others): the most recently pushed repos,
 //!   their newest default-branch commits, and the HEAD's checks + statuses
 //!   (GitHub Actions runs, `ci/failsafe-deploy`, everything not on Woodpecker).
 //! * Every 60 s: the 50 most recently updated open PRs (non-dependabot) and the
@@ -1228,7 +1228,7 @@ impl GithubAdapter {
             t.tick().await;
             tick += 1;
             let mut errs: Vec<String> = Vec::new();
-            // Heads: Northwind-Labs every 45 s, the other orgs every 90 s.
+            // Heads: the first org every 45 s, the other orgs every 90 s.
             for (i, org) in self.orgs.iter().enumerate() {
                 let every = if i == 0 { 3 } else { 6 };
                 if tick % every == (i as u64) % every

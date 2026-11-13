@@ -10,7 +10,7 @@ use switchyard::adapters::woodpecker::{Mapper, WpAgent, WpEvent};
 use switchyard::model::Ms;
 
 /// Public URL the Woodpecker mapper links pipelines to.
-pub const WP_URL: &str = "https://ci.dev.example.com";
+pub const WP_URL: &str = "https://ci.dev.example.internal";
 
 pub fn path(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

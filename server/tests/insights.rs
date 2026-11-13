@@ -112,7 +112,6 @@ fn apps() -> Fact {
 fn store(facts: Vec<Fact>) -> Store {
     let mut s = Store::new(StoreConfig {
         orgs: vec!["acme".into(), "volt".into()],
-        ..Default::default()
     });
     for f in facts {
         s.apply(f, false);

@@ -58,7 +58,6 @@ fn run(n: u64, event: PipelineEvent, state: CiState, deploy: bool) -> Fact {
 fn store(facts: Vec<Fact>) -> Store {
     let mut s = Store::new(StoreConfig {
         orgs: vec!["acme".into()],
-        ..Default::default()
     });
     for f in facts {
         s.apply(f, false);

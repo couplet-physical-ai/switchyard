@@ -5,7 +5,7 @@
    "name": "borealis-web",
    "kind": "lxc",
    "ct_status": "running",
-   "url": "https://borealis-web.apps.example.com/",
+   "url": "https://borealis-web.apps.example.internal/",
    "health": "up",
    "last_checked": 1794339429.0003967,
    "repo_url": "https://github.com/Northwind-Labs/borealis-web",
@@ -16,7 +16,7 @@
    "description": "Neutral app description.",
    "last_deployed_at": "2026-11-10T19:36:36Z",
    "exowatt_email": null,
-   "preview_url": "https://borealis-web.apps.example.com/preview",
+   "preview_url": "https://borealis-web.apps.example.internal/preview",
    "surfaces": [
     "http"
    ],
@@ -30,7 +30,7 @@
    "name": "cirrus-hub",
    "kind": "lxc",
    "ct_status": "running",
-   "url": "https://cirrus-hub.apps.example.com/",
+   "url": "https://cirrus-hub.apps.example.internal/",
    "health": "up",
    "last_checked": 1794339429.003809,
    "repo_url": "https://github.com/Northwind-Labs/cirrus-hub",
@@ -41,12 +41,12 @@
    "description": "Neutral app description.",
    "last_deployed_at": "2026-11-10T15:47:47Z",
    "exowatt_email": null,
-   "preview_url": "https://cirrus-hub.apps.example.com/preview",
+   "preview_url": "https://cirrus-hub.apps.example.internal/preview",
    "surfaces": [
     "http",
     "mcp"
    ],
-   "mcp_url": "https://cirrus-hub.mcp.example.com/mcp",
+   "mcp_url": "https://cirrus-hub.mcp.example.internal/mcp",
    "mcp_description": "Neutral MCP tools description.",
    "hosting": "",
    "repo": "Northwind-Labs/cirrus-hub"
@@ -56,7 +56,7 @@
    "name": "delta-stock",
    "kind": "lxc",
    "ct_status": "running",
-   "url": "https://delta-stock.apps.example.com/",
+   "url": "https://delta-stock.apps.example.internal/",
    "health": "up",
    "last_checked": 1794339428.9960291,
    "repo_url": "https://github.com/Northwind-Labs/delta-stock",
@@ -67,13 +67,13 @@
    "description": "Neutral app description.",
    "last_deployed_at": "2026-11-09T23:18:19Z",
    "exowatt_email": null,
-   "preview_url": "https://delta-stock.apps.example.com/preview",
+   "preview_url": "https://delta-stock.apps.example.internal/preview",
    "surfaces": [
     "http",
     "mcp",
     "agent"
    ],
-   "mcp_url": "https://delta-stock.mcp.example.com/mcp",
+   "mcp_url": "https://delta-stock.mcp.example.internal/mcp",
    "mcp_description": "Neutral MCP tools description.",
    "hosting": "",
    "repo": "Northwind-Labs/delta-stock"
@@ -83,7 +83,7 @@
    "name": "aurora-api",
    "kind": "lxc",
    "ct_status": "running",
-   "url": "https://aurora-api.apps.example.com/",
+   "url": "https://aurora-api.apps.example.internal/",
    "health": "up",
    "last_checked": 1794339429.022156,
    "repo_url": "https://github.com/Northwind-Labs/aurora-api",
@@ -94,7 +94,7 @@
    "description": "Neutral app description.",
    "last_deployed_at": "2026-11-09T20:15:20Z",
    "exowatt_email": null,
-   "preview_url": "https://aurora-api.apps.example.com/preview",
+   "preview_url": "https://aurora-api.apps.example.internal/preview",
    "surfaces": [
     "http"
    ],
@@ -108,7 +108,7 @@
    "name": "meridian-shop",
    "kind": "lxc",
    "ct_status": "running",
-   "url": "https://meridian-shop.apps.example.com/",
+   "url": "https://meridian-shop.apps.example.internal/",
    "health": "up",
    "last_checked": 1794339428.9957395,
    "repo_url": "https://github.com/Northwind-Labs/meridian-shop",
@@ -119,7 +119,7 @@
    "description": "Neutral app description.",
    "last_deployed_at": "2026-10-27T07:45:14Z",
    "exowatt_email": null,
-   "preview_url": "https://meridian-shop.apps.example.com/preview",
+   "preview_url": "https://meridian-shop.apps.example.internal/preview",
    "surfaces": [
     "http"
    ],
@@ -144,12 +144,12 @@
    "description": "Neutral app description.",
    "last_deployed_at": null,
    "exowatt_email": null,
-   "preview_url": "https://harbor.example.com/",
+   "preview_url": "https://harbor.example.internal/",
    "surfaces": [
     "http",
     "mcp"
    ],
-   "mcp_url": "https://harbor.mcp.example.com/mcp",
+   "mcp_url": "https://harbor.mcp.example.internal/mcp",
    "mcp_description": "Neutral MCP tools description.",
    "hosting": "AWS",
    "repo": "Northwind-Labs/harbor-board"
@@ -159,7 +159,7 @@
    "name": "static-site-01",
    "kind": "static",
    "ct_status": "",
-   "url": "https://static-site-01.apps.example.com/",
+   "url": "https://static-site-01.apps.example.internal/",
    "health": "up",
    "last_checked": 1794339429.040096,
    "repo_url": null,
@@ -170,7 +170,7 @@
    "description": "Neutral app description.",
    "last_deployed_at": null,
    "exowatt_email": null,
-   "preview_url": "https://static-site-01.apps.example.com/",
+   "preview_url": "https://static-site-01.apps.example.internal/",
    "surfaces": [
     "http"
    ],

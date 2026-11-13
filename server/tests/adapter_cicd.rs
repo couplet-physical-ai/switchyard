@@ -65,7 +65,12 @@ fn mode_lanes() {
             ("Northwind-Labs/borealis-web", RoadrunnerFirst, false, false),
             ("Northwind-Labs/summit-gale", RoadrunnerFirst, false, false),
             ("Northwind-Labs/delta-stock", RoadrunnerFirst, false, false),
-            ("Northwind-Labs/glacier-tracker", RoadrunnerFirst, true, true),
+            (
+                "Northwind-Labs/glacier-tracker",
+                RoadrunnerFirst,
+                true,
+                true
+            ),
             ("Northwind-Labs/meridian-shop", RoadrunnerFirst, true, false),
         ]
     );
@@ -117,8 +122,18 @@ fn mode_head_verdicts_become_deploys() {
             ("Northwind-Labs/cirrus-hub", "f917c19", Success, Roadrunner),
             // deployed_gha while on the Roadrunner lane.
             ("Northwind-Labs/aurora-api", "eed5b2a", Success, Gha),
-            ("Northwind-Labs/harbor-board", "0d5c96b", Success, Roadrunner),
-            ("Northwind-Labs/borealis-web", "be13021", Success, Roadrunner),
+            (
+                "Northwind-Labs/harbor-board",
+                "0d5c96b",
+                Success,
+                Roadrunner
+            ),
+            (
+                "Northwind-Labs/borealis-web",
+                "be13021",
+                Success,
+                Roadrunner
+            ),
             // `deployed` by the GitHub Actions lane while on its fallback.
             (
                 "Northwind-Labs/glacier-tracker",

@@ -25,22 +25,10 @@ pub const PIPELINE_VISIBLE_MS: Ms = 2 * H;
 /// Dots per repo main line.
 pub const DOTS: usize = crate::wire::DOTS;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct StoreConfig {
-    pub woodpecker_url: String,
-    pub cicd_url: String,
     /// Orgs shown even before their repos are listed.
     pub orgs: Vec<String>,
-}
-
-impl Default for StoreConfig {
-    fn default() -> Self {
-        StoreConfig {
-            woodpecker_url: "https://ci.dev.example.com".into(),
-            cicd_url: "https://cicd.apps.example.com".into(),
-            orgs: Vec::new(),
-        }
-    }
 }
 
 /// One output op, with the entity already serialized.

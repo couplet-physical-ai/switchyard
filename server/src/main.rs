@@ -61,12 +61,9 @@ struct Cli {
     /// Public base URL (for /connect deep links and Origin checks).
     #[arg(long, env = "SWITCHYARD_PUBLIC_URL", default_value = "")]
     public_url: String,
-    /// GitHub orgs to watch (comma list).
-    #[arg(
-        long,
-        env = "SWITCHYARD_ORGS",
-        default_value = "Northwind-Labs,Northwind-EMS,Northwind-Forge,couplet-physical-ai,copper-browser"
-    )]
+    /// GitHub orgs to watch (comma list, in display order; the first is polled most often).
+    /// Site-specific: unset, the GitHub adapter is off (server/.env.example).
+    #[arg(long, env = "SWITCHYARD_ORGS", default_value = "")]
     orgs: String,
     /// Record fixtures: write the live snapshot + N minutes of frames into this directory.
     #[arg(long)]
@@ -106,6 +103,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     {
         // Deep-link bases (meta.links; every URL field the server builds).
+        // Unset bases stay empty: links built on them are empty, never a guessed host.
         let up = switchyard::adapters::UpstreamCfg::from_env();
         switchyard::links::set(switchyard::links::Bases {
             github: up.github_web,
@@ -137,7 +135,8 @@ fn main() -> Result<()> {
                     .collect(),
                 None => Default::default(),
             };
-            let (bytes, frames) = switchyard::record::sanitize_dir(input, out, public)?;
+            let cfg = switchyard::record::SanitizeCfg::from_env()?;
+            let (bytes, frames) = switchyard::record::sanitize_dir(input, out, public, cfg)?;
             println!(
                 "sanitized: snapshot {bytes} bytes, {frames} frames → {}",
                 out.display()
@@ -167,6 +166,15 @@ async fn serve(cli: Cli) -> Result<()> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
+    if !cli.demo {
+        let missing = switchyard::adapters::UpstreamCfg::from_env().missing(&orgs);
+        if !missing.is_empty() {
+            tracing::warn!(
+                missing = %missing.join(","),
+                "site configuration unset (see server/.env.example): the adapters that need it are off"
+            );
+        }
+    }
     std::fs::create_dir_all(&cli.data_dir)
         .with_context(|| format!("create {}", cli.data_dir.display()))?;
     let epoch = format!("{:x}", runtime::now_ms());
@@ -274,10 +282,7 @@ async fn serve(cli: Cli) -> Result<()> {
                 .unwrap_or(0),
         );
         tracing::info!(records = n, "ledger loaded");
-        let cfg = StoreConfig {
-            orgs: orgs.clone(),
-            ..Default::default()
-        };
+        let cfg = StoreConfig { orgs: orgs.clone() };
         let store = Arc::new(RwLock::new(Store::new(cfg)));
         let (tx, rx) = tokio::sync::mpsc::channel(1024);
         switchyard::adapters::spawn_all(

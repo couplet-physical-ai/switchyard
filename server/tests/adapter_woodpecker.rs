@@ -95,7 +95,10 @@ fn sse_push_created_maps_to_pending_pipeline_and_pending_deploy() {
     assert_eq!(p.pr, None);
     assert!(p.deploy);
     assert_eq!(p.queue_pos, None);
-    assert_eq!(p.url, "https://ci.dev.example.com/repos/64/pipeline/28");
+    assert_eq!(
+        p.url,
+        "https://ci.dev.example.internal/repos/64/pipeline/28"
+    );
     let names: Vec<&str> = p.workflows.iter().map(|w| w.name.as_str()).collect();
     assert_eq!(names, ["ci", "deploy", "docs"]);
     for w in &p.workflows {
@@ -183,7 +186,10 @@ fn sse_pull_request_running_then_success() {
         assert_eq!(p.sha, "aad98fd9b169395a00cd2260d34490c1d1c0e6cb");
         assert_eq!(p.title.as_deref(), Some("feat: neutral change 2"));
         assert!(!p.deploy);
-        assert_eq!(p.url, "https://ci.dev.example.com/repos/38/pipeline/53");
+        assert_eq!(
+            p.url,
+            "https://ci.dev.example.internal/repos/38/pipeline/53"
+        );
         assert_eq!(p.created, s(1_794_339_459));
         assert_eq!(p.started, Some(s(1_794_339_467)));
     }
@@ -629,11 +635,11 @@ fn deep_links_open_roadrunner_on_the_step() {
     let ci = wf(p, "ci");
     assert_eq!(
         step(ci, "tests").url.as_deref(),
-        Some("https://ci.dev.example.com/repos/38/pipeline/53/4")
+        Some("https://ci.dev.example.internal/repos/38/pipeline/53/4")
     );
     assert_eq!(
         ci.url.as_deref(),
-        Some("https://ci.dev.example.com/repos/38/pipeline/53/3"),
+        Some("https://ci.dev.example.internal/repos/38/pipeline/53/3"),
         "a workflow opens on its first step"
     );
     assert_eq!(p.git_ref, None, "only tag runs carry a ref");
@@ -666,9 +672,18 @@ fn engines_link_to_their_machine_page() {
             .unwrap()
     };
     // The console's engine page shows VM 153 (its engine and the agents on it).
-    assert_eq!(url("wp-agent-1"), "https://cicd.apps.example.com/engine");
-    assert_eq!(url("wp-agent-3"), "https://ci.dev.example.com/admin/agents");
-    assert_eq!(url("wp-agent-9"), "https://ci.dev.example.com/admin/agents");
+    assert_eq!(
+        url("wp-agent-1"),
+        "https://cicd.apps.example.internal/engine"
+    );
+    assert_eq!(
+        url("wp-agent-3"),
+        "https://ci.dev.example.internal/admin/agents"
+    );
+    assert_eq!(
+        url("wp-agent-9"),
+        "https://ci.dev.example.internal/admin/agents"
+    );
 }
 
 #[test]

@@ -2,7 +2,7 @@
 //!
 //! ```sh
 //! SY_TOKEN=$(cat ~/.config/switchyard/e2e-token) \
-//!   cargo run --release --example e2e -- https://switchyard.apps.example.com [SHA] [TIMEOUT_S]
+//!   cargo run --release --example e2e -- "$SWITCHYARD_URL" [SHA] [TIMEOUT_S]
 //! ```
 //! 1. `/api/healthz` answers, 2. `/api/readyz` is ready with every enabled adapter `ok`,
 //! 3. `/api/v1/snapshot` is a real fleet (repos, apps, pipelines), 4. the WebSocket stream
@@ -27,10 +27,15 @@ fn fail(msg: String) -> ! {
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // The server to check: the first argument, else SWITCHYARD_URL (no built-in default).
     let base = args
         .get(1)
         .cloned()
-        .unwrap_or_else(|| "https://switchyard.apps.example.com".into());
+        .or_else(|| std::env::var("SWITCHYARD_URL").ok())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            fail("usage: e2e <server URL> [SHA] [TIMEOUT_S] (or SWITCHYARD_URL)".into())
+        });
     let base = base.trim_end_matches('/').to_string();
     let sha = args.get(2).filter(|s| !s.is_empty() && *s != "-").cloned();
     let timeout_s: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(60);

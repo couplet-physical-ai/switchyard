@@ -31,7 +31,6 @@ fn t(s: &str) -> Ms {
 fn store() -> Store {
     Store::new(StoreConfig {
         orgs: vec!["Northwind-Labs".into(), "Northwind-EMS".into()],
-        ..StoreConfig::default()
     })
 }
 
@@ -78,7 +77,11 @@ fn baseline_facts() -> Vec<Fact> {
         }
     }
     for (f, repo, id) in [
-        ("woodpecker/pipeline_full.json", "Northwind-EMS/ember-api", 38),
+        (
+            "woodpecker/pipeline_full.json",
+            "Northwind-EMS/ember-api",
+            38,
+        ),
         (
             "woodpecker/pipeline_full_failure.json",
             "Northwind-Labs/lumen-report",
@@ -549,9 +552,12 @@ fn derived_values() {
     let r = entity(&v, "repos", "Northwind-EMS/ember-api");
     assert_eq!(
         r["links"]["woodpecker"],
-        "https://ci.dev.example.com/repos/38"
+        "https://ci.dev.example.internal/repos/38"
     );
-    assert_eq!(r["links"]["cicd"], "https://cicd.apps.example.com/repos/38");
+    assert_eq!(
+        r["links"]["cicd"],
+        "https://cicd.apps.example.internal/repos/38"
+    );
     let c = entity(
         &v,
         "commits",
@@ -565,7 +571,10 @@ fn derived_values() {
         entity(&v, "prs", "Northwind-EMS/ember-api#100")["phase"],
         "mergeable"
     );
-    assert_eq!(entity(&v, "prs", "Northwind-EMS/ember-api#100")["bot"], true);
+    assert_eq!(
+        entity(&v, "prs", "Northwind-EMS/ember-api#100")["bot"],
+        true
+    );
 
     // ---- meridian-shop: GHA deploy failed on its fallback lane.
     let d = entity(
@@ -627,7 +636,10 @@ fn derived_values() {
     assert_eq!(v["watcher"]["tripped"], false);
     let q = entity(&v, "queues", "roadrunner");
     assert_eq!(q["pending"], 1);
-    assert_eq!(q["items"], serde_json::json!(["wp:Northwind-Labs/ion-tap:6"]));
+    assert_eq!(
+        q["items"],
+        serde_json::json!(["wp:Northwind-Labs/ion-tap:6"])
+    );
     let engines: Vec<&str> = v["engines"]
         .as_array()
         .unwrap()

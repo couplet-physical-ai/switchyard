@@ -19,7 +19,7 @@
       "runtime": "lxc",
       "status_url": "https://grafana.example/d/fleet-overview/?var-app=aurora-api",
       "team": "software",
-      "url": "https://aurora-api.apps.example.com/"
+      "url": "https://aurora-api.apps.example.internal/"
     },
     {
       "behind": 0,
@@ -40,7 +40,7 @@
       "runtime": "lxc",
       "status_url": "https://grafana.example/d/fleet-overview/?var-app=borealis-web",
       "team": "npi-scm",
-      "url": "https://borealis-web.apps.example.com/"
+      "url": "https://borealis-web.apps.example.internal/"
     },
     {
       "behind": 0,
@@ -61,7 +61,7 @@
       "runtime": "lxc",
       "status_url": "https://grafana.example/d/fleet-overview/?var-app=cirrus-hub",
       "team": "software",
-      "url": "https://cirrus-hub.apps.example.com/"
+      "url": "https://cirrus-hub.apps.example.internal/"
     },
     {
       "behind": 0,
@@ -80,7 +80,7 @@
       "runtime": "lxc",
       "status_url": "https://grafana.example/d/fleet-overview/?var-app=delta-stock",
       "team": "software",
-      "url": "https://delta-stock.apps.example.com/"
+      "url": "https://delta-stock.apps.example.internal/"
     },
     {
       "checked": 1794339000000,
@@ -117,7 +117,7 @@
       "runtime": "lxc",
       "status_url": "https://grafana.example/d/fleet-overview/?var-app=meridian-shop",
       "team": "software",
-      "url": "https://meridian-shop.apps.example.com/"
+      "url": "https://meridian-shop.apps.example.internal/"
     },
     {
       "checked": 1794339000000,
@@ -126,7 +126,7 @@
       "runtime": "static",
       "status_url": "https://grafana.example/d/fleet-overview/?var-app=static-site-01",
       "team": "software",
-      "url": "https://static-site-01.apps.example.com/"
+      "url": "https://static-site-01.apps.example.internal/"
     }
   ],
   "at": 1794339720000,
@@ -586,8 +586,8 @@
       "app": "aurora-api",
       "id": "Northwind-Labs/aurora-api@cba1fed1817599ede1b917712f1ac8d2e629e690",
       "links": {
-        "app": "https://aurora-api.apps.example.com/",
-        "cicd": "https://cicd.apps.example.com/pipelines/64/28",
+        "app": "https://aurora-api.apps.example.internal/",
+        "cicd": "https://cicd.apps.example.internal/pipelines/64/28",
         "commit": "https://github.com/Northwind-Labs/aurora-api/commit/cba1fed1817599ede1b917712f1ac8d2e629e690"
       },
       "pipeline": "wp:Northwind-Labs/aurora-api:28",
@@ -595,7 +595,7 @@
       "sha": "cba1fed1817599ede1b917712f1ac8d2e629e690",
       "started": 1794339609000,
       "state": "pending",
-      "url": "https://ci.dev.example.com/repos/64/pipeline/28",
+      "url": "https://ci.dev.example.internal/repos/64/pipeline/28",
       "via": "roadrunner"
     },
     {
@@ -603,7 +603,7 @@
       "finished": 1794256127184,
       "id": "Northwind-Labs/aurora-api@eed5b2a3b817f288f79cd4a0c9b015e008e6b452",
       "links": {
-        "app": "https://aurora-api.apps.example.com/",
+        "app": "https://aurora-api.apps.example.internal/",
         "commit": "https://github.com/Northwind-Labs/aurora-api/commit/eed5b2a3b817f288f79cd4a0c9b015e008e6b452"
       },
       "repo": "Northwind-Labs/aurora-api",
@@ -617,14 +617,14 @@
       "finished": 1794339432178,
       "id": "Northwind-Labs/borealis-web@be13021ca83449d513f82b9ab0708be58e876780",
       "links": {
-        "app": "https://borealis-web.apps.example.com/",
+        "app": "https://borealis-web.apps.example.internal/",
         "commit": "https://github.com/Northwind-Labs/borealis-web/commit/be13021ca83449d513f82b9ab0708be58e876780"
       },
       "repo": "Northwind-Labs/borealis-web",
       "sha": "be13021ca83449d513f82b9ab0708be58e876780",
       "started": 1794339405000,
       "state": "success",
-      "url": "https://ci.dev.example.com/repos/30/pipeline/23",
+      "url": "https://ci.dev.example.internal/repos/30/pipeline/23",
       "via": "roadrunner"
     },
     {
@@ -632,14 +632,14 @@
       "finished": 1794325676000,
       "id": "Northwind-Labs/cirrus-hub@f917c191816f60e33bd397e5c528f3ed7b1f8c9f",
       "links": {
-        "app": "https://cirrus-hub.apps.example.com/",
+        "app": "https://cirrus-hub.apps.example.internal/",
         "commit": "https://github.com/Northwind-Labs/cirrus-hub/commit/f917c191816f60e33bd397e5c528f3ed7b1f8c9f"
       },
       "repo": "Northwind-Labs/cirrus-hub",
       "sha": "f917c191816f60e33bd397e5c528f3ed7b1f8c9f",
       "started": 1794325632046,
       "state": "success",
-      "url": "https://ci.dev.example.com/repos/44/pipeline/97",
+      "url": "https://ci.dev.example.internal/repos/44/pipeline/97",
       "via": "roadrunner"
     },
     {
@@ -660,7 +660,7 @@
       "finished": 1794329504000,
       "id": "Northwind-Labs/meridian-shop@a988b12d5807cc1250dae2eae8b63ed942a3c59c",
       "links": {
-        "app": "https://meridian-shop.apps.example.com/",
+        "app": "https://meridian-shop.apps.example.internal/",
         "commit": "https://github.com/Northwind-Labs/meridian-shop/commit/a988b12d5807cc1250dae2eae8b63ed942a3c59c"
       },
       "pipeline": "gha:42860000031",
@@ -704,7 +704,7 @@
       "platform": "linux/amd64",
       "running": [],
       "slots": 6,
-      "url": "https://ci.dev.example.com/admin/agents"
+      "url": "https://ci.dev.example.internal/admin/agents"
     },
     {
       "busy": 0,
@@ -717,7 +717,7 @@
       "platform": "linux/amd64",
       "running": [],
       "slots": 6,
-      "url": "https://ci.dev.example.com/admin/agents"
+      "url": "https://ci.dev.example.internal/admin/agents"
     },
     {
       "busy": 1,
@@ -732,7 +732,7 @@
         "wp:Northwind-EMS/kestrel-deploy:74"
       ],
       "slots": 3,
-      "url": "https://ci.dev.example.com/admin/agents"
+      "url": "https://ci.dev.example.internal/admin/agents"
     },
     {
       "busy": 2,
@@ -748,7 +748,7 @@
         "wp:Northwind-Labs/delta-stock:149"
       ],
       "slots": 3,
-      "url": "https://ci.dev.example.com/admin/agents"
+      "url": "https://ci.dev.example.internal/admin/agents"
     },
     {
       "busy": 1,
@@ -763,7 +763,7 @@
         "wp:Northwind-EMS/ember-api:53"
       ],
       "slots": 3,
-      "url": "https://ci.dev.example.com/admin/agents"
+      "url": "https://ci.dev.example.internal/admin/agents"
     },
     {
       "busy": 0,
@@ -776,7 +776,7 @@
       "platform": "darwin/arm64",
       "running": [],
       "slots": 1,
-      "url": "https://ci.dev.example.com/admin/agents"
+      "url": "https://ci.dev.example.internal/admin/agents"
     },
     {
       "busy": 1,
@@ -791,7 +791,7 @@
         "wp:Northwind-EMS/polaris-ui:85"
       ],
       "slots": 3,
-      "url": "https://ci.dev.example.com/admin/agents"
+      "url": "https://ci.dev.example.internal/admin/agents"
     }
   ],
   "epoch": "golden",
@@ -1074,10 +1074,10 @@
       "lane": "roadrunner",
       "links": {
         "branch": "https://github.com/Northwind-EMS/ember-api/tree/feature/change-1",
-        "cicd": "https://cicd.apps.example.com/pipelines/38/53",
+        "cicd": "https://cicd.apps.example.internal/pipelines/38/53",
         "commit": "https://github.com/Northwind-EMS/ember-api/commit/aad98fd9b169395a00cd2260d34490c1d1c0e6cb",
         "pr": "https://github.com/Northwind-EMS/ember-api/pull/102",
-        "woodpecker": "https://ci.dev.example.com/repos/38/pipeline/53"
+        "woodpecker": "https://ci.dev.example.internal/repos/38/pipeline/53"
       },
       "number": 53,
       "pr": 102,
@@ -1086,7 +1086,7 @@
       "started": 1794339467000,
       "state": "success",
       "title": "feat: neutral change 2",
-      "url": "https://ci.dev.example.com/repos/38/pipeline/53",
+      "url": "https://ci.dev.example.internal/repos/38/pipeline/53",
       "workflows": [
         {
           "engine": "dagger-ci-102-1",
@@ -1101,7 +1101,7 @@
               "name": "clone",
               "started": 1794339469000,
               "state": "success",
-              "url": "https://ci.dev.example.com/repos/38/pipeline/53/3"
+              "url": "https://ci.dev.example.internal/repos/38/pipeline/53/3"
             },
             {
               "exit_code": 0,
@@ -1109,7 +1109,7 @@
               "name": "tests",
               "started": 1794339471000,
               "state": "success",
-              "url": "https://ci.dev.example.com/repos/38/pipeline/53/4"
+              "url": "https://ci.dev.example.internal/repos/38/pipeline/53/4"
             },
             {
               "exit_code": 0,
@@ -1117,10 +1117,10 @@
               "name": "db-migrations",
               "started": 1794339471000,
               "state": "success",
-              "url": "https://ci.dev.example.com/repos/38/pipeline/53/5"
+              "url": "https://ci.dev.example.internal/repos/38/pipeline/53/5"
             }
           ],
-          "url": "https://ci.dev.example.com/repos/38/pipeline/53/3"
+          "url": "https://ci.dev.example.internal/repos/38/pipeline/53/3"
         },
         {
           "engine": "dagger-ci-102-2",
@@ -1135,7 +1135,7 @@
               "name": "clone",
               "started": 1794339470000,
               "state": "success",
-              "url": "https://ci.dev.example.com/repos/38/pipeline/53/6"
+              "url": "https://ci.dev.example.internal/repos/38/pipeline/53/6"
             },
             {
               "exit_code": 0,
@@ -1143,10 +1143,10 @@
               "name": "security-scan",
               "started": 1794339472000,
               "state": "success",
-              "url": "https://ci.dev.example.com/repos/38/pipeline/53/7"
+              "url": "https://ci.dev.example.internal/repos/38/pipeline/53/7"
             }
           ],
-          "url": "https://ci.dev.example.com/repos/38/pipeline/53/6"
+          "url": "https://ci.dev.example.internal/repos/38/pipeline/53/6"
         }
       ]
     },
@@ -1160,9 +1160,9 @@
       "lane": "roadrunner",
       "links": {
         "branch": "https://github.com/Northwind-EMS/ember-api/tree/main",
-        "cicd": "https://cicd.apps.example.com/pipelines/38/54",
+        "cicd": "https://cicd.apps.example.internal/pipelines/38/54",
         "commit": "https://github.com/Northwind-EMS/ember-api/commit/acff1d505dc63d47e78d4dec9946f8a6848053cb",
-        "woodpecker": "https://ci.dev.example.com/repos/38/pipeline/54"
+        "woodpecker": "https://ci.dev.example.internal/repos/38/pipeline/54"
       },
       "number": 54,
       "repo": "Northwind-EMS/ember-api",
@@ -1170,7 +1170,7 @@
       "started": 1794339646000,
       "state": "running",
       "title": "feat: neutral change 3",
-      "url": "https://ci.dev.example.com/repos/38/pipeline/54",
+      "url": "https://ci.dev.example.internal/repos/38/pipeline/54",
       "workflows": [
         {
           "engine": "dagger-ci-102-2",
@@ -1184,13 +1184,13 @@
               "name": "clone",
               "started": 1794339648000,
               "state": "success",
-              "url": "https://ci.dev.example.com/repos/38/pipeline/54/2"
+              "url": "https://ci.dev.example.internal/repos/38/pipeline/54/2"
             },
             {
               "name": "tests",
               "started": 1794339650000,
               "state": "running",
-              "url": "https://ci.dev.example.com/repos/38/pipeline/54/3"
+              "url": "https://ci.dev.example.internal/repos/38/pipeline/54/3"
             },
             {
               "exit_code": 0,
@@ -1198,10 +1198,10 @@
               "name": "db-migrations",
               "started": 1794339650000,
               "state": "success",
-              "url": "https://ci.dev.example.com/repos/38/pipeline/54/4"
+              "url": "https://ci.dev.example.internal/repos/38/pipeline/54/4"
             }
           ],
-          "url": "https://ci.dev.example.com/repos/38/pipeline/54/2"
+          "url": "https://ci.dev.example.internal/repos/38/pipeline/54/2"
         }
       ]
     },
@@ -1215,9 +1215,9 @@
       "lane": "roadrunner",
       "links": {
         "branch": "https://github.com/Northwind-EMS/kestrel-deploy/tree/main",
-        "cicd": "https://cicd.apps.example.com/pipelines/207/68",
+        "cicd": "https://cicd.apps.example.internal/pipelines/207/68",
         "commit": "https://github.com/Northwind-EMS/kestrel-deploy/commit/ab1f04b23be2672d913b9c75dc991f5331e364d2",
-        "woodpecker": "https://ci.dev.example.com/repos/207/pipeline/68"
+        "woodpecker": "https://ci.dev.example.internal/repos/207/pipeline/68"
       },
       "number": 68,
       "repo": "Northwind-EMS/kestrel-deploy",
@@ -1225,7 +1225,7 @@
       "started": 1794338441000,
       "state": "success",
       "title": "feat: neutral change 12",
-      "url": "https://ci.dev.example.com/repos/207/pipeline/68",
+      "url": "https://ci.dev.example.internal/repos/207/pipeline/68",
       "workflows": []
     },
     {
@@ -1238,9 +1238,9 @@
       "lane": "roadrunner",
       "links": {
         "branch": "https://github.com/Northwind-EMS/kestrel-deploy/tree/main",
-        "cicd": "https://cicd.apps.example.com/pipelines/207/71",
+        "cicd": "https://cicd.apps.example.internal/pipelines/207/71",
         "commit": "https://github.com/Northwind-EMS/kestrel-deploy/commit/be83166efbf554f6fc5af32ebcb4f359bff0a4f1",
-        "woodpecker": "https://ci.dev.example.com/repos/207/pipeline/71"
+        "woodpecker": "https://ci.dev.example.internal/repos/207/pipeline/71"
       },
       "number": 71,
       "repo": "Northwind-EMS/kestrel-deploy",
@@ -1248,7 +1248,7 @@
       "started": 1794338856000,
       "state": "error",
       "title": "feat: neutral change 5",
-      "url": "https://ci.dev.example.com/repos/207/pipeline/71",
+      "url": "https://ci.dev.example.internal/repos/207/pipeline/71",
       "workflows": []
     },
     {
@@ -1261,9 +1261,9 @@
       "lane": "roadrunner",
       "links": {
         "branch": "https://github.com/Northwind-EMS/kestrel-deploy/tree/main",
-        "cicd": "https://cicd.apps.example.com/pipelines/207/73",
+        "cicd": "https://cicd.apps.example.internal/pipelines/207/73",
         "commit": "https://github.com/Northwind-EMS/kestrel-deploy/commit/be83166efbf554f6fc5af32ebcb4f359bff0a4f1",
-        "woodpecker": "https://ci.dev.example.com/repos/207/pipeline/73"
+        "woodpecker": "https://ci.dev.example.internal/repos/207/pipeline/73"
       },
       "number": 73,
       "repo": "Northwind-EMS/kestrel-deploy",
@@ -1271,7 +1271,7 @@
       "started": 1794338965000,
       "state": "error",
       "title": "feat: neutral change 5",
-      "url": "https://ci.dev.example.com/repos/207/pipeline/73",
+      "url": "https://ci.dev.example.internal/repos/207/pipeline/73",
       "workflows": []
     },
     {
@@ -1285,9 +1285,9 @@
       "lane": "roadrunner",
       "links": {
         "branch": "https://github.com/Northwind-Labs/aurora-api/tree/main",
-        "cicd": "https://cicd.apps.example.com/pipelines/64/28",
+        "cicd": "https://cicd.apps.example.internal/pipelines/64/28",
         "commit": "https://github.com/Northwind-Labs/aurora-api/commit/cba1fed1817599ede1b917712f1ac8d2e629e690",
-        "woodpecker": "https://ci.dev.example.com/repos/64/pipeline/28"
+        "woodpecker": "https://ci.dev.example.internal/repos/64/pipeline/28"
       },
       "number": 28,
       "repo": "Northwind-Labs/aurora-api",
@@ -1295,7 +1295,7 @@
       "started": 1794339617000,
       "state": "running",
       "title": "feat: neutral change 1",
-      "url": "https://ci.dev.example.com/repos/64/pipeline/28",
+      "url": "https://ci.dev.example.internal/repos/64/pipeline/28",
       "workflows": [
         {
           "engine": "dagger-ci-101-2",
@@ -1309,22 +1309,22 @@
               "name": "clone",
               "started": 1794339620000,
               "state": "success",
-              "url": "https://ci.dev.example.com/repos/64/pipeline/28/4"
+              "url": "https://ci.dev.example.internal/repos/64/pipeline/28/4"
             },
             {
               "name": "backend",
               "started": 1794339623000,
               "state": "running",
-              "url": "https://ci.dev.example.com/repos/64/pipeline/28/5"
+              "url": "https://ci.dev.example.internal/repos/64/pipeline/28/5"
             },
             {
               "name": "frontend",
               "started": 1794339623000,
               "state": "running",
-              "url": "https://ci.dev.example.com/repos/64/pipeline/28/6"
+              "url": "https://ci.dev.example.internal/repos/64/pipeline/28/6"
             }
           ],
-          "url": "https://ci.dev.example.com/repos/64/pipeline/28/4"
+          "url": "https://ci.dev.example.internal/repos/64/pipeline/28/4"
         },
         {
           "name": "deploy",
@@ -1333,15 +1333,15 @@
             {
               "name": "clone",
               "state": "pending",
-              "url": "https://ci.dev.example.com/repos/64/pipeline/28/7"
+              "url": "https://ci.dev.example.internal/repos/64/pipeline/28/7"
             },
             {
               "name": "failsafe-deploy",
               "state": "pending",
-              "url": "https://ci.dev.example.com/repos/64/pipeline/28/8"
+              "url": "https://ci.dev.example.internal/repos/64/pipeline/28/8"
             }
           ],
-          "url": "https://ci.dev.example.com/repos/64/pipeline/28/7"
+          "url": "https://ci.dev.example.internal/repos/64/pipeline/28/7"
         },
         {
           "engine": "dagger-ci-102-1",
@@ -1356,7 +1356,7 @@
               "name": "clone",
               "started": 1794339619000,
               "state": "success",
-              "url": "https://ci.dev.example.com/repos/64/pipeline/28/9"
+              "url": "https://ci.dev.example.internal/repos/64/pipeline/28/9"
             },
             {
               "exit_code": 0,
@@ -1364,10 +1364,10 @@
               "name": "docs",
               "started": 1794339621000,
               "state": "success",
-              "url": "https://ci.dev.example.com/repos/64/pipeline/28/10"
+              "url": "https://ci.dev.example.internal/repos/64/pipeline/28/10"
             }
           ],
-          "url": "https://ci.dev.example.com/repos/64/pipeline/28/9"
+          "url": "https://ci.dev.example.internal/repos/64/pipeline/28/9"
         }
       ]
     },
@@ -1381,9 +1381,9 @@
       "lane": "roadrunner",
       "links": {
         "branch": "https://github.com/Northwind-Labs/borealis-web/tree/main",
-        "cicd": "https://cicd.apps.example.com/pipelines/101/23",
+        "cicd": "https://cicd.apps.example.internal/pipelines/101/23",
         "commit": "https://github.com/Northwind-Labs/borealis-web/commit/be13021ca83449d513f82b9ab0708be58e876780",
-        "woodpecker": "https://ci.dev.example.com/repos/101/pipeline/23"
+        "woodpecker": "https://ci.dev.example.internal/repos/101/pipeline/23"
       },
       "number": 23,
       "repo": "Northwind-Labs/borealis-web",
@@ -1391,7 +1391,7 @@
       "started": 1794339309000,
       "state": "success",
       "title": "feat: neutral change 9",
-      "url": "https://ci.dev.example.com/repos/101/pipeline/23",
+      "url": "https://ci.dev.example.internal/repos/101/pipeline/23",
       "workflows": []
     },
     {
@@ -1404,10 +1404,10 @@
       "lane": "roadrunner",
       "links": {
         "branch": "https://github.com/Northwind-Labs/delta-stock/tree/feature/change-3",
-        "cicd": "https://cicd.apps.example.com/pipelines/3/149",
+        "cicd": "https://cicd.apps.example.internal/pipelines/3/149",
         "commit": "https://github.com/Northwind-Labs/delta-stock/commit/d23762fe1a7a7e8914b7406892eb1e05213422f3",
         "pr": "https://github.com/Northwind-Labs/delta-stock/pull/380",
-        "woodpecker": "https://ci.dev.example.com/repos/3/pipeline/149"
+        "woodpecker": "https://ci.dev.example.internal/repos/3/pipeline/149"
       },
       "number": 149,
       "pr": 380,
@@ -1416,7 +1416,7 @@
       "started": 1794338891000,
       "state": "success",
       "title": "feat: neutral change 10",
-      "url": "https://ci.dev.example.com/repos/3/pipeline/149",
+      "url": "https://ci.dev.example.internal/repos/3/pipeline/149",
       "workflows": []
     },
     {
@@ -1428,16 +1428,16 @@
       "lane": "roadrunner",
       "links": {
         "branch": "https://github.com/Northwind-Labs/glacier-tracker/tree/main",
-        "cicd": "https://cicd.apps.example.com/pipelines/2/714",
+        "cicd": "https://cicd.apps.example.internal/pipelines/2/714",
         "commit": "https://github.com/Northwind-Labs/glacier-tracker/commit/56abd483d1857d5540418a1a3bbbe4f667ad0ea6",
-        "woodpecker": "https://ci.dev.example.com/repos/2/pipeline/714"
+        "woodpecker": "https://ci.dev.example.internal/repos/2/pipeline/714"
       },
       "number": 714,
       "repo": "Northwind-Labs/glacier-tracker",
       "sha": "56abd483d1857d5540418a1a3bbbe4f667ad0ea6",
       "started": 1794339068000,
       "state": "failure",
-      "url": "https://ci.dev.example.com/repos/2/pipeline/714",
+      "url": "https://ci.dev.example.internal/repos/2/pipeline/714",
       "workflows": []
     },
     {
@@ -1450,10 +1450,10 @@
       "lane": "roadrunner",
       "links": {
         "branch": "https://github.com/Northwind-Labs/lumen-report/tree/dependabot/npm_and_yarn/example-lib-4",
-        "cicd": "https://cicd.apps.example.com/pipelines/47/110",
+        "cicd": "https://cicd.apps.example.internal/pipelines/47/110",
         "commit": "https://github.com/Northwind-Labs/lumen-report/commit/c67c88f218c62a5adbe8a8b92304d4c3739c749a",
         "pr": "https://github.com/Northwind-Labs/lumen-report/pull/125",
-        "woodpecker": "https://ci.dev.example.com/repos/47/pipeline/110"
+        "woodpecker": "https://ci.dev.example.internal/repos/47/pipeline/110"
       },
       "number": 110,
       "pr": 125,
@@ -1462,7 +1462,7 @@
       "started": 1794338832000,
       "state": "error",
       "title": "deps: bump example-lib from 1.0.13 to 1.0.14",
-      "url": "https://ci.dev.example.com/repos/47/pipeline/110",
+      "url": "https://ci.dev.example.internal/repos/47/pipeline/110",
       "workflows": []
     },
     {
@@ -1476,10 +1476,10 @@
       "lane": "roadrunner",
       "links": {
         "branch": "https://github.com/Northwind-Labs/lumen-report/tree/dependabot/npm_and_yarn/example-lib-2",
-        "cicd": "https://cicd.apps.example.com/pipelines/47/112",
+        "cicd": "https://cicd.apps.example.internal/pipelines/47/112",
         "commit": "https://github.com/Northwind-Labs/lumen-report/commit/b39afbc8843cf36efcc96716e1e96844add1e791",
         "pr": "https://github.com/Northwind-Labs/lumen-report/pull/21",
-        "woodpecker": "https://ci.dev.example.com/repos/47/pipeline/112"
+        "woodpecker": "https://ci.dev.example.internal/repos/47/pipeline/112"
       },
       "number": 112,
       "pr": 21,
@@ -1488,7 +1488,7 @@
       "started": 1794339108000,
       "state": "failure",
       "title": "deps: bump example-lib from 1.0.4 to 1.0.5",
-      "url": "https://ci.dev.example.com/repos/47/pipeline/112",
+      "url": "https://ci.dev.example.internal/repos/47/pipeline/112",
       "workflows": [
         {
           "engine": "dagger-ci-101-1",
@@ -1503,7 +1503,7 @@
               "name": "clone",
               "started": 1794339110000,
               "state": "success",
-              "url": "https://ci.dev.example.com/repos/47/pipeline/112/3"
+              "url": "https://ci.dev.example.internal/repos/47/pipeline/112/3"
             },
             {
               "exit_code": 0,
@@ -1511,7 +1511,7 @@
               "name": "backend",
               "started": 1794339112000,
               "state": "success",
-              "url": "https://ci.dev.example.com/repos/47/pipeline/112/4"
+              "url": "https://ci.dev.example.internal/repos/47/pipeline/112/4"
             },
             {
               "cluster": "f:ade02e03d804",
@@ -1520,10 +1520,10 @@
               "name": "frontend",
               "started": 1794339112000,
               "state": "failure",
-              "url": "https://ci.dev.example.com/repos/47/pipeline/112/5"
+              "url": "https://ci.dev.example.internal/repos/47/pipeline/112/5"
             }
           ],
-          "url": "https://ci.dev.example.com/repos/47/pipeline/112/3"
+          "url": "https://ci.dev.example.internal/repos/47/pipeline/112/3"
         },
         {
           "engine": "dagger-ci-101-2",
@@ -1538,7 +1538,7 @@
               "name": "clone",
               "started": 1794339110000,
               "state": "success",
-              "url": "https://ci.dev.example.com/repos/47/pipeline/112/6"
+              "url": "https://ci.dev.example.internal/repos/47/pipeline/112/6"
             },
             {
               "exit_code": 0,
@@ -1546,10 +1546,10 @@
               "name": "security-scan",
               "started": 1794339112000,
               "state": "success",
-              "url": "https://ci.dev.example.com/repos/47/pipeline/112/7"
+              "url": "https://ci.dev.example.internal/repos/47/pipeline/112/7"
             }
           ],
-          "url": "https://ci.dev.example.com/repos/47/pipeline/112/6"
+          "url": "https://ci.dev.example.internal/repos/47/pipeline/112/6"
         }
       ]
     }
@@ -1925,7 +1925,7 @@
     },
     {
       "author": "dev-02",
-      "base": "exowatt/main",
+      "base": "northwind/main",
       "checks": [
         {
           "name": "ci/woodpecker/pr/ci",
@@ -2003,7 +2003,7 @@
       "pending": 1,
       "pipelines_running": 4,
       "running": 5,
-      "url": "https://ci.dev.example.com/admin/queue",
+      "url": "https://ci.dev.example.internal/admin/queue",
       "waiting": 0
     }
   ],
@@ -2016,9 +2016,9 @@
       "lane": "none",
       "last_activity": 1794339646000,
       "links": {
-        "cicd": "https://cicd.apps.example.com/repos/38",
+        "cicd": "https://cicd.apps.example.internal/repos/38",
         "github": "https://github.com/Northwind-EMS/ember-api",
-        "woodpecker": "https://ci.dev.example.com/repos/38"
+        "woodpecker": "https://ci.dev.example.internal/repos/38"
       },
       "main": {
         "head": "acff1d505dc63d47e78d4dec9946f8a6848053cb",
@@ -2415,9 +2415,9 @@
       "lane": "none",
       "last_activity": 0,
       "links": {
-        "cicd": "https://cicd.apps.example.com/repos/370",
+        "cicd": "https://cicd.apps.example.internal/repos/370",
         "github": "https://github.com/copper-browser/Copper",
-        "woodpecker": "https://ci.dev.example.com/repos/370"
+        "woodpecker": "https://ci.dev.example.internal/repos/370"
       },
       "main": {
         "head": "",
@@ -2437,9 +2437,9 @@
       "lane": "none",
       "last_activity": 0,
       "links": {
-        "cicd": "https://cicd.apps.example.com/repos/373",
+        "cicd": "https://cicd.apps.example.internal/repos/373",
         "github": "https://github.com/copper-browser/canvas-app",
-        "woodpecker": "https://ci.dev.example.com/repos/373"
+        "woodpecker": "https://ci.dev.example.internal/repos/373"
       },
       "main": {
         "head": "",
@@ -2459,9 +2459,9 @@
       "lane": "none",
       "last_activity": 0,
       "links": {
-        "cicd": "https://cicd.apps.example.com/repos/372",
+        "cicd": "https://cicd.apps.example.internal/repos/372",
         "github": "https://github.com/copper-browser/canvas-cloud",
-        "woodpecker": "https://ci.dev.example.com/repos/372"
+        "woodpecker": "https://ci.dev.example.internal/repos/372"
       },
       "main": {
         "head": "",

@@ -59,7 +59,7 @@ fn catalog_to_apps_and_health() {
     );
     let a = &apps.apps[3];
     assert_eq!(a.repo.as_deref(), Some("Northwind-Labs/aurora-api"));
-    assert_eq!(a.url, "https://aurora-api.apps.example.com/");
+    assert_eq!(a.url, "https://aurora-api.apps.example.internal/");
     assert_eq!(a.runtime.as_deref(), Some("lxc"));
     assert_eq!(a.team.as_deref(), Some("software"));
     assert_eq!(a.live_sha, None, "the catalog does not know the live sha");
@@ -96,7 +96,7 @@ fn row(name: &str, kind: &str, ct: Option<&str>, health: &str) -> CatalogRow {
         name: name.into(),
         kind: kind.into(),
         ct_status: ct.map(str::to_string),
-        url: format!("https://{name}.apps.example.com/"),
+        url: format!("https://{name}.apps.example.internal/"),
         health: health.into(),
         ..Default::default()
     }

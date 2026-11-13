@@ -1,7 +1,8 @@
 //! Deep links: every URL a client opens is built here, from configured bases, so the
 //! client never hardcodes a host. Bases come from the environment (`GITHUB_WEB_URL`,
 //! `WOODPECKER_PUBLIC_URL`, `CICD_URL`, `CICD_ENGINE_HOST`) and are reported in
-//! `meta.links`.
+//! `meta.links`. A base left unset is empty, and every link built on it is empty too (the
+//! clients show no link), never a guessed host.
 
 use std::sync::OnceLock;
 
@@ -22,13 +23,15 @@ pub struct Bases {
     pub engine_host: String,
 }
 
+/// The synthetic bases of tests, benches and examples (`bases()` before any `set`). A server
+/// always sets its bases from the environment at boot, so these never reach a client.
 impl Default for Bases {
     fn default() -> Bases {
         Bases {
             github: "https://github.com".into(),
-            woodpecker: "https://ci.dev.example.com".into(),
-            roadrunner: "https://ci.dev.example.com".into(),
-            cicd: "https://cicd.apps.example.com".into(),
+            woodpecker: "https://ci.dev.example.internal".into(),
+            roadrunner: "https://ci.dev.example.internal".into(),
+            cicd: "https://cicd.apps.example.internal".into(),
             engine_host: "VM 153".into(),
         }
     }
@@ -51,6 +54,15 @@ pub fn set(b: Bases) {
 
 pub fn bases() -> &'static Bases {
     BASES.get_or_init(Bases::default)
+}
+
+/// `{base}{path}`, or empty when the base is not configured.
+fn at(base: &str, path: std::fmt::Arguments) -> String {
+    if base.is_empty() {
+        String::new()
+    } else {
+        format!("{base}{path}")
+    }
 }
 
 /// Percent-encode one URL path segment (or a git ref, keeping `/`).
@@ -118,18 +130,18 @@ pub fn gh_job_step(job_url: &str, step: u32) -> String {
 
 /// The Roadrunner console's page for one run.
 pub fn rr_run(repo_id: u64, number: u64) -> String {
-    format!("{}/pipelines/{repo_id}/{number}", bases().cicd)
+    at(&bases().cicd, format_args!("/pipelines/{repo_id}/{number}"))
 }
 
 pub fn rr_repo(repo_id: u64) -> String {
-    format!("{}/repos/{repo_id}", bases().cicd)
+    at(&bases().cicd, format_args!("/repos/{repo_id}"))
 }
 
 /// A machine's page: the console's engine page for the machine it shows (its Dagger
 /// engine and the agents on it), else Woodpecker's agents (it has no page per agent).
 pub fn engine_page(host: Option<&str>) -> String {
     if host.is_some_and(|h| !h.is_empty() && h == bases().engine_host) {
-        format!("{}/engine", bases().cicd)
+        at(&bases().cicd, format_args!("/engine"))
     } else {
         wp_agents()
     }
@@ -137,28 +149,36 @@ pub fn engine_page(host: Option<&str>) -> String {
 
 /// GitHub Actions runner scale sets.
 pub fn rr_runners() -> String {
-    format!("{}/runners", bases().cicd)
+    at(&bases().cicd, format_args!("/runners"))
 }
 
 pub fn wp_run(repo_id: u64, number: u64) -> String {
-    format!("{}/repos/{repo_id}/pipeline/{number}", bases().woodpecker)
+    at(
+        &bases().woodpecker,
+        format_args!("/repos/{repo_id}/pipeline/{number}"),
+    )
 }
 
 /// Roadrunner's page for one step (its log): Woodpecker selects a step by its `pid`.
 pub fn wp_step(repo_id: u64, number: u64, pid: u64) -> String {
-    format!("{}/{pid}", wp_run(repo_id, number))
+    let run = wp_run(repo_id, number);
+    if run.is_empty() {
+        run
+    } else {
+        format!("{run}/{pid}")
+    }
 }
 
 pub fn wp_repo(repo_id: u64) -> String {
-    format!("{}/repos/{repo_id}", bases().woodpecker)
+    at(&bases().woodpecker, format_args!("/repos/{repo_id}"))
 }
 
 pub fn wp_agents() -> String {
-    format!("{}/admin/agents", bases().woodpecker)
+    at(&bases().woodpecker, format_args!("/admin/agents"))
 }
 
 pub fn wp_queue() -> String {
-    format!("{}/admin/queue", bases().woodpecker)
+    at(&bases().woodpecker, format_args!("/admin/queue"))
 }
 
 /// The tag of a git ref (`refs/tags/v1.2` → `v1.2`).
@@ -190,7 +210,7 @@ mod tests {
         );
         assert_eq!(
             wp_step(413, 135, 4),
-            "https://ci.dev.example.com/repos/413/pipeline/135/4"
+            "https://ci.dev.example.internal/repos/413/pipeline/135/4"
         );
         let job = "https://github.com/acme/api/actions/runs/1/job/22";
         assert_eq!(gh_job_id(job), Some(22));
@@ -206,13 +226,16 @@ mod tests {
         );
         assert_eq!(
             engine_page(Some("VM 153")),
-            "https://cicd.apps.example.com/engine"
+            "https://cicd.apps.example.internal/engine"
         );
         assert_eq!(
             engine_page(Some("VM 154")),
-            "https://ci.dev.example.com/admin/agents"
+            "https://ci.dev.example.internal/admin/agents"
         );
-        assert_eq!(engine_page(None), "https://ci.dev.example.com/admin/agents");
+        assert_eq!(
+            engine_page(None),
+            "https://ci.dev.example.internal/admin/agents"
+        );
         assert_eq!(tag_of("refs/tags/v1"), Some("v1"));
         assert_eq!(tag_of("refs/heads/main"), None);
     }

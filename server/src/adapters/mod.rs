@@ -13,6 +13,11 @@ use tokio::sync::mpsc;
 use crate::runtime::{Adapters, Clock, Ingest};
 
 /// Upstream configuration (all from the environment; nothing secret is logged).
+///
+/// Every site-specific value (the Woodpecker and console URLs, the apps catalog, the engine
+/// host) comes from the environment, never from the source: unset, the adapter that needs it
+/// registers as disabled with the variable's name as its note, so `/api/v1/meta` says what is
+/// missing. `server/.env.example` lists every key.
 #[derive(Clone, Debug, Default)]
 pub struct UpstreamCfg {
     pub woodpecker_url: String,
@@ -39,24 +44,41 @@ fn env(k: &str) -> Option<String> {
 
 impl UpstreamCfg {
     pub fn from_env() -> UpstreamCfg {
+        let woodpecker_url = env("WOODPECKER_URL").unwrap_or_default();
         UpstreamCfg {
-            woodpecker_url: env("WOODPECKER_URL")
-                .unwrap_or_else(|| "https://ci.dev.example.com".into()),
             woodpecker_public_url: env("WOODPECKER_PUBLIC_URL")
-                .unwrap_or_else(|| "https://ci.dev.example.com".into()),
+                .unwrap_or_else(|| woodpecker_url.clone()),
+            woodpecker_url,
             woodpecker_token: env("WOODPECKER_TOKEN"),
             github_token: env("GITHUB_TOKEN").or_else(|| env("GITHUB_BOT_TOKEN")),
             github_api: env("GITHUB_API_URL").unwrap_or_else(|| "https://api.github.com".into()),
             github_web: env("GITHUB_WEB_URL").unwrap_or_else(|| "https://github.com".into()),
-            cicd_engine_host: env("CICD_ENGINE_HOST").unwrap_or_else(|| "VM 153".into()),
-            cicd_url: env("CICD_URL").unwrap_or_else(|| "https://cicd.apps.example.com".into()),
+            cicd_engine_host: env("CICD_ENGINE_HOST").unwrap_or_default(),
+            cicd_url: env("CICD_URL").unwrap_or_default(),
             cicd_token: env("CICD_READ_TOKEN").or_else(|| env("SWITCHYARD_READ_TOKEN")),
-            catalog_url: env("APPS_CATALOG_URL")
-                .unwrap_or_else(|| "https://catalog.apps.example.com/api/apps".into()),
+            catalog_url: env("APPS_CATALOG_URL").unwrap_or_default(),
             backfill_hours: env("SWITCHYARD_BACKFILL_HOURS")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(24),
         }
+    }
+
+    /// The site-specific keys a live server needs that are unset (logged at boot).
+    pub fn missing(&self, orgs: &[String]) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if orgs.is_empty() {
+            out.push("SWITCHYARD_ORGS");
+        }
+        if self.woodpecker_url.is_empty() {
+            out.push("WOODPECKER_URL");
+        }
+        if self.cicd_url.is_empty() {
+            out.push("CICD_URL");
+        }
+        if self.catalog_url.is_empty() {
+            out.push("APPS_CATALOG_URL");
+        }
+        out
     }
 }
 
@@ -80,6 +102,10 @@ pub fn spawn_all(
 ) {
     let http = http_client();
     match &cfg.github_token {
+        // No orgs: nothing to poll (and an org-less search would be all of GitHub).
+        Some(_) if orgs.is_empty() => {
+            adapters.register(github::NAME, false, Some("SWITCHYARD_ORGS unset".into()))
+        }
         Some(tok) => {
             adapters.register(
                 github::NAME,
@@ -103,6 +129,9 @@ pub fn spawn_all(
         None => adapters.register(github::NAME, false, Some("GITHUB_TOKEN unset".into())),
     }
     match &cfg.woodpecker_token {
+        Some(_) if cfg.woodpecker_url.is_empty() => {
+            adapters.register(woodpecker::NAME, false, Some("WOODPECKER_URL unset".into()))
+        }
         Some(tok) => {
             adapters.register(
                 woodpecker::NAME,
@@ -133,19 +162,25 @@ pub fn spawn_all(
             Some("WOODPECKER_TOKEN unset".into()),
         ),
     }
-    adapters.register(
-        apps::NAME,
-        true,
-        Some("apps catalog /api/apps every 20 s".into()),
-    );
-    tokio::spawn(apps::run(
-        cfg.catalog_url.clone(),
-        http.clone(),
-        tx.clone(),
-        adapters.clone(),
-        clock.clone(),
-    ));
-    if cfg.cicd_token.is_some() || cfg.github_token.is_some() {
+    if cfg.catalog_url.is_empty() {
+        adapters.register(apps::NAME, false, Some("APPS_CATALOG_URL unset".into()));
+    } else {
+        adapters.register(
+            apps::NAME,
+            true,
+            Some("apps catalog /api/apps every 20 s".into()),
+        );
+        tokio::spawn(apps::run(
+            cfg.catalog_url.clone(),
+            http.clone(),
+            tx.clone(),
+            adapters.clone(),
+            clock.clone(),
+        ));
+    }
+    if cfg.cicd_url.is_empty() {
+        adapters.register(cicd::NAME, false, Some("CICD_URL unset".into()));
+    } else if cfg.cicd_token.is_some() || cfg.github_token.is_some() {
         adapters.register(
             cicd::NAME,
             true,

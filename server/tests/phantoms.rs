@@ -19,7 +19,6 @@ const SHA: &str = "4d2fddbd901248b3566e4324733f9e19f9172d51";
 fn store(facts: Vec<Fact>) -> Store {
     let mut s = Store::new(StoreConfig {
         orgs: vec!["acme".into()],
-        ..Default::default()
     });
     for f in facts {
         s.apply(f, false);

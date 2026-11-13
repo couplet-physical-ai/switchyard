@@ -474,7 +474,6 @@ fn diff(a: &Tables, b: &Tables) -> String {
 fn run(facts: &[Fact], flush_every: usize) -> Store {
     let mut s = Store::new(StoreConfig {
         orgs: vec!["acme".into()],
-        ..Default::default()
     });
     for (i, f) in facts.iter().enumerate() {
         s.apply(f.clone(), true);
@@ -537,7 +536,7 @@ proptest! {
     fn ops_replay_to_the_same_tables(facts in prop::collection::vec(fact(), 1..40), every in 1usize..5) {
         // The emitted ops, encoded as on the wire (upsert / patch / dot / remove) and
         // applied to an empty client view, reproduce the server's tables exactly.
-        let mut s = Store::new(StoreConfig { orgs: vec!["acme".into()], ..Default::default() });
+        let mut s = Store::new(StoreConfig { orgs: vec!["acme".into()] });
         let mut view = switchyard::wire::WireState::default();
         let apply = |ops: Vec<switchyard::store::OpOut>, view: &mut switchyard::wire::WireState| {
             let inner = switchyard::hub::encode_ops(&ops);
@@ -620,7 +619,6 @@ fn expected_durations() {
     let fresh = |facts: &[Fact]| {
         let mut s = Store::new(StoreConfig {
             orgs: vec!["acme".into()],
-            ..Default::default()
         });
         for f in facts {
             s.apply(f.clone(), true);
