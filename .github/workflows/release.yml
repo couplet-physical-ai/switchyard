@@ -144,7 +144,7 @@ jobs:
       - name: macOS tests (app/tests/*.test.contract on the macOS host)
         if: env.MODE == 'app'
         # Gating: a release is published only after every macOS suite passes on this runner
-        # (GitHub's 3-core M1 is the slow-Mac canary for Exact's 100 ms turn budget; e3bfe34).
+        # (GitHub's 3-core M1 is the slow-Mac canary for Exact's 100 ms turn budget; 1e2e13a).
         env:
           EXACT2: ${{ runner.temp }}/exact
         run: app/scripts/build.sh test macos

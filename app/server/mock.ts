@@ -101,7 +101,7 @@ async function fixtureSource(dir: string, start: number): Promise<Source> {
     seedRecorded(floor, start, makeRng(0xf1a7));
     state.protocol = PROTOCOL;
   } else {
-    // the recording may be v0.5 itself (contract 46bdd2a+): a v0.4 server knows none of it
+    // the recording may be v0.5 itself (contract c04559f+): a v0.4 server knows none of it
     for (const k of ['groups', 'clusters', 'flakes', 'trends'] as const) delete (state as Partial<Snapshot>)[k];
     state.protocol = '0.4';
     for (const r of Object.values(state.repos)) strip05(r);

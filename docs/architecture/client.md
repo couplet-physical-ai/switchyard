@@ -21,7 +21,7 @@ The current client has three main views:
 | `/factory` | Factory | The berth board: six stations from waiting through apps, with a ledger of events and an inspector for a selected run. |
 | `/yard` | Yard | The fleet schematic, with repositories, engines, CI work, deployments, and apps. |
 
-The two earlier Factory floors (`app/src/factory/`, the isometric floor, and `app/src/flowfloor/`, the square swarm) were retired in `c1626f0`; every `/factory?v=…` link opens the board. The `/factory` view is Factory 3, implemented in [`app/src/factory3/`](https://github.com/couplet-physical-ai/switchyard/tree/main/app/src/factory3).
+The two earlier Factory floors (`app/src/factory/`, the isometric floor, and `app/src/flowfloor/`, the square swarm) were retired in `6d6338b`; every `/factory?v=…` link opens the board. The `/factory` view is Factory 3, implemented in [`app/src/factory3/`](https://github.com/couplet-physical-ai/switchyard/tree/main/app/src/factory3).
 
 The data module's main pieces are:
 

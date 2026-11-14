@@ -80,6 +80,6 @@ export function tokenFileReport(native: NativeModule | null | undefined): { ok: 
   return { ok: true, status: o.ok ? 'connected' : 'failed' };
 }
 
-// The kept-answer scrub with the stored token's value (f3ab409) runs in the module as it reads
+// The kept-answer scrub with the stored token's value (87a0fef) runs in the module as it reads
 // the token (modules/apple/Keychain.swift `onRead`): the read is async now, and a native call
 // from a continuation is not one.

@@ -81,7 +81,7 @@ enum SYUpdaterTests {
     static func latestJSON() {
         let sha = "4f2c" + String(repeating: "a", count: 60)
         let good = """
-        {"version":"0.1.1","build":1001,"url":"https://github.com/couplet-physical-ai/switchyard/releases/download/v0.1.1/Switchyard-0.1.1-arm64.zip","dmg":"https://github.com/couplet-physical-ai/switchyard/releases/download/v0.1.1/Switchyard-0.1.1-arm64.dmg","sha256":"\(sha)","notes":"- faster yard","published":"2026-11-10T23:59:00Z","minimumSystemVersion":"14.0","bundleId":"com.exowatt.switchyard","commit":"971efe1cc4e361c0993568140f2193438b079f1c","future":{"x":1}}
+        {"version":"0.1.1","build":1001,"url":"https://github.com/couplet-physical-ai/switchyard/releases/download/v0.1.1/Switchyard-0.1.1-arm64.zip","dmg":"https://github.com/couplet-physical-ai/switchyard/releases/download/v0.1.1/Switchyard-0.1.1-arm64.dmg","sha256":"\(sha)","notes":"- faster yard","published":"2026-11-10T23:59:00Z","minimumSystemVersion":"14.0","bundleId":"com.exowatt.switchyard","commit":"482f675b9a3a868c8dab3b39bafb538221c1afbf","future":{"x":1}}
         """
         do {
             let r = try SYFeed.parseLatest(Data(good.utf8), bundleID: id)

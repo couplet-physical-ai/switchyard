@@ -46,9 +46,9 @@ Frozen fleet: three builds running, so timers tick.
 
 | Release | Live | Factory | Yard | Canvas frames while idle |
 |---|---|---|---|---|
-| before 0.1.5 (`ca8a2b3`, the 0.1.4 line) | 10.9 % | 11.4 % | 13.0 % | 60 fps on every canvas, always |
+| before 0.1.5 (`802d36f`, the 0.1.4 line) | 10.9 % | 11.4 % | 13.0 % | 60 fps on every canvas, always |
 | 0.1.5, first pass | 4.65 % | 6.55 % | 4.77 % | Live and the board 0; the Yard redrew once a second |
-| 0.1.5 as shipped (`f6019ae`) | 2.86–3.28 % | 1.88–4.44 % | 3.05–3.60 % | Live and the board 0; the Yard about 12 per 30 s |
+| 0.1.5 as shipped (`1deffe3`) | 2.86–3.28 % | 1.88–4.44 % | 3.05–3.60 % | Live and the board 0; the Yard about 12 per 30 s |
 | 0.1.6 | 1.73 % | 1.40 % | 1.23 % | 0 |
 | 0.1.7 | 2.00 % | 1.54 % | 1.19 % | 0 |
 | 0.1.8 before Exact patch 0005 (pass 6) | 1.84–1.86 % | 1.23–1.25 % | 0.89 % | 0 |
@@ -67,7 +67,7 @@ fleet on every retry.
 
 | Release | Live | Factory | Yard |
 |---|---|---|---|
-| 0.1.5 (`f6019ae`) | 1×: 60 fps, p99 16.5–17 ms | 1×: 60 fps. 10×: 40.5 fps, p99 192–384 ms (stalls) | 1×: 58.6–59 fps, p99 24–48 ms. 10×: 51.5 fps, p99 48–96 ms, about 90 % of frames late |
+| 0.1.5 (`1deffe3`) | 1×: 60 fps, p99 16.5–17 ms | 1×: 60 fps. 10×: 40.5 fps, p99 192–384 ms (stalls) | 1×: 58.6–59 fps, p99 24–48 ms. 10×: 51.5 fps, p99 48–96 ms, about 90 % of frames late |
 | 0.1.6 | 59.2 fps, p99 24–48 ms | 32–40 fps, 0.2–0.8 s stalls | 57.6 fps, p99 24–48 ms, 8 % late |
 | 0.1.7 | 58.4 fps, CPU 16.7 % | **59.9 fps, p99 16.5–17 ms**, 0 of 196 frames missed | p99 16.5–17 / 21.5–22 ms, 1–2 % late |
 | 0.1.8 | 57.1–58.7 fps, work p99 14–19.5 ms, **CPU 13.9 %** (16.5 % without patch 0005) | 59.4 fps, CPU 11.8 % | 59.3–59.5 fps; p99 16.5–17 ms in most windows, 24–48 ms in some; about 5 % of frames late |

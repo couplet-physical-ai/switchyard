@@ -12,7 +12,7 @@ Switchyard applies a small ordered patch series to the pinned Exact checkout for
 | [`0004-recorder-roundrect-one-radius.patch`](https://github.com/couplet-physical-ai/switchyard/blob/main/app/scripts/exact-patches/0004-recorder-roundrect-one-radius.patch) | `canvas/recorder.js`, `roundRect` and `roundRectOne` | For finite non-negative geometry and one numeric radius, emit the same ops without the usual path's roughly 70 arrays/objects per rectangle. Other radii and invalid/negative cases keep the original path. | 4,000-trial fuzz across transforms, singular matrices, unusual radii, negative sizes, and following path ops: 0 differences. Yard live allocation fell 68→53 KB per frame (-22%). |
 | [`0005-mac-text-pass-touched-only.patch`](https://github.com/couplet-physical-ai/switchyard/blob/main/app/scripts/exact-patches/0005-mac-text-pass-touched-only.patch) | `host/apple/Sources/ExactKit/Mac/PresenterMac.swift`, `refreshVisibleText` and `batchApplied`; `TextViewportIndexMac.swift`, `BlockHostMac.swift`, and `NodeViewMac.swift` | For a safe words-only batch, refresh only the touched paragraphs. Keep the full pass for scroll, geometry, scale, capture, selection, or outstanding text work. | Mini A/B, interleaved: Live idle with timers 1.86 → 1.44 % CPU, busy Live at 10× 16.46 → 13.90 %, board and Yard unchanged; `refreshVisibleText` 5 → 0 profile samples. Window-server pictures: 0 of 1,370,880 px differ at every step. `TextTouchedMacTests` 2/2; the macOS suite 38/0. First release 0.1.8. |
 
-Patch 0005 landed in `7a4c7fa` and was measured on the Mac mini in `4c4cf53` ([pass 7](mac-passes.md#pass-7-touched-text-host-pass)). It ships in 0.1.8. The pictured drive stopped before a held scroll, a resize and new rows (the mini's terminal could not post synthetic wheel events); those paths take the full pass, which `TextTouchedMacTests` covers.
+Patch 0005 landed in `7725de4` and was measured on the Mac mini in `80d92cd` ([pass 7](mac-passes.md#pass-7-touched-text-host-pass)). It ships in 0.1.8. The pictured drive stopped before a held scroll, a resize and new rows (the mini's terminal could not post synthetic wheel events); those paths take the full pass, which `TextTouchedMacTests` covers.
 
 ## Apply and reverse-check
 
@@ -33,7 +33,7 @@ The Exact pin remains unchanged. The reverse check is only an idempotency test; 
 ## Scope and limits
 
 - 0001 protects against a too-small default heap; Hermes OOM remains fatal, so the 512 MiB value is headroom, not a budget.
-- 0002 is a general native recorder allocation reduction. The isolated [legacy-floor probe](https://github.com/couplet-physical-ai/switchyard/commit/a8c81d8) still reported external-byte drift after 0002; that patch alone was not the cure for the old floor. macOS stopped mounting the legacy surfaces, and the later product pass retired them.
+- 0002 is a general native recorder allocation reduction. The isolated [legacy-floor probe](https://github.com/couplet-physical-ai/switchyard/commit/3b2f936) still reported external-byte drift after 0002; that patch alone was not the cure for the old floor. macOS stopped mounting the legacy surfaces, and the later product pass retired them.
 - 0003 and 0004 preserve emitted recorder bytes for their tested inputs. Their performance gains are specific to interpreter-style Yard drawing, not a promise that all app frames become faster.
 - 0005 is macOS-host-only. Its fast path is guarded by geometry and text-pending invariants; it does not change the web host.
 

@@ -119,7 +119,7 @@ export type Changes = {
   groups: { id: string; failed: number; red: number }[];
 };
 
-/** GET /api/v1/app/{id} (server 73ef168): an app's last ≤ 10 deploys (newest first) and its 7 d
+/** GET /api/v1/app/{id} (server 36dc09d): an app's last ≤ 10 deploys (newest first) and its 7 d
  *  of health changes (newest first); `health_ms` = time spent in each state over `since` → now;
  *  `complete` false while the server's ledger holds less than 7 d. */
 export type AppDeployRow = {

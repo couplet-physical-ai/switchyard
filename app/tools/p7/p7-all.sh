@@ -6,7 +6,7 @@ F=/Volumes/Farm/farm-exowatt; K=$F/switchyard-client-p7/app/tools/p7
 H=$F/switchyard-client-p7; B=$F/switchyard-client-p7-base
 step() { echo "=== $(date +%T) load $(uptime | sed 's/.*averages: //') · $*"; }
 die() { step "ABORT: $*"; exit 1; }
-step "start head $(cat $H/app/.p7-head 2>/dev/null) base df6e18a"
+step "start head $(cat $H/app/.p7-head 2>/dev/null) base 3e4d2df"
 df -h /Volumes/Farm | tail -1
 [ "$(df -g /Volumes/Farm | tail -1 | awk '{print $4}')" -ge 20 ] || die "under 20 GB free on /Volumes/Farm"
 for e in p7 p7base; do [ -d $F/switchyard-exact-$e ] || cp -cR $F/switchyard-exact $F/switchyard-exact-$e || die "cp exact-$e"; done

@@ -422,7 +422,7 @@ enum SYToken {
             let scratch = context.agent && ProcessInfo.processInfo.environment["EXACT_STORE"] != "real"
             let file = scratch ? SYTokenFileStore(dir: context.data) : (SYTokenFileStore.app(id) ?? SYTokenFileStore(dir: context.data))
             let s = SYTokenStore(file: file, legacy: scratch ? nil : SYKeychainItem(service: id), agent: context.agent)
-            // The kept-answer scrub (f3ab409) with the stored token's value, as loadToken's
+            // The kept-answer scrub (87a0fef) with the stored token's value, as loadToken's
             // native.call once did: older builds' kept answers holding it are deleted.
             s.onRead = { token in _ = SYHooks.shared.scrub(["token": token]) }
             made = s

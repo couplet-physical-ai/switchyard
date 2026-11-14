@@ -65,10 +65,10 @@ A new designer rebuilt the Factory from scratch using the brief called FACTORY3.
 
 These public commits mark the main design transitions:
 
-- [The first Yard and client views (`fd4396b`)](https://github.com/couplet-physical-ai/switchyard/commit/fd4396b).
-- [The isometric Factory floor (`7d83a3b`)](https://github.com/couplet-physical-ai/switchyard/commit/7d83a3b).
-- [The Live-first redesign and view cleanup (`608e3ff`)](https://github.com/couplet-physical-ai/switchyard/commit/608e3ff).
-- [The square-swarm design (`6aff538`), then its move to the default Factory route (`7484b39`)](https://github.com/couplet-physical-ai/switchyard/commit/6aff538).
-- [The berth-board design (`20e7d28`) and default route (`ca8a2b3`)](https://github.com/couplet-physical-ai/switchyard/commit/ca8a2b3).
-- [Still-board behavior (`069a311`) and repainting only changed marks (`67b5766`)](https://github.com/couplet-physical-ai/switchyard/commit/67b5766).
-- [Retirement of the older floors (`c1626f0`)](https://github.com/couplet-physical-ai/switchyard/commit/c1626f0).
+- [The first Yard and client views (`c713fa9`)](https://github.com/couplet-physical-ai/switchyard/commit/c713fa9).
+- [The isometric Factory floor (`4a7b75a`)](https://github.com/couplet-physical-ai/switchyard/commit/4a7b75a).
+- [The Live-first redesign and view cleanup (`f714d91`)](https://github.com/couplet-physical-ai/switchyard/commit/f714d91).
+- [The square-swarm design (`4674f19`), then its move to the default Factory route (`0a99b64`)](https://github.com/couplet-physical-ai/switchyard/commit/4674f19).
+- [The berth-board design (`1393bf0`) and default route (`802d36f`)](https://github.com/couplet-physical-ai/switchyard/commit/802d36f).
+- [Still-board behavior (`0acea6a`) and repainting only changed marks (`dde9d1d`)](https://github.com/couplet-physical-ai/switchyard/commit/dde9d1d).
+- [Retirement of the older floors (`6d6338b`)](https://github.com/couplet-physical-ai/switchyard/commit/6d6338b).

@@ -50,7 +50,7 @@ used 190–205 % CPU:
 | 1440×900 | 10× | off | 56.00 | 24 / 360 | 0.5–1.0 ms | 24–48 ms |
 
 An A/B in the same minutes, with the build from before the last yard changes (commit
-`f9c6bb7`), read the same 1× work (median 20.0–21.0 ms, 59.83 FPS): Run B's slower 1× work is the
+`b08e24e`), read the same 1× work (median 20.0–21.0 ms, 59.83 FPS): Run B's slower 1× work is the
 machine, not a regression.
 
 The frame rate held 56–60 FPS in every run, 1× and 10×, at both sizes. Pinning the quality
@@ -127,7 +127,7 @@ calm; floor 0.25–0.45 ms (Hermes estimate 18 ms full, 12 ms low detail).
 
 | Host | Tree | Window | Fleet | HUD | FPS | Work / JS per frame | Rung |
 |---|---|---|---|---|---|---|---|
-| web (devbox) | before (255f81c) | 1440×900 @1× | 1× | off | 59.8 | JS 7.0 · task 10.7 ms | — |
+| web (devbox) | before (01421c3) | 1440×900 @1× | 1× | off | 59.8 | JS 7.0 · task 10.7 ms | — |
 | web | before | 1440×900 @2× | 1× | off | 56.0 | JS 6.9 · task 12.8 ms | — |
 | web | fab-base (pre-merge) | 1440×900 @1× | 1× | off | 59.9 | JS 2.6 · task 4.1 ms | q0 |
 | web | fab-base | 1440×900 @2× | 1× | off | 59.9 | JS 0.9 · task 2.2 ms | q0 |
@@ -152,8 +152,8 @@ their static parts on the floor layer), then re-measure.
 
 ### Factory B, wave B (fab-w7): 60 fps at full quality on the mini
 
-Measured 2026-11-11 06:00–07:45Z on `sy/fab-w7` (merged with main `c1116e3`, W3's lenses in).
-"Before" is `c1116e3` itself. 1× is the recorded server on each host's `127.0.0.1:8090` (394
+Measured 2026-11-11 06:00–07:45Z on `sy/fab-w7` (merged with main `080f8f3`, W3's lenses in).
+"Before" is `080f8f3` itself. 1× is the recorded server on each host's `127.0.0.1:8090` (394
 repos, 239 apps); 10× is stress mode. The mini: 1440×900, Metal (Vello), load average 2.1–3.1,
 no other worker on it, `/tmp/sy-fab-w7-run2.sh` (a perf drive: connect by taps, 14 s from the
 intro on, HUD on, 3 × `perf frames live 6000`, 10× on, 3 more). Web: `tools/perf-web.mjs`,
@@ -161,11 +161,11 @@ intro on, HUD on, 3 × `perf frames live 6000`, 10× on, 3 more). Web: `tools/pe
 
 | Host | Tree | Fleet | HUD | FPS (mean of the window) | Frame time median | Work median (late) | Rung |
 |---|---|---|---|---|---|---|---|
-| macOS Metal | before (`1b5ca6b`, W3 not in) | 1× | off / on | 54.4–56.6 | — | 24–48 ms (246 of 265 late) | q4 |
-| macOS Metal | before (`c1116e3`, the overseer's run) | 1× / 10× | on | 55–56 / ~53 | — | — | q4 / q4 |
-| macOS Metal | **after (`3aa1dd0`)** | 1× | on | **58.3–59.7** (t8 59.2–59.7, t9 58.3–59.0) | **16.5–17.0 ms** | 10.5–11.0 ms (0–2 late) | **q0** |
+| macOS Metal | before (`ba5d25b`, W3 not in) | 1× | off / on | 54.4–56.6 | — | 24–48 ms (246 of 265 late) | q4 |
+| macOS Metal | before (`080f8f3`, the overseer's run) | 1× / 10× | on | 55–56 / ~53 | — | — | q4 / q4 |
+| macOS Metal | **after (`28448bc`)** | 1× | on | **58.3–59.7** (t8 59.2–59.7, t9 58.3–59.0) | **16.5–17.0 ms** | 10.5–11.0 ms (0–2 late) | **q0** |
 | macOS Metal | after | 10× | on | **59.0–60.0** | 16.5–17.0 ms | 11.5–12.5 ms (0 late) | q4 |
-| web | before (`c1116e3`) | 1× | off / on | 59.9 / 59.9 | 16.7 ms | JS 1.87 / 6.92 ms a frame | — |
+| web | before (`080f8f3`) | 1× | off / on | 59.9 / 59.9 | 16.7 ms | JS 1.87 / 6.92 ms a frame | — |
 | web | before | 10× | off / on | 59.9 / 59.9 | 16.7 ms | JS 6.53 / 7.32 ms | — |
 | web | **after** | 1× | off / on | 59.9 / 59.9 | 16.7 ms | JS 2.14 / 2.73 ms | q0 |
 | web | **after** | 10× | off / on | 59.8 / 59.9 | 16.7 ms | JS 3.49 / 3.66 ms | q4 |
@@ -193,7 +193,7 @@ drawn frame; the mini column is the drive right after the fix):
 
 | Fix | demo 1× q0 | fixtures 1× q0 | demo 10× (auto rung) | Mini 1× |
 |---|---|---|---|---|
-| before (`c1116e3`) | 142.0 KB | 127.8 KB | 144.7 KB at q4 (1,091 KB at q0) | 55–56 fps, q4 |
+| before (`080f8f3`) | 142.0 KB | 127.8 KB | 144.7 KB at q4 (1,091 KB at q0) | 55–56 fps, q4 |
 | GPU claim (both canvases) | — | — | — | 56–58 fps, work 24–48 → 18–19 ms |
 | top canvas: words and chrome retained (`cache.ts`) | 87 KB + ~1 KB top | | | 59.7–59.8 fps, q0 |
 | the ladder no longer learns from the intro | | | | holds q0 (it had settled at q4) |
@@ -240,7 +240,7 @@ q3+). Overlapping badges keep the biggest. One 1 Hz beat and the arrival ripples
 **Turns** (`bun tools/turns.ts … --max 4`): demo 422 turns, longest 1.75 ms; fixtures 152 turns,
 longest 1.86 ms.
 
-**On the integrated tree** (main `ad8bc31` merged: W1 lanes, W6 engine, W5 city; drive `m1`, 07:54Z):
+**On the integrated tree** (main `dfeba63` merged: W1 lanes, W6 engine, W5 city; drive `m1`, 07:54Z):
 mini 1× q0 56.5 / 57.2 / 57.7 / 59.5 fps (draw ~1.6 ms, 755 ops, 0 texts on the live canvas),
 10× q4 58.5 / 59.0 / 59.2 fps (draw ~3.3 ms). The misses at 1× follow the static floor's repaints
 (`floor1/s ~44 ms` on Hermes; the window with `floor0/s` reads 59.5): a floor key that churns
@@ -324,8 +324,8 @@ demo, fixtures and stress.
 The floor's paint ms in Bun: p50 14.3 → 0.39 (demo), 18.6 → 0.47 (stress).
 
 **The mini** (2026-11-11 10:30–11:10Z, 1440×900, Metal, `/tmp/sy-fab-w7c-run.sh`: connect by
-taps, the HUD on, 3 × `perf frames live 6000` at 1×, 10× on, 3 more). Before is main `4a7fe2d`.
-After is `69c45a9`, i.e. main `cbbbae4` plus this wave. Both were measured on a mini with nothing
+taps, the HUD on, 3 × `perf frames live 6000` at 1×, 10× on, 3 more). Before is main `16df672`.
+After is `1c016bd`, i.e. main `a3ecdb3` plus this wave. Both were measured on a mini with nothing
 else of ours on it (load average 1.4–1.7; a mutagen agent and a VM, not ours). The first before
 run, with a background Switchyard at ~28 % CPU, read 8090 1× 55.9–56.7 and demo 1× 55.2–57.8.
 In the tables below, the first FPS is the window that includes the HUD tap; then the three
@@ -365,7 +365,7 @@ usual", so the light was on.
 
 | Tree (what differs) | Fleet | FPS by 6 s window | Missed slots a window | Work median (late) |
 |---|---|---|---|---|
-| before: main `e2685c9` | demo 1× | 56.7 / 57.0 / 57.8 | 20 / 18 / 13 | 17.5–21 ms (199–301) |
+| before: main `60151fc` | demo 1× | 56.7 / 57.0 / 57.8 | 20 / 18 / 13 | 17.5–21 ms (199–301) |
 | before | demo 10× | 56.0 / 56.8 / 56.3 | 24 / 19 / 22 | 20–21.5 ms (308–322) |
 | before | 8090 1× (control) | 59.8 / 60.0 / 60.0 | 1 / 0 / 0 | 15–16 ms (46–59) |
 | before | 8090 10× | 60.0 / 60.0 / 59.8 | 0 / 0 / 1 | 16–17 ms (175–179) |
@@ -374,7 +374,7 @@ usual", so the light was on.
 | before + the light's `look()` off | demo 1× | 59.7 / 60.0 / 60.0 / 59.8 / 60.0 | 2 / 0 / 0 / 1 / 0 | 15–16.5 ms |
 | the same, again | demo 1× | 58.2 / 59.8 / 60.0 / 60.0 / 60.0 | 11 / 1 / 0 / 0 / 0 | 11–13 ms (9–68) |
 | sim off the draws + the light off | demo 1× | 59.7 / 60.0 / 60.0 / 60.0 / 60.0 | 2 / 0 / 0 / 0 / 0 | 15–16.5 ms |
-| the light on the live canvas (`069efd4`) | demo 1× | 57.0 / 57.5 / 57.8 / 57.7 / 58.0 | 18 / 15 / 13 / 14 / 12 | 11.5–13.5 ms (13–28) |
+| the light on the live canvas (`cbb3ef9`) | demo 1× | 57.0 / 57.5 / 57.8 / 57.7 / 58.0 | 18 / 15 / 13 / 14 / 12 | 11.5–13.5 ms (13–28) |
 | the same, again | demo 1× | 57.3 / 58.0 / 58.0 / 57.7 / 57.5 | 16 / 12 / 12 / 14 / 15 | 11–13 ms (9–20) |
 | path on the retained top canvas, glow on the live one | demo 1× | 58.0 / 58.0 / 57.7 / 58.3 / 58.2 | 12 / 12 / 14 / 10 / 11 | 10–11 ms (5–10) |
 | the same | demo 10× | 57.8 / 58.0 / 58.3 | 13 / 12 / 10 | 12–13.5 ms (16–29) |
@@ -419,7 +419,7 @@ selftest passes, 81/81.
 at 720×). The demo starts 24 h back, then is pumped to now in fixed slices: `DemoUpstream.pump`
 plus `World.apply`.
 
-| Measure | Before (`e2685c9`) | After |
+| Measure | Before (`60151fc`) | After |
 |---|---|---|
 | 24 h of fleet, Bun JIT, 12 s slices (720×'s per-frame step) | 32.1 s of CPU, 2,690 fleet-ms per CPU-ms (11,500 in hour 1, falling to 1,800 by hour 24) | **8.5 s, 10,174** (8,000–14,000 every hour) |
 | the same, per 12 s slice | p50 4.24, p95 10.6, max 15.9 ms | p50 0.86, p95 3.06, max 8.4 ms |
@@ -438,7 +438,7 @@ plus `World.apply`.
 
 ## Idle pass 2 (idle2): clock ticks cost ~nothing (2026-11-12)
 
-Branch `sy/mac-idle2`, base `ff823ac` (the `idle` pass). What a 1 Hz tick costs now:
+Branch `sy/mac-idle2`, base `e2af659` (the `idle` pass). What a 1 Hz tick costs now:
 
 - **Live**: a clock-only tick re-stamps the last feed: timers, ages, rings and the intake.
   - Cost: 0.03–0.05 ms in Bun; the rows and their order are unchanged.
@@ -456,7 +456,7 @@ Mac mini, dev build, 1440×900, `/tmp/sy-idle2-m.sh`:
 - Load average: 0.9–1.8 (nothing else on the mini) unless noted. Live has no Pause of its own: it is paused from the Yard's.
 - LIVE is `tools/live-proxy.ts` to the real fleet, with its stream flowing.
 - frozen is `server/mock.ts --frozen`: 3 builds "running", so 1 Hz timers tick and no stream frames arrive.
-- merged is HEAD plus `sy/mac-perf` 4ec35d8 (`leak`'s Exact patch 0002).
+- merged is HEAD plus `sy/mac-perf` f30582e (`leak`'s Exact patch 0002).
 
 | Idle CPU | Live | Board | Yard |
 |---|---|---|---|
@@ -468,7 +468,7 @@ Mac mini, dev build, 1440×900, `/tmp/sy-idle2-m.sh`:
 | merged, frozen (timers) | 3.21 % | **2.09 %** | 2.84 % |
 | merged, LIVE paused / frozen paused | 2.65 % | 2.05 % | — |
 
-The `idle` worker's frozen numbers at `51959e7` were 4.65 / 6.55 / 4.77 %.
+The `idle` worker's frozen numbers at `cacf1ce` were 4.65 / 6.55 / 4.77 %.
 
 **Busy**: the recorded fleet at 1× (`switchyard-server --demo`), 20 s windows.
 
@@ -507,7 +507,7 @@ Where the floor is:
 
 ## Pass 3, the shell (p3-shell): the pulse sleeps (2026-11-12)
 
-Branch `sy/mac-p3shell`, base `f6019ae` (pass 2 merged). What a quiet second costs now:
+Branch `sy/mac-p3shell`, base `1deffe3` (pass 2 merged). What a quiet second costs now:
 
 - **Nothing shown ticks** (paused, a still fleet, Live filtered to a quiet repo): no pulse at all
   (`ov.pace` 2).
@@ -549,7 +549,7 @@ Branch `sy/mac-p3shell`, base `f6019ae` (pass 2 merged). What a quiet second cos
 Yard). Script / main-thread task ms per second over 15 s, style recalcs per second, and data-module
 source calls per 20 s (an instrumented build):
 
-| Web, ms/s · recalcs/s · source calls | base `f6019ae` | head |
+| Web, ms/s · recalcs/s · source calls | base `1deffe3` | head |
 |---|---|---|
 | Live, timers | 16.3 / 34.1 · 61 · overview 20, nowFeed 19 | 17.4 / 38.8 · 61 · nowTick 20 (8.7 KB each) |
 | Board, timers | 15.3 / 35.8 · 60 · overview 20, f3Stats 20 | 10.2 / 19.5 · 0 · 0 |
@@ -565,7 +565,7 @@ How to read it:
   the web's script time there.
 - Live's timers: one small `nowTick` re-stamp a second, and nothing else.
 - On the moving fleet, the overview and the whole feed are asked per batch of stream frames (16 in 20 s; the overview was 65).
-- The time columns before `91aff90` (`nowTick`); the source calls at it.
+- The time columns before `fabf95f` (`nowTick`); the source calls at it.
 - The Mac mini numbers for this pass come after sy-ship's 0.1.5 gate (the mini was busy).
 
 **Launch → connected** (pass 2's logs, LIVE, token file):
@@ -590,7 +590,7 @@ Mac mini, recorded fleet at 10× (`switchyard-server --demo --speed 10`, fresh p
 
 **It is not the GPU path.** `EXACT_CANVAS_STATS=1` (read from the drive's `app:` lines: `log show`
 and `log stream` catch nothing, NSLog from a child of the agent does not reach the unified log)
-reads, every second of the busy Yard at base `368b10d` (5 runs): `3–66 gpu/s (2.2–4.0 ms each),
+reads, every second of the busy Yard at base `5efb8fc` (5 runs): `3–66 gpu/s (2.2–4.0 ms each),
 0.0 recorded/s, 0.0 bitmap/s` (~62 while packets move, 3–8 while only the panels change). All four
 layers replay on Vello; nothing is recorded by Core Animation.
 
@@ -618,7 +618,7 @@ the frame's timestamp (target offset 7.9–12.2 ms, steady within a run), so a f
 read under that, and the budget after the callback is 8–12 ms, of which the GPU replay takes 2.2–4.
 
 **Tried, measured, reverted: the info layer in slices.** A draw asked its dirty panels until their
-last hashed ops would pass 700 and left the rest to the next 1–3 frames (`853ba6e`). On the
+last hashed ops would pass 700 and left the rest to the next 1–3 frames (`90fcf2a`). On the
 devbox it cut the info draw (Bun without JIT, `yard-bench --hermes`, 10×) from p50 10.1 / p90 24.5
 / p99 54.9 ms to 2.1 / 5.8 / 21.9. On the mini it bought nothing: the slices moved the same owner
 work into the frames that followed, where the display-link callback waits for it in
@@ -626,10 +626,10 @@ work into the frames that followed, where the display-link callback waits for it
 
 | Run | Tree | Callbacks | FPS | Late | Work median | Work p99 | CPU | Load |
 |---|---|---|---|---|---|---|---|---|
-| base 3 | `368b10d` | 824 | 58.97 | 32 (3.9 %) | 9.0–9.5 | 22.0–22.5 | 30.1 % | 1.86 → 2.13 |
-| head 3 | `853ba6e` (slices) | 836 | 59.22 | 41 (4.9 %) | 9.0–9.5 | 23.5–24.0 | 26.2 % | 2.10 → 2.11 |
-| base 4 | `368b10d` | 779 | 59.09 | 31 (4.0 %) | 9.0–9.5 | 24–48 | 27.6 % | 1.95 → 1.99 |
-| head 4 | `853ba6e` (slices) | 836 | 59.08 | 52 (6.2 %) | 9.0–9.5 | 22.5–23.0 | 30.5 % | 1.64 → 1.88 |
+| base 3 | `5efb8fc` | 824 | 58.97 | 32 (3.9 %) | 9.0–9.5 | 22.0–22.5 | 30.1 % | 1.86 → 2.13 |
+| head 3 | `90fcf2a` (slices) | 836 | 59.22 | 41 (4.9 %) | 9.0–9.5 | 23.5–24.0 | 26.2 % | 2.10 → 2.11 |
+| base 4 | `5efb8fc` | 779 | 59.09 | 31 (4.0 %) | 9.0–9.5 | 24–48 | 27.6 % | 1.95 → 1.99 |
+| head 4 | `90fcf2a` (slices) | 836 | 59.08 | 52 (6.2 %) | 9.0–9.5 | 22.5–23.0 | 30.5 % | 1.64 → 1.88 |
 
 The recorded fleet is busy in bursts: the canvas stats alternate ~62 gpu/s (packets moving) with
 3–8 gpu/s (only the panels), so a 30 s window has ~800 callbacks, not 1,800. The panels' hashed
@@ -645,22 +645,22 @@ whichever display-link callback falls inside it. The ways out are in Exact (deli
 without the main thread waiting on its turn; collect off the frame path) or fewer, smaller owner
 turns in the app; neither fit this pass.
 
-**Paused, Live asked frames** (sy-client's 368b10d run: 44 callbacks a paused 30 s window). The
+**Paused, Live asked frames** (sy-client's 5efb8fc run: 44 callbacks a paused 30 s window). The
 cause was the test mock: it answered `/api/v1/tstream` (the device-token WebSocket path, which the
 real server's `api.rs` serves) with 404, so the app, holding a token, reconnected every 8–16 s,
 refetched the 2 MB snapshot and re-mounted Live's rows (their `nowIn` entrance: ~22 frames each
-time). The mock now serves `tstream` as `stream` (`853ba6e`). Against the real server the app never
+time). The mock now serves `tstream` as `stream` (`90fcf2a`). Against the real server the app never
 saw this; it still reconnects that way against any server that refuses the stream.
 
 Mini, paused Live, 30 s, frozen mock (load 1.4–1.8):
 
 | Tree | Mock | Callbacks | CPU |
 |---|---|---|---|
-| base `368b10d` | 404 on `tstream` | 44 | 1.69 % |
-| base `368b10d` | serves `tstream` | **0** | **0.11 %** |
-| head `a5712a9` (+ `fc37169`) | serves `tstream` | 0 | 0.12 % |
+| base `5efb8fc` | 404 on `tstream` | 44 | 1.69 % |
+| base `5efb8fc` | serves `tstream` | **0** | **0.11 %** |
+| head `9f4bc20` (+ `d20b9a7`) | serves `tstream` | 0 | 0.12 % |
 
-`fc37169` (paused: one wake every 32 s instead of a ladder rung that never shrank, since the
+`d20b9a7` (paused: one wake every 32 s instead of a ladder rung that never shrank, since the
 playhead stands) stays: fewer wakes, no frames either way.
 
 ## Pass 5, the Yard (p5-yard): the timer turn shrinks (2026-11-12)
@@ -682,15 +682,15 @@ for **every** `localeCompare` call (ECMA-402 defines it as `new Intl.Collator(�
 
 | Commit | What |
 |---|---|
-| `61fa9ee` | The info layer's parts take a key (a number and up to two objects by identity): a part whose key, objects and band match the last paint's is not run, not even hashed; its last hash and box stand. The main lines key each row (repo by identity, row, `shortKey`: `fmtShort`'s words as a number). |
-| `0a008d1` | One `Intl.Collator` (and one numeric) made once, used for every sort in the Yard (the same order by spec; checked on the fixtures' 776 names, 602,176 pairs: 0 disagree). The repos' org/name order is kept while the same ids keep the same org and name. The queue's waiting and just-finished rows are keyed. |
-| `78d8477` | The ranked repos: only the first 120 (the yard's picks), by insertion, scores in a `Float64Array` (checked against the full sort on 30 perturbed trials with ties: 0 differ). The gates' verdicts kept per `kv.pipeline`. |
-| `992b273` | `exact-patches/0003`: the native recorder parses each font string once and quotes each family once (bounded maps). |
-| `088e0e8` | `Yard.ensure` compares the scene signature's twelve parts instead of building a string every draw. |
-| `5f65381` | `exact-patches/0004`: the recorder's `roundRect` with one radius and a size that is not negative records the same ops without ~70 arrays per rectangle. |
+| `02a5c57` | The info layer's parts take a key (a number and up to two objects by identity): a part whose key, objects and band match the last paint's is not run, not even hashed; its last hash and box stand. The main lines key each row (repo by identity, row, `shortKey`: `fmtShort`'s words as a number). |
+| `f3d4915` | One `Intl.Collator` (and one numeric) made once, used for every sort in the Yard (the same order by spec; checked on the fixtures' 776 names, 602,176 pairs: 0 disagree). The repos' org/name order is kept while the same ids keep the same org and name. The queue's waiting and just-finished rows are keyed. |
+| `d73ab0a` | The ranked repos: only the first 120 (the yard's picks), by insertion, scores in a `Float64Array` (checked against the full sort on 30 perturbed trials with ties: 0 differ). The gates' verdicts kept per `kv.pipeline`. |
+| `ef3e8ef` | `exact-patches/0003`: the native recorder parses each font string once and quotes each family once (bounded maps). |
+| `130f852` | `Yard.ensure` compares the scene signature's twelve parts instead of building a string every draw. |
+| `d00326e` | `exact-patches/0004`: the recorder's `roundRect` with one radius and a size that is not negative records the same ops without ~70 arrays per rectangle. |
 
 **Devbox** (`tools/yard-bench.ts --hermes --fed`, Bun 1.4.2, the recorded fleet at 10×,
-`switchyard-server --demo --speed 10`, base `50768b6` and head run at the same time on one
+`switchyard-server --demo --speed 10`, base `4b1a475` and head run at the same time on one
 stream; `--hermes` now prices `localeCompare` as Hermes does, a collator per call; `--fed`
 asks the overview as the app's `fed` task does):
 
@@ -718,7 +718,7 @@ negative sizes): 0 differ.
 
 **Mac mini** (`p5yard-m.sh`, a copy of p4's recipe: a fresh `--demo --speed 10` server per run,
 busy Yard 1440×900, real taps, `EXACT_CANVAS_STATS=1`; window A = `perf frames live 30000`;
-base `50768b6` with the shared Exact (0001+0002), head `5f65381` with a private Exact
+base `4b1a475` with the shared Exact (0001+0002), head `d00326e` with a private Exact
 (0001–0004); interleaved base/head ×2, 13:11–13:19Z). p5-board's builds ran beside it, so the
 load was 3–14, not p4's 1.3–1.9; **pair 1's base ran at load 14 → 12 and is tainted; pair 2
 (load 3–6 for both) is the clean one.**
@@ -757,10 +757,10 @@ the call that answers a frame.
 
 ## Pass 5, the board (p5-board): no frame waits on a whole board, and a refused stream stops looping (2026-11-12)
 
-Branch `sy/mac-p5board`, base `50768b6`. The board (Factory) at 10× read 32–40 fps with
+Branch `sy/mac-p5board`, base `4b1a475`. The board (Factory) at 10× read 32–40 fps with
 0.2–0.8 s stalls on the mini (pre-existing; 60 at 1×). Two causes, both the board's own.
 
-**1. The board never reached the GPU** (`f33ac50`). The macOS host gives a canvas to its GPU
+**1. The board never reached the GPU** (`e1cbc53`). The macOS host gives a canvas to its GPU
 module only if the first draw with anything in it after a fresh bitmap asks for the next frame
 (PERF.md "Where the native frame went"; the old floor's and the Yard's `gpuClaim`). Board3's two
 layers asked for nothing there (an idle board asks for nothing), so both stayed with Core
@@ -771,7 +771,7 @@ a frame. Each layer's first paint on a fresh bitmap now asks for one more frame 
 nothing); a fresh bitmap whose draw was skipped while covered (app.ts) is owed its whole paint and
 its claim.
 
-**2. A change in the number of marks repainted the whole board** (`bdfb9f7`, `69b0626`).
+**2. A change in the number of marks repainted the whole board** (`fc1a964`, `eddcfcb`).
 `paint()` compared the scenes index by index and went whole whenever their lengths differed: a run
 arriving, leaving or landing. A whole board is 100–180 KB of list through Exact's recorder (the
 list, base64, JSON); at 10× that came about once a second. Now:
@@ -799,7 +799,7 @@ load 1.5–2.2):
 | head 1 | 3 of 67 (the mount, layout changes) | 3 | 11.5 / 39.6 ms | 108.1 KB (the mount) |
 | base 2 | 19 of 77 | 24 | 45.7 / 71.4 ms | 177.3 KB |
 | head 2 | 2 of 77 | 6 | 27.1 / 39.7 ms | 107.9 KB (the mount) |
-| head + tile runs (`69b0626`) | 3 of 84 (the mount, the bench's font pass, a layout change) | 6 | 24.3 / 39.7 ms | partials ≤ 60 KB |
+| head + tile runs (`eddcfcb`) | 3 of 84 (the mount, the bench's font pass, a layout change) | 6 | 24.3 / 39.7 ms | partials ≤ 60 KB |
 | head + words grouped | 3 of 78 | 6 | 23.0 / 36.1 ms (the mount) | 72.8 KB (the mount) |
 
 **Pixels.** `f3-bench --pixels`: every board list also goes to a canvas that keeps it (Exact's web
@@ -809,7 +809,7 @@ same scene, in the scene's own order, goes to a fresh one. 84 paints at 10× (81
 `factory3-shots stills` base vs head (frozen fixtures): the only differences are the running
 timers (the two runs 4 s apart) and the proxy's port in the status line.
 
-**3. A refused stream** (`9648d25`). Against a server that refuses `/api/v1/tstream`, `retry`
+**3. A refused stream** (`fa24cfc`). Against a server that refuses `/api/v1/tstream`, `retry`
 bumped `gen`, the connect's argument, so every rung of the ladder fetched the 2 MB snapshot again
 and loaded a new world (Live rebuilt; and paused, `tl.load` put the module back to live under a
 paused UI, so its 1 Hz timers ticked). The ladder itself was right: 2, 4, 8, 16, then every 30 s
@@ -825,7 +825,7 @@ stays). Now:
 
 **The mini** (2026-11-12 13:22–13:37Z; 1440×900, dev builds, real taps, `EXACT_AGENT=live`,
 `EXACT_CANVAS_STATS=1`, the recorded fleet at 10× on a fresh `switchyard-server --demo --speed 10`
-per run; base `50768b6` and head built side by side, runs interleaved, nothing else on the mini;
+per run; base `4b1a475` and head built side by side, runs interleaved, nothing else on the mini;
 load average logged per run). Window A is 30 s of the busy board, window B 12 s with `sample`.
 
 | Run | Window | Callbacks | FPS | Missed slots | Frame time p99 | Work median / p99 / max (late) | Canvas stats while squares move | CPU (load) |
@@ -850,7 +850,7 @@ the pause; both apps on the head clone's mock):
 
 | Tree | Frames in the 70 s | CPU (load) | Snapshot GETs in the run | Stream opens |
 |---|---|---|---|---|
-| base `50768b6` | 68 (three bursts of 21–24: Live's rows entering again) | 1.72 % (1.48 → 1.30) | 7 (the connect's 2, then one a rung) | 6 |
+| base `4b1a475` | 68 (three bursts of 21–24: Live's rows entering again) | 1.72 % (1.48 → 1.30) | 7 (the connect's 2, then one a rung) | 6 |
 | head | **0** | **0.08 %** (1.23 → 1.10) | **2** (the connect's) | 6 (2, 4, 8, 16, 30 s) |
 
 **Idle with timers** (the frozen mock, which serves `tstream`: 3 builds running, so the 1 Hz
@@ -860,7 +860,7 @@ timers tick; 58 s windows):
 |---|---|---|---|
 | Live | head | 0 | 2.14 % (1.22 → 1.68) |
 | Board | head | 0 frame callbacks; 1 GPU replay a second (the timers' repaint, 4.7–7.9 ms each) | 1.93 % (1.08 → 1.17) |
-| Board | base `50768b6` | 0; 0.5–1 bitmap replay a second (Core Graphics, off the main thread) | 1.51 % (1.28 → 1.30) |
+| Board | base `4b1a475` | 0; 0.5–1 bitmap replay a second (Core Graphics, off the main thread) | 1.51 % (1.28 → 1.30) |
 
 The refused stream is fixed outright (0 frames, 0.08 % CPU, one snapshot). The board meets 60 fps
 at 10× with its stalls gone; idle with timers does not meet ≤ 1.5 % on Live (2.14 %) or the board
@@ -880,7 +880,7 @@ Graphics updated the bitmap in place.
 
 ## Pass 6 (p6-idle): a board that never animates on the GPU, and Live's second (2026-11-12)
 
-Branch `sy/mac-p6`, base `e5d51d6` (the 0.1.7 candidate). Brief: idle with timers ≤ 1.5 % on Live,
+Branch `sy/mac-p6`, base `2e1fb07` (the 0.1.7 candidate). Brief: idle with timers ≤ 1.5 % on Live,
 the board and the Yard; paused unchanged; the busy board and Yard at 60 fps; the same look.
 
 **Where a ticking second went** (the mini, Live idle with timers, `sample <pid> 10`, a profile only:
@@ -951,13 +951,13 @@ waiting:
     every mark, colour and position is the same.
   - The board's diff is the words' anti-aliasing: 60 k of 1.3 M px, 6.8 k over 64 of 255.
 
-**The mini** (1440×900, dev builds of head `81f4ba5` and base `e5d51d6` on one private Exact,
+**The mini** (1440×900, dev builds of head `3926e9c` and base `2e1fb07` on one private Exact,
 `/tmp/p6/p6-m.sh` + `p6-batch2.sh`. Interleaved, 15:06–15:25Z, sy-ship's build off the mini, load
 1.0–1.8. Raw logs: `/tmp/p6/mini/`.)
 
 Idle with timers: the frozen mock (it serves `tstream`; 3 builds running), CPU from `ps` over 56–57 s:
 
-| Tab | base `e5d51d6` | head | frames in the windows |
+| Tab | base `2e1fb07` | head | frames in the windows |
 |---|---|---|---|
 | Live | 1.81 %, 2.18 % | 1.86 %, 1.84 % | 0 / 0 |
 | Board | 1.81 %, 1.70 % | **1.25 %, 1.23 %** | 0 / 0 (head: 0 GPU, 1 bitmap replay a second; base: 1 GPU replay a second, 3.3–5.5 ms each) |
@@ -1002,7 +1002,7 @@ Busy CPU at 10×: the board 12.36 → 11.32 %, the Yard 24.59 → 23.41 %.
 - `native time format="timer"` is not a fit for Live. A standalone live `time` reserves its box for
   one more hour digit, which would move the "/ ~5:26" after it. Inside a paragraph it would need a
   space for the 4 px gap. And it would still be one batch a second.
-- The macOS `tests/*.test.contract` suite on `81f4ba5`, on the mini after the A/B: every file
+- The macOS `tests/*.test.contract` suite on `3926e9c`, on the mini after the A/B: every file
   0 failed (`suite rc=0`, 16 files, some tests skipped on macOS as marked).
 
 
@@ -1052,7 +1052,7 @@ and is never printed.
 
 ## Pass 7 (p7-text): Exact's Mac text pass asks only what a batch touched (exact-patches/0005, 2026-11-12)
 
-Branch `sy/mac-p7`, base `df6e18a` (pass 6, the 0.1.8 candidate). Brief: Live idle with timers
+Branch `sy/mac-p7`, base `3e4d2df` (pass 6, the 0.1.8 candidate). Brief: Live idle with timers
 ≤ 1.5 % on the mini (better ≤ 1.0 %), with the patch tiny, macOS-host only, and the look unchanged.
 
 **The cost** (pass 6's mini profile, Live idle with three running timers, `sample` 10 s, 77
@@ -1100,8 +1100,8 @@ upstream write-up):
   - a full pass afterwards finds nothing to do;
   - a frame move, a page zoom and a mount each make the index stale.
 
-**Measured on the mini (sy-client, 18:10–19:03Z, quiet, load 1.1–2.3).** Head = df6e18a + 0005
-(Exact 0001–0005), base = df6e18a (0001–0004), dev builds, interleaved, 56–57 s windows:
+**Measured on the mini (sy-client, 18:10–19:03Z, quiet, load 1.1–2.3).** Head = 3e4d2df + 0005
+(Exact 0001–0005), base = 3e4d2df (0001–0004), dev builds, interleaved, 56–57 s windows:
 
 | | base | head |
 |---|---|---|

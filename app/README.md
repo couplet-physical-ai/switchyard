@@ -322,7 +322,7 @@ app/tools/updater-e2e-feed.sh <Switchyard.app> 0.0.2 <latest.json URL>   # a rea
 
 
 **Tokens never sit in kept answers.** Exact keeps a resource's answer and its identifying
-arguments on disk for the next launch (`kv/exact.kept`). Builds before 5ecedeb passed the token
+arguments on disk for the next launch (`kv/exact.kept`). Builds before 778694f passed the token
 through Contract, so it landed there in plain text; now Contract only sees `{has, ver, status}` and
 the sources keep the token in the data module's memory ("Security"). At every launch the module
 also deletes any kept entry or persisted state that holds a token (`syd_`/`sys_`-shaped, or the

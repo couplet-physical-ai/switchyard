@@ -18,7 +18,7 @@ export interface Upstream {
   insights?(): Promise<Insights | null>;
   /** v0.5 `GET /api/v1/changes?since=&until=`; null where the server has none. */
   changes?(since: number, until?: number): Promise<Changes | null>;
-  /** `GET /api/v1/app/{id}` (server 73ef168): deploys + 7 d health; null where the server has none (404). */
+  /** `GET /api/v1/app/{id}` (server 36dc09d): deploys + 7 d health; null where the server has none (404). */
   appHistory?(id: string): Promise<AppDetail | null>;
   /** `GET /api/v1/engine/{id}/history`: 24 h per minute, columnar; null where the server has none (404). */
   engineHistory?(id: string): Promise<EngineHistoryDoc | null>;

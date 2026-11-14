@@ -119,7 +119,7 @@ enum SYHookLog {
     }
 }
 
-/// Tokens Exact once kept in plain text (before 5ecedeb a resource's answer and identifying
+/// Tokens Exact once kept in plain text (before 778694f a resource's answer and identifying
 /// arguments, kept on disk for the next launch under `kv/exact.kept`, carried the device token).
 /// At every launch the module deletes any kept entry that holds a token: one with the stored
 /// token's value (the data module hands it over, `op: "scrub"`), or anything shaped like a

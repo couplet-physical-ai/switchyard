@@ -29,7 +29,7 @@ A gated release is published as a prerelease. GitHub's stable `latest` feed and 
 
 The soak checks that the app remains alive, no new crash report appears, RSS and JavaScript heap plateau, and each view stays within its memory gates. The Yard must draw frames. The heap line is required because RSS alone can miss growth inside Hermes. A borderline or failed soak remains a prerelease; do not promote it.
 
-A garbage-collected heap is a sawtooth: it moves about 2 MB a minute without leaking, so two samples a few minutes apart prove nothing (0.1.7's first soak was flagged that way and passed a rerun). Since `c4fefdc` each view segment of at least 15 minutes is judged on every sample:
+A garbage-collected heap is a sawtooth: it moves about 2 MB a minute without leaking, so two samples a few minutes apart prove nothing (0.1.7's first soak was flagged that way and passed a rerun). Since `e5eb5f0` each view segment of at least 15 minutes is judged on every sample:
 
 | Check | Limit | Why |
 |---|---|---|

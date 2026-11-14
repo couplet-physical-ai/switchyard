@@ -17,7 +17,7 @@ const settle = (ins: Insights, max = 200) => { for (let i = 0; i < max; i++) { i
 
 // ── v0.4: the fixtures as recorded ──
 const fixture = await Bun.file(new URL('../../contract/fixtures/snapshot.json', import.meta.url)).json();
-// the recording is v0.5 itself since contract 46bdd2a: served as a v0.4 server would (mock --v04)
+// the recording is v0.5 itself since contract c04559f: served as a v0.4 server would (mock --v04)
 fixture.protocol = '0.4';
 for (const k of ['groups', 'clusters', 'flakes', 'trends']) delete fixture[k];
 for (const r of fixture.repos) delete r.group;
@@ -144,7 +144,7 @@ const kv = i5.ver('trends');
 tl5.world.apply({ t: 'delta', seq: tl5.world.seq + 1, at: tl5.world.at + 1, ops: [{ op: 'upsert', kind: 'trend', id: 'fleet', v: tl5.world.trends.get('fleet') }] } as any);
 ok(i5.ver('trends') !== kv, 'v0.5 ver: bumps on the table\'s ops');
 
-// ── H6/H7 from the server (73ef168), else the client seams in the server's shape ──
+// ── H6/H7 from the server (36dc09d), else the client seams in the server's shape ──
 {
   let appCalls = 0, engCalls = 0;
   const srvApp = { id: appId, app: null, deploys: [{ sha: 'abc', via: 'roadrunner', state: 'success', started: 1, at: 2, finished: 2, duration_ms: 1 }], health: [], health_ms: { up: 5 }, since: 0, complete: true };

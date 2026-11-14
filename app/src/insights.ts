@@ -496,7 +496,7 @@ export class Insights {
     };
   }
 
-  // ── H6 / H7 from the server (73ef168), else the client seams above ──
+  // ── H6 / H7 from the server (36dc09d), else the client seams above ──
 
   private appHist = new Map<string, { at: number; epoch: number; v: Promise<AppHistoryResult | null> }>();
   private engHist = new Map<string, { at: number; epoch: number; v: Promise<EngineHistoryResult | null> }>();

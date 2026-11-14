@@ -23,16 +23,16 @@ Switchyard only reads its upstreams, so no CI run, deploy, or upstream record wa
 | When | Event |
 |---|---|
 | 05:40 | The warm boot ships: after a restart the server serves its last state and holds entity changes until the store settles, about six minutes later. It fixes a half-empty fleet after each deploy, and starts the frozen-run problem below. |
-| 16:50 | Phantom waiting pipelines are traced to Woodpecker's created-then-deleted pipelines and fixed (`b23b922`). The fix is live at 17:40; after the warm boot settles, the known phantoms are gone. |
+| 16:50 | Phantom waiting pipelines are traced to Woodpecker's created-then-deleted pipelines and fixed (`5e6aa49`). The fix is live at 17:40; after the warm boot settles, the known phantoms are gone. |
 | 17:40–18:05 | Phantoms are still reported. The client and server teams audit the served snapshot against the upstreams. |
-| 18:05 | The client bug is found: a server reset could be cancelled by the next frame. Fixed in `0a02dd2`, with the resume reset on the server in `a65ad31`. |
-| 18:17 | The upstream audit's fixes for main lines, deploys, and pushes without CI land (`f95db94`). Against the live fleet, they make the GitHub inventory pages too slow: GitHub answers some pages without data and one organization's list stops at 200 repositories, leaving 113 blank main lines. |
-| 18:35 | `6b6135b` reads per-commit checks only for red commits and keeps the last list when a page has no data. |
+| 18:05 | The client bug is found: a server reset could be cancelled by the next frame. Fixed in `da64074`, with the resume reset on the server in `9364015`. |
+| 18:17 | The upstream audit's fixes for main lines, deploys, and pushes without CI land (`77c5357`). Against the live fleet, they make the GitHub inventory pages too slow: GitHub answers some pages without data and one organization's list stops at 200 repositories, leaving 113 blank main lines. |
+| 18:35 | `f872917` reads per-commit checks only for red commits and keeps the last list when a page has no data. |
 | about 18:40 | Runs finishing during a deploy's warm boot are reported as still running. |
-| 18:50–19:03 | The warm boot lets runs, deploys, engines and the queue through (`9bb1679`), and the served snapshot follows them (`03a3e12`). |
-| 19:14 | Server `03a3e12` and web client `6b6135b` are live. Across a restart, a finished run shows finished within 5 s. |
-| 19:18 | A failed GitHub Actions deploy run no longer keeps a main line red once the commit's deploy succeeded (`844f290`). |
-| 19:36 | A pipeline number Woodpecker reuses after deleting a phantom is treated as a new run (`a2c2011`, deployed with the 0.1.8 web client). |
+| 18:50–19:03 | The warm boot lets runs, deploys, engines and the queue through (`f20129a`), and the served snapshot follows them (`51deccf`). |
+| 19:14 | Server `51deccf` and web client `f872917` are live. Across a restart, a finished run shows finished within 5 s. |
+| 19:18 | A failed GitHub Actions deploy run no longer keeps a main line red once the commit's deploy succeeded (`8d51c75`). |
+| 19:36 | A pipeline number Woodpecker reuses after deleting a phantom is treated as a new run (`35d8cbc`, deployed with the 0.1.8 web client). |
 
 ## Causes and fixes
 
@@ -40,7 +40,7 @@ Switchyard only reads its upstreams, so no CI run, deploy, or upstream record wa
 
 When the server cannot resume a client's stream, it sends a reset, and the client must discard its fleet and fetch the snapshot again. The client marked the stream `reset` and armed a refetch 250 ms later, as a gated task. In Exact, a gated task's timer lives only while its gate holds. The next frame on the stream set the status back to `live`, which disarmed the refetch. Later deltas landed on the stale fleet. An entity removed between the old fleet and the new one never received a removal, so it stayed on the client's board for good.
 
-**Fix** (`0a02dd2`): a reset is sticky until the fleet has been fetched again; frames after it are dropped, not applied. A stream reopened after a drop also asks `/api/v1/meta` which server process answers; a different `epoch` means the server restarted, and the client refetches rather than trusting its fleet across processes. `ad702e9` adds `app/tools/stale.test.ts`, which proves that an upsert replaces a pipeline in every view and a removal takes it out of every view. It also hardens two spots the test found: the intake no longer counts a queued id the fleet removed or holds finished, and Live's machine no longer shows a removed run as busy.
+**Fix** (`da64074`): a reset is sticky until the fleet has been fetched again; frames after it are dropped, not applied. A stream reopened after a drop also asks `/api/v1/meta` which server process answers; a different `epoch` means the server restarted, and the client refetches rather than trusting its fleet across processes. `f873a7c` adds `app/tools/stale.test.ts`, which proves that an upsert replaces a pipeline in every view and a removal takes it out of every view. It also hardens two spots the test found: the intake no longer counts a queued id the fleet removed or holds finished, and Live's machine no longer shows a removed run as busy.
 
 The web client got the fix with the 19:14 deploy. The macOS app gets it in 0.1.8.
 
@@ -48,27 +48,27 @@ The web client got the fix with the 19:14 deploy. The macOS app gets it in 0.1.8
 
 A client that resumed at a sequence number from before a restart received the new process's frames after that number. Its fleet came from the old process, which the new one never diffed against, so entities only the old process had (a pipeline Woodpecker deleted meanwhile) were never removed.
 
-**Fix** (`a65ad31`): the hub records `boot_seq`, the sequence it started numbering after. A resume at or before it gets a reset. `server/tests/restart_resume.rs` covers it. The client's epoch check (cause 1) closes the same gap from the other side.
+**Fix** (`9364015`): the hub records `boot_seq`, the sequence it started numbering after. A resume at or before it gets a reset. `server/tests/restart_resume.rs` covers it. The client's epoch check (cause 1) closes the same gap from the other side.
 
 ### 3. The warm boot froze runs (server)
 
 The warm boot held every entity change until the store settled, 6–10 minutes after a restart. A run that finished during that window stayed "running" on Live and the board, and `/api/v1/snapshot` kept serving the frozen last state. A client that connected or refetched mid-boot, and the audit script, saw finished runs as running while the stream already carried their finish.
 
-**Fix** (`9bb1679`, `03a3e12`): only the half-built fleet's churn is held. Pipelines the last state holds or that are running now, running deploys, engines, and the queue go out at once, as whole entities applied to the warm state, so the settle diff starts from what clients hold. Removals go out only for runs the last state holds; repositories, commits, and derived views still wait for the settle. The served snapshot follows what went out. `server/tests/warm_boot.rs` covers a run finishing during the boot (finished at once) and a historic one (waits for the settle). See [Server architecture](../../architecture/server.md#metadata-and-warm-boot).
+**Fix** (`f20129a`, `51deccf`): only the half-built fleet's churn is held. Pipelines the last state holds or that are running now, running deploys, engines, and the queue go out at once, as whole entities applied to the warm state, so the settle diff starts from what clients hold. Removals go out only for runs the last state holds; repositories, commits, and derived views still wait for the settle. The served snapshot follows what went out. `server/tests/warm_boot.rs` covers a run finishing during the boot (finished at once) and a historic one (waits for the settle). See [Server architecture](../../architecture/server.md#metadata-and-warm-boot).
 
 ### 4. Woodpecker's created-then-deleted pipelines (server)
 
 Woodpecker stores a pipeline as `created` on every webhook before it reads the repository's configuration, then deletes it unpublished when no workflow matches the event (a merged or closed pull request, a label change). The reconcile and feed polls caught such pipelines in that window and mapped them to Pending. The later 404 was ignored, and Pending pipelines are never pruned, so they sat in the waiting column forever.
 
-**Fix** (`b23b922`): a `created` pipeline without workflows maps to no facts; a real one is published again with its workflows moments later. A 404 on a pipeline's detail sends `Fact::PipelineGone`, and the store removes it through `Store::remove_pipeline`, the same path as the age-based prune. Timeouts, 401s, and 5xx responses change nothing. `server/tests/pipeline_gone.rs` covers it.
+**Fix** (`5e6aa49`): a `created` pipeline without workflows maps to no facts; a real one is published again with its workflows moments later. A 404 on a pipeline's detail sends `Fact::PipelineGone`, and the store removes it through `Store::remove_pipeline`, the same path as the age-based prune. Timeouts, 401s, and 5xx responses change nothing. `server/tests/pipeline_gone.rs` covers it.
 
-Woodpecker also gives a deleted pipeline's number to the next run. The store compared lifecycles across the two, so a phantom's "running" rejected the real run's "pending" facts until the real run got further. Since `a2c2011`, a Roadrunner pipeline with another commit or creation time is another run: the newer one replaces the old whole, with no lifecycle comparison and no transition events against the old one, and a late fact about the older run is ignored.
+Woodpecker also gives a deleted pipeline's number to the next run. The store compared lifecycles across the two, so a phantom's "running" rejected the real run's "pending" facts until the real run got further. Since `35d8cbc`, a Roadrunner pipeline with another commit or creation time is another run: the newer one replaces the old whole, with no lifecycle comparison and no transition events against the old one, and a late fact about the older run is ignored.
 
 ### 5. False red main lines and false failed deploys (server)
 
 The main line read GitHub's combined `statusCheckRollup.state`. That state counts CodeQL and Dependabot scanning and runs triggered by pull requests, so 11 of 24 red main lines were red only for a CodeQL "Analyze" job, one for a superseded push deploy and one for a pull request's run. Separately, a failed push deploy stayed "failed" after a manual redeploy passed, because a manually dispatched workflow run is not in the commit's check rollup.
 
-**Fix** (`f95db94`, `6b6135b`, `844f290`):
+**Fix** (`77c5357`, `f872917`, `8d51c75`):
 
 - A main line reads its red commits' own check contexts: scanning and pull-request runs are out, and a newer Roadrunner push or manual status wins.
 - A manual Roadrunner run that runs the deploy workflow counts as a deploy, so a passing redeploy supersedes the failed one. A cancelled deploy workflow, superseded by a newer push, is not a failed deploy.
@@ -79,7 +79,7 @@ The first version read every history commit's contexts and made the inventory pa
 
 ### 6. Counting and intake (client)
 
-The Yard's engine header counted a Dagger host's slots and then its agents' slots again (28 shown, 16 real); `app/tools/yard-slots.test.ts` pins the count. Live showed a push to a repository without CI as "no CI run has started yet" and counted it as waiting intake. A commit now waits for CI only where CI will run (`0a02dd2`, `f95db94`).
+The Yard's engine header counted a Dagger host's slots and then its agents' slots again (28 shown, 16 real); `app/tools/yard-slots.test.ts` pins the count. Live showed a push to a repository without CI as "no CI run has started yet" and counted it as waiting intake. A commit now waits for CI only where CI will run (`da64074`, `77c5357`).
 
 ## What went well
 
