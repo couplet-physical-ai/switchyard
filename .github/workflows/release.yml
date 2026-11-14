@@ -102,7 +102,7 @@ jobs:
           echo "EXACT_DIR=$RUNNER_TEMP/exact" >> "$GITHUB_ENV"
       - name: Cache (cargo registry, Hermes bundle, Exact target)
         if: env.MODE != 'placeholder'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
