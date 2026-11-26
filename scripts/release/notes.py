@@ -58,7 +58,7 @@ def main() -> int:
                     break
         groups[key].append(f"- {text if key != 'other' else subject} ({sha[:7]})")
     # The team's web app, for notes that stay private (the mini's): release notes on GitHub are
-    # public, so the release workflow leaves SWITCHYARD_NOTES_WEB_URL unset.
+    # public, so a release leaves SWITCHYARD_NOTES_WEB_URL unset.
     web = os.environ.get("SWITCHYARD_NOTES_WEB_URL", "").strip().rstrip("/")
     out = [] if changes_only else [
         f"## Switchyard {version}", "",
@@ -68,7 +68,7 @@ def main() -> int:
         "# already installed? click Update in the app (or: brew upgrade --cask --greedy switchyard)",
         "```", "",
         "The app is signed with a Developer ID and notarized by Apple. Without Homebrew: download the",
-        "dmg below and drag Switchyard to Applications. Checksums: `SHA256SUMS`.",
+        "dmg below and drag Switchyard to Applications. Checksums: `SHA256SUMS`.", "",
         *([f"Web: {web}", ""] if web else []),
     ]
     any_change = False

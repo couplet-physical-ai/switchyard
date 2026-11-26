@@ -40,10 +40,13 @@ else
   want=$(awk 'NF && $1 !~ /^#/ {print $1; exit}' packaging/exo-macsign.sha256)
   got=$(shasum -a 256 "$tool" | cut -d' ' -f1)
   [[ "$got" == "$want" ]] || { echo "exo-macsign at $tool is sha256 $got; packaging/exo-macsign.sha256 pins $want" >&2; exit 1; }
-  echo "signing with $("$tool" --version | head -1) ($tool, sha256 ${got::12}, pinned)"
+  echo "signing with $("$tool" --version 2>/dev/null | sed -n 1p) ($tool, sha256 ${got::12}, pinned)"
   # sign (inside out, hardened runtime, timestamp) -> notarize + staple the app -> zip it ->
   # dmg -> sign + notarize + staple the dmg -> unzip and verify as a user's Mac would.
-  "$tool" release "$APP" --zip "$ZIP" --dmg "$DMG" --volname "Switchyard $V"
+  # Apple's queue can take over an hour (0.1.9's app took longer than 3600 s). On a timeout
+  # (exit 5) the submission id is printed: `exo-macsign notary-wait <id>`, then staple; never
+  # submit the same build again.
+  "$tool" release "$APP" --zip "$ZIP" --dmg "$DMG" --volname "Switchyard $V" --timeout "${SY_NOTARY_TIMEOUT:-10800}"
   # Belt and braces, with Apple's own tools: the stapled app, a copy unpacked from the zip, the dmg.
   check=$(mktemp -d)
   ditto -x -k "$ZIP" "$check"
