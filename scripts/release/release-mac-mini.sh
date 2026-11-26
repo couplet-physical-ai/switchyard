@@ -71,7 +71,21 @@ timeout 10800 "${SSH[@]}" "set -e
   if [ \"\$(git -C \"\$EXACT_DIR\" rev-parse HEAD)\" != '$pin' ]; then git -C \"\$EXACT_DIR\" fetch -q origin && git -C \"\$EXACT_DIR\" checkout -q -f '$pin'; fi
   cd '$src'
   if [ -x app/scripts/patch-exact.sh ]; then app/scripts/patch-exact.sh \"\$EXACT_DIR\"; fi
-  if [ ! -f \"\$EXACT_DIR/.switchyard-setup-$pin\" ]; then (cd \"\$EXACT_DIR\" && $lock sh -c 'bun install --frozen-lockfile && bun scripts/exact.mjs setup') && touch \"\$EXACT_DIR/.switchyard-setup-$pin\"; fi
+  # A shared RUSTUP_HOME: rustup and its proxies must be in this CARGO_HOME too (links to the account's).
+  if [ ! -x \"\$CARGO_HOME/bin/rustup\" ] && [ -x \"\$HOME/.cargo/bin/rustup\" ]; then
+    mkdir -p \"\$CARGO_HOME/bin\"
+    for f in \"\$HOME\"/.cargo/bin/*; do if [ \"\$f\" -ef \"\$HOME/.cargo/bin/rustup\" ]; then ln -sf \"\$f\" \"\$CARGO_HOME/bin/\$(basename \"\$f\")\"; fi; done
+  fi
+  if [ ! -f \"\$EXACT_DIR/.switchyard-setup-$pin\" ]; then
+    (cd \"\$EXACT_DIR\" && $lock sh -c 'bun install --frozen-lockfile && bun scripts/exact.mjs setup') || { echo 'mini: Exact setup failed' >&2; exit 1; }
+    touch \"\$EXACT_DIR/.switchyard-setup-$pin\"
+  fi
+  # Exact's builds run offline: put the pinned Hermes engine into this CARGO_HOME once.
+  hi=\"\$EXACT_DIR/vendor/ibex/crates/hermes-lean-sys-installer/Cargo.toml\"
+  if [ -f \"\$hi\" ] && [ ! -f \"\$CARGO_HOME/.switchyard-hermes-$pin\" ]; then
+    $lock cargo run -q --manifest-path \"\$hi\" -- --target aarch64-apple-darwin || { echo 'mini: Hermes install failed' >&2; exit 1; }
+    touch \"\$CARGO_HOME/.switchyard-hermes-$pin\"
+  fi
   $lock scripts/release/build-macos.sh --mode '$MODE' --version '$V'
   scripts/release/package-macos.sh '$V'
   # Smoke: the shipped zip, unpacked, must still be running after 5 s.

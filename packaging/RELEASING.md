@@ -27,9 +27,11 @@ name the server.
 1. Refuses to start when the release Mac's working volume has under 20 GB free, then copies the
    commit (`REF`, default `HEAD`) to `$MINI_DIR/src` (default
    `/Volumes/Farm/farm-exowatt/switchyard-release`: one Exact checkout `exact/` at the pin
-   (`app/exact.pin`, else [`packaging/exact.pin`](exact.pin)) with its own
-   `CARGO_HOME`/`RUSTUP_HOME`, and one working tree `src/` whose `app/target` is kept between
-   releases; ~15 GB).
+   (`app/exact.pin`, else [`packaging/exact.pin`](exact.pin)), cloned and set up on first use,
+   with its own `CARGO_HOME` (and the pinned Hermes engine) and `RUSTUP_HOME`, and one working
+   tree `src/` whose `app/target` is kept between releases; ~15 GB). `MINI_RUSTUP_HOME` and
+   `MINI_CACHE` reuse the account's toolchains and Exact caches instead; `MINI_MIN_FREE_GB`
+   (default 20) is the free-space floor.
 2. [`scripts/release/build-macos.sh`](../scripts/release/build-macos.sh) builds
    `dist/Switchyard.app` (arm64). With `MINI_LOCK=<file>` the build and the macOS tests run under
    `lockf -t 10800 <file>`, queued behind other builds on a shared Mac.
