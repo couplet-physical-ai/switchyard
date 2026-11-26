@@ -24,7 +24,7 @@ bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 flate2 = "1"
 futures = "0.3"
-hmac = "0.12"
+hmac = "0.13"
 parking_lot = "0.12"
 rand = "0.8"
 mime_guess = "2"
