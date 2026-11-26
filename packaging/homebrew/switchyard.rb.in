@@ -21,12 +21,6 @@ cask "switchyard" do
 
   app "Switchyard.app"
 
-  # Ad-hoc signed (no Developer ID): drop the download quarantine so Gatekeeper lets it open.
-  # `postflight_steps` (Homebrew >= 7.0.6), not the `postflight` block Homebrew 7 deprecates.
-  postflight_steps do
-    run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{appdir}}/Switchyard.app"]
-  end
-
   zap trash: [
     "~/Library/Application Support/@BUNDLE_ID@",
     "~/Library/Caches/@BUNDLE_ID@",
@@ -36,7 +30,6 @@ cask "switchyard" do
 
   caveats <<~CAVEATS
     Switchyard connects to your team's Switchyard server (single sign-on).
-    The app is ad-hoc signed; this cask removes the quarantine flag on install.
     It updates itself (Update in the app); `brew upgrade --cask --greedy switchyard` also works.
   CAVEATS
 end

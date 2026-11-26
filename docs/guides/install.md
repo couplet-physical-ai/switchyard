@@ -16,13 +16,9 @@ The tap is [couplet-physical-ai/homebrew-tap](https://github.com/couplet-physica
 
 1. Download the `Switchyard-<version>-arm64.dmg` asset and `SHA256SUMS` from the [latest GitHub release](https://github.com/couplet-physical-ai/switchyard/releases/latest). Verify the listed checksums with `shasum -a 256 -c SHA256SUMS`.
 2. Open the disk image and drag Switchyard to Applications.
-3. Remove the quarantine flag and launch the app:
+3. Launch the app: `open -a Switchyard`.
 
-   ```sh
-   xattr -dr com.apple.quarantine /Applications/Switchyard.app && open -a Switchyard
-   ```
-
-The app is ad-hoc signed because the project does not have an Apple Developer ID. Homebrew removes quarantine during installation; the disk-image route needs the command above once.
+From 0.1.9 the app is signed with a Developer ID and notarized by Apple, so Gatekeeper opens it from either route without a prompt. Versions up to 0.1.8 were ad-hoc signed; a disk-image install of one of those needs `xattr -dr com.apple.quarantine /Applications/Switchyard.app` once.
 
 ## Connect on first launch
 
@@ -66,7 +62,7 @@ Add `--zap` if you also want Homebrew to remove the app's settings and caches.
 |---|---|
 | Homebrew refuses the tap as untrusted | Run `brew trust couplet-physical-ai/tap`, then install again. On older Homebrew, skip the trust command if it is unavailable. |
 | The cask is unavailable | Run `brew update`; if needed, remove and re-add the tap, then install again. |
-| macOS says the app is damaged or cannot be opened | On a disk-image install, remove the quarantine flag with the command above. |
+| macOS says the app is damaged or cannot be opened | It is a 0.1.8 or older disk image: remove the quarantine flag with the command above, or install the current release. |
 | The Mac does not meet the supported architecture | The native app requires Apple Silicon; use the web app instead. |
 | The app asks to connect or shows no data | Confirm the server URL, complete SSO on the web connect page, and create a device token for the native app. |
 | An older app shows no window during an update | Check for a pending Keychain migration prompt from a build that predates the token file. Approve the expected read once to migrate the token. |

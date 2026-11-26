@@ -22,8 +22,8 @@ What each part does:
    non-official tap; without it Homebrew refuses with *"Refusing to load cask … from untrusted
    tap"*. On an older Homebrew, where `brew trust` does not exist, skip it.
 3. `brew install --cask switchyard` downloads the release zip, checks its sha256, installs
-   `/Applications/Switchyard.app` and removes the download quarantine flag (the app is
-   ad-hoc signed; there is no Apple Developer ID), so it opens without a Gatekeeper prompt.
+   `/Applications/Switchyard.app`. From 0.1.9 the app is signed with a Developer ID and
+   notarized, so Gatekeeper opens it without a prompt.
 
 Update: the app updates itself (**Update** in the app, fed by the release's `latest.json`); the
 cask is marked `auto_updates`, so plain `brew upgrade` leaves it alone and
@@ -85,11 +85,9 @@ browser (signed in), `GET /api/v1/tokens` lists yours and `DELETE /api/v1/tokens
    [latest release](https://github.com/couplet-physical-ai/switchyard/releases/latest)
    (`SHA256SUMS` lists the checksums: `shasum -a 256 -c SHA256SUMS`).
 2. Open it and drag **Switchyard** onto **Applications**.
-3. Remove the quarantine flag once, then open it:
-
-   ```sh
-   xattr -dr com.apple.quarantine /Applications/Switchyard.app && open -a Switchyard
-   ```
+3. Open it (`open -a Switchyard`). The app is notarized, so Gatekeeper lets it open. Versions
+   up to 0.1.8 were ad hoc signed and needed
+   `xattr -dr com.apple.quarantine /Applications/Switchyard.app` once.
 
 ## Troubleshooting
 
@@ -97,7 +95,7 @@ browser (signed in), `GET /api/v1/tokens` lists yours and `DELETE /api/v1/tokens
 |---|---|
 | `Refusing to load cask couplet-physical-ai/tap/switchyard from untrusted tap` | `brew trust couplet-physical-ai/tap`, then install again |
 | `Error: Cask 'switchyard' is unavailable` | `brew update`, or `brew untap couplet-physical-ai/tap && brew tap couplet-physical-ai/tap` |
-| *"Switchyard" is damaged / can't be opened* | the quarantine flag is still set: `xattr -dr com.apple.quarantine /Applications/Switchyard.app` |
+| *"Switchyard" is damaged / can't be opened* | a 0.1.8 or older dmg: `xattr -dr com.apple.quarantine /Applications/Switchyard.app`, or install the current release |
 | `depends_on arch: :arm64` | Intel Macs are not supported; use the web app on your server |
 | The app shows *Connect Switchyard to a server* | mint a token at `/connect` on your server (see First run above) |
 | An app at 0.1.2 or earlier shows no window | a Keychain prompt is waiting, maybe behind other windows (check the Dock or press ⌘-Tab): answer it with your login password and **Always Allow**, then update to the current release |

@@ -3,12 +3,16 @@
 # HooksTests.swift, README "Updates" and "Test hooks"; KeychainTests.swift, "Security"): compiles UpdaterCore.swift,
 # HooksCore.swift and the two test files with swiftc into a CLI and runs it. Exits
 # nonzero when a case fails or the build does.
-# The signer-pin cases make two throwaway self-signed code-signing certificates in a keychain
-# file of their own (openssl + security; never the login keychain, its search list or trust
-# settings, never sudo) and delete it after the run.
+# The signer-pin cases make throwaway self-signed code-signing certificates as .p12 files (openssl)
+# and sign fixtures with rcodesign (apple-codesign 0.29+: RCODESIGN, PATH or ~/.local/bin): no
+# keychain is created, read or changed, and nothing needs sudo.
 #   app/tools/updater-tests.sh                  on a Mac
 #   MINI=user@host app/tools/updater-tests.sh   from elsewhere: copies the files to the Mac
 #                                               over ssh and runs them there
+#   app/tools/updater-tests.sh --verify-release <zip> <version>
+#                                               the updater's whole check of a real release zip
+#                                               (a path on the Mac that runs it), as an ad-hoc
+#                                               copy and as a Developer ID copy
 set -eu
 cd "$(dirname "$0")/.."
 SRC="modules/apple/UpdaterCore.swift modules/apple/UpdaterTests.swift modules/apple/HooksCore.swift modules/apple/HooksTests.swift modules/apple/Keychain.swift modules/apple/KeychainTests.swift" # fx-kc: + the token at rest
@@ -18,7 +22,7 @@ if [ "$(uname -s)" != Darwin ]; then
   # shellcheck disable=SC2086
   tar czf - $SRC tools/updater-tests.sh \
     | timeout 900 ssh -o BatchMode=yes -o ConnectTimeout=10 "$MINI" \
-      'set -e; d=$(mktemp -d /tmp/sy-updater-tests.XXXXXX); trap "rm -rf $d" EXIT; tar xzf - -C "$d"; cd "$d"; [ -f "${SWITCHYARD_ENV:-/dev/null}" ] && . "$SWITCHYARD_ENV"; sh tools/updater-tests.sh'
+      'set -e; d=$(mktemp -d /tmp/sy-updater-tests.XXXXXX); trap "rm -rf $d" EXIT; tar xzf - -C "$d"; cd "$d"; [ -f "${SWITCHYARD_ENV:-/dev/null}" ] && . "$SWITCHYARD_ENV"; sh tools/updater-tests.sh '"$*"
   exit $?
 fi
 
@@ -28,4 +32,4 @@ printf 'import Foundation\nexit(SYUpdaterTests.run())\n' > "$OUT/main.swift"
 echo "swiftc $(swiftc --version 2>&1 | head -1)"
 # shellcheck disable=SC2086
 timeout 600 swiftc -swift-version 5 -O -D SWITCHYARD_UPDATER_TESTS $SRC "$OUT/main.swift" -o "$OUT/updater-tests"
-timeout 600 "$OUT/updater-tests"
+timeout 600 "$OUT/updater-tests" "$@"

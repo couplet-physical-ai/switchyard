@@ -1,0 +1,3 @@
+# The exo-macsign release scripts/release/package-macos.sh signs and notarizes with. A different
+# copy of the tool is refused until this line is changed in a reviewed commit.
+6c3d14b888b81cfa3334fcec132cfacf9e5dc7754e81e499968d15b384d1b38b  exo-macsign 0.1.0 (rcodesign 0.29.0)

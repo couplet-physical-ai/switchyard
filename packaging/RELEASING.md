@@ -6,79 +6,97 @@
 scripts/release.sh 0.1.0
 ```
 
-It checks that `origin/main` is green on GitHub Actions (every check run of the commit passed),
-tags it `v0.1.0`, pushes the tag, waits for [`release.yml`](../.github/workflows/release.yml),
-then runs the tap's `bump-switchyard` workflow. `--dry-run` shows the plan; `--skip-ci` skips
-the CI check.
+It checks that `origin/main` is green (every check run of the commit passed), tags it
+`v0.1.0`, pushes the tag, then runs
+[`scripts/release/release-mac-mini.sh`](../scripts/release/release-mac-mini.sh) at that commit:
+the release Mac builds, signs, notarizes and staples; this machine publishes the GitHub release
+and moves the tap. `--dry-run` shows the plan; `--skip-ci` skips the check.
 
-Site configuration comes from repository secrets, never from the source:
-`SWITCHYARD_DEFAULT_SERVER` (the server a fresh install talks to; an app release refuses to build
-without it) and `SWITCHYARD_ORGS` (the watched orgs in display order, the server's list). Set
-them with `gh secret set <NAME> -R couplet-physical-ai/switchyard`. Public release notes and the
-cask caveat never name the server.
+Site configuration comes from the environment, never from the source: `MINI` (or `SY_MINI`,
+`user@host` of the release Mac), `SWITCHYARD_DEFAULT_SERVER` (the server a fresh install talks
+to; an app release refuses to build without it) and `SWITCHYARD_ORGS` (the watched orgs in
+display order, the server's list). The real values are kept with the private deployment
+(`set -a; . <its release env>; set +a` before running). Public release notes and the cask never
+name the server.
 
-## What the release workflow does
+## What the release does
 
-`.github/workflows/release.yml` (GitHub Actions; macOS builds stay on GitHub's macOS runners,
-free for this public repo), on a `v*` tag or a manual run:
+[`scripts/release/release-mac-mini.sh`](../scripts/release/release-mac-mini.sh) `<version>
+[--mode app|placeholder] [--prerelease] [--no-publish]`:
 
-1. `runs-on: xcode-27` (macOS 27, Xcode 27.1, the Xcode Exact is developed against; the
-   Mac mini runs the same pair).
-2. Bun 1.4.2, a checkout of [expo/exact](https://github.com/expo/exact) at the pin
-   (`app/exact.pin`, else [`packaging/exact.pin`](exact.pin)), `bun scripts/exact.mjs setup`
-   and the Hermes bundle for `aarch64-apple-darwin`; cargo registry, Hermes and Exact's
-   `target/` are cached per pin.
-3. [`scripts/release/build-macos.sh`](../scripts/release/build-macos.sh) builds
-   `dist/Switchyard.app` (arm64).
-4. [`scripts/release/package-macos.sh`](../scripts/release/package-macos.sh) ad-hoc signs it
-   (`codesign -s -`; no Developer ID exists), writes `Switchyard-<v>-arm64.zip` (what the
-   cask installs), `Switchyard-<v>-arm64.dmg` and `SHA256SUMS`.
-5. Launch smoke: the packaged app must still be running after 5 s.
-6. GitHub release `v<v>` with the zip, dmg, `SHA256SUMS` and `latest.json`, the in-app
-   updater's feed (stable URL
+1. Refuses to start when the release Mac's working volume has under 20 GB free, then copies the
+   commit (`REF`, default `HEAD`) to `$MINI_DIR/src` (default
+   `/Volumes/Farm/farm-exowatt/switchyard-release`: one Exact checkout `exact/` at the pin
+   (`app/exact.pin`, else [`packaging/exact.pin`](exact.pin)) with its own
+   `CARGO_HOME`/`RUSTUP_HOME`, and one working tree `src/` whose `app/target` is kept between
+   releases; ~15 GB).
+2. [`scripts/release/build-macos.sh`](../scripts/release/build-macos.sh) builds
+   `dist/Switchyard.app` (arm64). With `MINI_LOCK=<file>` the build and the macOS tests run under
+   `lockf -t 10800 <file>`, queued behind other builds on a shared Mac.
+3. [`scripts/release/package-macos.sh`](../scripts/release/package-macos.sh) signs it with the
+   Developer ID, notarizes and staples the app, zips it (`Switchyard-<v>-arm64.zip`, what the
+   cask and the updater install), makes `Switchyard-<v>-arm64.dmg`, signs, notarizes and staples
+   the dmg, checks all of it with `codesign`, `spctl` and `stapler`, and writes `SHA256SUMS` from
+   the final files (*Signing* below).
+4. Launch smoke: the app unpacked from the zip must still be running after 5 s. Then the app's
+   `*.test.contract` suites on the macOS host (`app/scripts/build.sh test macos`).
+5. Back here: the checksums are verified, `latest.json` (the in-app updater's feed, stable URL
    <https://github.com/couplet-physical-ai/switchyard/releases/latest/download/latest.json>;
-   shape in [`scripts/release/latest-json.py`](../scripts/release/latest-json.py)). The bundle's
-   `CFBundleVersion` is `M*1000000 + m*1000 + p`, so it rises with every release on both build
-   paths; the updater refuses a bundle that is not newer. Its notes come from the commit subjects since the
+   shape in [`scripts/release/latest-json.py`](../scripts/release/latest-json.py)) is written
+   from `SHA256SUMS` and the shipped `Info.plist`, so it hashes the stapled zip, and on a Mac
+   Gatekeeper checks the zip and the dmg once more.
+6. GitHub release `v<v>` with the zip, dmg, `SHA256SUMS` and `latest.json`. The bundle's
+   `CFBundleVersion` is `M*1000000 + m*1000 + p`, so it rises with every release; the updater
+   refuses a bundle that is not newer. Its notes come from the commit subjects since the
    previous release, grouped by area (`client:`, `server:`, `ci:`, `release:`, …):
-   [`scripts/release/notes.py`](../scripts/release/notes.py) (`python3 scripts/release/notes.py 0.1.0` previews them).
+   [`scripts/release/notes.py`](../scripts/release/notes.py) (`python3 scripts/release/notes.py 0.1.0`
+   previews them). `0.0.x`, suffixed versions and `--prerelease` publish as prereleases.
+7. [`scripts/release/bump-tap.sh`](../scripts/release/bump-tap.sh) (stable releases only):
+   downloads the release's `SHA256SUMS` and zip, checks the hash, and renders
+   [`homebrew/switchyard.rb.in`](homebrew/switchyard.rb.in) into
+   [couplet-physical-ai/homebrew-tap](https://github.com/couplet-physical-ai/homebrew-tap)
+   `Casks/switchyard.rb` (`scripts/release/bump-cask.sh --push`). The tap's own scheduled bump
+   only edits the version and sha256, so the cask's structure always comes from here.
 
-The tap ([couplet-physical-ai/homebrew-tap](https://github.com/couplet-physical-ai/homebrew-tap))
-moves itself: its `bump-switchyard` workflow reads the newest release's `SHA256SUMS`, hashes
-the zip again, and commits `Casks/switchyard.rb` with its own `GITHUB_TOKEN` (deploy keys are
-disabled for the org, and this repo's token cannot push there). It runs every 20 minutes and on
-demand: `gh workflow run bump-switchyard.yml -R couplet-physical-ai/homebrew-tap -f version=0.1.0`.
-
-The cask's structure lives here, in [`homebrew/switchyard.rb.in`](homebrew/switchyard.rb.in);
-after changing it, render it into the tap once with
-`scripts/release/bump-cask.sh <version> <sha256> <tap checkout> --push`.
-
-## Manual runs
-
-```sh
-gh workflow run release.yml -f version=0.0.1 -f mode=placeholder -f prerelease=true   # release-path check
-gh workflow run release.yml -f version=0.0.0 -f mode=exact-probe                    # toolchain check, publishes nothing
-```
-
-## Fallback: build on the Mac mini
-
-If GitHub's macOS runners are down or cannot build Exact:
-
-```sh
-scripts/release/release-mac-mini.sh 0.1.0
-```
-
-It refuses to start when `/Volumes/Farm` (shared) has under 20 GB free, then copies `HEAD` to the mini (`$MINI` or `$SY_MINI`,
-`user@host`, kept with the private deployment's configuration, never here;
-`/Volumes/Farm/farm-exowatt/switchyard-release`: one Exact checkout `exact/`, one working tree
-`src/` whose `app/target` is kept between releases, and its own `CARGO_HOME`/`RUSTUP_HOME`; ~15 GB), builds and packages there, verifies the checksums here, publishes
-the release with `gh`, and dispatches the tap bump.
+`--mode placeholder` proves the release path without the client (a tiny AppKit window, signed
+and notarized the same way); use a `0.0.x` version so it stays a prerelease.
 
 ## Signing
 
-There is no Apple Developer ID, so the app is ad-hoc signed and not notarized. The cask's
-`postflight` removes `com.apple.quarantine`; a dmg download needs
-`xattr -dr com.apple.quarantine /Applications/Switchyard.app` once.
+Every release is signed with Exowatt Inc's **Developer ID Application** certificate (team
+`62D5L6T44Y`), with the hardened runtime and a secure timestamp on each Mach-O
+(`Contents/MacOS/Switchyard`, `libexact_canvas_gpu.dylib`, `libexact_modules.dylib`; no
+entitlements: the dylibs load from the bundle and carry the same team), then notarized by Apple
+and stapled. The dmg is signed, notarized and stapled too. No keychain is involved anywhere.
+
+- **Tool:** `exo-macsign` (a wrapper around [rcodesign](https://github.com/indygreg/apple-platform-rs)),
+  installed on the release Mac at `~/.local/bin/exo-macsign` with rcodesign 0.29.
+  `package-macos.sh` refuses any copy whose SHA-256 differs from
+  [`exo-macsign.sha256`](exo-macsign.sha256); bump that file to move to a newer tool.
+- **Credentials:** on the release Mac, in `~/.config/exowatt-apple-signing/` (dir 0700, files
+  0600): `developer-id-application.p12` + `p12-password`, the App Store Connect API key
+  `AuthKey_<id>.p8` + `asc-issuer`, and `team-id`. Or the same values in the environment as
+  `EXO_MACSIGN_P12_BASE64`, `EXO_MACSIGN_P12_PASSWORD`, `EXO_MACSIGN_ASC_KEY_P8_BASE64`,
+  `EXO_MACSIGN_ASC_KEY_ID`, `EXO_MACSIGN_ASC_ISSUER`, `EXO_MACSIGN_TEAM_ID`. They are never in
+  this repository. `exo-macsign doctor --online` checks them.
+- **Command:** `scripts/release/package-macos.sh <v>` runs
+  `exo-macsign release dist/Switchyard.app --zip … --dmg …`.
+  A failed signature or a rejected notarization (exit 3; Apple's log is printed) fails the
+  release before anything is published. `--adhoc` makes an ad-hoc local test build that must
+  never be published.
+- **Verify** a published copy:
+
+  ```sh
+  gh release download v<v> -R couplet-physical-ai/switchyard -p '*.zip' -p '*.dmg'
+  ditto -x -k Switchyard-<v>-arm64.zip x && spctl -a -vv -t exec x/Switchyard.app   # source=Notarized Developer ID
+  xcrun stapler validate x/Switchyard.app && codesign --verify --deep --strict x/Switchyard.app
+  spctl -a -vv -t open --context context:primary-signature Switchyard-<v>-arm64.dmg && xcrun stapler validate Switchyard-<v>-arm64.dmg
+  app/tools/updater-tests.sh --verify-release "$PWD/Switchyard-<v>-arm64.zip" <v>      # the updater takes it
+  ```
+
+Releases up to 0.1.8 were ad-hoc signed; their updater takes the first Developer ID build as a
+normal update (the pin is off on an ad-hoc copy), and from then on the updater pins the team
+(app README, "Signer pinning"). The cask no longer strips the quarantine flag.
 
 ## Prereleases and the update proof
 

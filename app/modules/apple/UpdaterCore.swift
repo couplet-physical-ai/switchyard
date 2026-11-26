@@ -333,10 +333,11 @@ struct SYTools {
 /// A bundle is not trusted because it arrived: its zip's SHA-256 is the feed's, it is this app,
 /// it is the version and build the feed named, its build is newer than this one's, and its
 /// signature holds under SecStaticCodeCheckValidity's strict checks (and `codesign --verify
-/// --deep --strict`). No Team ID (the certificate is self-signed): instead the pin, last. A copy
-/// signed with a certificate takes only a build whose leaf certificate is the same one (its DER's
-/// SHA-256); an ad-hoc copy takes a build signed either way (the one-time ad hoc → certificate
-/// step).
+/// --deep --strict`). Then the pin, last (SYPin): a Developer ID copy takes only a build signed
+/// with a Developer ID Application certificate of the same team (Apple anchor + team OU), so a
+/// renewed certificate still updates; an ad-hoc copy (every release up to 0.1.8) takes a build
+/// signed either way, which is the one-time ad hoc → Developer ID step; a copy signed with some
+/// other certificate takes that same leaf or the team's Developer ID.
 struct SYVerifier {
     let bundleID: String
     /// The running bundle's CFBundleVersion.
@@ -377,9 +378,7 @@ struct SYVerifier {
         guard !SYDigest.quarantined(app) else { throw SYRefusal.quarantine }
         // The pin, after every other check.
         let running = try runningSigner()
-        if case .cert(let mine) = running, signer != running {
-            throw SYRefusal.otherSigner(got: signer.leaf ?? "\(signer)", want: mine)
-        }
+        if let refusal = SYPin.refusal(running: running, new: signer) { throw refusal }
         return Verified(app: app, cdhash: cdhash, signer: signer, running: running)
     }
 }
@@ -410,11 +409,76 @@ enum SYDigest {
 enum SYSigner: Equatable, CustomStringConvertible {
     /// No certificate: `kSecCodeInfoFlags` has `kSecCodeSignatureAdhoc`.
     case adhoc
-    /// The SHA-256 of the leaf certificate's DER (`kSecCodeInfoCertificates[0]`), lower-case hex.
+    /// Any other certificate (self-signed, another team's): the SHA-256 of the leaf certificate's
+    /// DER (`kSecCodeInfoCertificates[0]`), lower-case hex.
     case cert(String)
+    /// Satisfies `SYPin.requirement(team:)`: Apple's anchor, the Developer ID intermediate, a
+    /// Developer ID Application leaf whose OU is `team`. `leaf` (its DER's SHA-256) is for the log.
+    case developerID(team: String, leaf: String)
 
-    var leaf: String? { if case .cert(let h) = self { return h }; return nil }
-    var description: String { leaf.map { "leaf sha256 \($0)" } ?? "ad hoc" }
+    var leaf: String? {
+        switch self {
+        case .adhoc: return nil
+        case .cert(let h), .developerID(_, let h): return h
+        }
+    }
+    var description: String {
+        switch self {
+        case .adhoc: return "ad hoc"
+        case .cert(let h): return "leaf sha256 \(h)"
+        case .developerID(let team, let h): return "Developer ID team \(team), leaf sha256 \(h)"
+        }
+    }
+}
+
+/// The signer pin: which signers this copy takes an update from.
+enum SYPin {
+    /// The Apple Developer team whose Developer ID Application certificate signs every release
+    /// from 0.1.9 on (notarized and stapled; packaging/RELEASING.md "Signing").
+    static let team = "62D5L6T44Y"
+
+    /// "Signed with a Developer ID Application certificate of `team`" as a code requirement
+    /// (the designated requirement Apple's tools write for a Developer ID build, minus its
+    /// identifier: the bundle id is checked on its own, from Info.plist). A self-signed
+    /// certificate with the same OU and extensions fails `anchor apple generic`.
+    static func requirement(team: String = team) -> String {
+        "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = \"\(team)\""
+    }
+
+    /// nil = take the update. Running ad hoc: anything that signs (the pin is off; this is how
+    /// every ad-hoc install up to 0.1.8 reaches the first Developer ID build). Running Developer
+    /// ID: only the same team's Developer ID (a renewed certificate passes; ad hoc, self-signed
+    /// and other teams do not). Running some other certificate: that same leaf, or the team's
+    /// Developer ID.
+    static func refusal(running: SYSigner, new: SYSigner) -> SYRefusal? {
+        switch running {
+        case .adhoc:
+            return nil
+        case .cert(let mine):
+            if new == running { return nil }
+            if case .developerID(let t, _) = new, t == team { return nil }
+            return .otherSigner(got: name(new), want: mine)
+        case .developerID(let mine, _):
+            if case .developerID(let t, _) = new, t == mine { return nil }
+            return .otherSigner(got: name(new), want: "Developer ID team \(mine)")
+        }
+    }
+
+    /// How a refusal names the download's signer.
+    static func name(_ s: SYSigner) -> String {
+        switch s {
+        case .adhoc: return "ad hoc"
+        case .cert(let h): return h
+        case .developerID(let t, _): return "Developer ID team \(t)"
+        }
+    }
+
+    /// The requirement, compiled once.
+    static let compiled: SecRequirement? = {
+        var req: SecRequirement?
+        guard SecRequirementCreateWithString(requirement() as CFString, [], &req) == errSecSuccess else { return nil }
+        return req
+    }()
 }
 
 enum SYSign {
@@ -432,7 +496,8 @@ enum SYSign {
         guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
               let dict = info as? [String: Any], let unique = dict[kSecCodeInfoUnique as String] as? Data
         else { throw SYRefusal.unsigned("no cdhash") }
-        return (SYDigest.hex(unique), try signer(dict))
+        let devID = SYPin.compiled.map { SecStaticCodeCheckValidity(code, strict, $0) == errSecSuccess } ?? false
+        return (SYDigest.hex(unique), try signer(dict, developerID: devID))
     }
 
     /// This process's signer (SecCodeCopySelf). Throws when it cannot be read: a copy that cannot
@@ -446,16 +511,20 @@ enum SYSign {
         guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
               let dict = info as? [String: Any]
         else { throw SYRefusal.unsigned("cannot read this app's own signature") }
-        return try signer(dict)
+        // The running process against the requirement (the kernel validated its pages already).
+        let devID = SYPin.compiled.map { SecCodeCheckValidity(me, [], $0) == errSecSuccess } ?? false
+        return try signer(dict, developerID: devID)
     }
 
-    /// A certificate chain's leaf → `.cert`; none, with the ad-hoc flag → `.adhoc`. Anything else
-    /// (no signature at all) is refused.
-    static func signer(_ info: [String: Any]) throws -> SYSigner {
+    /// A certificate chain's leaf → `.developerID` when the code satisfies SYPin's requirement,
+    /// else `.cert`; none, with the ad-hoc flag → `.adhoc`. Anything else (no signature at all) is
+    /// refused.
+    static func signer(_ info: [String: Any], developerID: Bool = false) throws -> SYSigner {
         if let chain = info[kSecCodeInfoCertificates as String] as? [AnyObject], let first = chain.first {
             guard CFGetTypeID(first) == SecCertificateGetTypeID() else { throw SYRefusal.unsigned("an unreadable certificate") }
             let der = SecCertificateCopyData(first as! SecCertificate) as Data
-            return .cert(SYDigest.hex(SHA256.hash(data: der)))
+            let leaf = SYDigest.hex(SHA256.hash(data: der))
+            return developerID ? .developerID(team: SYPin.team, leaf: leaf) : .cert(leaf)
         }
         let flags = (info[kSecCodeInfoFlags as String] as? NSNumber)?.uint32Value ?? 0
         guard flags & SecCodeSignatureFlags.adhoc.rawValue != 0 else { throw SYRefusal.unsigned("neither a certificate nor ad hoc") }
@@ -598,8 +667,15 @@ struct SYToolFailure: LocalizedError {
 /// its executable, signed ad hoc (or with `identity`), so `codesign --verify --deep --strict`
 /// holds.
 enum SYFixture {
-    /// A code-signing identity in a keychain file (the unit tests' throwaway certificates).
-    struct Identity { let sha1: String; let keychain: URL }
+    /// A code-signing identity as a .p12 file plus its password file, signed with by rcodesign:
+    /// the unit tests' throwaway certificates. No keychain is involved.
+    struct Identity {
+        let p12: URL; let passwordFile: URL; let rcodesign: String
+        /// rcodesign signs `path` (a bundle or a single Mach-O) with this identity.
+        func sign(_ path: URL) throws {
+            try SYProcess.run(rcodesign, ["sign", "--p12-file", p12.path, "--p12-password-file", passwordFile.path, path.path], deadline: 120)
+        }
+    }
 
     static func bundle(in dir: URL, id: String, version: String, build: Int? = nil, name: String = "Switchyard.app", sign: Bool = true,
                        identity: Identity? = nil) throws -> URL {
@@ -617,8 +693,7 @@ enum SYFixture {
         try? FileManager.default.removeItem(at: exe)
         try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/bin/true"), to: exe)
         if sign {
-            let who = identity.map { ["--sign", $0.sha1, "--keychain", $0.keychain.path] } ?? ["--sign", "-"]
-            try SYProcess.run("/usr/bin/codesign", ["--force"] + who + [app.path], deadline: 60)
+            if let identity { try identity.sign(app) } else { try SYProcess.run("/usr/bin/codesign", ["--force", "--sign", "-", app.path], deadline: 60) }
         }
         return app
     }

@@ -89,11 +89,11 @@ keeps it readable by your own macOS user's processes, the way `gh` keeps its tok
   a page's token carries over), this origin only (`modules/web/index.js`). With no server set the
   page uses its own origin's sign-in and needs no token.
 
-**Why not the Keychain.** Exowatt builds have no Apple Developer ID. Without a Team ID, a Keychain
+**Why not the Keychain.** Builds up to 0.1.8 had no Apple Developer ID. Without a Team ID, a Keychain
 item's partition is the CDHash of the build that made it, so every update asked again, and 0.1.2
 blocked its launch on that prompt with no window. An "any application" access list does not help:
-we tried it on a Mac, and the partition still prompts. With a Developer ID we would tighten this
-(a Keychain item whose partition is our Team ID).
+we tried it on a Mac, and the partition still prompts. Releases are Developer ID signed from 0.1.9,
+so a Keychain item partitioned by our Team ID is now possible; the token stays in the file.
 
 **From 0.1.2 and earlier.** Those builds kept the token in the Keychain (a generic password,
 service `com.exowatt.switchyard`, account `switchyard.token`). The first launch with no token file
@@ -178,9 +178,10 @@ computed from the version). If the API rate-limits it (403/429), it reads
 `releases/latest/download/SHA256SUMS` instead. `app.json` `moduleConfig.updater.repo`
 overrides the repo.
 
-**Trust anchor and host allowlist.** Releases are signed ad hoc, so there is no Team ID to pin
-(see *Certificate pinning* below for copies signed with a certificate). Trust rests on these
-instead:
+**Trust anchor and host allowlist.** From 0.1.9, releases are signed with a Developer ID
+Application certificate, notarized and stapled, and the updater pins the signing team (*Signer
+pinning* below). 0.1.8 and earlier are ad hoc and pin nothing. On top of the signature, trust
+rests on these:
 
 - the feed is https only;
 - the zip URL is on `https://github.com/couplet-physical-ai/switchyard/releases/…`;
@@ -210,18 +211,29 @@ volume. The download is accepted only if all of these hold, in this order:
 6. Any quarantine flag is removed (URLSession downloads carry none).
 7. The pin (below).
 
-**Certificate pinning.** The pin is off unless the running copy is signed with a certificate.
-All releases today are ad hoc, so for them it does nothing. The launch line logs
-`pin: off (running ad-hoc)`, and an update is taken ad hoc or cert-signed, as before. That
-also makes the one-time switch from ad hoc to a certificate a normal update.
+**Signer pinning.** `SYPin` (`UpdaterCore.swift`) decides by what signs the running copy and
+the download, read with `SecCodeCopySigningInformation` and checked with
+`SecStaticCodeCheckValidity` / `SecCodeCheckValidity` against the requirement
 
-A copy signed with a certificate (`kSecCodeInfoCertificates` present, `kSecCodeSignatureAdhoc`
-clear) takes only a build whose leaf certificate is the same. The comparison is the SHA-256 of
-the leaf's DER, from `SecCodeCopySigningInformation`. Anything else is refused with *Update
-failed: update signed by a different certificate*, including an ad-hoc build. A copy that cannot
-read its own signature takes no update. The log names the running leaf hash and the new one:
-hashes of public certificates, never a secret. Going back to ad hoc, or moving to another
-certificate, needs a manual install (the DMG or `brew`).
+```
+anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6]
+  and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = "62D5L6T44Y"
+```
+
+(Apple's anchor, the Developer ID intermediate, a Developer ID Application leaf of team
+`62D5L6T44Y`). Code that satisfies it is *Developer ID*; other code with a certificate is pinned
+by its leaf's SHA-256.
+
+| Running copy | Takes |
+|---|---|
+| ad hoc (0.1.8 and earlier) | anything that signs: ad hoc, a certificate, Developer ID. This is the one-time step to the first Developer ID build, as a normal update. The launch line logs `pin: off (running ad-hoc)`. |
+| Developer ID of the team (0.1.9 on) | only the same team's Developer ID. A renewed certificate passes (the team is pinned, not the leaf); ad hoc, self-signed and other teams are refused. Logs `pin: on (running Developer ID team 62D5L6T44Y, …)`. |
+| another certificate | the same leaf, or the team's Developer ID. |
+
+A refused download fails with *Update failed: update signed by a different certificate*. A copy
+that cannot read its own signature takes no update. The log names the signers: team ids and
+hashes of public certificates, never a secret. Going back to ad hoc needs a manual install (the
+DMG or `brew`).
 
 **Install: Copper's `Swap`.** The pill then reads *Update ready · Relaunch to update*. The same
 button appears in Settings. Pressing it does two sibling renames with `rename(2)`, so it never
@@ -295,8 +307,10 @@ self-updated app alone and does not fight the updater.
 
 ```sh
 app/tools/updater-tests.sh                 # native unit tests (on a Mac; MINI=user@host from elsewhere); the
-                                           # pin cases sign fixtures with throwaway certificates in a temp
-                                           # keychain, made per run and deleted after
+                                           # pin cases sign fixtures with rcodesign and throwaway .p12
+                                           # certificates (no keychain is touched)
+app/tools/updater-tests.sh --verify-release Switchyard-0.1.9-arm64.zip 0.1.9   # the updater's whole check of
+                                           # a real release zip, as an ad-hoc and a Developer ID copy
 app/tools/updater-e2e.sh <Switchyard.app>  # end to end on a Mac, outside the agent, local feed
 app/tools/updater-e2e-feed.sh <Switchyard.app> 0.0.2 <latest.json URL>   # a real feed, --update-now
 ```
@@ -308,6 +322,8 @@ app/tools/updater-e2e-feed.sh <Switchyard.app> 0.0.2 <latest.json URL>   # a rea
   - the host allowlist and off-host redirects;
   - the verify chain: bad sum, corrupt zip, wrong id, build not newer or not the feed's,
     tampered signature, quarantine;
+  - the signer pin: every running signer against every download, and a self-signed impostor
+    with the team's OU and the Developer ID extension (read as a plain certificate);
   - the swap with an injected rename failure (rollback);
   - EACCES before anything is touched.
 - `updater-e2e.sh`:

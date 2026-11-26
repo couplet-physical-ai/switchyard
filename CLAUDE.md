@@ -15,16 +15,19 @@ Workflows (path-filtered, so a client-only change never rebuilds the server):
 | `release-lint.yml` | `.github/**`, `scripts/release*` | `scripts/ci/check_release_shell.py` |
 | `security.yml` | every PR and push to main | `scripts/check-no-internal.sh`, gitleaks (`.gitleaks.toml`), osv-scanner (report-only) |
 | `dco.yml` | every PR | the required `DCO` check: every commit signed off (`git commit -s`) |
-| `release.yml` | tag `v*` | macOS release: builds on a macOS runner, publishes a GitHub release, bumps the cask in [`couplet-physical-ai/homebrew-tap`](https://github.com/couplet-physical-ai/homebrew-tap) |
 
-One command cuts a release: `scripts/release.sh <version>`; details in `packaging/RELEASING.md`.
+The macOS release does not run on GitHub Actions: `scripts/release.sh <version>` tags the commit and runs
+`scripts/release/release-mac-mini.sh`, which builds on the release Mac, signs with the Developer ID,
+notarizes and staples, publishes the GitHub release and bumps the cask in
+[`couplet-physical-ai/homebrew-tap`](https://github.com/couplet-physical-ai/homebrew-tap); details in
+`packaging/RELEASING.md`.
 
 ## Public repo
 
 This repository is public. Never commit secrets, tokens, internal hostnames, private IPs,
 private org or repo names, or people's emails. Everything site-specific is runtime
 configuration: the server reads it from the environment (`server/.env.example` lists every key
-with neutral placeholders), the macOS release from repository secrets (`release.yml`), and the
+with neutral placeholders), the macOS release from its environment (`packaging/RELEASING.md`), and the
 real values live with the private deployment. Tests, fixtures and docs use synthetic names
 (`Northwind-*` orgs, `*.example.com` hosts). Before pushing, run `scripts/check-no-internal.sh`
 and `gitleaks dir . -c .gitleaks.toml`.

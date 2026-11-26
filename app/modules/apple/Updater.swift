@@ -496,14 +496,19 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
             let ok = try verifier.verify(zip: zip, sha256: want, version: rel.version, build: rel.build, into: dir)
             let app = ok.app
             try? FileManager.default.removeItem(at: zip)
-            let pin = ok.running.leaf.map { "pin: on, running leaf sha256 \($0) == new \(ok.signer.leaf ?? "?")" } ?? "pin: off (running ad-hoc); new \(ok.signer)"
+            let pin: String
+            switch ok.running {
+            case .adhoc: pin = "pin: off (running ad-hoc); new \(ok.signer)"
+            case .developerID(let team, _): pin = "pin: on, running Developer ID team \(team); new \(ok.signer)"
+            case .cert(let leaf): pin = "pin: on, running leaf sha256 \(leaf); new \(ok.signer)"
+            }
             log("verify: sha256 \(want) == latest.json; ditto -x -k unpacked one Switchyard.app; bundle id \(bundleID) == this app's; version \(rel.version), build \(rel.build) > \(currentBuild); SecStaticCodeCheckValidity strict+all-arch+nested passed; codesign --verify --deep --strict passed; cdhash \(ok.cdhash); no quarantine; \(pin)")
             set { s in s.stagedApp = app; s.stagedVersion = rel.version; s.state = "ready"; s.progress = 1 }
             log("ready: \(rel.version) staged at \(app.path)")
             if updateNow { installNow() }
         } catch {
             if case .otherSigner(let got, let want)? = error as? SYRefusal {
-                log("verify: pin refused: running leaf sha256 \(want), new \(got == "ad hoc" ? got : "leaf sha256 \(got)")")
+                log("verify: pin refused: running \(want.hasPrefix("Developer ID") ? want : "leaf sha256 \(want)"), new \(got == "ad hoc" || got.hasPrefix("Developer ID") ? got : "leaf sha256 \(got)")")
             }
             cleanStaging()
             fail(describe(error), quiet: false)
@@ -612,6 +617,7 @@ final class SYUpdateEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
         switch signer {
         case .success(.adhoc): return "pin: off (running ad-hoc)"
         case .success(.cert(let leaf)): return "pin: on (running leaf sha256 \(leaf))"
+        case .success(.developerID(let team, let leaf)): return "pin: on (running Developer ID team \(team), leaf sha256 \(leaf))"
         case .failure(let e): return "pin: this app's signer is unreadable (\(describe(e))); updates are refused"
         }
     }

@@ -67,9 +67,8 @@ def main() -> int:
         "brew tap couplet-physical-ai/tap && brew trust couplet-physical-ai/tap && brew install --cask switchyard",
         "# already installed? click Update in the app (or: brew upgrade --cask --greedy switchyard)",
         "```", "",
-        "The app is ad-hoc signed (no Developer ID); the cask clears the quarantine flag. Without Homebrew:",
-        "download the dmg below, drag Switchyard to Applications, then run",
-        "`xattr -dr com.apple.quarantine /Applications/Switchyard.app`. Checksums: `SHA256SUMS`.",
+        "The app is signed with a Developer ID and notarized by Apple. Without Homebrew: download the",
+        "dmg below and drag Switchyard to Applications. Checksums: `SHA256SUMS`.",
         *([f"Web: {web}", ""] if web else []),
     ]
     any_change = False

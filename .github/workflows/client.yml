@@ -1,6 +1,6 @@
 # The Exact client (app/): the web build, every tests/*.test.contract suite on the web host
 # (headless Chromium, 1440x900) and the mock server's selftest, on Linux. The macOS build and its
-# tests run in release.yml. Runs only when app/, contract/, the Exact pin or this file changes,
+# tests run on the release Mac (scripts/release/release-mac-mini.sh). Runs only when app/, contract/, the Exact pin or this file changes,
 # so a server-only change never rebuilds the client.
 #
 # Toolchain: Bun 1.4.2, expo/exact at the pin (app/exact.pin, else packaging/exact.pin; keep

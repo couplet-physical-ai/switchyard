@@ -10,7 +10,7 @@
 #                (GitHub release -> Homebrew cask -> install -> launch) without Exact.
 #   exact-probe  builds Exact's own Caltrain example from EXACT_DIR: proves the toolchain
 #                on this machine (GitHub's macOS image or the Mac mini) and times it.
-# Runs on GitHub Actions (release.yml) and on the Mac mini (release-mac-mini.sh).
+# Runs on the release Mac (release-mac-mini.sh).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT=$PWD
@@ -68,7 +68,7 @@ app)
     || { echo "app: $built lacks the baked data module (no loadToken in Contents/MacOS/Switchyard)" >&2; exit 1; }
   ditto "$built" "$OUT/Switchyard.app"
   # The release version is the tag's; Exact stamps app.json's. Changing Info.plist voids the
-  # build's ad-hoc signature, so package-macos.sh signs again (entitlements preserved).
+  # build's ad-hoc signature; package-macos.sh signs the bundle again (Developer ID).
   plist="$OUT/Switchyard.app/Contents/Info.plist"
   if [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist" 2>/dev/null)" != "$VERSION" ]]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$plist"
