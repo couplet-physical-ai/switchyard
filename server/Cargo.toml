@@ -47,7 +47,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 tikv-jemallocator = "0.6"
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["async_tokio"] }
+criterion = { version = "0.8", features = ["async_tokio"] }
 proptest = "1"
 tempfile = "3"
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
